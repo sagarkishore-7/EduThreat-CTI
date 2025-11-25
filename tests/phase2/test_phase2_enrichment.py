@@ -21,9 +21,9 @@ from src.edu_cti.pipeline.phase2.schemas import (
     MITREAttackTechnique,
     AttackDynamics,
 )
-from src.edu_cti.pipeline.phase2.article_fetcher import ArticleFetcher, ArticleContent
+from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleFetcher, ArticleContent
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
-from src.edu_cti.pipeline.phase2.db import (
+from src.edu_cti.pipeline.phase2.storage.db import (
     get_unenriched_incidents,
     save_enrichment_result,
     get_enrichment_result,

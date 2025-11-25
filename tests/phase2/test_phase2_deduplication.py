@@ -11,7 +11,7 @@ from pathlib import Path
 
 from src.edu_cti.core.db import get_connection, init_db, insert_incident
 from src.edu_cti.core.models import BaseIncident, make_incident_id
-from src.edu_cti.pipeline.phase2.deduplication import (
+from src.edu_cti.pipeline.phase2.utils.deduplication import (
     normalize_institution_name,
     parse_incident_date,
     dates_within_window,
@@ -19,7 +19,7 @@ from src.edu_cti.pipeline.phase2.deduplication import (
     deduplicate_by_institution,
 )
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
-from src.edu_cti.pipeline.phase2.db import (
+from src.edu_cti.pipeline.phase2.storage.db import (
     save_enrichment_result,
     get_enrichment_result,
 )

@@ -15,8 +15,8 @@ from urllib.parse import urlparse
 import sqlite3
 
 from src.edu_cti.core.db import get_connection
-from src.edu_cti.pipeline.phase2.article_fetcher import ArticleFetcher, ArticleContent
-from src.edu_cti.pipeline.phase2.article_storage import (
+from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleFetcher, ArticleContent
+from src.edu_cti.pipeline.phase2.storage.article_storage import (
     init_articles_table,
     save_article,
     article_exists,

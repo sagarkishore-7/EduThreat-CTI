@@ -13,12 +13,11 @@ from typing import Optional, List, Dict, TYPE_CHECKING
 from datetime import datetime
 
 from src.edu_cti.core.db import get_connection
-from src.edu_cti.pipeline.phase2.article_fetcher import ArticleFetcher, ArticleContent
-from src.edu_cti.pipeline.phase2.metadata_extractor import MetadataExtractor
+from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleFetcher, ArticleContent
+# metadata_extractor removed - no longer used for scoring
 from src.edu_cti.core.models import BaseIncident
 
-if TYPE_CHECKING:
-    from src.edu_cti.pipeline.phase2.schemas import URLConfidenceScore
+# URL scoring removed - no longer needed
 
 logger = logging.getLogger(__name__)
 
@@ -117,71 +116,7 @@ def save_article(
     conn.commit()
 
 
-def update_article_scores_from_llm(
-    conn: sqlite3.Connection,
-    incident_id: str,
-    url_scores: List,  # List of URLConfidenceScore objects
-    primary_url: Optional[str] = None,
-) -> None:
-    """
-    Update article URL scores and primary status based on LLM evaluation.
-    
-    This is called after LLM enrichment to store the LLM's URL scoring results.
-    
-    Args:
-        conn: Database connection
-        incident_id: Incident ID
-        url_scores: List of URLConfidenceScore from LLM enrichment
-        primary_url: The primary URL selected by LLM (if different from highest score)
-    """
-    init_articles_table(conn)
-    
-    # Update scores for all URLs evaluated by LLM
-    for url_score in url_scores:
-        conn.execute(
-            """
-            UPDATE articles
-            SET url_score = ?, url_score_reasoning = ?
-            WHERE incident_id = ? AND url = ?
-            """,
-            (
-                url_score.confidence_score,
-                f"LLM Evaluation: {url_score.reasoning}. "
-                f"Quality: {url_score.article_quality}, "
-                f"Completeness: {url_score.content_completeness}, "
-                f"Reliability: {url_score.source_reliability}",
-                incident_id,
-                url_score.url,
-            )
-        )
-    
-    # Determine primary URL: use provided primary_url or highest scored URL
-    if primary_url:
-        selected_primary = primary_url
-    elif url_scores:
-        # Select URL with highest confidence score
-        best_score = max(url_scores, key=lambda s: s.confidence_score)
-        selected_primary = best_score.url
-    else:
-        # No scores available, can't determine primary
-        logger.warning(f"No URL scores available to determine primary for incident {incident_id}")
-        return
-    
-    # Unmark all articles as primary, then mark selected one
-    conn.execute(
-        "UPDATE articles SET is_primary = 0 WHERE incident_id = ?",
-        (incident_id,)
-    )
-    conn.execute(
-        "UPDATE articles SET is_primary = 1 WHERE incident_id = ? AND url = ?",
-        (incident_id, selected_primary)
-    )
-    
-    conn.commit()
-    logger.info(
-        f"Updated URL scores and set primary article to {selected_primary} "
-        f"for incident {incident_id} based on LLM evaluation"
-    )
+# update_article_scores_from_llm removed - URL scoring no longer used in simplified pipeline
 
 
 def cleanup_non_primary_articles(
@@ -344,8 +279,6 @@ class ArticleProcessor:
     
     def __init__(self):
         self.article_fetcher = ArticleFetcher()
-        self.metadata_extractor = MetadataExtractor()
-        self.hybrid_scoring_weight = 0.6  # Weight for LLM vs metadata coverage
     
     def process_incident_articles(
         self,

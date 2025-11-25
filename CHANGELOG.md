@@ -5,6 +5,69 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2025-11-25
+
+### Phase 2 Enrichment Pipeline Improvements
+
+#### Added
+- **JSON Schema-based Extraction**: New extraction method using comprehensive JSON schema for structured LLM output
+- **Comprehensive CTI Schema**: Extended extraction schema with 192+ fields covering all aspects of cyber threat intelligence
+  - Education relevance and institution identification
+  - Attack mechanics (vectors, chains, MITRE ATT&CK techniques)
+  - Threat actor attribution and ransomware families
+  - Data impact metrics (records, types, encryption, exfiltration)
+  - System impact (affected systems, infrastructure context)
+  - User impact (students, faculty, staff, alumni, etc.)
+  - Operational impact (teaching, research, admissions, etc.)
+  - Financial impact (ransom, recovery costs, insurance)
+  - Regulatory impact (GDPR, HIPAA, FERPA, fines, lawsuits)
+  - Recovery and remediation metrics
+  - Transparency and disclosure tracking
+  - Research impact assessment
+- **Dual-table Storage Strategy**: Optimized database storage with both JSON and flattened tables
+  - `incident_enrichments`: Full JSON storage for flexibility
+  - `incident_enrichments_flat`: Flattened columns (80+ fields) for fast CSV export and analytics
+- **Producer-Consumer Pattern**: Concurrent article fetching and enrichment processing
+  - Articles fetched and pushed to queue immediately
+  - Enrichment processes incidents as they arrive
+  - Better resource utilization and faster processing
+- **Article Selection Algorithm**: Multi-article handling with intelligent selection
+  - Enriches all articles for each incident
+  - Scores articles based on field coverage
+  - Selects article with highest field coverage as primary
+- **Comprehensive Coverage Test**: Test suite with prepared article covering all schema fields
+  - Located in `tests/phase2/test_enrichment_coverage.py`
+  - Verifies extraction of all 192 schema fields
+  - Generates coverage reports
+
+#### Changed
+- **Simplified Schema Structure**: Removed nested Pydantic models in favor of Dict structures for flexibility
+- **Enhanced LLM Prompting**: Improved system prompts with explicit JSON output requirements and tag usage
+- **Improved Error Handling**: Better fallback mechanisms and error recovery
+  - JSON schema extraction with fallback to comprehensive method
+  - Escaped newline handling in JSON parsing
+  - Thread-safe database connections
+
+#### Fixed
+- **SQLite Thread Safety**: Added `check_same_thread=False` for multi-threaded operations
+- **JSON Parsing Issues**: Fixed handling of escaped newlines and malformed JSON responses
+- **CSV Export Bugs**: Fixed variable initialization and indentation errors
+- **Return Value Consistency**: Fixed functions returning tuples instead of single values
+- **Database Commit Issues**: Ensured proper transaction commits for data persistence
+
+#### Technical Improvements
+- **Code Organization**: Refactored Phase 2 directory structure
+  - `extraction/`: JSON schema, prompts, and mappers
+  - `storage/`: Database and article storage
+  - `utils/`: Helper functions (deduplication, fetching strategy)
+- **Logging Enhancements**: Added detailed logging for debugging and monitoring
+- **Type Safety**: Improved type hints and error handling throughout
+
+#### Documentation
+- **Test Documentation**: Added README for Phase 2 test suite
+- **Code Cleanup**: Removed temporary verification scripts and logs
+- **Changelog Updates**: Comprehensive documentation of Phase 2 improvements
+
 ## [1.0.0] - 2025-01-20
 
 ### Initial Release

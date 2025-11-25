@@ -16,7 +16,7 @@ except ImportError:
     date_parser = None
 
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
-from src.edu_cti.pipeline.phase2.db import get_enrichment_result
+from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_result
 
 logger = logging.getLogger(__name__)
 

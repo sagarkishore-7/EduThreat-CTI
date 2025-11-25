@@ -10,19 +10,21 @@ import argparse
 import logging
 import sys
 import time
+import queue
+import threading
 from typing import Dict, List, Optional
 
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.enrichment import IncidentEnricher
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
-from src.edu_cti.pipeline.phase2.article_storage import ArticleProcessor
-from src.edu_cti.pipeline.phase2.db import (
+from src.edu_cti.pipeline.phase2.storage.article_storage import ArticleProcessor
+from src.edu_cti.pipeline.phase2.storage.db import (
     get_unenriched_incidents,
     save_enrichment_result,
     mark_incident_skipped,
     get_enrichment_stats,
 )
-from src.edu_cti.pipeline.phase2.deduplication import deduplicate_by_institution
+from src.edu_cti.pipeline.phase2.utils.deduplication import deduplicate_by_institution
 from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
 from src.edu_cti.core.config import (
     DB_PATH,
@@ -76,6 +78,7 @@ def dict_to_incident(incident_dict: Dict, conn) -> BaseIncident:
 def fetch_articles_phase(
     conn,
     unenriched: List[Dict],
+    incident_queue: queue.Queue,
     limit: Optional[int] = None,
     min_delay_seconds: float = 2.0,
     max_delay_seconds: float = 5.0,
@@ -86,19 +89,29 @@ def fetch_articles_phase(
     Uses domain-based rate limiting and random incident selection to avoid
     bot detection and ensure efficient fetching.
     
+    Pushes incidents to queue as soon as articles are fetched (producer pattern).
+    
+    Args:
+        conn: Database connection
+        unenriched: List of unenriched incidents
+        incident_queue: Queue to push incidents with fetched articles
+        limit: Maximum number of incidents to process
+        min_delay_seconds: Minimum delay between fetches
+        max_delay_seconds: Maximum delay between fetches
+    
     Returns:
         Statistics dict with counts
     """
     logger = logging.getLogger(__name__)
     logger.info("=" * 60)
-    logger.info("PHASE 1: Smart Article Fetching (Domain-Based Rate Limiting)")
+    logger.info("PHASE 1: Smart Article Fetching (Producer - Pushing to Queue)")
     logger.info("=" * 60)
     
-    from src.edu_cti.pipeline.phase2.fetching_strategy import (
+    from src.edu_cti.pipeline.phase2.utils.fetching_strategy import (
         SmartArticleFetchingStrategy,
         DomainRateLimiter,
     )
-    from src.edu_cti.pipeline.phase2.article_fetcher import ArticleFetcher
+    from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleFetcher
     
     # Initialize rate limiter and fetching strategy
     rate_limiter = DomainRateLimiter(
@@ -134,28 +147,59 @@ def fetch_articles_phase(
     
     logger.info(f"Selected {len(incidents_to_process)} incidents for fetching (random selection with domain diversity)")
     
-    # Track which incident IDs we're processing (for later LLM enrichment)
-    processing_incident_ids = fetching_strategy.get_processing_incident_ids()
-    
     try:
-        # Fetch articles for all incidents with domain-based rate limiting
-        results = fetching_strategy.fetch_articles_for_incidents(incidents_to_process)
-        
-        # Count statistics
-        stats["processed"] = len(incidents_to_process)
-        stats["articles_fetched"] = sum(
-            1 for incident_id, articles in results.items()
-            if articles and any(article.fetch_successful for article in articles)
-        )
-        
-        # Log results
-        for incident_id, articles in results.items():
-            successful_articles = [a for a in articles if a.fetch_successful]
-            if successful_articles:
-                logger.info(f"✓ Fetched {len(successful_articles)} article(s) for incident {incident_id}")
-            else:
-                logger.warning(f"⊘ No articles fetched for incident {incident_id}")
+        # Process incidents one by one and push to queue as soon as articles are fetched
+        for idx, incident in enumerate(incidents_to_process, 1):
+            incident_id = incident["incident_id"]
+            logger.info(f"[{idx}/{len(incidents_to_process)}] Fetching articles for incident: {incident_id}")
+            
+            try:
+                # Fetch articles for this single incident
+                results = fetching_strategy.fetch_articles_for_incidents([incident])
+                
+                articles = results.get(incident_id, [])
+                successful_articles = [a for a in articles if a.fetch_successful]
+                
+                if successful_articles:
+                    stats["articles_fetched"] += 1
+                    logger.info(f"✓ Fetched {len(successful_articles)} article(s) for incident {incident_id} - pushing to queue")
+                    
+                    # Push incident to queue immediately after fetching articles
+                    # This allows enrichment to start processing while we continue fetching
+                    incident_dict = {
+                        "incident_id": incident_id,
+                        "university_name": incident.get("university_name") or incident.get("victim_raw_name") or "Unknown",
+                        "victim_raw_name": incident.get("victim_raw_name"),
+                        "institution_type": None,  # Will be read from DB
+                        "country": None,  # Will be read from DB
+                        "region": None,  # Will be read from DB
+                        "city": None,  # Will be read from DB
+                        "incident_date": None,  # Will be read from DB
+                        "date_precision": "unknown",  # Will be read from DB
+                        "source_published_date": incident.get("source_published_date"),
+                        "ingested_at": None,  # Will be read from DB
+                        "title": incident.get("title"),
+                        "subtitle": None,  # Will be read from DB
+                        "primary_url": None,  # Will be read from DB
+                        "all_urls": incident.get("all_urls", []),
+                        "attack_type_hint": None,  # Will be read from DB
+                        "status": "suspected",  # Will be read from DB
+                        "source_confidence": "medium",  # Will be read from DB
+                        "notes": None,  # Will be read from DB
+                    }
+                    
+                    # Push to queue - enrichment consumer will pick it up
+                    incident_queue.put(incident_dict)
+                    logger.info(f"✓ Pushed incident {incident_id} to enrichment queue (queue size: {incident_queue.qsize()})")
+                else:
+                    logger.warning(f"⊘ No articles fetched for incident {incident_id}")
+                    stats["errors"] += 1
+                
+                stats["processed"] += 1
+                
+            except Exception as e:
                 stats["errors"] += 1
+                logger.error(f"✗ Error fetching articles for incident {incident_id}: {e}", exc_info=True)
         
     except Exception as e:
         stats["errors"] += len(incidents_to_process)
@@ -166,7 +210,6 @@ def fetch_articles_phase(
     logger.info(f"  Processed: {stats['processed']}")
     logger.info(f"  Articles Fetched: {stats['articles_fetched']}")
     logger.info(f"  Errors: {stats['errors']}")
-    logger.info(f"  Processing Incident IDs: {', '.join(sorted(processing_incident_ids)[:10])}{'...' if len(processing_incident_ids) > 10 else ''}")
     logger.info("=" * 60)
     
     return stats
@@ -175,81 +218,37 @@ def fetch_articles_phase(
 def enrich_articles_phase(
     conn,
     enricher: IncidentEnricher,
+    incident_queue: queue.Queue,
+    fetch_complete_event: threading.Event,
     skip_if_not_education: bool = False,
-    limit: Optional[int] = None,
     rate_limit_delay: float = 1.0,
 ) -> Dict[str, int]:
     """
     Phase 2: Sequential LLM enrichment (queue-based consumer).
     
-    Processes incidents ONE AT A TIME, waiting for each LLM response before
-    making the next call. This prevents rate limiting and ensures proper sequencing.
+    Consumes incidents from queue and processes them ONE AT A TIME, waiting for
+    each LLM response before processing the next. This prevents rate limiting and
+    ensures proper sequencing.
+    
+    Args:
+        conn: Database connection
+        enricher: IncidentEnricher instance
+        incident_queue: Queue to consume incidents from
+        fetch_complete_event: Event to signal when fetching is complete
+        skip_if_not_education: Whether to skip non-education incidents
+        rate_limit_delay: Delay between LLM calls
     
     Returns:
         Statistics dict with counts
     """
     logger = logging.getLogger(__name__)
     logger.info("=" * 60)
-    logger.info("PHASE 2: Sequential LLM Enrichment (Queue-Based Consumer)")
+    logger.info("PHASE 2: Sequential LLM Enrichment (Consumer - Processing from Queue)")
     logger.info("=" * 60)
     
-    # Get incidents that have articles in DB but are not yet enriched
-    from src.edu_cti.pipeline.phase2.article_storage import init_articles_table
+    # Initialize articles table
+    from src.edu_cti.pipeline.phase2.storage.article_storage import init_articles_table
     init_articles_table(conn)
-    
-    # Query for incidents with articles but not enriched
-    query = """
-        SELECT DISTINCT i.* FROM incidents i
-        INNER JOIN articles a ON i.incident_id = a.incident_id
-        WHERE i.llm_enriched = 0
-          AND a.fetch_successful = 1
-          AND a.content IS NOT NULL
-          AND LENGTH(a.content) > 50
-        ORDER BY i.ingested_at DESC
-    """
-    if limit:
-        query += f" LIMIT {limit}"
-    
-    cur = conn.execute(query)
-    
-    rows = cur.fetchall()
-    incidents_to_enrich = []
-    for row in rows:
-        all_urls_str = row["all_urls"] or ""
-        all_urls = [url.strip() for url in all_urls_str.split(";") if url.strip()]
-        incident_dict = {
-            "incident_id": row["incident_id"],
-            "university_name": row["university_name"] or row["victim_raw_name"] or "Unknown",
-            "victim_raw_name": row["victim_raw_name"],
-            "institution_type": row["institution_type"],
-            "country": row["country"],
-            "region": row["region"],
-            "city": row["city"],
-            "incident_date": row["incident_date"],
-            "date_precision": row["date_precision"] or "unknown",
-            "source_published_date": row["source_published_date"],
-            "ingested_at": row["ingested_at"],
-            "title": row["title"],
-            "subtitle": row["subtitle"],
-            "primary_url": row["primary_url"],
-            "all_urls": all_urls,
-            "attack_type_hint": row["attack_type_hint"],
-            "status": row["status"] or "suspected",
-            "source_confidence": row["source_confidence"] or "medium",
-            "notes": row["notes"],
-        }
-        incidents_to_enrich.append(incident_dict)
-    
-    if not incidents_to_enrich:
-        logger.info("No incidents with articles ready for LLM enrichment")
-        return {
-            "processed": 0,
-            "enriched": 0,
-            "skipped": 0,
-            "errors": 0,
-        }
-    
-    logger.info(f"Processing {len(incidents_to_enrich)} incidents for LLM enrichment (SEQUENTIALLY)")
     
     stats = {
         "processed": 0,
@@ -258,50 +257,151 @@ def enrich_articles_phase(
         "errors": 0,
     }
     
-    # SEQUENTIAL PROCESSING: One at a time, wait for each response
-    for idx, incident_dict in enumerate(incidents_to_enrich, 1):
-        incident_id = incident_dict["incident_id"]
-        logger.info(f"[{idx}/{len(incidents_to_enrich)}] Processing incident: {incident_id}")
-        
+    # SENTINEL value to signal end of queue
+    SENTINEL = None
+    
+    logger.info("Waiting for incidents in queue...")
+    logger.info(f"Queue initial state: empty={incident_queue.empty()}, size={incident_queue.qsize()}")
+    
+    # CONSUMER LOOP: Process incidents from queue as they arrive
+    items_processed = 0
+    while True:
         try:
-            # Convert to BaseIncident
-            incident = dict_to_incident(incident_dict, conn=conn)
+            # Get incident from queue (blocks until available or timeout)
+            # Use timeout to periodically check if fetching is complete
+            try:
+                incident_dict = incident_queue.get(timeout=5.0)
+            except queue.Empty:
+                # Check if fetching is complete
+                if fetch_complete_event.is_set():
+                    logger.info(f"Fetching complete and queue is empty - stopping consumer (processed {items_processed} items)")
+                    break
+                # Continue waiting
+                logger.debug(f"Queue empty, waiting... (processed {items_processed} items so far)")
+                continue
             
-            # Process incident (reads articles from DB) - SEQUENTIAL, ONE AT A TIME
-            # This is the queue-based consumer pattern - wait for each LLM response
-            enrichment_result = enricher.process_incident(
-                incident=incident,
-                skip_if_not_education=skip_if_not_education,
-                conn=conn,  # Required: pass connection to read articles from DB
-            )
+            # Check for sentinel (end of queue)
+            if incident_dict is SENTINEL:
+                logger.info("Received sentinel - stopping consumer")
+                break
             
-            if enrichment_result:
-                # Save enrichment result
-                saved = save_enrichment_result(conn, incident_id, enrichment_result)
-                if saved:
-                    stats["enriched"] += 1
-                    logger.info(f"✓ Enriched incident: {incident_id}")
-                else:
-                    stats["skipped"] += 1
-                    logger.info(f"⊘ Skipped enrichment upgrade for {incident_id} - lower confidence")
-            else:
-                # Mark as skipped
-                reason = "Not education-related" if skip_if_not_education else "No enrichment result"
-                mark_incident_skipped(conn, incident_id, reason)
-                stats["skipped"] += 1
-                logger.info(f"⊘ Skipped incident: {incident_id} - {reason}")
-            
+            incident_id = incident_dict["incident_id"]
             stats["processed"] += 1
             
-            # Rate limiting between LLM calls
-            if rate_limit_delay > 0 and idx < len(incidents_to_enrich):
-                logger.debug(f"Waiting {rate_limit_delay}s before next LLM call...")
-                time.sleep(rate_limit_delay)
+            logger.info(f"[{stats['processed']}] Processing incident from queue: {incident_id}")
+            
+            try:
+                # Read full incident data from DB (queue only has minimal data)
+                query = """
+                    SELECT * FROM incidents WHERE incident_id = ?
+                """
+                cur = conn.execute(query, (incident_id,))
+                row = cur.fetchone()
+                
+                if not row:
+                    logger.warning(f"Incident {incident_id} not found in database")
+                    stats["errors"] += 1
+                    incident_queue.task_done()
+                    continue
+                
+                # Check if already enriched (shouldn't happen, but check anyway)
+                if row["llm_enriched"] == 1:
+                    logger.warning(f"Incident {incident_id} is already enriched - skipping")
+                    stats["skipped"] += 1
+                    incident_queue.task_done()
+                    continue
+                
+                # Build full incident dict from DB
+                all_urls_str = row["all_urls"] or ""
+                all_urls = [url.strip() for url in all_urls_str.split(";") if url.strip()]
+                full_incident_dict = {
+                    "incident_id": row["incident_id"],
+                    "university_name": row["university_name"] or row["victim_raw_name"] or "Unknown",
+                    "victim_raw_name": row["victim_raw_name"],
+                    "institution_type": row["institution_type"],
+                    "country": row["country"],
+                    "region": row["region"],
+                    "city": row["city"],
+                    "incident_date": row["incident_date"],
+                    "date_precision": row["date_precision"] or "unknown",
+                    "source_published_date": row["source_published_date"],
+                    "ingested_at": row["ingested_at"],
+                    "title": row["title"],
+                    "subtitle": row["subtitle"],
+                    "primary_url": row["primary_url"],
+                    "all_urls": all_urls,
+                    "attack_type_hint": row["attack_type_hint"],
+                    "status": row["status"] or "suspected",
+                    "source_confidence": row["source_confidence"] or "medium",
+                    "notes": row["notes"],
+                }
+                
+                # Convert to BaseIncident
+                incident = dict_to_incident(full_incident_dict, conn=conn)
+                
+                # Process incident (reads articles from DB) - SEQUENTIAL, ONE AT A TIME
+                logger.info(f"Calling process_incident for {incident_id}...")
+                try:
+                    enrichment_result = enricher.process_incident(
+                        incident=incident,
+                        skip_if_not_education=skip_if_not_education,
+                        conn=conn,  # Required: pass connection to read articles from DB
+                    )
+                    logger.info(f"process_incident returned: {type(enrichment_result)}, is None: {enrichment_result is None}")
+                except Exception as e:
+                    logger.error(f"Error in process_incident for {incident_id}: {e}", exc_info=True)
+                    stats["errors"] += 1
+                    incident_queue.task_done()
+                    continue
+                
+                # process_incident returns tuple (enrichment_result, raw_json_data)
+                if isinstance(enrichment_result, tuple):
+                    enrichment_result, raw_json_data = enrichment_result
+                else:
+                    raw_json_data = None
+                
+                if enrichment_result:
+                    # Save enrichment result (with raw JSON data for country/region/city extraction)
+                    saved = save_enrichment_result(conn, incident_id, enrichment_result, raw_json_data=raw_json_data)
+                    if saved:
+                        stats["enriched"] += 1
+                        logger.info(f"✓✓✓ Successfully enriched and saved incident: {incident_id}")
+                        # Verify it was saved
+                        cur = conn.execute("SELECT llm_enriched FROM incidents WHERE incident_id = ?", (incident_id,))
+                        verify_row = cur.fetchone()
+                        if verify_row and verify_row["llm_enriched"] == 1:
+                            logger.info(f"✓ Verified: incident {incident_id} marked as enriched in database")
+                        else:
+                            logger.error(f"✗ ERROR: incident {incident_id} NOT marked as enriched in database!")
+                    else:
+                        stats["skipped"] += 1
+                        logger.warning(f"⊘ Skipped enrichment upgrade for {incident_id} - lower confidence or save failed")
+                else:
+                    # Mark as skipped
+                    reason = "Not education-related" if skip_if_not_education else "No enrichment result"
+                    mark_incident_skipped(conn, incident_id, reason)
+                    stats["skipped"] += 1
+                    logger.info(f"⊘ Skipped incident: {incident_id} - {reason}")
+                
+                # Rate limiting between LLM calls
+                if rate_limit_delay > 0:
+                    logger.debug(f"Waiting {rate_limit_delay}s before next LLM call...")
+                    time.sleep(rate_limit_delay)
+                
+                # Mark task as done
+                incident_queue.task_done()
+                items_processed += 1
+                
+            except Exception as e:
+                stats["errors"] += 1
+                logger.error(f"✗ Error processing incident {incident_id}: {e}", exc_info=True)
+                incident_queue.task_done()
+                items_processed += 1
+                # Don't mark as processed - will retry on next run
                 
         except Exception as e:
+            logger.error(f"✗ Error in consumer loop: {e}", exc_info=True)
             stats["errors"] += 1
-            logger.error(f"✗ Error processing incident {incident_id}: {e}", exc_info=True)
-            # Don't mark as processed - will retry on next run
     
     logger.info("=" * 60)
     logger.info("LLM Enrichment Complete")
@@ -416,52 +516,87 @@ def main() -> None:
         conn.close()
         return
     
-    # PHASE 1: Fetch and store articles
+    # PHASE 1 & 2: Concurrent producer-consumer pattern
     logger.info(f"\n{'='*60}")
     logger.info(f"Starting Phase 2 Pipeline with {len(unenriched)} incidents")
+    logger.info(f"Using concurrent producer-consumer pattern (fetching + enrichment)")
     logger.info(f"{'='*60}\n")
     
-    # Phase 1: Fetch articles using smart strategy with domain-based rate limiting
-    fetch_stats = fetch_articles_phase(
-        conn,
-        unenriched,
-        limit=args.limit,
-        min_delay_seconds=2.0,
-        max_delay_seconds=5.0,
-    )
-    
-    # PHASE 2: Sequential LLM enrichment (one at a time, wait for response)
-    if fetch_stats["articles_fetched"] > 0:
-        # Initialize LLM enricher
-        try:
-            llm_client = OllamaLLMClient(
-                api_key=OLLAMA_API_KEY,
-                host=OLLAMA_HOST,
-                model=OLLAMA_MODEL,
-            )
-            enricher = IncidentEnricher(llm_client=llm_client)
-            logger.info(f"Initialized LLM client with model: {OLLAMA_MODEL}")
-        except Exception as e:
-            logger.error(f"Failed to initialize LLM client: {e}")
-            logger.error("Make sure OLLAMA_API_KEY is set in environment")
-            sys.exit(1)
-        
-        # Run sequential enrichment (one at a time, queue-based)
-        enrich_stats = enrich_articles_phase(
-            conn=conn,
-            enricher=enricher,
-            skip_if_not_education=args.skip_non_education,
-            limit=args.limit,
-            rate_limit_delay=args.rate_limit_delay,
+    # Initialize LLM enricher (needed for consumer thread)
+    try:
+        llm_client = OllamaLLMClient(
+            api_key=OLLAMA_API_KEY,
+            host=OLLAMA_HOST,
+            model=OLLAMA_MODEL,
         )
+        enricher = IncidentEnricher(llm_client=llm_client)
+        logger.info(f"Initialized LLM client with model: {OLLAMA_MODEL}")
+    except Exception as e:
+        logger.error(f"Failed to initialize LLM client: {e}")
+        logger.error("Make sure OLLAMA_API_KEY is set in environment")
+        sys.exit(1)
+    
+    # Create queue and synchronization primitives
+    incident_queue = queue.Queue()
+    fetch_complete_event = threading.Event()
+    fetch_stats = {"processed": 0, "articles_fetched": 0, "errors": 0}
+    enrich_stats = {"processed": 0, "enriched": 0, "skipped": 0, "errors": 0}
+    
+    # Start consumer thread (enrichment) - it will wait for items in queue
+    def consumer_thread():
+        """Consumer thread that processes incidents from queue."""
+        nonlocal enrich_stats
+        # Create a new connection for this thread (SQLite connections are not thread-safe)
+        thread_conn = get_connection()
+        try:
+            logger.info("Consumer thread started - waiting for incidents in queue")
+            enrich_stats = enrich_articles_phase(
+                conn=thread_conn,
+                enricher=enricher,
+                incident_queue=incident_queue,
+                fetch_complete_event=fetch_complete_event,
+                skip_if_not_education=args.skip_non_education,
+                rate_limit_delay=args.rate_limit_delay,
+            )
+            logger.info(f"Consumer thread completed: {enrich_stats}")
+        except Exception as e:
+            logger.error(f"Error in consumer thread: {e}", exc_info=True)
+            enrich_stats = {"processed": 0, "enriched": 0, "skipped": 0, "errors": 1}
+        finally:
+            thread_conn.close()
+    
+    # Start consumer thread
+    consumer = threading.Thread(target=consumer_thread, daemon=False)
+    consumer.start()
+    logger.info("Started enrichment consumer thread (waiting for incidents in queue)")
+    
+    # Run producer (fetching) in main thread
+    # This will push incidents to queue as articles are fetched
+    try:
+        fetch_stats = fetch_articles_phase(
+            conn,
+            unenriched,
+            incident_queue=incident_queue,
+            limit=args.limit,
+            min_delay_seconds=2.0,
+            max_delay_seconds=5.0,
+        )
+    except Exception as e:
+        logger.error(f"Error in producer (fetching): {e}", exc_info=True)
+        fetch_stats["errors"] += 1
+    finally:
+        # Signal that fetching is complete
+        fetch_complete_event.set()
+        logger.info("Fetching complete - signaled consumer thread")
+    
+    # Wait for consumer thread to finish processing remaining items
+    logger.info("Waiting for enrichment consumer to finish processing queue...")
+    consumer.join(timeout=300)  # Wait up to 5 minutes
+    
+    if consumer.is_alive():
+        logger.warning("Consumer thread did not finish within timeout - may still be processing")
     else:
-        logger.warning("No articles were fetched - skipping LLM enrichment phase")
-        enrich_stats = {
-            "processed": 0,
-            "enriched": 0,
-            "skipped": 0,
-            "errors": 0,
-        }
+        logger.info("Consumer thread finished")
     
     # Final stats - combine both phases
     processed = fetch_stats["processed"]

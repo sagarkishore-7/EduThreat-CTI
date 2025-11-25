@@ -1,26 +1,22 @@
 """
 Pydantic schemas for LLM enrichment output.
 
-These schemas ensure structured, validated output from the LLM for CTI enrichment.
+Simplified schema - nested impact metrics are stored as Dict structures
+instead of separate Pydantic models for simplicity and flexibility.
 """
 
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
-from datetime import datetime
 
 
 class EducationRelevanceCheck(BaseModel):
-    """Schema for education relevance check."""
+    """Schema for education relevance check - simple Yes/No with reasoning."""
     
     is_education_related: bool = Field(
-        description="Whether this incident is related to the education sector"
-    )
-    confidence: float = Field(
-        ge=0.0, le=1.0,
-        description="Confidence score (0.0 to 1.0) in the relevance assessment"
+        description="Whether this incident is related to the education sector (true/false)"
     )
     reasoning: str = Field(
-        description="Brief explanation of why this is or isn't education-related"
+        description="Brief explanation (1-2 sentences) of why this is or isn't education-related"
     )
     institution_identified: Optional[str] = Field(
         default=None,
@@ -28,49 +24,44 @@ class EducationRelevanceCheck(BaseModel):
     )
 
 
-class URLConfidenceScore(BaseModel):
-    """Schema for URL confidence scoring."""
-    
-    url: str = Field(description="The URL being scored")
-    confidence_score: float = Field(
-        ge=0.0, le=1.0,
-        description="Confidence score (0.0 to 1.0) indicating quality/completeness"
-    )
-    reasoning: str = Field(
-        description="Brief explanation of why this URL scores this way"
-    )
-    article_quality: str = Field(
-        description="Quality assessment: 'excellent', 'good', 'fair', or 'poor'"
-    )
-    content_completeness: str = Field(
-        description="Completeness: 'complete', 'partial', or 'minimal'"
-    )
-    source_reliability: str = Field(
-        description="Source reliability: 'highly_reliable', 'reliable', 'moderate', or 'unknown'"
-    )
-
-
 class TimelineEvent(BaseModel):
     """Schema for a single timeline event."""
     
-    date: str = Field(
+    date: Optional[str] = Field(
+        default=None,
         description="Date of the event in YYYY-MM-DD format (or best approximation)"
     )
-    date_precision: str = Field(
+    date_precision: Optional[Literal["day", "month", "year", "approximate"]] = Field(
+        default=None,
         description="Precision level: 'day', 'month', 'year', or 'approximate'"
     )
-    event_description: str = Field(
+    event_description: Optional[str] = Field(
+        default=None,
         description="Description of what happened at this time"
     )
-    event_type: str = Field(
-        description="Type of event: 'initial_access', 'discovery', 'impact', 'containment', 'recovery', 'disclosure', 'other'"
+    event_type: Optional[Literal[
+        "initial_access",
+        "discovery",
+        "exploitation",
+        "impact",
+        "containment",
+        "eradication",
+        "recovery",
+        "disclosure",
+        "notification",
+        "investigation",
+        "remediation",
+        "other"
+    ]] = Field(
+        default=None,
+        description="Type of event. Use exact tags: initial_access, discovery, exploitation, impact, containment, eradication, recovery, disclosure, notification, investigation, remediation, other"
     )
     actor_attribution: Optional[str] = Field(
         default=None,
         description="Attributed threat actor or group name if identified"
     )
-    indicators: List[str] = Field(
-        default_factory=list,
+    indicators: Optional[List[str]] = Field(
+        default=None,
         description="List of indicators of compromise (IOCs) or artifacts from this event"
     )
 
@@ -78,23 +69,24 @@ class TimelineEvent(BaseModel):
 class MITREAttackTechnique(BaseModel):
     """Schema for a MITRE ATT&CK technique."""
     
-    technique_id: str = Field(
+    technique_id: Optional[str] = Field(
+        default=None,
         description="MITRE ATT&CK technique ID (e.g., 'T1055.001')"
     )
-    technique_name: str = Field(
+    technique_name: Optional[str] = Field(
+        default=None,
         description="Name of the technique"
     )
-    tactic: str = Field(
+    tactic: Optional[str] = Field(
+        default=None,
         description="MITRE ATT&CK tactic name (e.g., 'Defense Evasion', 'Initial Access')"
     )
-    confidence: str = Field(
-        description="Confidence level: 'confirmed', 'likely', or 'possible'"
-    )
-    description: str = Field(
+    description: Optional[str] = Field(
+        default=None,
         description="How this technique was used in the incident"
     )
-    sub_techniques: List[str] = Field(
-        default_factory=list,
+    sub_techniques: Optional[List[str]] = Field(
+        default=None,
         description="List of sub-technique IDs if applicable"
     )
 
@@ -102,28 +94,60 @@ class MITREAttackTechnique(BaseModel):
 class AttackDynamics(BaseModel):
     """Schema for attack dynamics and modeling."""
     
-    attack_vector: str = Field(
-        description="Primary attack vector: 'phishing', 'vulnerability_exploit', 'credential_stuffing', 'insider_threat', 'unknown', or 'other'"
+    attack_vector: Optional[Literal[
+        "phishing",
+        "spear_phishing",
+        "vulnerability_exploit",
+        "credential_stuffing",
+        "credential_theft",
+        "malware",
+        "ransomware",
+        "insider_threat",
+        "social_engineering",
+        "supply_chain",
+        "third_party_breach",
+        "misconfiguration",
+        "brute_force",
+        "ddos",
+        "sql_injection",
+        "xss",
+        "other"
+    ]] = Field(
+        default=None,
+        description="Primary attack vector. Use exact tags: phishing, spear_phishing, vulnerability_exploit, credential_stuffing, credential_theft, malware, ransomware, insider_threat, social_engineering, supply_chain, third_party_breach, misconfiguration, brute_force, ddos, sql_injection, xss, other"
     )
-    attack_chain: List[str] = Field(
-        description="Kill chain stages observed: e.g., ['Reconnaissance', 'Weaponization', 'Delivery', 'Exploitation', 'Installation', 'C2', 'Actions on Objectives']"
+    attack_chain: Optional[List[Literal[
+        "reconnaissance",
+        "weaponization",
+        "delivery",
+        "exploitation",
+        "installation",
+        "command_and_control",
+        "actions_on_objectives",
+        "exfiltration",
+        "impact"
+    ]]] = Field(
+        default=None,
+        description="Kill chain stages observed. Use exact tags: reconnaissance, weaponization, delivery, exploitation, installation, command_and_control, actions_on_objectives, exfiltration, impact"
     )
     ransomware_family: Optional[str] = Field(
         default=None,
         description="Ransomware family name if applicable (e.g., 'LockBit', 'BlackCat')"
     )
-    data_exfiltration: bool = Field(
+    data_exfiltration: Optional[bool] = Field(
+        default=None,
         description="Whether data exfiltration occurred"
     )
-    encryption_impact: Optional[str] = Field(
+    encryption_impact: Optional[Literal["full", "partial", "none"]] = Field(
         default=None,
-        description="Encryption impact: 'full', 'partial', 'none', or None if not applicable"
+        description="Encryption impact. Use exact tags: 'full', 'partial', 'none'"
     )
-    impact_scope: Dict[str, Any] = Field(
-        default_factory=dict,
+    impact_scope: Optional[Dict[str, Any]] = Field(
+        default=None,
         description="Impact scope details: systems affected, data types, user count, etc."
     )
-    ransom_demanded: bool = Field(
+    ransom_demanded: Optional[bool] = Field(
+        default=None,
         description="Whether a ransom was demanded"
     )
     ransom_amount: Optional[str] = Field(
@@ -134,46 +158,70 @@ class AttackDynamics(BaseModel):
         default=None,
         description="Whether ransom was paid (True/False/None if unknown)"
     )
-    recovery_timeframe: Optional[str] = Field(
+    recovery_timeframe_days: Optional[float] = Field(
         default=None,
-        description="Recovery timeframe if mentioned (e.g., '2 weeks', '1 month')"
+        description="Recovery timeframe in days (convert from weeks/months to days if mentioned)"
     )
-    business_impact: str = Field(
-        description="Business impact assessment: 'critical', 'severe', 'moderate', 'limited', or 'unknown'"
+    business_impact: Optional[Literal["critical", "severe", "moderate", "limited", "minimal"]] = Field(
+        default=None,
+        description="Business impact assessment. Use exact tags: 'critical', 'severe', 'moderate', 'limited', 'minimal'"
     )
-    operational_impact: List[str] = Field(
-        default_factory=list,
-        description="Operational impacts: e.g., ['teaching_disrupted', 'research_affected', 'admissions_delayed', 'payroll_disrupted']"
+    operational_impact: Optional[List[Literal[
+        "teaching_disrupted",
+        "research_disrupted",
+        "admissions_disrupted",
+        "enrollment_disrupted",
+        "payroll_disrupted",
+        "clinical_operations_disrupted",
+        "online_learning_disrupted",
+        "classes_cancelled",
+        "exams_postponed",
+        "graduation_delayed",
+        "email_system_down",
+        "student_portal_down",
+        "network_down",
+        "website_down",
+        "other"
+    ]]] = Field(
+        default=None,
+        description="Operational impacts. Use exact tags: teaching_disrupted, research_disrupted, admissions_disrupted, enrollment_disrupted, payroll_disrupted, clinical_operations_disrupted, online_learning_disrupted, classes_cancelled, exams_postponed, graduation_delayed, email_system_down, student_portal_down, network_down, website_down, other"
     )
 
 
 class CTIEnrichmentResult(BaseModel):
-    """Complete CTI enrichment result schema."""
+    """
+    Complete CTI enrichment result schema.
     
-    # Education relevance
+    Nested impact metrics are stored as Dict[str, Any] for flexibility.
+    This allows direct mapping from JSON without intermediate Pydantic models.
+    """
+    
+    # Education relevance (required - simple Yes/No check)
     education_relevance: EducationRelevanceCheck = Field(
-        description="Education relevance assessment"
+        description="Education relevance assessment - is this an education sector cyber attack?"
     )
     
-    # Primary URL selection
+    # Primary URL (optional - just the URL, no scoring)
     primary_url: Optional[str] = Field(
         default=None,
-        description="Selected primary URL for the incident (best URL from all_urls)"
+        description="Primary URL for the incident article"
     )
-    url_scores: List[URLConfidenceScore] = Field(
-        default_factory=list,
-        description="Confidence scores for all URLs evaluated"
+    
+    # Initial access description (1-3 sentences on how attacker gained access)
+    initial_access_description: Optional[str] = Field(
+        default=None,
+        description="1-3 sentences describing how the attacker gained initial access (if mentioned in article)"
     )
     
     # Timeline
-    timeline: List[TimelineEvent] = Field(
-        default_factory=list,
+    timeline: Optional[List[TimelineEvent]] = Field(
+        default=None,
         description="Chronological timeline of events in the incident"
     )
     
     # MITRE ATT&CK
-    mitre_attack_techniques: List[MITREAttackTechnique] = Field(
-        default_factory=list,
+    mitre_attack_techniques: Optional[List[MITREAttackTechnique]] = Field(
+        default=None,
         description="MITRE ATT&CK techniques identified in the incident"
     )
     
@@ -183,18 +231,51 @@ class CTIEnrichmentResult(BaseModel):
         description="Attack dynamics and modeling details"
     )
     
+    # Extended impact metrics (stored as Dict for flexibility)
+    data_impact: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Detailed data impact metrics as dictionary"
+    )
+    system_impact: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Detailed system impact metrics as dictionary"
+    )
+    user_impact: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Detailed user impact metrics as dictionary"
+    )
+    operational_impact_metrics: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Detailed operational impact metrics as dictionary"
+    )
+    financial_impact: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Detailed financial impact metrics as dictionary"
+    )
+    regulatory_impact: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Detailed regulatory and compliance impact metrics as dictionary"
+    )
+    recovery_metrics: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Detailed recovery and remediation metrics as dictionary"
+    )
+    transparency_metrics: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Detailed transparency and disclosure metrics as dictionary"
+    )
+    research_impact: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Detailed research-specific impact metrics as dictionary"
+    )
+    
     # Summary
     enriched_summary: str = Field(
         description="Comprehensive summary of the incident with all extracted details"
     )
     
     # Additional metadata
-    extraction_confidence: float = Field(
-        ge=0.0, le=1.0,
-        description="Overall confidence in the extraction quality (0.0 to 1.0)"
-    )
     extraction_notes: Optional[str] = Field(
         default=None,
         description="Additional notes about the extraction process or limitations"
     )
-
