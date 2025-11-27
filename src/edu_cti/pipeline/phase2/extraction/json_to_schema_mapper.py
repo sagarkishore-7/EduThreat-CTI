@@ -1,5 +1,7 @@
 """
 Mapper to convert JSON schema extraction response to CTIEnrichmentResult.
+
+Includes dynamic normalization to handle unexpected LLM outputs gracefully.
 """
 
 from typing import Dict, Any, Optional, List
@@ -10,6 +12,305 @@ from src.edu_cti.pipeline.phase2.schemas import (
     MITREAttackTechnique,
     AttackDynamics,
 )
+
+
+# ============================================
+# DYNAMIC VALUE NORMALIZATION
+# ============================================
+# Maps unexpected LLM outputs to valid enum values
+
+ATTACK_VECTOR_NORMALIZATION = {
+    # Simple/short forms -> full form
+    "email": "phishing_email",
+    "phish": "phishing",
+    "spear_phish": "spear_phishing",
+    "spearphishing": "spear_phishing",
+    "bec": "business_email_compromise",
+    "cred_stuffing": "credential_stuffing",
+    "password_spray": "password_spraying",
+    "cred_theft": "credential_theft",
+    "stolen_creds": "stolen_credentials",
+    "vuln_exploit": "vulnerability_exploit",
+    "zero_day": "vulnerability_exploit_zero_day",
+    "0day": "vulnerability_exploit_zero_day",
+    "known_vuln": "vulnerability_exploit_known",
+    "rce": "vulnerability_exploit",
+    "remote_code_execution": "vulnerability_exploit",
+    "unpatched": "unpatched_system",
+    "misconfig": "misconfiguration",
+    "default_creds": "default_credentials",
+    "default_password": "default_credentials",
+    "rdp": "exposed_rdp",
+    "vpn": "exposed_vpn",
+    "ssh": "exposed_ssh",
+    "api": "exposed_api",
+    "database": "exposed_database",
+    "db": "exposed_database",
+    "mitm": "man_in_the_middle",
+    "social_eng": "social_engineering",
+    "se": "social_engineering",
+    "insider": "insider_access",
+    "internal": "insider_access",
+    "cloud_misconfig": "cloud_misconfiguration",
+    "api_key": "api_key_exposure",
+    "bucket": "storage_bucket_exposure",
+    "s3": "storage_bucket_exposure",
+    "supply_chain_attack": "supply_chain_compromise",
+    "vendor": "third_party_vendor",
+    "third_party": "third_party_vendor",
+    "dos": "ddos",
+    "denial_of_service": "ddos",
+    "dns": "dns_hijacking",
+    "sim_swap": "sim_swapping",
+    "usb": "usb_drop",
+    "tailgate": "tailgating",
+    "physical": "tailgating",
+    "watering_hole_attack": "watering_hole",
+    "drive_by": "drive_by_download",
+    "malvert": "malvertising",
+    "sqli": "sql_injection",
+    "xss_attack": "xss",
+    "csrf_attack": "csrf",
+    "ssrf_attack": "ssrf",
+}
+
+ATTACK_CHAIN_NORMALIZATION = {
+    # Common LLM variations
+    "recon": "reconnaissance",
+    "initial": "initial_access",
+    "access": "initial_access",
+    "exec": "execution",
+    "run": "execution",
+    "persist": "persistence",
+    "priv_esc": "privilege_escalation",
+    "privesc": "privilege_escalation",
+    "escalation": "privilege_escalation",
+    "defense_bypass": "defense_evasion",
+    "evasion": "defense_evasion",
+    "cred_access": "credential_access",
+    "credentials": "credential_access",
+    "lateral": "lateral_movement",
+    "movement": "lateral_movement",
+    "c2": "command_and_control",
+    "c&c": "command_and_control",
+    "cnc": "command_and_control",
+    "exfil": "exfiltration",
+    "data_exfil": "data_exfiltration",
+    "encrypt": "encryption",
+    "ransom": "ransom_demand",
+    "contain": "containment",
+    "eradicate": "eradication",
+    "recover": "recovery",
+    "lessons": "lessons_learned",
+    "notify": "notification",
+    "disclose": "disclosure",
+    "detect": "detection",
+    "investigate": "investigation",
+}
+
+EVENT_TYPE_NORMALIZATION = {
+    "access": "initial_access",
+    "recon": "reconnaissance",
+    "lateral": "lateral_movement",
+    "priv_esc": "privilege_escalation",
+    "exfil": "data_exfiltration",
+    "encrypt": "encryption_started",
+    "ransom": "ransom_demand",
+    "contain": "containment",
+    "eradicate": "eradication",
+    "recover": "recovery",
+    "disclose": "disclosure",
+    "notify": "notification",
+    "investigate": "investigation",
+    "remediate": "remediation",
+    "improve": "security_improvement",
+}
+
+
+def normalize_enum_value(value: Any, normalization_map: Dict[str, str], valid_values: set, fallback: str = "unknown") -> Optional[str]:
+    """
+    Normalize an enum value to a valid option.
+    
+    Args:
+        value: The raw value from LLM
+        normalization_map: Mapping of variations to canonical values
+        valid_values: Set of all valid enum values
+        fallback: Value to use if no mapping found
+    
+    Returns:
+        Normalized value or fallback
+    """
+    if value is None:
+        return None
+    
+    if not isinstance(value, str):
+        return fallback
+    
+    # Normalize: lowercase, strip, replace spaces with underscores
+    normalized = value.lower().strip().replace(" ", "_").replace("-", "_")
+    
+    # Check if already valid
+    if normalized in valid_values:
+        return normalized
+    
+    # Check normalization map
+    if normalized in normalization_map:
+        return normalization_map[normalized]
+    
+    # Try partial matching for compound values
+    for key, mapped_value in normalization_map.items():
+        if key in normalized or normalized in key:
+            return mapped_value
+    
+    # Fallback
+    return fallback
+
+
+def normalize_attack_vector(value: Any) -> Optional[str]:
+    """Normalize attack_vector to valid enum value."""
+    valid_values = {
+        "phishing_email", "spear_phishing_email", "malicious_attachment", "malicious_link",
+        "business_email_compromise", "stolen_credentials", "credential_stuffing", "brute_force",
+        "password_spraying", "credential_phishing", "session_hijacking", "vulnerability_exploit_known",
+        "vulnerability_exploit_zero_day", "unpatched_system", "misconfiguration", "default_credentials",
+        "drive_by_download", "watering_hole", "malvertising", "sql_injection", "xss", "csrf", "ssrf",
+        "path_traversal", "exposed_service", "exposed_rdp", "exposed_vpn", "exposed_ssh",
+        "exposed_database", "exposed_api", "man_in_the_middle", "supply_chain_compromise",
+        "third_party_vendor", "software_update_compromise", "trusted_relationship", "social_engineering",
+        "pretexting", "baiting", "tailgating", "usb_drop", "insider_access", "former_employee",
+        "cloud_misconfiguration", "api_key_exposure", "storage_bucket_exposure", "phishing",
+        "spear_phishing", "vulnerability_exploit", "credential_theft", "malware", "ransomware",
+        "insider_threat", "supply_chain", "third_party_breach", "ddos", "dns_hijacking",
+        "sim_swapping", "unknown", "other"
+    }
+    return normalize_enum_value(value, ATTACK_VECTOR_NORMALIZATION, valid_values, "unknown")
+
+
+def normalize_attack_chain(values: Any) -> Optional[List[str]]:
+    """Normalize attack_chain list to valid enum values."""
+    if not values or not isinstance(values, list):
+        return None
+    
+    valid_values = {
+        "reconnaissance", "resource_development", "initial_access", "execution", "persistence",
+        "privilege_escalation", "defense_evasion", "credential_access", "discovery",
+        "lateral_movement", "collection", "command_and_control", "exfiltration", "impact",
+        "weaponization", "delivery", "exploitation", "installation", "actions_on_objectives",
+        "vulnerability_discovery", "credential_harvesting", "data_analysis", "data_theft",
+        "encryption", "ransom_demand", "data_exfiltration", "containment", "eradication",
+        "recovery", "lessons_learned", "notification", "disclosure", "detection", "investigation"
+    }
+    
+    normalized = []
+    for v in values:
+        norm = normalize_enum_value(v, ATTACK_CHAIN_NORMALIZATION, valid_values, None)
+        if norm and norm not in normalized:
+            normalized.append(norm)
+    
+    return normalized if normalized else None
+
+
+def normalize_event_type(value: Any) -> Optional[str]:
+    """Normalize event_type to valid enum value."""
+    valid_values = {
+        "initial_access", "reconnaissance", "lateral_movement", "privilege_escalation",
+        "data_exfiltration", "encryption_started", "ransom_demand", "discovery", "exploitation",
+        "impact", "operational_impact", "containment", "eradication", "recovery", "disclosure",
+        "notification", "investigation", "remediation", "law_enforcement_contact",
+        "public_statement", "systems_restored", "response_action", "security_improvement", "other"
+    }
+    return normalize_enum_value(value, EVENT_TYPE_NORMALIZATION, valid_values, "other")
+
+
+OPERATIONAL_IMPACT_NORMALIZATION = {
+    "classes_canceled": "classes_cancelled",
+    "class_cancelled": "classes_cancelled",
+    "class_cancellation": "classes_cancelled",
+    "online_classes": "classes_moved_online",
+    "remote_classes": "classes_moved_online",
+    "virtual_classes": "classes_moved_online",
+    "exam_delayed": "exams_postponed",
+    "exam_delay": "exams_postponed",
+    "exams_delayed": "exams_postponed",
+    "research_stopped": "research_halted",
+    "research_paused": "research_halted",
+    "enrollment_delayed": "enrollment_disrupted",
+    "enrollment_stopped": "enrollment_disrupted",
+    "admissions_delayed": "admissions_impacted",
+    "admissions_stopped": "admissions_impacted",
+    "library_down": "library_services_affected",
+    "library_closed": "library_services_affected",
+    "payment_down": "payment_systems_offline",
+    "payments_down": "payment_systems_offline",
+    "email_down": "email_system_down",
+    "email_offline": "email_system_down",
+    "portal_down": "student_portal_down",
+    "student_portal_offline": "student_portal_down",
+    "network_down": "network_down",
+    "network_offline": "network_down",
+    "website_down": "website_down",
+    "website_offline": "website_down",
+    "site_down": "website_down",
+}
+
+BUSINESS_IMPACT_NORMALIZATION = {
+    "high": "severe",
+    "low": "limited",
+    "medium": "moderate",
+    "minor": "minimal",
+    "major": "severe",
+    "significant": "severe",
+    "catastrophic": "critical",
+    "extreme": "critical",
+    "none": "minimal",
+    "negligible": "minimal",
+}
+
+ENCRYPTION_IMPACT_NORMALIZATION = {
+    "complete": "full",
+    "total": "full",
+    "100%": "full",
+    "some": "partial",
+    "limited": "partial",
+    "partial_encryption": "partial",
+    "no_encryption": "none",
+    "not_encrypted": "none",
+    "unencrypted": "none",
+}
+
+
+def normalize_operational_impact(values: Any) -> Optional[List[str]]:
+    """Normalize operational_impact list to valid enum values."""
+    if not values or not isinstance(values, list):
+        return None
+    
+    valid_values = {
+        "classes_cancelled", "classes_moved_online", "exams_postponed", "research_halted",
+        "enrollment_disrupted", "graduation_delayed", "admissions_impacted",
+        "campus_closed", "dormitories_affected", "dining_services_disrupted",
+        "library_services_affected", "athletic_events_cancelled", "payment_systems_offline",
+        "email_system_down", "student_portal_down", "network_down", "website_down", "other"
+    }
+    
+    normalized = []
+    for v in values:
+        norm = normalize_enum_value(v, OPERATIONAL_IMPACT_NORMALIZATION, valid_values, None)
+        if norm and norm not in normalized:
+            normalized.append(norm)
+    
+    return normalized if normalized else None
+
+
+def normalize_business_impact(value: Any) -> Optional[str]:
+    """Normalize business_impact to valid enum value."""
+    valid_values = {"critical", "severe", "moderate", "limited", "minimal"}
+    return normalize_enum_value(value, BUSINESS_IMPACT_NORMALIZATION, valid_values, None)
+
+
+def normalize_encryption_impact(value: Any) -> Optional[str]:
+    """Normalize encryption_impact to valid enum value."""
+    valid_values = {"full", "partial", "none"}
+    return normalize_enum_value(value, ENCRYPTION_IMPACT_NORMALIZATION, valid_values, None)
 
 
 def map_systems_affected_codes(codes: List[str]) -> List[str]:
@@ -271,7 +572,7 @@ def json_to_cti_enrichment(
         institution_identified=json_data.get("institution_name")
     )
     
-    # Timeline
+    # Timeline - normalize event_type values
     timeline = None
     if json_data.get("timeline"):
         timeline = [
@@ -279,7 +580,7 @@ def json_to_cti_enrichment(
                 date=event.get("date"),
                 date_precision=event.get("date_precision"),
                 event_description=event.get("event_description"),
-                event_type=event.get("event_type"),
+                event_type=normalize_event_type(event.get("event_type")),
                 actor_attribution=event.get("actor_attribution"),
                 indicators=event.get("indicators")
             )
@@ -323,10 +624,14 @@ def json_to_cti_enrichment(
         if not final_attack_vector and attack_category:
             final_attack_vector = map_attack_category_to_vector(attack_category)
         
-        # Determine encryption impact
+        # NORMALIZE attack_vector to valid enum value
+        final_attack_vector = normalize_attack_vector(final_attack_vector)
+        
+        # Determine encryption impact - normalize to valid enum
         encryption_impact = None
-        if json_data.get("encryption_impact"):
-            encryption_impact = json_data.get("encryption_impact")
+        raw_enc = json_data.get("encryption_impact")
+        if raw_enc:
+            encryption_impact = normalize_encryption_impact(raw_enc)
         elif json_data.get("data_encrypted") is True:
             encryption_impact = "full"
         elif json_data.get("data_encrypted") is False:
@@ -346,14 +651,15 @@ def json_to_cti_enrichment(
         ransom_amt = json_data.get("ransom_amount_exact") or json_data.get("ransom_amount")
         ransom_amt_str = str(ransom_amt) if ransom_amt is not None else None
         
-        # Business impact
-        business_impact = json_data.get("business_impact")
+        # Business impact - normalize to valid enum
+        business_impact = normalize_business_impact(json_data.get("business_impact"))
         
-        # Attack chain from extraction schema
-        attack_chain = json_data.get("attack_chain")
+        # Attack chain from extraction schema - NORMALIZE to valid enum values
+        raw_attack_chain = json_data.get("attack_chain")
+        attack_chain = normalize_attack_chain(raw_attack_chain)
         
-        # Operational impact from extraction schema  
-        operational_impact = json_data.get("operational_impact")
+        # Operational impact from extraction schema - normalize to valid enum list
+        operational_impact = normalize_operational_impact(json_data.get("operational_impact"))
         
         attack_dynamics = AttackDynamics(
             attack_vector=final_attack_vector,

@@ -53,8 +53,17 @@ This release significantly improves article extraction with dynamic global selec
 - **lesoir.be Extraction**: Added specific selectors for Belgian news site (`r-article--section`)
 - **Selenium Cookie Handling**: Robust iframe switching for embedded consent dialogs
 - **Multiple Indentation Errors**: Fixed indentation issues across pipeline files
+- **Pydantic Validation Errors**: Dynamic enum normalization prevents validation failures from unexpected LLM outputs
 
 #### Technical Improvements
+- **Dynamic Enum Normalization**: Automatic mapping of LLM output variations to valid schema values:
+  - `attack_vector`: Maps "email" → "phishing_email", "rdp" → "exposed_rdp", etc.
+  - `attack_chain`: Maps "recon" → "reconnaissance", "c2" → "command_and_control", etc.
+  - `event_type`: Maps "access" → "initial_access", "encrypt" → "encryption_started", etc.
+  - `operational_impact`: Maps "classes_canceled" → "classes_cancelled", etc.
+  - `business_impact`: Maps "high" → "severe", "low" → "limited", etc.
+  - `encryption_impact`: Maps "complete" → "full", "some" → "partial", etc.
+- **LLM Temperature Reduced**: Changed from 0.3 to 0.1 for more deterministic structured outputs
 - **Dynamic Selector Patterns**: Uses CSS attribute contains selectors (`[class*="..."]`) for flexibility
 - **Parent Element Filtering**: Skips text inside nav/aside/footer elements
 - **Deduplication**: Prevents duplicate content paragraphs

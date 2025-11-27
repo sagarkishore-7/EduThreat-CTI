@@ -73,7 +73,7 @@ class OllamaLLMClient:
         messages: list[Dict[str, str]],
         format: Optional[Dict[str, Any]] = None,
         stream: bool = False,
-        temperature: float = 0.3,  # Lower temperature for more structured output
+        temperature: float = 0.1,  # Low temperature for deterministic structured output
     ) -> Iterator[Dict[str, Any]] | Dict[str, Any]:
         """
         Send chat request to Ollama.
@@ -132,7 +132,7 @@ class OllamaLLMClient:
                     messages=messages,
                     format=None,  # No format constraint - we want raw JSON
                     stream=False,
-                    temperature=0.3,
+                    temperature=0.1,  # Low for deterministic structured output
                 )
                 
                 # Extract content from response
