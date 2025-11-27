@@ -1,15 +1,36 @@
-# src/edu_cti/ingest/konbriefing.py
+"""
+KonBriefing University Cyber Attacks listing ingestion.
+
+This module scrapes the KonBriefing page that tracks cyber attacks on universities.
+It's a single-page source (no pagination) but supports incremental ingestion
+by tracking the last ingestion date.
+
+URL: https://konbriefing.com/en-topics/cyber-attacks-universities.html
+"""
+
 import json
+import logging
+from datetime import datetime
 from typing import Callable, List, Optional
 
 from bs4 import BeautifulSoup, NavigableString
 import pandas as pd
 
+from src.edu_cti.core.db import (
+    get_connection,
+    init_db,
+    get_last_pubdate,
+    set_last_pubdate,
+    source_event_exists,
+    register_source_event,
+)
 from src.edu_cti.core.http import HttpClient, build_http_client
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.utils import parse_date_with_precision, now_utc_iso
 
 LISTING_URL = "https://konbriefing.com/en-topics/cyber-attacks-universities.html"
+SOURCE_NAME = "konbriefing"
+logger = logging.getLogger(__name__)
 
 
 def _text_after_img(img) -> str:
@@ -66,6 +87,16 @@ def _extract_subtitle_and_links(art) -> tuple[str, list[str]]:
             uniq.append(u)
 
     return subtitle, uniq
+
+
+def _parse_date_for_comparison(date_str: Optional[str]) -> Optional[datetime]:
+    """Parse date string to datetime for comparison."""
+    if not date_str:
+        return None
+    try:
+        return datetime.strptime(date_str[:10], "%Y-%m-%d")
+    except (ValueError, TypeError):
+        return None
 
 
 def fetch_konbriefing_listing(client: Optional[HttpClient] = None) -> pd.DataFrame:
@@ -134,10 +165,14 @@ def fetch_konbriefing_listing(client: Optional[HttpClient] = None) -> pd.DataFra
 def build_konbriefing_base_incidents(
     client: Optional[HttpClient] = None,
     save_callback: Optional[Callable[[List[BaseIncident]], None]] = None,
+    incremental: bool = True,
 ) -> List[BaseIncident]:
     """
     Build a list of BaseIncident objects from KonBriefing listing data.
-    Supports incremental saving via save_callback - saves after processing all records.
+    
+    Supports incremental ingestion:
+    - incremental=True (default): Only process incidents newer than last_pubdate
+    - incremental=False: Process all incidents (full refresh)
 
     Notes:
     - incident_date: we use the listing date as a first approximation.
@@ -147,12 +182,35 @@ def build_konbriefing_base_incidents(
     - source_confidence: "high".
     
     Args:
-        save_callback: Optional callback to save incidents incrementally.
-                      Called after processing all records (single page source).
+        client: Optional HTTP client
+        save_callback: Optional callback to save incidents incrementally
+        incremental: If True, skip incidents already ingested or older than last_pubdate
     """
+    # Initialize database connection for incremental tracking
+    conn = get_connection()
+    init_db(conn)
+    
+    # Get last ingestion date for incremental mode
+    last_pubdate = None
+    last_pubdate_dt = None
+    if incremental:
+        last_pubdate = get_last_pubdate(conn, SOURCE_NAME)
+        if last_pubdate:
+            last_pubdate_dt = _parse_date_for_comparison(last_pubdate)
+            logger.info(f"KonBriefing: Incremental mode - processing incidents newer than {last_pubdate}")
+        else:
+            logger.info("KonBriefing: No previous ingestion found - processing all incidents")
+    else:
+        logger.info("KonBriefing: Full mode (incremental=False) - processing all incidents")
+    
     df = fetch_konbriefing_listing(client=client)
     incidents: List[BaseIncident] = []
     ingested_at = now_utc_iso()
+    
+    newest_date: Optional[str] = None
+    newest_date_dt: Optional[datetime] = None
+    total_new = 0
+    total_skipped = 0
 
     for _, row in df.iterrows():
         all_urls: list[str] = []
@@ -172,15 +230,37 @@ def build_konbriefing_base_incidents(
         date_precision = row.get("date_precision") or "unknown"
 
         institution = row.get("institution") or ""
+        
+        # Track newest date for updating last_pubdate
+        if incident_date:
+            incident_date_dt = _parse_date_for_comparison(incident_date)
+            if incident_date_dt and (newest_date_dt is None or incident_date_dt > newest_date_dt):
+                newest_date = incident_date
+                newest_date_dt = incident_date_dt
+        
+        # INCREMENTAL CHECK: Skip if older than last ingestion date
+        if incremental and last_pubdate_dt and incident_date:
+            incident_date_dt = _parse_date_for_comparison(incident_date)
+            if incident_date_dt and incident_date_dt <= last_pubdate_dt:
+                total_skipped += 1
+                continue
+        
         # Use all URLs for unique string generation
         urls_str = ";".join(all_urls) if all_urls else ""
         unique_string = f"{institution}|{incident_date or ''}|{urls_str}"
-        incident_id = make_incident_id("konbriefing", unique_string)
+        incident_id = make_incident_id(SOURCE_NAME, unique_string)
+        
+        # Skip if already in source_events (deduplication)
+        source_event_id = unique_string
+        if source_event_exists(conn, SOURCE_NAME, source_event_id):
+            logger.debug(f"Skipping already-ingested incident: {institution[:50]}...")
+            total_skipped += 1
+            continue
 
         incident = BaseIncident(
             incident_id=incident_id,
-            source="konbriefing",
-            source_event_id=None,  # KonBriefing has no native event ID
+            source=SOURCE_NAME,
+            source_event_id=source_event_id,
 
             university_name=institution,
             victim_raw_name=institution,
@@ -200,7 +280,6 @@ def build_konbriefing_base_incidents(
             title=row.get("title") or None,
             subtitle=row.get("subtitle") or None,
 
-            # Enrichment URLs (news / official statements)
             # Phase 1: primary_url=None, all URLs in all_urls (Phase 2 will select best URL)
             primary_url=None,
             all_urls=all_urls,
@@ -211,25 +290,34 @@ def build_konbriefing_base_incidents(
             screenshot_url=None,
 
             # Basic classification
-            attack_type_hint=None,   # inferred later from article text
+            attack_type_hint=None,
             status="confirmed",
             source_confidence="high",
 
             notes=None,
         )
+        
+        # Register source event to prevent re-ingestion
+        register_source_event(conn, SOURCE_NAME, source_event_id, incident.incident_id, ingested_at)
+        
         incidents.append(incident)
+        total_new += 1
     
-    # Save all incidents if callback provided (single page source, save after processing all)
+    # Save all incidents if callback provided
     if save_callback is not None and incidents:
         try:
             save_callback(incidents)
-            import logging
-            logger = logging.getLogger(__name__)
             logger.debug(f"KonBriefing: Saved {len(incidents)} incidents")
         except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
             logger.error(f"KonBriefing: Error saving incidents: {e}", exc_info=True)
-            # Continue even if save fails
-
+    
+    # Update last_pubdate to newest incident we saw
+    if newest_date:
+        set_last_pubdate(conn, SOURCE_NAME, newest_date)
+        logger.info(f"KonBriefing: Updated last_pubdate to {newest_date}")
+    
+    conn.commit()
+    conn.close()
+    
+    logger.info(f"KonBriefing: Complete - {total_new} new, {total_skipped} skipped")
     return incidents

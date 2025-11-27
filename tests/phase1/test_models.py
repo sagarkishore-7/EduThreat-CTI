@@ -4,7 +4,7 @@ import pytest
 from datetime import datetime
 from typing import List
 
-from src.edu_cti.models import BaseIncident, make_incident_id
+from src.edu_cti.core.models import BaseIncident, make_incident_id
 
 
 class TestBaseIncident:

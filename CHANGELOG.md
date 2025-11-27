@@ -5,7 +5,179 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.1.0] - 2025-11-25
+## [1.5.0] - 2025-11-27
+
+### Enhanced Article Extraction & Cookie Consent Handling
+
+This release significantly improves article extraction with dynamic global selectors and robust cookie consent handling for reliable content fetching from international news sites.
+
+#### Added
+- **Universal Content Extraction (80+ Selectors)**: Comprehensive CSS selectors covering global news sites, multiple CMS platforms, and semantic HTML patterns:
+  - Site-specific: DarkReading, SecurityWeek, BleepingComputer, The Record, lesoir.be
+  - CMS: WordPress, Drupal, Joomla, Ghost, Medium, Substack
+  - Pattern-based: Dynamic class matching (`[class*="article-body"]`, etc.)
+  - Semantic: HTML5 article/main elements, Schema.org microdata
+  - Fallback: Progressive degradation with multiple fallback layers
+
+- **Cookie Consent Auto-Handler**: Automatic detection and acceptance of cookie consent dialogs:
+  - OneTrust, SourcePoint, Evidon consent frameworks
+  - TechTarget/DarkReading-specific selectors
+  - Generic button text matching (Accept, Agree, OK, etc.)
+  - iframe support for embedded consent dialogs
+  - Post-acceptance wait for dialog dismissal
+
+- **Progress Tracking**: Real-time progress indicators for Phase 2 pipeline:
+  - Fetching progress: `[5/20] (25%)`
+  - Enrichment progress: `[3/20] (15%)`
+
+- **`.gitignore` File**: Proper git ignore rules for Python, IDE, data files, and caches
+
+#### Changed
+- **Content Extraction Strategy**: Multi-fallback approach with priority ordering:
+  1. Site-specific selectors (highest priority)
+  2. CMS-specific patterns
+  3. Semantic HTML5 elements
+  4. Generic class/id patterns
+  5. All paragraphs (fallback)
+  6. Body text (last resort)
+
+- **Unwanted Element Removal**: Expanded list of non-content elements removed before extraction:
+  - Sidebars, comments, related articles, social buttons
+  - Advertisements, newsletters, popups, modals
+  - Navigation, breadcrumbs, tag clouds
+
+- **Education Relevance**: LLM's `is_edu_cyber_incident` output is now the sole determinant (removed trusted sources override)
+
+#### Fixed
+- **DarkReading Article Fetching**: Cookie consent pop-ups no longer block content extraction
+- **lesoir.be Extraction**: Added specific selectors for Belgian news site (`r-article--section`)
+- **Selenium Cookie Handling**: Robust iframe switching for embedded consent dialogs
+- **Multiple Indentation Errors**: Fixed indentation issues across pipeline files
+
+#### Technical Improvements
+- **Dynamic Selector Patterns**: Uses CSS attribute contains selectors (`[class*="..."]`) for flexibility
+- **Parent Element Filtering**: Skips text inside nav/aside/footer elements
+- **Deduplication**: Prevents duplicate content paragraphs
+- **Character Limit**: Body text fallback limited to 10k characters
+
+---
+
+## [1.4.0] - 2025-11-26
+
+### Incremental Ingestion for Phase 1
+
+This release adds **incremental ingestion** support for all Phase 1 sources, enabling efficient daily updates without re-scraping entire archives.
+
+#### Added
+- **Incremental Mode (Default)**: All source builders now track `last_pubdate` in `source_state` table
+  - `--full-historical` flag for first-time historical scrape
+  - Default mode only fetches new incidents since last ingestion
+  - Dramatically reduces ingestion time for regular updates (hours → seconds)
+- **Source State Tracking**: New `source_state` table tracks last ingestion date per source
+  - Automatically updated after each successful ingestion
+  - Supports all curated, news, and RSS sources
+- **ISO 8601 Date Parsing**: Added support for ISO 8601 datetime format (`2025-11-19T11:23:06-05:00`)
+- **Brotli Compression Support**: Added `brotli` package for handling Brotli-compressed HTTP responses
+
+#### Changed
+- **DataBreaches.net (Curated)**: Stops pagination when reaching already-ingested dates
+  - First run: All 490+ pages (~2-3 hours)
+  - Daily incremental: 1-5 pages (~30 seconds)
+- **KonBriefing**: Skips incidents older than `last_pubdate`
+- **RSS Feeds**: All RSS sources skip articles older than `last_pubdate`
+- **CLI Flags**:
+  - `--full-historical`: Force full historical scrape
+  - Default: Incremental mode
+
+#### Fixed
+- **Date Parsing**: ISO 8601 dates from DataBreaches.net `<time>` tags now parse correctly
+- **Indentation Errors**: Fixed multiple indentation issues in source files
+
+#### Usage
+
+```bash
+# First-time setup (full historical - takes hours)
+python -m src.edu_cti.pipeline.phase1 --full-historical
+
+# Daily updates (incremental - takes seconds)
+python -m src.edu_cti.pipeline.phase1
+
+# Run specific source
+python -m src.edu_cti.pipeline.phase1 --groups curated --sources databreach
+
+# Check source state
+sqlite3 data/eduthreat.db "SELECT * FROM source_state"
+```
+
+---
+
+## [1.3.0] - 2025-11-25
+
+### Enhanced CTI Schema + BleepingComputer RSS Source
+
+This release significantly enhances the extraction schema with extensive enum values for accurate and comprehensive threat intelligence extraction and cross-incident analysis. Also adds BleepingComputer as a new RSS data source.
+
+#### Added
+- **BleepingComputer RSS Source**: New RSS feed source (`bleepingcomputer`) that filters for Security category articles containing education keywords
+- **Extended Education Keywords**: 70+ education-related keywords in `config.EDUCATION_KEYWORDS` for comprehensive filtering (institution types, education terms, levels, identifiers, research terms)
+- **50+ Attack Categories**: Granular attack classification including ransomware variants (encryption, double/triple extortion), phishing types, data breach variants, malware types, and insider threat categories
+- **60+ Attack Vectors**: Comprehensive initial access vectors including credential-based, vulnerability exploitation, exposed services, cloud-specific, and supply chain attacks
+- **35+ Ransomware Families**: Complete ransomware family enumeration (LockBit, BlackCat/ALPHV, Cl0p, Akira, Play, 8Base, BianLian, Royal, Black Basta, Medusa, Rhysida, etc.)
+- **Threat Actor Classification**: APT/nation-state, ransomware gangs, affiliates, hacktivists, with motivation tracking
+- **30+ Data Categories**: Granular data type classification (student PII/SSN/grades, employee payroll, research IP, credentials)
+- **35+ System Categories**: Detailed system impact tracking (LMS, SIS, ERP, research HPC, hospital systems)
+- **25+ Operational Impacts**: Comprehensive operational disruption types (classes cancelled/moved online, exams postponed, research halted)
+- **25+ Security Improvements**: Recovery action enumeration (MFA, EDR, network segmentation, zero trust)
+- **Cross-Incident Analysis Fields**: Campaign tracking, related incidents, sector targeting patterns
+- **MITRE ATT&CK Integration**: Full tactic enumeration with technique ID validation
+
+#### Changed
+- **Pydantic Schemas Updated**: All schema enums expanded to match extraction schema
+- **Extraction Prompt Enhanced**: Detailed instructions for comprehensive CTI extraction
+- **JSON-to-Schema Mapper**: Updated with new category mappings
+
+---
+
+## [1.2.0] - 2025-11-25
+
+### Phase 2 LLM Enrichment Pipeline - Production Ready
+
+This release marks the Phase 2 enrichment pipeline as **production-ready** with comprehensive bug fixes, improved error handling, and robust article fetching.
+
+#### Added
+- **Archive.org Fallback**: All failed article fetches now try archive.org/Wayback Machine as final fallback
+- **Intelligent Error Classification**: Distinguishes between "enrichment failed" vs "not education-related" for proper retry logic
+- **Ad Popup Handler**: Selenium now detects and closes common ad/newsletter popups during article extraction
+- **Comprehensive CSV Export**: All victim name fields (`university_name`, `victim_raw_name`, `victim_raw_name_normalized`) now populate correctly
+- **Contributor Test Suite**: New test structure for contributors adding sources
+
+#### Changed
+- **Article Fetching Strategy**: `newspaper3k → Selenium → archive.org → Skip` for all sites
+- **Error Recovery**: Failed enrichments no longer mark incidents as "not education-related" - they will retry on next run
+- **LLM Prompt Consolidation**: Single source of truth for LLM instructions in `extraction_prompt.py`
+- **Database Storage**: All data flows to single `eduthreat.db` (removed separate test databases)
+
+#### Fixed
+- **CSV Victim Name Bug**: Fixed `victim_raw_name` and `university_name` being empty while `victim_raw_name_normalized` was filled
+- **JSON Escape Handling**: Fixed `Invalid \escape` errors in LLM JSON output parsing
+- **NoneType Iteration**: Fixed `TypeError` when `operational_impact` list is None
+- **Path Object Handling**: Fixed `AttributeError` for string paths in CSV export
+- **Cloudflare Detection**: Selenium bypasses now work consistently for protected sites
+- **Konbriefing Classification**: Education-related incidents from curated sources no longer incorrectly skipped
+
+#### Removed
+- **Redundant Test Files**: Cleaned up duplicate test coverage files
+- **Temporary Databases**: Removed `phase2_enrichments.db` and test artifacts from `data/processed/`
+- **Duplicate LLM Prompts**: Removed inline prompts in `enrichment.py` that duplicated `extraction_prompt.py`
+
+#### Documentation
+- **Updated Tests README**: Comprehensive test documentation for contributors
+- **Phase 2 README**: Complete pipeline documentation with data flow diagrams
+- **CONTRIBUTING.md**: Updated with contributor test cases and verification steps
+
+---
+
+## [1.1.0] - 2025-11-24
 
 ### Phase 2 Enrichment Pipeline Improvements
 
@@ -26,7 +198,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Research impact assessment
 - **Dual-table Storage Strategy**: Optimized database storage with both JSON and flattened tables
   - `incident_enrichments`: Full JSON storage for flexibility
-  - `incident_enrichments_flat`: Flattened columns (80+ fields) for fast CSV export and analytics
+  - `incident_enrichments_flat`: Flattened columns (88+ fields) for fast CSV export and analytics
 - **Producer-Consumer Pattern**: Concurrent article fetching and enrichment processing
   - Articles fetched and pushed to queue immediately
   - Enrichment processes incidents as they arrive
@@ -36,17 +208,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - Scores articles based on field coverage
   - Selects article with highest field coverage as primary
 - **Comprehensive Coverage Test**: Test suite with prepared article covering all schema fields
-  - Located in `tests/phase2/test_enrichment_coverage.py`
-  - Verifies extraction of all 192 schema fields
-  - Generates coverage reports
 
 #### Changed
 - **Simplified Schema Structure**: Removed nested Pydantic models in favor of Dict structures for flexibility
 - **Enhanced LLM Prompting**: Improved system prompts with explicit JSON output requirements and tag usage
 - **Improved Error Handling**: Better fallback mechanisms and error recovery
-  - JSON schema extraction with fallback to comprehensive method
-  - Escaped newline handling in JSON parsing
-  - Thread-safe database connections
 
 #### Fixed
 - **SQLite Thread Safety**: Added `check_same_thread=False` for multi-threaded operations
@@ -55,18 +221,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Return Value Consistency**: Fixed functions returning tuples instead of single values
 - **Database Commit Issues**: Ensured proper transaction commits for data persistence
 
-#### Technical Improvements
-- **Code Organization**: Refactored Phase 2 directory structure
-  - `extraction/`: JSON schema, prompts, and mappers
-  - `storage/`: Database and article storage
-  - `utils/`: Helper functions (deduplication, fetching strategy)
-- **Logging Enhancements**: Added detailed logging for debugging and monitoring
-- **Type Safety**: Improved type hints and error handling throughout
-
-#### Documentation
-- **Test Documentation**: Added README for Phase 2 test suite
-- **Code Cleanup**: Removed temporary verification scripts and logs
-- **Changelog Updates**: Comprehensive documentation of Phase 2 improvements
+---
 
 ## [1.0.0] - 2025-01-20
 
@@ -102,77 +257,6 @@ This is the first official release of EduThreat-CTI, a comprehensive cyber threa
 - **Comprehensive CTI extraction**: Timeline, MITRE ATT&CK mapping, attack dynamics
 - **Extended analytics schema**: Detailed metrics for comprehensive analytics
 - **Enrichment preservation**: Enrichment data preserved during Phase 1 merges
-
-#### Deduplication System
-- **URL-based matching**: Identifies duplicates by normalizing and comparing URLs
-- **Smart merging**: Keeps highest confidence source, merges all URLs and metadata
-- **URL normalization**: Removes trailing slashes, www. prefix, fragments for accurate matching
-- **Statistics**: Provides detailed deduplication statistics
-
-#### Source Registry
-- **Centralized registry**: `core/sources.py` provides easy source management
-- **Easy source addition**: New sources can be added by following established patterns
-- **Source validation**: Built-in source name validation
-- **Source documentation**: Comprehensive guide for adding sources
-
-#### CLI Interface
-- **Main orchestrator**: `python -m src.edu_cti.pipeline.phase1.orchestrator` - Complete Phase 1 workflow
-- **Phase 1 pipeline**: `python -m src.edu_cti.pipeline.phase1` - Phase 1 ingestion
-- **Phase 2 pipeline**: `python -m src.edu_cti.pipeline.phase2` - Phase 2 LLM enrichment
-- **CLI commands**: `eduthreat-orchestrator`, `eduthreat-phase1`, `eduthreat-phase2`, `eduthreat-build`
-- **Flexible options**: Source selection, page limits, group filtering, batch processing
-
-#### Configuration
-- **Environment variables**: Database path, log level, log file, Ollama API configurable via environment
-- **Default values**: Sensible defaults in `core/config.py`
-- **`.env` support**: Local development configuration via `.env` file
-
-#### Documentation
-- **Comprehensive README**: Complete project documentation with usage examples
-- **Architecture docs**: Detailed architecture and design principles
-- **Contributor guide**: `CONTRIBUTING.md` with contribution guidelines
-- **Source addition guide**: `docs/ADDING_SOURCES.md` with step-by-step instructions
-- **Database docs**: Complete database schema documentation
-- **Deduplication guide**: Detailed deduplication strategy explanation
-- **Source recommendations**: List of potential additional sources in `docs/SOURCES.md`
-
-#### Development Tools
-- **Package management**: `setup.py` and `pyproject.toml` for proper Python packaging
-- **Testing framework**: Test structure with `pytest` support
-- **Type hints**: Type annotations throughout codebase
-- **Code quality**: Black formatting, flake8 linting support
-
-### Technical Details
-
-#### Database Schema
-- `incidents`: Deduplicated incidents with enrichment fields
-- `incident_sources`: Many-to-many relationship tracking source attribution
-- `source_events`: Per-source deduplication tracking
-- `source_state`: Source ingestion state tracking
-- `incident_enrichments`: Phase 2 enrichment data storage
-
-#### Project Structure
-- **Phase-based organization**: Clear separation of Phase 1, Phase 2, Phase 3
-- **Core module**: Shared functionality across all phases
-- **Source modularity**: Easy-to-extend source system
-- **Professional structure**: Contributor-friendly organization
-
-### Future Enhancements
-
-#### Phase 3 - CTI Outputs (Planned)
-- Public dataset export formats
-- STIX/TAXII feeds
-- Dashboard & analytics
-- API endpoints
-- Data visualization
-
-#### Additional Sources (Potential)
-- BleepingComputer
-- CISA alerts
-- CERT advisories (NCSC, CERT-EU)
-- University IT status pages
-- Additional ransomware leak sites
-- See `docs/SOURCES.md` for comprehensive list
 
 ---
 

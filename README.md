@@ -1,18 +1,16 @@
 # EduThreat-CTI
 
-**Real-time cyber threat intelligence pipeline for the global education
-sector**
+[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](CHANGELOG.md)
+[![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://python.org)
 
-EduThreat-CTI is an open-source cyber threat intelligence (CTI)
-framework focused on **cyber incidents affecting universities, schools,
-and research institutions worldwide**.\
-Its mission is to make the education sector's threat landscape
-**transparent, analyzable, and research-ready** by building a unified
-dataset from diverse OSINT sources.
+**Real-time cyber threat intelligence pipeline for the global education sector**
 
-This project is inspired by large-scale cyber-incident measurement
-studies (e.g., USENIX Security research) and extends that approach
-**vertically** into the education domain.
+EduThreat-CTI is an open-source cyber threat intelligence (CTI) framework focused on **cyber incidents affecting universities, schools, and research institutions worldwide**. Its mission is to make the education sector's threat landscape **transparent, analyzable, and research-ready** by building a unified dataset from diverse OSINT sources.
+
+This project is inspired by large-scale cyber-incident measurement studies (e.g., USENIX Security research) and extends that approach **vertically** into the education domain.
+
+> **Latest Release (v1.5.0)**: Enhanced article extraction with 80+ dynamic CSS selectors, automatic cookie consent handling, and progress tracking. Reliable content fetching from international news sites including DarkReading, SecurityWeek, and European sources. See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ------------------------------------------------------------------------
 
@@ -99,7 +97,8 @@ Provide a clean dataset ready for:
     │     │  └─ rss/                    # RSS feed sources
     │     │     ├─ __init__.py
     │     │     ├─ common.py
-    │     │     └─ databreaches_rss.py
+    │     │     ├─ databreaches_rss.py
+    │     │     └─ bleepingcomputer_rss.py  # Security + education keyword filtering
     │     └─ pipeline/                  # Phase-based pipelines
     │        ├─ __init__.py
     │        ├─ phase1/                 # Phase 1: Ingestion
@@ -157,14 +156,43 @@ git clone https://github.com/sagarkishore-7/EduThreat-CTI.git
 cd EduThreat-CTI
 pip install -r requirements.txt
 
-# Run the complete Phase 1 pipeline (recommended)
-python -m src.edu_cti.pipeline.phase1.orchestrator
+# First-time setup: Full historical scrape (takes ~2-3 hours for 490+ pages)
+python -m src.edu_cti.pipeline.phase1 --full-historical
+
+# Daily updates: Incremental mode (default, takes seconds)
+python -m src.edu_cti.pipeline.phase1
 ```
 
 This will:
 1. Initialize the SQLite database (`data/eduthreat.db`)
 2. Ingest incidents from all sources into the database (with cross-source deduplication)
-3. Build the unified base dataset CSV (`data/processed/base_dataset.csv`) from database
+3. Track `last_pubdate` per source for efficient incremental updates
+
+## 🔄 Incremental Ingestion (v1.4.0)
+
+EduThreat-CTI now supports **incremental ingestion** - only fetching new incidents since the last run:
+
+| Mode | Command | Pages Fetched | Time |
+|------|---------|--------------|------|
+| **First run** | `--full-historical` | All 490+ | ~2-3 hours |
+| **Daily** (default) | (no flag) | 1-5 pages | ~30 seconds |
+| **Weekly** | (no flag) | 5-20 pages | ~2 minutes |
+
+```bash
+# First-time historical scrape (fetches ALL pages)
+python -m src.edu_cti.pipeline.phase1 --full-historical
+
+# Regular incremental updates (default behavior)
+python -m src.edu_cti.pipeline.phase1
+
+# Check source state (last ingestion dates)
+sqlite3 data/eduthreat.db "SELECT * FROM source_state"
+```
+
+**How it works:**
+- Each source tracks its `last_pubdate` in the `source_state` table
+- In incremental mode, sources stop when they reach already-ingested dates
+- Deduplication via `source_events` table prevents re-ingesting same incidents
 
 
 **Output files:**
@@ -193,6 +221,9 @@ This will:
   - DataBreaches.net (education sector archive)
 ✔ **News sources** (keyword-based search):
   - Krebs on Security, The Hacker News, The Record, SecurityWeek, Dark Reading
+✔ **RSS feed sources** (real-time with keyword filtering):
+  - BleepingComputer (Security category + 70+ education keywords)
+  - DataBreaches.net RSS (Education Sector category)
 ✔ Unified schema\
 ✔ Base dataset builder\
 ✔ **Cross-source URL-based deduplication** (at database ingestion level)\
@@ -249,32 +280,35 @@ The pipeline automatically deduplicates incidents at multiple levels:
 
 **Examples:**
 ```bash
-# Run full pipeline (all sources, fetches all pages by default)
-python -m src.edu_cti.pipeline.phase1.orchestrator
+# Daily incremental run (default - only new incidents)
+python -m src.edu_cti.pipeline.phase1
 
-# Run only news sources
-python -m src.edu_cti.pipeline.phase1.orchestrator --groups news
+# First-time full historical scrape (all pages)
+python -m src.edu_cti.pipeline.phase1 --full-historical
 
-# Run only curated sources
-python -m src.edu_cti.pipeline.phase1.orchestrator --groups curated
+# Run only curated sources (incremental)
+python -m src.edu_cti.pipeline.phase1 --groups curated
 
-# Run specific news sources
-python -m src.edu_cti.pipeline.phase1.orchestrator --groups news --news-sources darkreading krebsonsecurity
+# Run only news sources (incremental)  
+python -m src.edu_cti.pipeline.phase1 --groups news
+
+# Run specific sources
+python -m src.edu_cti.pipeline.phase1 --groups curated --sources databreach konbriefing
+
+# Force full refresh for specific source
+python -m src.edu_cti.pipeline.phase1 --groups curated --sources databreach --full-historical
 
 # Run with page limits (for testing)
-python -m src.edu_cti.pipeline.phase1.orchestrator --news-max-pages 10
+python -m src.edu_cti.pipeline.phase1 --max-pages 10
 
-# Fetch all pages explicitly
-python -m src.edu_cti.pipeline.phase1.orchestrator --news-max-pages all
+# Full orchestrator (ingestion + CSV building)
+python -m src.edu_cti.pipeline.phase1.orchestrator
 
 # Skip ingestion (only build dataset)
 python -m src.edu_cti.pipeline.phase1.orchestrator --skip-ingestion
 
 # Skip dataset building (only run ingestion)
 python -m src.edu_cti.pipeline.phase1.orchestrator --skip-dataset
-
-# Disable cross-source deduplication
-python -m src.edu_cti.pipeline.phase1.orchestrator --no-deduplication
 
 # Re-scrape sources for CSV (instead of using database - for testing)
 python -m src.edu_cti.pipeline.phase1.orchestrator --fresh-collection
@@ -286,14 +320,20 @@ python -m src.edu_cti.pipeline.phase1.orchestrator --fresh-collection
 
 After Phase 1 collects incidents, Phase 2 enriches them with LLM analysis:
 
-1. **Article Fetching**: Fetches articles from all URLs in `all_urls`
+1. **Article Fetching**: Multi-fallback strategy: `newspaper3k → Selenium → archive.org`
 2. **Education Relevance Check**: Uses LLM to verify incidents are education-related
 3. **URL Confidence Scoring**: Scores and selects the best primary URL from `all_urls`
-4. **Comprehensive Enrichment**: Extracts:
-   - Detailed timeline of events
+4. **Comprehensive Enrichment**: Extracts 192+ structured CTI fields:
+   - Timeline of events with dates and IOCs
    - MITRE ATT&CK techniques and tactics
-   - Attack dynamics (ransomware family, impact scope, recovery)
-   - Business and operational impact analysis
+   - Attack dynamics (ransomware family, encryption, exfiltration)
+   - Data impact (records affected, types, PII exposure)
+   - User impact (students, faculty, staff, alumni affected)
+   - Operational impact (teaching, research, admissions disruption)
+   - Financial impact (ransom amount, recovery costs, insurance)
+   - Regulatory impact (GDPR, HIPAA, FERPA, fines, lawsuits)
+   - Recovery metrics (timeline, phases, security improvements)
+   - Transparency scoring (disclosure timing, updates)
 
 **Requirements:**
 - `OLLAMA_API_KEY` environment variable must be set
@@ -313,17 +353,21 @@ python -m src.edu_cti.pipeline.phase2 --limit 10
 # Process with custom batch size and rate limiting
 python -m src.edu_cti.pipeline.phase2 --batch-size 5 --rate-limit-delay 3.0
 
+# Export enriched data to CSV
+python -m src.edu_cti.pipeline.phase2 --limit 20 --export-csv
+
 # Process incidents even if not education-related (not recommended)
 python -m src.edu_cti.pipeline.phase2 --keep-non-education
 ```
 
 **Features:**
 - ✅ **Incremental Processing**: Only processes unenriched incidents
-- ✅ **Rate Limiting**: Configurable delays between API calls
-- ✅ **Batch Processing**: Processes incidents in batches
-- ✅ **Error Handling**: Gracefully handles failures and continues
-- ✅ **Schema-Constrained Output**: Uses Pydantic models for structured extraction
-- ✅ **Education Relevance Filtering**: Skips non-education incidents by default
+- ✅ **Multi-Fallback Article Fetching**: newspaper3k → Selenium → archive.org
+- ✅ **Intelligent Error Recovery**: Failed enrichments retry on next run
+- ✅ **Dual-Table Storage**: JSON storage + flattened table for fast CSV export
+- ✅ **192+ CTI Fields**: Comprehensive schema covering all aspects of incidents
+- ✅ **Standardized Values**: Numeric normalization (e.g., "$4.75M" → `4750000`)
+- ✅ **Education Relevance Filtering**: Skips non-education incidents with reasoning
 
 **Model Selection:**
 Phase 2 uses `deepseek-v3.1:671b-cloud` by default (configurable via `OLLAMA_MODEL` env var). This model was chosen for its superior performance on complex structured extraction tasks required for CTI analysis.
@@ -352,32 +396,36 @@ Phase 2 uses `deepseek-v3.1:671b-cloud` by default (configurable via `OLLAMA_MOD
 
 # 🧭 Roadmap
 
-## Phase 1 --- Ingestion & Baseline
+## Phase 1 --- Ingestion & Baseline ✅ Complete
 
--   **Curated sources** (dedicated education sector sections):
+-   ✅ **Curated sources** (dedicated education sector sections):
     - KonBriefing (university cyber attacks database)
     - Ransomware.live (education sector filter)
     - DataBreaches.net (education sector archive)
--   **News sources** (keyword-based search):
+-   ✅ **News sources** (keyword-based search):
     - Krebs on Security, The Hacker News, The Record, SecurityWeek, Dark Reading
--   Deduplication
+-   ✅ **Cross-source deduplication** at ingestion
 
-## Phase 2 --- LLM Enrichment
+## Phase 2 --- LLM Enrichment ✅ Production Ready (v1.2.0)
 
--   ✅ Article fetching from URLs\
--   ✅ Education relevance checking\
--   ✅ URL confidence scoring and primary URL selection\
--   ✅ LLM-based structured extraction\
--   ✅ Timeline construction\
--   ✅ MITRE ATT&CK mapping\
--   ✅ Attack dynamics modeling\
--   ✅ Comprehensive CTI enrichment with Pydantic schemas
+-   ✅ **Article fetching** with multi-fallback (newspaper3k → Selenium → archive.org)
+-   ✅ **Education relevance checking** with LLM reasoning
+-   ✅ **Comprehensive CTI extraction** (192+ fields):
+    - Timeline construction with IOCs
+    - MITRE ATT&CK mapping
+    - Attack dynamics (ransomware family, encryption, exfiltration)
+    - Data/User/System/Operational/Financial/Regulatory impact
+    - Recovery metrics and transparency scoring
+-   ✅ **Dual-table storage** (JSON + flattened for analytics)
+-   ✅ **CSV export** with standardized values
+-   ✅ **Intelligent error recovery** (retry on next run)
 
-## Phase 3 --- CTI Outputs
+## Phase 3 --- CTI Outputs (Planned)
 
--   Public dataset export\
--   STIX/TAXII\
+-   Public dataset export formats
+-   STIX 2.1 / TAXII feeds
 -   Dashboard & analytics
+-   API endpoints
 
 ------------------------------------------------------------------------
 
@@ -446,34 +494,82 @@ MIT License
 
 # 🤝 Contributions
 
-Contributions welcome!\
-Help by improving ingestion, adding OSINT sources, or refining schemas.
+Contributions welcome! Help by improving ingestion, adding OSINT sources, or refining schemas.
 
 ## Adding New Sources
 
-1. Create a builder function in the appropriate ingest module (`ingest/curated/` or `ingest/news/`)
-2. Register it in `sources.py` in the appropriate registry
-3. The pipeline will automatically pick it up
+1. Create a builder function in `src/edu_cti/sources/<type>/<source_name>.py`
+2. Register it in `src/edu_cti/core/sources.py`
+3. **Test your source**: `pytest tests/phase1/test_source_contribution.py -v --source-name <name>`
+4. The pipeline will automatically pick it up
 
-See `docs/SOURCES.md` for a list of potential additional sources.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guide with examples.
+See [docs/SOURCES.md](docs/SOURCES.md) for potential additional sources.
 
 ## Development Setup
 
 ```bash
-# Install in development mode
-pip install -e .
+# Clone and setup
+git clone https://github.com/sagarkishore-7/EduThreat-CTI.git
+cd EduThreat-CTI
 
-# Install development dependencies
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
 pip install -e ".[dev]"
 
+# Run setup script to verify configuration
+python scripts/setup.py --check
+
+# Initialize database
+python scripts/setup.py --init-db
+
+# Generate .env.example file
+python scripts/setup.py --env
+
 # Run tests
-pytest
+pytest tests/ -v
 
-# Format code
+# Format and lint code
 black src/
-
-# Lint code
 flake8 src/
+```
+
+### Setup Script
+
+The `scripts/setup.py` script helps verify and initialize your configuration:
+
+```bash
+# Check all dependencies and configuration
+python scripts/setup.py --check
+
+# Initialize database only
+python scripts/setup.py --init-db
+
+# Generate .env.example file
+python scripts/setup.py --env
+```
+
+This will:
+- ✓ Verify all dependencies are installed
+- ✓ Check directory structure
+- ✓ Validate environment variables
+- ✓ Verify database state and source tracking
+
+## Testing New Sources
+
+```bash
+# Test your source implementation
+pytest tests/phase1/test_source_contribution.py -v --source-name your_source
+
+# Verify Phase 2 compatibility
+pytest tests/phase1/test_source_contribution.py -v -k "test_phase2_readiness" --source-name your_source
+
+# Run full regression
+pytest tests/ -v
 ```
 
 ------------------------------------------------------------------------

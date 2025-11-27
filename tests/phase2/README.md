@@ -1,189 +1,332 @@
-# Phase 2 Enrichment Coverage Test
+# Phase 2: LLM Enrichment Pipeline Tests
 
-## Overview
+Comprehensive test suite for the Phase 2 LLM enrichment pipeline, which extracts structured Cyber Threat Intelligence (CTI) from articles about educational sector security incidents.
 
-This test verifies that the Phase 2 enrichment pipeline can extract all fields from the JSON schema when provided with a comprehensive article that mentions all possible information.
+---
 
-## Test File
-
-**`test_enrichment_coverage.py`** - Comprehensive coverage test for Phase 2 enrichment
-
-## Test Article
-
-The test uses a prepared article (`COMPREHENSIVE_TEST_ARTICLE`) that covers **all fields** in the JSON schema, including:
-
-### Core Information
-- Institution details (Metropolitan State University, New York City, United States)
-- Incident dates (incident, discovery, publication)
-- Education relevance confirmation
-
-### Attack Details
-- Attack vector (spear-phishing, vulnerability exploit)
-- Attack chain (full kill chain)
-- MITRE ATT&CK techniques (7 techniques with sub-techniques)
-- Threat actor (LockBit ransomware group)
-- Initial access description
-
-### Ransom Information
-- Ransom demanded: $5.2 million USD
-- Ransom paid: Yes, full amount
-- Payment method: Bitcoin
-- Communication channels: Email, Tor leak site
-
-### Data Impact
-- Records affected: 2,547,832 (exact number)
-- Data types: Student records, faculty data, alumni data, financial data, research data, medical records, PII, credentials
-- Data exfiltrated: Yes
-- Data encrypted: Yes
-
-### System Impact
-- Systems affected: Email, student portal, LMS, HPC clusters, Active Directory, VPN, WiFi, network infrastructure, DNS, firewall, ERP, HR, admissions, library, payment, cloud storage, file shares, research lab instruments, phone/VoIP, printing, backups, security tools
-- Infrastructure context: Hybrid cloud/on-premises
-- Critical systems affected: Yes
-- Network compromised: Yes
-- Third-party vendor impact: Yes (EduTech Solutions Inc.)
-
-### User Impact
-- Students affected: 45,000
-- Faculty affected: 3,200
-- Staff affected: 8,500
-- Alumni affected: 125,000
-- Parents affected: 12,000
-- Applicants affected: 5,500
-- Patients affected: 2,800
-- Total users: ~200,000
-
-### Operational Impact
-- Teaching disrupted: Yes (classes cancelled)
-- Research disrupted: Yes (projects halted)
-- Admissions disrupted: Yes
-- Enrollment disrupted: Yes
-- Payroll disrupted: Yes
-- Clinical operations disrupted: Yes
-- Online learning disrupted: Yes
-- Classes cancelled: Yes
-- Exams postponed: Yes
-- Graduation delayed: Yes
-- Downtime: 10 days (240 hours)
-- Partial service: 5 days
-
-### Financial Impact
-- Recovery costs: $3.5-4.2 million USD
-- Legal costs: $850,000 USD
-- Notification costs: $125,000 USD
-- Credit monitoring: $2.1 million USD
-- Insurance claim: $8.5 million USD
-- Total impact: $12-15 million USD
-
-### Regulatory Impact
-- GDPR breach: Yes
-- UK DPA notification: Yes
-- HIPAA breach: Yes
-- FERPA breach: Yes
-- PCI-DSS concerns: Yes
-- Regulators notified: Multiple (NY AG, DoE, HHS, ICO, EU DPAs)
-- Notifications sent: 200,000 individuals
-- Fine imposed: $2.5 million USD
-- Lawsuits filed: 13 (1 class action + 12 individual)
-- Investigation opened: Yes
-
-### Recovery & Remediation
-- Recovery started: March 13, 2024
-- Recovery completed: April 5, 2024
-- Recovery timeframe: 23 days
-- Recovery phases: Containment, eradication, recovery, lessons learned, post-incident review
-- From backup: Yes (7 days old)
-- Clean rebuild: Some systems
-- Incident response firm: Mandiant
-- Forensics firm: CrowdStrike
-- Law firm: Jones Day
-- Security improvements: MFA, network segmentation, firewall, IDS/IPS, monitoring, training, penetration testing, audit
-- Response measures: Multiple (password reset, backup restoration, system rebuild, network isolation, etc.)
-- MTTD: 18 hours
-- MTTR: 4 hours
-- MTTRecovery: 23 days
-
-### Transparency
-- Public disclosure: Yes (March 13, 2024)
-- Disclosure delay: 3 days
-- Transparency level: High
-- Official statement URL: Provided
-- Detailed report URL: Provided
-- Updates provided: 8 updates
-
-### Research Impact
-- Research projects affected: 47
-- Research data compromised: Yes (sensitive data)
-- Publications delayed: 12
-- Grants affected: 8 ($15 million)
-- Collaborations affected: 15
-- Research area: Biomedical Sciences, Quantum Computing
-
-### Timeline
-- Complete timeline with 15+ events from March 10 to April 5, 2024
-- Event types: initial_access, discovery, exploitation, impact, containment, recovery, disclosure, notification
-- Actor attribution: LockBit ransomware group
-- Indicators: Multiple IOCs mentioned
-
-## Running the Test
+## Quick Start
 
 ```bash
-# Activate virtual environment
-source .venv/bin/activate
+# Run all Phase 2 unit tests (no API key needed)
+pytest tests/phase2/ -v
 
-# Set API key
-export OLLAMA_API_KEY="your_api_key_here"
+# Run mock LLM test (no API key needed)
+python tests/phase2/test_comprehensive_llm_extraction.py --mock
 
-# Run the test
-python tests/phase2/test_enrichment_coverage.py
+# Run actual LLM test (requires API key)
+export OLLAMA_API_KEY="your_key"
+python tests/phase2/test_comprehensive_llm_extraction.py
 ```
 
-## Test Output
+---
 
-The test generates:
+## Test Files
 
-1. **Console Output**: Detailed logging of the test process and results
-2. **`coverage_test_results.json`**: JSON file with:
-   - Coverage statistics (total fields, extracted, missing, null)
-   - List of extracted fields
-   - List of missing fields
-   - List of null fields
-   - Sample of extracted enrichment data
+| File | Description | API Key Required |
+|------|-------------|------------------|
+| `test_comprehensive_llm_extraction.py` | Full pipeline test with all modes | Optional |
+| `test_phase2_enrichment.py` | `IncidentEnricher` class tests | No |
+| `test_phase2_llm_client.py` | `OllamaLLMClient` tests | No |
+| `test_phase2_deduplication.py` | Institution name normalization | No |
+| `test_llm_response_validation.py` | LLM response parsing/validation | No |
 
-## Expected Results
+---
 
-The test verifies:
-- ✅ All 192 schema fields are analyzed
-- ✅ Enrichment completes successfully
-- ✅ Data is saved to database
-- ✅ Field coverage is calculated
-- ✅ Results are saved to JSON file
+## Test Modes
 
-## Notes
+The comprehensive test (`test_comprehensive_llm_extraction.py`) supports three modes:
 
-- The test uses the comprehensive enrichment method as a fallback if JSON schema parsing fails
-- Coverage percentage indicates how many schema fields were successfully extracted
-- Missing fields are those in the schema but not extracted from the article
-- Null fields are those extracted but set to null/None
+### Mock Mode (Recommended for CI)
 
-## Test Article Location
+```bash
+python tests/phase2/test_comprehensive_llm_extraction.py --mock
+```
 
-The comprehensive test article is embedded in `test_enrichment_coverage.py` as `COMPREHENSIVE_TEST_ARTICLE`. It's a 13,342-character article that mentions all possible fields in the JSON schema.
+- **No API key required**
+- Verifies data flow with simulated LLM response
+- Tests JSON-to-Pydantic mapping, DB storage, CSV export
+- Fast execution (~2 seconds)
 
-## Coverage Metrics
+### LLM Mode (Integration Test)
 
-The test tracks:
-- **Total Schema Fields**: 192 fields
-- **Extracted Fields**: Fields with non-null values
-- **Missing Fields**: Schema fields not present in enrichment data
-- **Null Fields**: Fields present but set to null
-- **Coverage Percentage**: (Extracted / Total) * 100
+```bash
+export OLLAMA_API_KEY="your_key"
+python tests/phase2/test_comprehensive_llm_extraction.py
+```
 
-## Usage
+- **Requires API key**
+- Tests actual LLM extraction with comprehensive test article
+- Verifies schema coverage and standardization
+- Execution time: ~30-60 seconds
 
-This test can be run:
-- During development to verify extraction capabilities
-- After schema changes to ensure all fields are still extractable
-- As a regression test to catch extraction regressions
-- To benchmark extraction quality improvements
+### E2E Mode (Full Pipeline)
 
+```bash
+export OLLAMA_API_KEY="your_key"
+python tests/phase2/test_comprehensive_llm_extraction.py --e2e
+```
+
+- **Requires API key**
+- Full flow: LLM extraction → DB storage → CSV export
+- Uses temporary database
+- Verifies entire data pipeline
+
+---
+
+## Data Flow Tested
+
+```
+                                ┌─────────────────────┐
+                                │   Article Content   │
+                                └──────────┬──────────┘
+                                           │
+                                           ▼
+                            ┌──────────────────────────────┐
+                            │  LLM Extraction (JSON Schema)│
+                            │  Using EXTRACTION_SCHEMA     │
+                            └──────────────┬───────────────┘
+                                           │
+                                           ▼
+                            ┌──────────────────────────────┐
+                            │ json_to_cti_enrichment()     │
+                            │ → CTIEnrichmentResult        │
+                            └──────────────┬───────────────┘
+                                           │
+                                           ▼
+                            ┌──────────────────────────────┐
+                            │ save_enrichment_result()     │
+                            │ → incident_enrichments (JSON)│
+                            │ → incident_enrichments_flat  │
+                            └──────────────┬───────────────┘
+                                           │
+                                           ▼
+                            ┌──────────────────────────────┐
+                            │ export_enriched_dataset()    │
+                            │ → CSV Export                 │
+                            └──────────────────────────────┘
+```
+
+---
+
+## Comprehensive Test Article
+
+The test suite includes a crafted article covering **all 200+ schema fields** for comprehensive verification:
+
+**Fields Covered:**
+- Education relevance and institution identification
+- Attack mechanics (vectors, MITRE ATT&CK tactics)
+- Threat actor and ransomware attribution (40+ families)
+- Data impact (records affected, 25+ data types)
+- User impact (students, faculty, staff, alumni)
+- System impact (35+ system categories)
+- Operational impact (25+ impact types)
+- Financial impact (ransom, recovery costs)
+- Regulatory impact (GDPR, HIPAA, FERPA, fines)
+- Recovery and remediation metrics (25+ security improvements)
+- Transparency and disclosure tracking
+- Research impact assessment
+- Cross-incident analysis fields
+
+---
+
+## Enhanced CTI Schema (v2.0)
+
+The extraction schema has been enhanced for comprehensive threat intelligence:
+
+### Attack Categories (50+ types)
+```
+RANSOMWARE: ransomware_encryption, ransomware_double_extortion, ransomware_triple_extortion
+PHISHING: phishing_credential_harvest, spear_phishing, whaling, business_email_compromise
+DATA BREACH: data_breach_external, data_breach_internal, data_exposure_misconfiguration
+MALWARE: malware_trojan, malware_infostealer, malware_cryptominer, malware_rat
+ACCESS: credential_stuffing, brute_force, account_takeover, unauthorized_access
+```
+
+### Attack Vectors (60+ types)
+```
+CREDENTIAL: stolen_credentials, credential_stuffing, password_spraying, session_hijacking
+VULNERABILITY: vulnerability_exploit_known, vulnerability_exploit_zero_day, unpatched_system
+EXPOSED: exposed_rdp, exposed_vpn, exposed_ssh, exposed_database, exposed_api
+CLOUD: cloud_misconfiguration, api_key_exposure, storage_bucket_exposure
+SUPPLY CHAIN: supply_chain_compromise, third_party_vendor, trusted_relationship
+```
+
+### Ransomware Families (35+)
+```
+lockbit, lockbit_2, lockbit_3, blackcat_alphv, cl0p_clop, akira, play, 8base,
+bianlian, royal, black_basta, medusa, rhysida, hunters_international, inc_ransom,
+vice_society, hive, conti, ryuk, revil_sodinokibi, darkside, blackmatter, maze, etc.
+```
+
+### Data Categories (30+ types)
+```
+STUDENT: student_pii, student_ssn, student_grades, student_transcripts, student_health_records
+EMPLOYEE: employee_pii, employee_ssn, employee_payroll, employee_benefits
+RESEARCH: research_data, research_grants, research_ip, research_unpublished
+CREDENTIALS: usernames_passwords, api_keys, certificates
+```
+
+### Value Standardization
+All extracted values are automatically standardized:
+- **Ransom amounts**: `$4.75 million` → `4750000` (numeric USD)
+- **Durations**: `2 weeks` → `14` days or `336` hours
+- **Record counts**: `2.8 million records` → `2800000`
+- **Dates**: All ISO format `YYYY-MM-DD`
+
+---
+
+## Database Tables Verified
+
+| Table | Purpose | Fields Verified |
+|-------|---------|-----------------|
+| `incidents` | Base incident with enrichment flags | `llm_enriched`, `llm_enriched_at`, `primary_url` |
+| `incident_enrichments` | Full JSON enrichment | Complete `CTIEnrichmentResult` |
+| `incident_enrichments_flat` | Flattened for CSV | 88+ columns |
+| `articles` | Fetched article content | `content`, `fetch_successful`, `is_primary` |
+
+---
+
+## CSV Export Verification
+
+Tests verify correct population of CSV columns:
+
+### Core Fields
+- `incident_id`, `source`, `university_name`
+- `victim_raw_name`, `victim_raw_name_normalized`
+- `institution_type`, `country`, `region`, `city`
+
+### Standardization Verified
+- Ransom amounts: `$4.75 million` → `4750000`
+- Durations: `13 days` → `312` hours
+- User counts: `52,500 students` → `52500`
+- Records: `2,847,293 records` → `2847293`
+
+### Field Categories (150+ columns)
+- Attack mechanics (`attack_vector`, `ransomware_family`)
+- Data impact (`data_records_affected_exact`, `data_exfiltrated`)
+- User impact (`user_students_affected`, `user_staff_affected`)
+- Operational impact (`operational_downtime_days`)
+- Financial impact (`financial_ransom_amount_exact`)
+- Regulatory impact (`regulatory_fine_amount`)
+- Recovery metrics (`recovery_recovery_timeframe_days`)
+- Transparency (`transparency_disclosure_delay_days`)
+
+---
+
+## Running Tests
+
+### Unit Tests
+
+```bash
+# All Phase 2 unit tests
+pytest tests/phase2/ -v
+
+# Specific test file
+pytest tests/phase2/test_phase2_enrichment.py -v
+
+# Tests matching pattern
+pytest tests/phase2/ -v -k "test_dedup"
+```
+
+### Coverage
+
+```bash
+pytest tests/phase2/ --cov=src.edu_cti.pipeline.phase2 --cov-report=html
+open htmlcov/index.html
+```
+
+### With Verbose Logging
+
+```bash
+pytest tests/phase2/ -v --log-cli-level=DEBUG
+```
+
+---
+
+## Error Handling Verified
+
+The test suite verifies proper handling of:
+
+| Scenario | Expected Behavior |
+|----------|-------------------|
+| JSON parsing failure | Marked as error, will retry |
+| Not education-related | Marked as skipped with reason |
+| No articles fetched | Marked as error, will retry |
+| Selenium fails | Tries archive.org fallback |
+| Invalid escape characters | Pre-processed before parsing |
+
+---
+
+## Environment Variables
+
+| Variable | Purpose | Default |
+|----------|---------|---------|
+| `OLLAMA_API_KEY` | API key for Ollama Cloud | Required for LLM/E2E |
+| `OLLAMA_MODEL` | LLM model to use | `deepseek-v3.1:671b-cloud` |
+| `EDU_CTI_DB_PATH` | Database path | `data/eduthreat.db` |
+
+---
+
+## Troubleshooting
+
+### "OLLAMA_API_KEY not provided"
+
+```bash
+export OLLAMA_API_KEY="your_key"
+# Or use mock mode:
+python tests/phase2/test_comprehensive_llm_extraction.py --mock
+```
+
+### "No module named 'src.edu_cti'"
+
+```bash
+pip install -e .
+```
+
+### JSON Parse Errors
+
+The pipeline now handles:
+- `Invalid \escape` sequences
+- Truncated JSON responses
+- Missing required fields
+
+These are logged but don't fail tests unless the whole pipeline fails.
+
+---
+
+## Contributing New Phase 2 Tests
+
+When adding tests:
+
+1. Use temporary databases (`tempfile.NamedTemporaryFile`)
+2. Mock LLM calls for unit tests
+3. Use the comprehensive test article for schema coverage
+4. Verify both JSON and flattened storage
+5. Check CSV export mapping
+
+Example pattern:
+
+```python
+import tempfile
+from src.edu_cti.pipeline.phase2.storage.db import get_connection, init_incident_enrichments_table
+
+def test_my_feature():
+    with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as f:
+        db_path = f.name
+    
+    try:
+        conn = get_connection(db_path)
+        init_incident_enrichments_table(conn)
+        # Your test code here
+        conn.close()
+    finally:
+        os.unlink(db_path)
+```
+
+---
+
+## Questions?
+
+- Check `tests/phase2/test_comprehensive_llm_extraction.py` for patterns
+- Review `src/edu_cti/pipeline/phase2/extraction/` for schema details
+- See `docs/ARCHITECTURE.md` for system design

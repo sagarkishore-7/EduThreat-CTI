@@ -6,13 +6,29 @@ from typing import Tuple, List
 
 def parse_date_with_precision(raw: str) -> Tuple[str, str]:
     """
-    Parse many human-readable date formats.
+    Parse many human-readable and machine date formats.
     Returns (yyyy-mm-dd or "", precision: day|month|year|unknown)
+    
+    Supports:
+    - Human formats: "April 17, 2025", "17 April 2025", etc.
+    - ISO 8601: "2025-11-19", "2025-11-19T11:23:06-05:00"
+    - Month/year: "April 2025"
+    - Year only: "2025"
     """
     if not raw:
         return "", "unknown"
 
     s = raw.replace("\xa0", " ").strip()
+    
+    # Handle ISO 8601 with timezone (e.g., "2025-11-19T11:23:06-05:00")
+    # Extract just the date part before the 'T'
+    if "T" in s:
+        date_part = s.split("T")[0]
+        try:
+            dt = datetime.datetime.strptime(date_part, "%Y-%m-%d").date()
+            return dt.isoformat(), "day"
+        except ValueError:
+            pass
 
     # Day-level formats
     fmts_day = [

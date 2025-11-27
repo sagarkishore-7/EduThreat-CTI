@@ -22,10 +22,14 @@ def collect_news_incidents(
     max_pages: Optional[int] = None,
     sources: Optional[Sequence[str]] = None,
     save_callback: Optional[Callable[[List[BaseIncident]], None]] = None,
+    incremental: bool = True,
 ) -> Dict[str, List[BaseIncident]]:
     """
     Run news/RSS-style ingestors and return a mapping of source -> incidents list.
     Supports incremental saving via save_callback.
+    
+    Note: News sources use URL-based deduplication rather than date-based incremental.
+    The `incremental` parameter is accepted for API consistency but doesn't change behavior.
     
     Args:
         max_pages: Maximum number of pages to fetch per source (None = all pages)
@@ -33,7 +37,7 @@ def collect_news_incidents(
                  Valid sources: krebsonsecurity, thehackernews, therecord, 
                                 databreach, securityweek, darkreading
         save_callback: Optional callback function to save incidents incrementally.
-                      Called with batches of incidents as they are collected.
+        incremental: Accepted for API consistency (news uses URL deduplication instead)
     """
     builder_args = (
         {"max_pages": max_pages} if max_pages is not None else {}

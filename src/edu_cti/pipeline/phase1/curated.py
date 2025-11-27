@@ -1,3 +1,14 @@
+"""
+Phase 1: Curated Sources Pipeline
+
+Collects incidents from curated education-sector specific sources:
+- KonBriefing: University cyber attacks listing
+- RansomwareLive: Ransomware victim tracker (education sector)
+- DataBreaches.net: Education sector archive
+
+Supports incremental ingestion via last_pubdate tracking.
+"""
+
 from __future__ import annotations
 
 import logging
@@ -22,10 +33,14 @@ def collect_curated_incidents(
     sources: Optional[Sequence[str]] = None,
     max_pages: Optional[int] = None,
     save_callback: Optional[Callable[[List[BaseIncident]], None]] = None,
+    incremental: bool = True,
 ) -> Dict[str, List[BaseIncident]]:
     """
     Run curated ingestors and return a mapping of source -> incidents.
-    Supports incremental saving via save_callback.
+    
+    Supports incremental ingestion:
+    - incremental=True (default): Only fetch new incidents since last_pubdate
+    - incremental=False: Full historical scrape (all pages/incidents)
     
     Curated sources are those with dedicated education sector sections/endpoints
     that contain only education-related incidents.
@@ -34,9 +49,9 @@ def collect_curated_incidents(
         sources: List of source names to run. If None, runs all sources.
                  Valid sources: konbriefing, ransomwarelive, databreach
         max_pages: Maximum number of pages to fetch per source (only applies to databreach).
-                   If None, fetches all pages.
+                   If None and incremental=False, fetches all pages.
         save_callback: Optional callback function to save incidents incrementally.
-                      Called with batches of incidents as they are collected.
+        incremental: If True, use incremental ingestion (stop at already-ingested articles)
     """
     # Determine which sources to run
     if sources is None:
@@ -54,21 +69,25 @@ def collect_curated_incidents(
         try:
             logger.info(f"Collecting incidents from {source_name}...")
             
-            # Check if builder supports save_callback
+            # Check which parameters the builder supports
             import inspect
             sig = inspect.signature(builder_func)
             builder_kwargs = {}
             
-            # Only databreach supports max_pages parameter
-            if source_name == "databreach" and max_pages is not None:
+            # Pass max_pages if supported (databreach)
+            if "max_pages" in sig.parameters and max_pages is not None:
                 builder_kwargs["max_pages"] = max_pages
             
+            # Pass incremental flag if supported
+            if "incremental" in sig.parameters:
+                builder_kwargs["incremental"] = incremental
+            
+            # Pass save_callback if supported
             if "save_callback" in sig.parameters and save_callback is not None:
                 builder_kwargs["save_callback"] = save_callback
                 incidents = builder_func(**builder_kwargs)
             else:
                 # Builder doesn't support incremental saving yet
-                # Collect all incidents, then save in batches
                 incidents = builder_func(**builder_kwargs)
                 
                 # Save in batches if callback provided
@@ -78,7 +97,7 @@ def collect_curated_incidents(
                         batch = incidents[i:i + batch_size]
                         try:
                             save_callback(batch)
-                            logger.debug(f"{source_name}: Saved batch of {len(batch)} incidents ({i+1}-{min(i+batch_size, len(incidents))} of {len(incidents)})")
+                            logger.debug(f"{source_name}: Saved batch of {len(batch)} incidents")
                         except Exception as e:
                             logger.error(f"{source_name}: Error saving batch: {e}", exc_info=True)
             
@@ -86,7 +105,7 @@ def collect_curated_incidents(
             logger.info(f"{source_name}: collected {len(incidents)} incidents")
         except Exception as e:
             logger.error(f"Error collecting incidents from {source_name}: {e}", exc_info=True)
-            results[source_name] = []  # Return empty list on error
+            results[source_name] = []
     
     return results
 
@@ -96,25 +115,29 @@ def run_curated_pipeline(
     sources: Optional[Sequence[str]] = None,
     max_pages: Optional[int] = None,
     write_raw: bool = False,
+    incremental: bool = True,
 ) -> List[BaseIncident]:
     """
-    Execute the curated pipeline, optionally writing per-source CSVs and returning all incidents.
+    Execute the curated pipeline, optionally writing per-source CSVs.
     
     Args:
         sources: List of source names to run. If None, runs all sources.
-        max_pages: Maximum number of pages to fetch per source (only applies to databreach).
-                   If None, fetches all pages.
-        write_raw: If True, write per-source CSV snapshots to raw/ directory (for debugging).
-                   Default False for production efficiency.
+        max_pages: Maximum number of pages to fetch per source.
+        write_raw: If True, write per-source CSV snapshots.
+        incremental: If True, use incremental ingestion.
     """
     all_incidents: List[BaseIncident] = []
     logger.info(
-        "Collecting curated incidents (sources=%s, max_pages=%s, write_raw=%s)",
+        "Collecting curated incidents (sources=%s, max_pages=%s, incremental=%s)",
         sources if sources else "all",
         max_pages if max_pages else "all",
-        write_raw,
+        incremental,
     )
-    results = collect_curated_incidents(sources=sources, max_pages=max_pages)
+    results = collect_curated_incidents(
+        sources=sources,
+        max_pages=max_pages,
+        incremental=incremental,
+    )
 
     for source, incidents in results.items():
         if write_raw:

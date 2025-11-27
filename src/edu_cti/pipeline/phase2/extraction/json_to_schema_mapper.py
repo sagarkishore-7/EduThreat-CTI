@@ -13,35 +13,91 @@ from src.edu_cti.pipeline.phase2.schemas import (
 
 
 def map_systems_affected_codes(codes: List[str]) -> List[str]:
-    """Map extraction schema system codes to CTIEnrichmentResult system codes."""
+    """Map extraction schema system codes to CTIEnrichmentResult system codes (extensive mapping)."""
+    if not codes:
+        return None
+    
     mapping = {
+        # Email/Communication
         "email": "email_system",
+        "email_system": "email_system",
+        # Web/Public
         "website_public": "web_servers",
+        "public_website": "web_servers",
+        # Portals
         "portal_student_staff": "student_portal",
+        "student_portal": "student_portal",
+        "staff_portal": "student_portal",
+        "alumni_portal": "student_portal",
+        "applicant_portal": "student_portal",
+        # Identity
         "identity_sso": "other",
+        "identity_management": "other",
         "active_directory": "other",
+        # Network
         "vpn_remote_access": "network_infrastructure",
+        "vpn": "network_infrastructure",
         "wifi_network": "network_infrastructure",
         "wired_network_core": "network_infrastructure",
+        "core_network": "network_infrastructure",
         "dns_dhcp": "network_infrastructure",
+        "dns": "network_infrastructure",
+        "dhcp": "network_infrastructure",
         "firewall_gateway": "network_infrastructure",
+        "firewall": "network_infrastructure",
+        # Academic systems
         "lms": "learning_management_system",
+        "lms_learning_management": "learning_management_system",
         "sis": "student_portal",
-        "erp_finance_hr": "financial_systems",
-        "hr_payroll": "payroll_system",
-        "admissions_enrollment": "admissions_system",
-        "exam_proctoring": "other",
+        "sis_student_information": "student_portal",
+        "registration_system": "student_portal",
+        "grade_system": "student_portal",
+        "library_system": "other",
         "library_systems": "other",
+        "exam_proctoring": "other",
+        # Administrative
+        "erp_finance_hr": "financial_systems",
+        "erp_system": "financial_systems",
+        "hr_payroll": "payroll_system",
+        "hr_system": "payroll_system",
+        "payroll_system": "payroll_system",
+        "financial_system": "financial_systems",
+        "admissions_enrollment": "admissions_system",
+        "admissions_system": "admissions_system",
+        "financial_aid_system": "financial_systems",
+        "procurement": "financial_systems",
+        # Storage/Files
         "payment_billing": "financial_systems",
         "file_transfer": "file_servers",
         "cloud_storage": "cloud_services",
         "on_prem_file_share": "file_servers",
+        "file_servers": "file_servers",
+        # Research
         "research_hpc": "research_systems",
+        "research_computing_hpc": "research_systems",
         "research_lab_instruments": "research_systems",
+        "research_storage": "research_systems",
+        "research_databases": "research_systems",
+        "lab_instruments": "research_systems",
+        # Healthcare (teaching hospitals)
+        "ehr_emr": "hospital_systems",
+        "hospital_systems": "hospital_systems",
+        "medical_devices": "hospital_systems",
+        "pharmacy_system": "hospital_systems",
+        # Phone/Communication
         "phone_voip": "other",
+        "voip_phone": "other",
+        # Other infrastructure
         "printing_copy": "other",
+        "printing_system": "other",
+        "parking_system": "other",
+        "physical_access": "other",
+        "cctv_security": "other",
         "backup_infrastructure": "backup_systems",
+        "backup_systems": "backup_systems",
         "datacenter_facilities": "other",
+        "data_center": "other",
+        "virtualization": "other",
         "security_tools": "other",
         "other": "other",
         "unknown": "other",
@@ -49,28 +105,67 @@ def map_systems_affected_codes(codes: List[str]) -> List[str]:
     
     mapped = []
     for code in codes:
-        mapped_code = mapping.get(code, "other")
+        if code:
+            code_lower = code.lower() if isinstance(code, str) else code
+            mapped_code = mapping.get(code_lower, mapping.get(code, "other"))
         if mapped_code not in mapped:
             mapped.append(mapped_code)
     return mapped if mapped else None
 
 
 def map_attack_category_to_vector(category: str) -> Optional[str]:
-    """Map attack category to attack vector."""
+    """Map attack category to attack vector (handles extensive new categories)."""
+    if not category:
+        return None
+    
+    # Normalize to lowercase for matching
+    category_lower = category.lower()
+    
+    # Ransomware variants
+    if "ransomware" in category_lower:
+        return "ransomware"
+    
+    # Phishing variants
+    if "phishing" in category_lower or "bec" in category_lower or "whaling" in category_lower:
+        return "phishing"
+    
+    # Data breach variants
+    if "data_breach" in category_lower or "data_leak" in category_lower or "data_exposure" in category_lower:
+        return "other"
+    
+    # DDoS variants
+    if "ddos" in category_lower:
+        return "ddos"
+    
+    # Malware variants
+    if "malware" in category_lower or "trojan" in category_lower or "infostealer" in category_lower:
+        return "malware"
+    
+    # Access-based attacks
+    if "credential" in category_lower or "brute_force" in category_lower or "unauthorized" in category_lower:
+        return "credential_theft"
+    
+    # Supply chain
+    if "supply_chain" in category_lower or "third_party" in category_lower:
+        return "supply_chain"
+    
+    # Insider threats
+    if "insider" in category_lower:
+        return "insider_threat"
+    
+    # Other mappings
     mapping = {
-        "ransomware": "ransomware",
-        "phishing": "phishing",
-        "data_breach": "other",
-        "ddos": "ddos",
-        "malware": "malware",
-        "extortion": "other",
-        "supply_chain": "supply_chain",
         "web_defacement": "other",
-        "unauthorized_access": "other",
-        "insider_threat": "insider_threat",
-        "other": "other",
+        "extortion": "other",
+        "hacktivism": "other",
+        "espionage": "other",
+        "sabotage": "other",
+        "fraud": "social_engineering",
+        "account_takeover": "credential_theft",
+        "social_engineering": "social_engineering",
     }
-    return mapping.get(category, "other")
+    
+    return mapping.get(category_lower, "other")
 
 
 def map_initial_access_vector(access_vector: str) -> Optional[str]:
@@ -91,13 +186,40 @@ def map_initial_access_vector(access_vector: str) -> Optional[str]:
 
 
 def map_data_types(data_types: List[str]) -> Dict[str, bool]:
-    """Map data types to data impact metrics."""
+    """Map data types to data impact metrics (handles extensive new categories)."""
     result = {}
+    
+    # Extended type mapping for new comprehensive schema
     type_mapping = {
+        # Student data
         "student_records": "student_data",
+        "student_pii": "student_data",
+        "student_ssn": "student_data",
+        "student_grades": "student_data",
+        "student_transcripts": "student_data",
+        "student_financial_aid": "student_data",
+        "student_health_records": "student_data",
+        "student_immigration": "student_data",
+        "student_housing": "student_data",
+        "student_disciplinary": "student_data",
+        # Staff/Faculty data
         "staff_data": "faculty_data",
+        "employee_pii": "faculty_data",
+        "employee_ssn": "faculty_data",
+        "employee_payroll": "faculty_data",
+        "employee_benefits": "faculty_data",
+        "employee_performance": "faculty_data",
+        "employee_background_checks": "faculty_data",
+        # Alumni data
         "alumni_data": "alumni_data",
+        "alumni_pii": "alumni_data",
+        "alumni_donation_history": "alumni_data",
+        # Research data
         "research_data": "research_data",
+        "research_grants": "research_data",
+        "research_ip": "research_data",
+        "research_unpublished": "research_data",
+        "research_classified": "research_data",
         "health_data": "medical_records",
         "financial_data": "financial_data",
         "credentials": "personal_information",
@@ -142,10 +264,10 @@ def json_to_cti_enrichment(
     if json_data.get("extraction_notes"):
         extraction_notes_parts.append(json_data.get("extraction_notes"))
     extraction_notes = "\n".join(extraction_notes_parts) if extraction_notes_parts else None
-    # Education relevance
+    # Education relevance - directly from LLM analysis of article content
     education_relevance = EducationRelevanceCheck(
         is_education_related=json_data.get("is_edu_cyber_incident", False),
-        reasoning=json_data.get("other_notable_details", "") or "Education relevance determined from article",
+        reasoning=json_data.get("education_relevance_reasoning", "") or "No reasoning provided by LLM",
         institution_identified=json_data.get("institution_name")
     )
     
@@ -178,23 +300,74 @@ def json_to_cti_enrichment(
             for tech in json_data["mitre_attack_techniques"]
         ]
     
-    # Attack dynamics
+    # Attack dynamics - capture all attack-related fields
     attack_dynamics = None
     attack_category = json_data.get("attack_category")
-    if attack_category:
+    attack_vector = json_data.get("attack_vector")  # Direct attack_vector from schema
+    
+    # Check if we have any attack-related data
+    has_attack_data = (
+        attack_category is not None or
+        attack_vector is not None or
+        json_data.get("ransomware_family_or_group") is not None or
+        json_data.get("was_ransom_demanded") is not None or
+        json_data.get("ransom_paid") is not None or
+        json_data.get("data_breached") is not None or
+        json_data.get("data_exfiltrated") is not None or
+        json_data.get("data_encrypted") is not None
+    )
+    
+    if has_attack_data:
+        # Determine attack vector - prefer direct attack_vector, then derive from category
+        final_attack_vector = attack_vector
+        if not final_attack_vector and attack_category:
+            final_attack_vector = map_attack_category_to_vector(attack_category)
+        
+        # Determine encryption impact
+        encryption_impact = None
+        if json_data.get("encryption_impact"):
+            encryption_impact = json_data.get("encryption_impact")
+        elif json_data.get("data_encrypted") is True:
+            encryption_impact = "full"
+        elif json_data.get("data_encrypted") is False:
+            encryption_impact = "none"
+        
+        # Determine data exfiltration
+        data_exfil = json_data.get("data_exfiltrated")
+        if data_exfil is None:
+            data_exfil = json_data.get("data_breached")
+        
+        # Recovery timeframe - check multiple sources
+        recovery_days = json_data.get("recovery_timeframe_days")
+        if recovery_days is None and json_data.get("mttr_hours"):
+            recovery_days = json_data.get("mttr_hours") / 24.0
+        
+        # Ransom amount handling
+        ransom_amt = json_data.get("ransom_amount_exact") or json_data.get("ransom_amount")
+        ransom_amt_str = str(ransom_amt) if ransom_amt is not None else None
+        
+        # Business impact
+        business_impact = json_data.get("business_impact")
+        
+        # Attack chain from extraction schema
+        attack_chain = json_data.get("attack_chain")
+        
+        # Operational impact from extraction schema  
+        operational_impact = json_data.get("operational_impact")
+        
         attack_dynamics = AttackDynamics(
-            attack_vector=map_attack_category_to_vector(attack_category),
-            attack_chain=None,  # Not in extraction schema
+            attack_vector=final_attack_vector,
+            attack_chain=attack_chain,
             ransomware_family=json_data.get("ransomware_family_or_group"),
-            data_exfiltration=json_data.get("data_breached"),
-            encryption_impact="full" if json_data.get("encryption_at_rest") == "yes" else "partial" if json_data.get("encryption_at_rest") == "no" else None,
+            data_exfiltration=data_exfil,
+            encryption_impact=encryption_impact,
             impact_scope=None,
             ransom_demanded=json_data.get("was_ransom_demanded"),
-            ransom_amount=str(json_data.get("ransom_amount", "")) if json_data.get("ransom_amount") is not None else None,
+            ransom_amount=ransom_amt_str,
             ransom_paid=json_data.get("ransom_paid"),
-            recovery_timeframe_days=json_data.get("mttr_hours", 0) / 24.0 if json_data.get("mttr_hours") else None,
-            business_impact=None,  # Not directly mapped
-            operational_impact=None  # Will be in operational_impact_metrics
+            recovery_timeframe_days=recovery_days,
+            business_impact=business_impact,
+            operational_impact=operational_impact
         )
     
     # System impact (as Dict)
@@ -237,20 +410,43 @@ def json_to_cti_enrichment(
             "data_exfiltrated": json_data.get("data_breached") or json_data.get("data_exfiltrated")
         }
     
-    # User impact (as Dict)
+    # User impact (as Dict) - preserve actual counts, not booleans
     user_impact = None
-    if json_data.get("students_affected") is not None or json_data.get("staff_affected") is not None or json_data.get("faculty_affected") is not None:
+    if (json_data.get("students_affected") is not None or 
+        json_data.get("staff_affected") is not None or 
+        json_data.get("faculty_affected") is not None or
+        json_data.get("alumni_affected") is not None or
+        json_data.get("users_affected_exact") is not None):
+        
+        # Calculate users_affected_exact if not provided
+        users_exact = json_data.get("users_affected_exact")
+        if users_exact is None:
+            # Sum up known affected counts
+            total = 0
+            if json_data.get("students_affected"):
+                total += json_data.get("students_affected", 0)
+            if json_data.get("staff_affected"):
+                total += json_data.get("staff_affected", 0)
+            if json_data.get("faculty_affected") and isinstance(json_data.get("faculty_affected"), int):
+                total += json_data.get("faculty_affected", 0)
+            if total > 0:
+                users_exact = total
+        
         user_impact = {
-            "students_affected": json_data.get("students_affected", 0) > 0 if json_data.get("students_affected") is not None else None,
+            "students_affected": json_data.get("students_affected") is not None and json_data.get("students_affected") > 0 if isinstance(json_data.get("students_affected"), (int, float)) else json_data.get("students_affected"),
             "faculty_affected": json_data.get("faculty_affected"),
-            "staff_affected": json_data.get("staff_affected", 0) > 0 if json_data.get("staff_affected") is not None else None,
+            "staff_affected": json_data.get("staff_affected") is not None and json_data.get("staff_affected") > 0 if isinstance(json_data.get("staff_affected"), (int, float)) else json_data.get("staff_affected"),
             "alumni_affected": json_data.get("alumni_affected"),
             "parents_affected": json_data.get("parents_affected"),
             "applicants_affected": json_data.get("applicants_affected"),
             "patients_affected": json_data.get("patients_affected"),
             "users_affected_min": json_data.get("users_affected_min"),
             "users_affected_max": json_data.get("users_affected_max"),
-            "users_affected_exact": json_data.get("users_affected_exact") or ((json_data.get("students_affected", 0) or 0) + (json_data.get("staff_affected", 0) or 0) if json_data.get("students_affected") is not None or json_data.get("staff_affected") is not None else None)
+            "users_affected_exact": users_exact,
+            # Store actual counts for CSV export
+            "students_affected_count": json_data.get("students_affected"),
+            "staff_affected_count": json_data.get("staff_affected"),
+            "faculty_affected_count": json_data.get("faculty_affected") if isinstance(json_data.get("faculty_affected"), int) else None,
         }
     
     # Operational impact metrics (as Dict)
@@ -258,7 +454,10 @@ def json_to_cti_enrichment(
     if (json_data.get("teaching_impacted") is not None or json_data.get("research_impacted") is not None or 
         json_data.get("outage_duration_hours") is not None or json_data.get("downtime_days") is not None or
         json_data.get("operational_impact")):
-        operational_impact = json_data.get("operational_impact", [])
+        # Ensure operational_impact is always a list (LLM may return None)
+        operational_impact = json_data.get("operational_impact") or []
+        if not isinstance(operational_impact, list):
+            operational_impact = []
         operational_impact_metrics = {
             "teaching_disrupted": json_data.get("teaching_impacted", False) or json_data.get("teaching_disrupted") or "teaching_disrupted" in operational_impact,
             "research_disrupted": json_data.get("research_impacted", False) or json_data.get("research_disrupted") or "research_disrupted" in operational_impact,
@@ -274,60 +473,138 @@ def json_to_cti_enrichment(
             "graduation_delayed": json_data.get("graduation_delayed") or "graduation_delayed" in operational_impact
         }
     
-    # Financial impact (as Dict)
+    # Financial impact (as Dict) - capture all financial fields
     financial_impact = None
-    if (json_data.get("was_ransom_demanded") is not None or json_data.get("ransom_amount") is not None or 
-        json_data.get("currency_normalized_cost_usd") is not None or json_data.get("recovery_costs_min") is not None):
+    has_financial_data = (
+        json_data.get("was_ransom_demanded") is not None or 
+        json_data.get("ransom_amount") is not None or 
+        json_data.get("ransom_amount_exact") is not None or
+        json_data.get("ransom_paid") is not None or
+        json_data.get("currency_normalized_cost_usd") is not None or 
+        json_data.get("recovery_costs_min") is not None or
+        json_data.get("recovery_costs_max") is not None or
+        json_data.get("legal_costs") is not None or
+        json_data.get("notification_costs") is not None or
+        json_data.get("insurance_claim") is not None or
+        json_data.get("insurance_claim_amount") is not None
+    )
+    if has_financial_data:
+        # Get ransom amount - could be in different fields
+        ransom_amount = json_data.get("ransom_amount_exact") or json_data.get("ransom_amount")
+        ransom_paid_amount = json_data.get("ransom_paid_amount")
+        if ransom_paid_amount is None and json_data.get("ransom_paid") and ransom_amount:
+            ransom_paid_amount = ransom_amount
+        
         financial_impact = {
             "ransom_demanded": json_data.get("was_ransom_demanded"),
             "ransom_amount_min": json_data.get("ransom_amount_min"),
             "ransom_amount_max": json_data.get("ransom_amount_max"),
-            "ransom_amount_exact": json_data.get("ransom_amount_exact") or json_data.get("ransom_amount"),
-            "ransom_currency": json_data.get("ransom_currency"),
+            "ransom_amount_exact": ransom_amount,
+            "ransom_currency": json_data.get("ransom_currency") or "USD",  # Default to USD if not specified
             "ransom_paid": json_data.get("ransom_paid"),
-            "ransom_paid_amount": json_data.get("ransom_paid_amount") or (json_data.get("ransom_amount") if json_data.get("ransom_paid") else None),
+            "ransom_paid_amount": ransom_paid_amount,
             "recovery_costs_min": json_data.get("recovery_costs_min"),
             "recovery_costs_max": json_data.get("recovery_costs_max"),
             "legal_costs": json_data.get("legal_costs"),
             "notification_costs": json_data.get("notification_costs"),
             "credit_monitoring_costs": json_data.get("credit_monitoring_costs"),
             "insurance_claim": json_data.get("insurance_claim"),
-            "insurance_claim_amount": json_data.get("insurance_claim_amount")
+            "insurance_claim_amount": json_data.get("insurance_claim_amount"),
+            "total_cost_estimate": json_data.get("currency_normalized_cost_usd"),
         }
     
-    # Regulatory impact (as Dict)
+    # Regulatory impact (as Dict) - comprehensive regulatory data
     regulatory_impact = None
-    if (json_data.get("regulatory_context") or json_data.get("fines_or_penalties") or 
-        json_data.get("class_actions_or_lawsuits") or json_data.get("gdpr_breach") is not None):
+    regulatory_context = json_data.get("regulatory_context") or []
+    has_regulatory_data = (
+        regulatory_context or
+        json_data.get("fines_or_penalties") is not None or 
+        json_data.get("class_actions_or_lawsuits") is not None or 
+        json_data.get("gdpr_breach") is not None or
+        json_data.get("hipaa_breach") is not None or
+        json_data.get("ferpa_breach") is not None or
+        json_data.get("breach_notification_required") is not None or
+        json_data.get("fine_imposed") is not None or
+        json_data.get("lawsuits_filed") is not None
+    )
+    if has_regulatory_data:
+        # Determine breach types from regulatory_context if not explicitly set
+        gdpr_breach = json_data.get("gdpr_breach")
+        if gdpr_breach is None and regulatory_context:
+            gdpr_breach = "GDPR" in regulatory_context
+        
+        hipaa_breach = json_data.get("hipaa_breach")
+        if hipaa_breach is None and regulatory_context:
+            hipaa_breach = "HIPAA" in regulatory_context
+        
+        ferpa_breach = json_data.get("ferpa_breach")
+        if ferpa_breach is None and regulatory_context:
+            ferpa_breach = "FERPA" in regulatory_context
+        
+        dpa_notified = json_data.get("dpa_notified")
+        if dpa_notified is None and regulatory_context:
+            dpa_notified = "UK_DPA" in regulatory_context
+        
+        # Notification dates from nested object or direct fields
+        notification_dates = json_data.get("notification_dates") or {}
+        notifications_sent_date = json_data.get("notifications_sent_date") or notification_dates.get("data_subjects_notified_date")
+        regulators_notified_date = json_data.get("regulators_notified_date") or notification_dates.get("regulator_notified_date")
+        
         regulatory_impact = {
             "breach_notification_required": json_data.get("breach_notification_required"),
             "notifications_sent": json_data.get("notifications_sent"),
-            "notifications_sent_date": json_data.get("notifications_sent_date") or (json_data.get("notification_dates", {}).get("data_subjects_notified_date") if json_data.get("notification_dates") else None),
-            "regulators_notified": json_data.get("regulators_notified") or json_data.get("regulatory_context"),
-            "regulators_notified_date": json_data.get("regulators_notified_date") or (json_data.get("notification_dates", {}).get("regulator_notified_date") if json_data.get("notification_dates") else None),
-            "gdpr_breach": json_data.get("gdpr_breach") or ("GDPR" in (json_data.get("regulatory_context") or [])),
-            "dpa_notified": json_data.get("dpa_notified") or ("UK_DPA" in (json_data.get("regulatory_context") or [])),
-            "hipaa_breach": json_data.get("hipaa_breach") or ("HIPAA" in (json_data.get("regulatory_context") or [])),
-            "ferc_breach": json_data.get("ferpa_breach") or ("FERPA" in (json_data.get("regulatory_context") or [])),
+            "notifications_sent_date": notifications_sent_date,
+            "regulators_notified": json_data.get("regulators_notified") or regulatory_context,
+            "regulators_notified_date": regulators_notified_date,
+            "gdpr_breach": gdpr_breach,
+            "dpa_notified": dpa_notified,
+            "hipaa_breach": hipaa_breach,
+            "ferc_breach": ferpa_breach,  # Note: using ferc_breach key for FERPA (matching existing schema)
             "investigation_opened": json_data.get("investigation_opened"),
-            "fine_imposed": json_data.get("fine_imposed") or (json_data.get("fines_or_penalties") is not None and len(str(json_data.get("fines_or_penalties", ""))) > 0),
+            "fine_imposed": json_data.get("fine_imposed") if json_data.get("fine_imposed") is not None else (json_data.get("fines_or_penalties") is not None and len(str(json_data.get("fines_or_penalties", ""))) > 0),
             "fine_amount": json_data.get("fine_amount"),
-            "lawsuits_filed": json_data.get("lawsuits_filed") or (json_data.get("class_actions_or_lawsuits") is not None and len(str(json_data.get("class_actions_or_lawsuits", ""))) > 0),
+            "fines_or_penalties_description": json_data.get("fines_or_penalties"),
+            "lawsuits_filed": json_data.get("lawsuits_filed") if json_data.get("lawsuits_filed") is not None else (json_data.get("class_actions_or_lawsuits") is not None and len(str(json_data.get("class_actions_or_lawsuits", ""))) > 0),
             "lawsuit_count": json_data.get("lawsuit_count"),
-            "class_action": json_data.get("class_action") or (json_data.get("class_actions_or_lawsuits") is not None and "class" in str(json_data.get("class_actions_or_lawsuits", "")).lower())
+            "class_action": json_data.get("class_action") if json_data.get("class_action") is not None else (json_data.get("class_actions_or_lawsuits") is not None and "class" in str(json_data.get("class_actions_or_lawsuits", "")).lower()),
+            "class_actions_or_lawsuits_description": json_data.get("class_actions_or_lawsuits"),
+            "regulatory_context": regulatory_context,
         }
     
-    # Recovery metrics (as Dict)
+    # Recovery metrics (as Dict) - comprehensive recovery data
     recovery_metrics = None
-    if (json_data.get("backup_status") or json_data.get("service_restoration_date") or 
-        json_data.get("response_actions") or json_data.get("recovery_started_date") or 
-        json_data.get("recovery_timeframe_days") is not None):
+    has_recovery_data = (
+        json_data.get("backup_status") is not None or 
+        json_data.get("service_restoration_date") is not None or 
+        json_data.get("response_actions") is not None or 
+        json_data.get("recovery_started_date") is not None or 
+        json_data.get("recovery_completed_date") is not None or
+        json_data.get("recovery_timeframe_days") is not None or
+        json_data.get("mttr_hours") is not None or
+        json_data.get("incident_response_firm") is not None or
+        json_data.get("forensics_firm") is not None or
+        json_data.get("mfa_implemented") is not None or
+        json_data.get("response_measures") is not None or
+        json_data.get("from_backup") is not None
+    )
+    if has_recovery_data:
+        # Calculate recovery timeframe
+        recovery_days = json_data.get("recovery_timeframe_days")
+        if recovery_days is None and json_data.get("mttr_hours"):
+            recovery_days = json_data.get("mttr_hours") / 24.0
+        
+        # Determine from_backup
+        from_backup = json_data.get("from_backup")
+        if from_backup is None and json_data.get("backup_status"):
+            from_backup = json_data.get("backup_status") == "available_and_used"
+        
         recovery_metrics = {
             "recovery_started_date": json_data.get("recovery_started_date"),
             "recovery_completed_date": json_data.get("recovery_completed_date") or json_data.get("service_restoration_date"),
-            "recovery_timeframe_days": json_data.get("recovery_timeframe_days") or (json_data.get("mttr_hours", 0) / 24.0 if json_data.get("mttr_hours") else None),
+            "recovery_timeframe_days": recovery_days,
             "recovery_phases": json_data.get("recovery_phases"),
-            "from_backup": json_data.get("from_backup") or (json_data.get("backup_status") == "available_and_used"),
+            "from_backup": from_backup,
+            "backup_status": json_data.get("backup_status"),
             "backup_age_days": json_data.get("backup_age_days"),
             "clean_rebuild": json_data.get("clean_rebuild"),
             "incident_response_firm": json_data.get("incident_response_firm"),
@@ -336,36 +613,63 @@ def json_to_cti_enrichment(
             "security_improvements": json_data.get("security_improvements") or json_data.get("response_actions"),
             "mfa_implemented": json_data.get("mfa_implemented"),
             "security_training_conducted": json_data.get("security_training_conducted"),
-            "response_measures": json_data.get("response_measures")
+            "response_measures": json_data.get("response_measures"),
+            "law_enforcement_involved": json_data.get("law_enforcement_involved"),
+            "law_enforcement_agency": json_data.get("law_enforcement_agency"),
+            "detection_source": json_data.get("detection_source"),
+            "mttd_hours": json_data.get("mttd_hours"),
+            "mttr_hours": json_data.get("mttr_hours"),
         }
     
-    # Transparency metrics (as Dict)
+    # Transparency metrics (as Dict) - comprehensive disclosure data
     transparency_metrics = None
-    if (json_data.get("was_disclosed_publicly") is not None or json_data.get("disclosure_source") or
-        json_data.get("public_disclosure") is not None):
+    has_transparency_data = (
+        json_data.get("was_disclosed_publicly") is not None or 
+        json_data.get("disclosure_source") is not None or
+        json_data.get("public_disclosure") is not None or
+        json_data.get("public_disclosure_date") is not None or
+        json_data.get("disclosure_delay_days") is not None or
+        json_data.get("transparency_level") is not None or
+        json_data.get("official_statement_url") is not None or
+        json_data.get("update_count") is not None
+    )
+    if has_transparency_data:
         transparency_metrics = {
             "disclosure_timeline": json_data.get("disclosure_timeline"),
-            "public_disclosure": json_data.get("public_disclosure") or json_data.get("was_disclosed_publicly", False),
+            "public_disclosure": json_data.get("public_disclosure") if json_data.get("public_disclosure") is not None else json_data.get("was_disclosed_publicly"),
             "public_disclosure_date": json_data.get("public_disclosure_date"),
             "disclosure_delay_days": json_data.get("disclosure_delay_days"),
             "transparency_level": json_data.get("transparency_level"),
             "official_statement_url": json_data.get("official_statement_url"),
             "detailed_report_url": json_data.get("detailed_report_url"),
             "updates_provided": json_data.get("updates_provided"),
-            "update_count": json_data.get("update_count")
+            "update_count": json_data.get("update_count"),
+            "disclosure_source": json_data.get("disclosure_source"),
+            "notification_dates": json_data.get("notification_dates"),
         }
     
-    # Research impact (as Dict)
+    # Research impact (as Dict) - comprehensive research data
     research_impact = None
-    if json_data.get("research_impacted") is not None or json_data.get("research_projects_affected") is not None:
+    has_research_data = (
+        json_data.get("research_impacted") is not None or 
+        json_data.get("research_projects_affected") is not None or
+        json_data.get("research_data_compromised") is not None or
+        json_data.get("research_impact_code") is not None or
+        json_data.get("research_area") is not None or
+        json_data.get("publications_delayed") is not None or
+        json_data.get("grants_affected") is not None
+    )
+    if has_research_data:
         research_impact = {
-            "research_projects_affected": json_data.get("research_projects_affected") or json_data.get("research_impacted", False),
-            "research_data_compromised": json_data.get("research_data_compromised") or (json_data.get("research_impact_code") in ["data_loss", "data_unavailable"]),
+            "research_projects_affected": json_data.get("research_projects_affected") if json_data.get("research_projects_affected") is not None else json_data.get("research_impacted"),
+            "research_data_compromised": json_data.get("research_data_compromised") if json_data.get("research_data_compromised") is not None else (json_data.get("research_impact_code") in ["data_loss", "data_unavailable"] if json_data.get("research_impact_code") else None),
             "sensitive_research_impact": json_data.get("sensitive_research_impact"),
             "publications_delayed": json_data.get("publications_delayed"),
             "grants_affected": json_data.get("grants_affected"),
             "collaborations_affected": json_data.get("collaborations_affected"),
-            "research_area": json_data.get("research_area")
+            "research_area": json_data.get("research_area"),
+            "research_impact_code": json_data.get("research_impact_code"),
+            "research_impact_notes_en": json_data.get("research_impact_notes_en"),
         }
     
     return CTIEnrichmentResult(

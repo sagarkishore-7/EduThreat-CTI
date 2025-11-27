@@ -33,6 +33,7 @@ from src.edu_cti.sources.news import (
 # Import RSS feed source builders
 from src.edu_cti.sources.rss import (
     build_databreaches_rss_incidents,
+    build_bleepingcomputer_rss_incidents,
 )
 
 # Curated sources registry (sources with dedicated education sector endpoints/sections)
@@ -54,6 +55,7 @@ NEWS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
 # RSS feed sources registry (real-time RSS feed sources)
 RSS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "databreaches_rss": build_databreaches_rss_incidents,
+    "bleepingcomputer": build_bleepingcomputer_rss_incidents,
 }
 
 # All sources (for reference)
@@ -87,6 +89,15 @@ def get_news_builder(source_name: str) -> Optional[Callable[..., List[BaseIncide
 def get_rss_sources() -> List[str]:
     """Get list of all registered RSS source names."""
     return list(RSS_SOURCE_REGISTRY.keys())
+
+
+def get_all_source_names() -> List[str]:
+    """Get list of all registered source names across all registries."""
+    return (
+        list(CURATED_SOURCE_REGISTRY.keys()) +
+        list(NEWS_SOURCE_REGISTRY.keys()) +
+        list(RSS_SOURCE_REGISTRY.keys())
+    )
 
 
 def get_rss_builder(source_name: str) -> Optional[Callable[..., List[BaseIncident]]]:

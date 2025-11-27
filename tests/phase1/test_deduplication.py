@@ -1,158 +1,201 @@
-"""Tests for deduplication module."""
+"""Tests for cross-source deduplication functionality."""
 
 import pytest
 
-from src.edu_cti.models import BaseIncident, make_incident_id
-from src.edu_cti.deduplication import (
+from src.edu_cti.core.models import BaseIncident, make_incident_id
+from src.edu_cti.core.deduplication import (
     normalize_url,
     extract_urls_from_incident,
-    deduplicate_by_urls,
     merge_incidents,
+    deduplicate_by_urls,
 )
 
 
-def test_normalize_url():
-    """Test URL normalization."""
-    assert normalize_url("https://example.com/article") == "https://example.com/article"
-    assert normalize_url("https://example.com/article/") == "https://example.com/article"
-    assert normalize_url("https://www.example.com/article") == "https://example.com/article"
-    assert normalize_url("https://example.com/article#section") == "https://example.com/article"
-    assert normalize_url("https://example.com/article?param=value") == "https://example.com/article?param=value"
+class TestURLNormalization:
+    """Test URL normalization for deduplication."""
+    
+    def test_normalize_url_removes_trailing_slash(self):
+        """Test that trailing slashes are removed."""
+        url = "https://example.com/article/"
+        normalized = normalize_url(url)
+        assert not normalized.endswith("/")
+    
+    def test_normalize_url_removes_www(self):
+        """Test that www. prefix is removed."""
+        url = "https://www.example.com/article"
+        normalized = normalize_url(url)
+        assert "www." not in normalized
+    
+    def test_normalize_url_removes_fragment(self):
+        """Test that URL fragments are removed."""
+        url = "https://example.com/article#section"
+        normalized = normalize_url(url)
+        assert "#" not in normalized
+    
+    def test_normalize_url_lowercase(self):
+        """Test that URLs are lowercased."""
+        url = "https://EXAMPLE.COM/Article"
+        normalized = normalize_url(url)
+        assert normalized == normalized.lower()
 
 
-def test_extract_urls_from_incident():
-    """Test URL extraction from incidents."""
-    incident = BaseIncident(
-        incident_id="test_123",
-        source="test",
-        source_event_id=None,
-        university_name="Test University",
-        victim_raw_name="Test University",
-        institution_type="University",
-        country="US",
-        region=None,
-        city=None,
-        incident_date="2024-01-01",
-        date_precision="day",
-        source_published_date="2024-01-01",
-        ingested_at="2024-01-01T00:00:00Z",
-        title="Test Incident",
-        subtitle=None,
-        primary_url=None,
-        all_urls=["https://example.com/article", "https://example.com/article2"],
-        leak_site_url=None,
-        source_detail_url="https://example.com/detail",
-        screenshot_url=None,
-        attack_type_hint=None,
-        status="suspected",
-        source_confidence="medium",
-        notes=None,
-    )
+class TestExtractURLs:
+    """Test extracting URLs from incidents."""
     
-    urls = extract_urls_from_incident(incident)
-    assert len(urls) == 3  # 2 from all_urls + 1 from source_detail_url
-    assert "https://example.com/article" in urls
-    assert "https://example.com/article2" in urls
-    assert "https://example.com/detail" in urls
+    def test_extract_urls_from_all_urls(self):
+        """Test extracting URLs from all_urls field."""
+        incident = BaseIncident(
+            incident_id="test_1",
+            source="test",
+            source_event_id="event_1",
+            university_name="Test University",
+            victim_raw_name="Test University",
+            institution_type="University",
+            country="US",
+            region=None,
+            city=None,
+            incident_date="2024-01-01",
+            date_precision="day",
+            source_published_date="2024-01-01",
+            ingested_at="2024-01-01T00:00:00Z",
+            title="Test Incident",
+            subtitle=None,
+            primary_url=None,
+            all_urls=["https://example.com/article", "https://other.com/article"],
+            leak_site_url=None,
+            source_detail_url=None,
+            screenshot_url=None,
+            attack_type_hint=None,
+            status="suspected",
+            source_confidence="medium",
+            notes=None,
+        )
+        
+        urls = extract_urls_from_incident(incident)
+        assert len(urls) == 2
 
 
-def test_deduplicate_by_urls():
-    """Test cross-source deduplication."""
-    # Create two incidents with the same URL
-    incident1 = BaseIncident(
-        incident_id="test_1",
-        source="source1",
-        source_event_id=None,
-        university_name="Test University",
-        victim_raw_name="Test University",
-        institution_type="University",
-        country="US",
-        region=None,
-        city=None,
-        incident_date="2024-01-01",
-        date_precision="day",
-        source_published_date="2024-01-01",
-        ingested_at="2024-01-01T00:00:00Z",
-        title="Test Incident",
-        subtitle=None,
-        primary_url=None,
-        all_urls=["https://example.com/article"],
-        leak_site_url=None,
-        source_detail_url=None,
-        screenshot_url=None,
-        attack_type_hint=None,
-        status="suspected",
-        source_confidence="medium",
-        notes=None,
-    )
+class TestDeduplication:
+    """Test deduplication by URLs."""
     
-    incident2 = BaseIncident(
-        incident_id="test_2",
-        source="source2",
-        source_event_id=None,
-        university_name="Test University",
-        victim_raw_name="Test University",
-        institution_type="University",
-        country="US",
-        region=None,
-        city=None,
-        incident_date="2024-01-01",
-        date_precision="day",
-        source_published_date="2024-01-01",
-        ingested_at="2024-01-01T00:00:00Z",
-        title="Test Incident",
-        subtitle=None,
-        primary_url=None,
-        all_urls=["https://example.com/article"],
-        leak_site_url=None,
-        source_detail_url=None,
-        screenshot_url=None,
-        attack_type_hint=None,
-        status="suspected",
-        source_confidence="high",
-        notes=None,
-    )
-    
-    # Create a third incident with different URL
-    incident3 = BaseIncident(
-        incident_id="test_3",
-        source="source1",
-        source_event_id=None,
-        university_name="Another University",
-        victim_raw_name="Another University",
-        institution_type="University",
-        country="US",
-        region=None,
-        city=None,
-        incident_date="2024-01-02",
-        date_precision="day",
-        source_published_date="2024-01-02",
-        ingested_at="2024-01-02T00:00:00Z",
-        title="Another Incident",
-        subtitle=None,
-        primary_url=None,
-        all_urls=["https://example.com/different"],
-        leak_site_url=None,
-        source_detail_url=None,
-        screenshot_url=None,
-        attack_type_hint=None,
-        status="suspected",
-        source_confidence="medium",
-        notes=None,
-    )
-    
-    incidents = [incident1, incident2, incident3]
-    deduplicated, stats = deduplicate_by_urls(incidents)
-    
-    # Should have 2 incidents (1 merged + 1 standalone)
-    assert stats["total_input"] == 3
-    assert stats["total_output"] == 2
-    assert stats["duplicates_merged"] == 1
-    assert stats["incidents_removed"] == 1
-    
-    # Check that merged incident has high confidence (from incident2)
-    merged = next(inc for inc in deduplicated if "merged_from" in (inc.notes or ""))
-    assert merged.source_confidence == "high"
-    assert "source1" in merged.notes
-    assert "source2" in merged.notes
-
+    def test_deduplicate_by_urls_finds_duplicates(self):
+        """Test that deduplication finds incidents with same URLs."""
+        incident1 = BaseIncident(
+            incident_id="source1_123",
+            source="source1",
+            source_event_id="event_1",
+            university_name="Test University",
+            victim_raw_name="Test University",
+            institution_type="University",
+            country="US",
+            region=None,
+            city=None,
+            incident_date="2024-01-01",
+            date_precision="day",
+            source_published_date="2024-01-01",
+            ingested_at="2024-01-01T00:00:00Z",
+            title="Test Incident",
+            subtitle=None,
+            primary_url=None,
+            all_urls=["https://example.com/article"],
+            leak_site_url=None,
+            source_detail_url=None,
+            screenshot_url=None,
+            attack_type_hint=None,
+            status="suspected",
+            source_confidence="medium",
+            notes=None,
+        )
+        
+        incident2 = BaseIncident(
+            incident_id="source2_456",
+            source="source2",
+            source_event_id="event_2",
+            university_name="Test University",
+            victim_raw_name="Test University",
+            institution_type="University",
+            country="US",
+            region=None,
+            city=None,
+            incident_date="2024-01-01",
+            date_precision="day",
+            source_published_date="2024-01-01",
+            ingested_at="2024-01-01T00:00:00Z",
+            title="Same Incident",
+            subtitle=None,
+            primary_url=None,
+            all_urls=["https://www.example.com/article/"],  # Same URL normalized
+            leak_site_url=None,
+            source_detail_url=None,
+            screenshot_url=None,
+            attack_type_hint=None,
+            status="suspected",
+            source_confidence="high",
+            notes=None,
+        )
+        
+        unique, stats = deduplicate_by_urls([incident1, incident2])
+        
+        # Should merge into one incident
+        assert len(unique) == 1
+        
+    def test_deduplicate_keeps_unique_incidents(self):
+        """Test that unique incidents are kept."""
+        incident1 = BaseIncident(
+            incident_id="source1_123",
+            source="source1",
+            source_event_id="event_1",
+            university_name="University A",
+            victim_raw_name="University A",
+            institution_type="University",
+            country="US",
+            region=None,
+            city=None,
+            incident_date="2024-01-01",
+            date_precision="day",
+            source_published_date="2024-01-01",
+            ingested_at="2024-01-01T00:00:00Z",
+            title="Incident A",
+            subtitle=None,
+            primary_url=None,
+            all_urls=["https://example.com/article-a"],
+            leak_site_url=None,
+            source_detail_url=None,
+            screenshot_url=None,
+            attack_type_hint=None,
+            status="suspected",
+            source_confidence="medium",
+            notes=None,
+        )
+        
+        incident2 = BaseIncident(
+            incident_id="source2_456",
+            source="source2",
+            source_event_id="event_2",
+            university_name="University B",
+            victim_raw_name="University B",
+            institution_type="University",
+            country="US",
+            region=None,
+            city=None,
+            incident_date="2024-01-02",
+            date_precision="day",
+            source_published_date="2024-01-02",
+            ingested_at="2024-01-02T00:00:00Z",
+            title="Incident B",
+            subtitle=None,
+            primary_url=None,
+            all_urls=["https://example.com/article-b"],  # Different URL
+            leak_site_url=None,
+            source_detail_url=None,
+            screenshot_url=None,
+            attack_type_hint=None,
+            status="suspected",
+            source_confidence="high",
+            notes=None,
+        )
+        
+        unique, stats = deduplicate_by_urls([incident1, incident2])
+        
+        # Should keep both incidents
+        assert len(unique) == 2

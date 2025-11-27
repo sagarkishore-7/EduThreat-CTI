@@ -2,6 +2,10 @@
 Phase 1: Ingestion Pipeline CLI
 
 Main entry point for Phase 1 ingestion pipeline.
+
+Supports incremental ingestion:
+- Default (incremental): Only fetch new incidents since last run
+- --full-historical: Fetch all pages/incidents (first-time run)
 """
 
 import argparse
@@ -39,24 +43,17 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run all sources (default, fetches all pages)
-  python -m src.edu_cti.cli.ingestion
+  # Incremental run (default) - only fetch new incidents
+  python -m src.edu_cti.pipeline.phase1
 
-  # Run only news sources
-  python -m src.edu_cti.cli.ingestion --groups news
+  # Full historical run - fetch all pages/incidents
+  python -m src.edu_cti.pipeline.phase1 --full-historical
 
   # Run only curated sources
-  python -m src.edu_cti.cli.ingestion --groups curated
+  python -m src.edu_cti.pipeline.phase1 --groups curated
 
-  # Run specific news sources
-  python -m src.edu_cti.cli.ingestion --groups news --sources darkreading krebsonsecurity
-
-  # Run with page limit (for testing)
-  python -m src.edu_cti.cli.ingestion --groups news --max-pages 10
-  python -m src.edu_cti.cli.ingestion --groups curated --max-pages 1  # Limit databreach pages
-
-  # Fetch all pages explicitly
-  python -m src.edu_cti.cli.ingestion --groups news --max-pages all
+  # Run specific sources with page limit
+  python -m src.edu_cti.pipeline.phase1 --groups curated --sources databreach --max-pages 10
         """,
     )
     parser.add_argument(
@@ -85,8 +82,14 @@ Examples:
     parser.add_argument(
         "--rss-max-age-days",
         type=int,
-        default=1,
-        help="Maximum age in days for RSS feed items (default: 1). Only items published within this window are included.",
+        default=30,
+        help="Maximum age in days for RSS feed items (default: 30). Only items published within this window are included.",
+    )
+    parser.add_argument(
+        "--full-historical",
+        action="store_true",
+        help="Perform full historical scrape (fetch all pages/incidents). "
+             "By default, incremental mode is used which only fetches new incidents.",
     )
     return parser.parse_args()
 
@@ -98,10 +101,8 @@ def _event_key_for_incident(incident: BaseIncident) -> str:
     """
     if incident.source_event_id:
         return incident.source_event_id
-    # Phase 1: primary_url is None, so check all_urls
     if incident.all_urls and len(incident.all_urls) > 0:
         return incident.all_urls[0]
-    # Legacy fallback (shouldn't happen in Phase 1)
     if incident.primary_url:
         return incident.primary_url
     return incident.incident_id
@@ -110,20 +111,6 @@ def _event_key_for_incident(incident: BaseIncident) -> str:
 def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> int:
     """
     Insert incidents into DB with cross-source deduplication.
-    
-    For RSS feeds, also checks rss_feed_items table for GUID-based deduplication.
-    
-    Process:
-    1. Check per-source deduplication (source_events table, or rss_feed_items for RSS)
-    2. If new from this source, check for cross-source duplicates (URL matching)
-    3. If duplicate found: merge and update existing incident
-    4. If new: insert new incident
-    5. Always add to incident_sources and source_events (and rss_feed_items for RSS)
-    
-    Args:
-        conn: Database connection
-        incidents: List of incidents to ingest
-        is_rss: If True, use RSS feed item tracking (GUID-based)
     
     Returns number of newly inserted/updated incidents.
     """
@@ -135,13 +122,11 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
         event_key = _event_key_for_incident(inc)
 
         if not event_key:
-            # Highly unusual, but fallback to incident_id
             event_key = inc.incident_id
 
         # Step 1: Check per-source deduplication
-        # RSS feeds use source_events table with GUID as source_event_id
         if source_event_exists(conn, source, event_key):
-            continue  # Already ingested from this source in a previous run
+            continue
 
         # Step 2: Check for cross-source duplicates (URL matching)
         duplicate_result = find_duplicate_incident_by_urls(conn, inc)
@@ -150,59 +135,34 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
             duplicate_incident_id, is_enriched, should_upgrade_or_drop = duplicate_result
             
             if is_enriched:
-                # Existing incident is enriched
                 if should_upgrade_or_drop:
-                    # New incident has additional URLs - mark for enrichment upgrade
-                    # Update URLs and reset enrichment flag to allow re-enrichment with new URLs
                     existing_incident = load_incident_by_id(conn, duplicate_incident_id)
                     if existing_incident:
-                        # Get existing URLs
                         existing_urls = set(existing_incident.all_urls or [])
                         new_urls = set(inc.all_urls or [])
-                        
-                        # Merge URLs (keep unique ones)
                         merged_urls = list(existing_urls | new_urls)
-                        
-                        # Update incident with merged URLs
                         existing_incident.all_urls = merged_urls
-                        # Reset enrichment flag to allow re-enrichment with new URLs
-                        # The enrichment pipeline will check if upgrade is needed based on confidence
                         conn.execute(
                             "UPDATE incidents SET llm_enriched = 0 WHERE incident_id = ?",
                             (duplicate_incident_id,)
                         )
-                        # Update URLs and other fields (preserve_enrichment=False since we reset the flag)
                         insert_incident(conn, existing_incident, preserve_enrichment=False)
                         incident_id = duplicate_incident_id
-                        logger.info(
-                            f"Merged URLs for enriched incident {duplicate_incident_id} - "
-                            f"marked for re-enrichment with additional URLs"
-                        )
+                        logger.info(f"Merged URLs for enriched incident {duplicate_incident_id}")
                     else:
-                        # Shouldn't happen, but fallback
                         incident_id = insert_incident(conn, inc)
                 else:
-                    # All URLs are duplicates - drop new incident
-                    logger.info(
-                        f"Dropping incident {inc.incident_id} - all URLs are duplicates "
-                        f"of enriched incident {duplicate_incident_id}"
-                    )
-                    # Still add source attribution but don't create new incident
+                    logger.info(f"Dropping incident {inc.incident_id} - duplicate of {duplicate_incident_id}")
                     incident_id = duplicate_incident_id
             else:
                 # Step 3: Merge with existing incident (not enriched)
                 existing_incident = load_incident_by_id(conn, duplicate_incident_id)
                 if existing_incident:
-                    # Merge incidents (keep highest confidence, merge URLs/metadata)
                     merged = merge_incidents([existing_incident, inc])
-                    # Preserve the existing incident_id (important for foreign keys)
                     merged.incident_id = duplicate_incident_id
-                    # Update existing incident with merged data
-                    # preserve_enrichment=True ensures enrichment data is not lost during merge
                     insert_incident(conn, merged, preserve_enrichment=True)
                     incident_id = duplicate_incident_id
                 else:
-                    # Shouldn't happen, but fallback
                     incident_id = insert_incident(conn, inc)
         else:
             # Step 4: New incident - insert
@@ -220,7 +180,6 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
         )
 
         # Step 6: Register source_event for per-source deduplication
-        # For RSS feeds, this uses GUID as event_key (already set above)
         register_source_event(conn, source, event_key, incident_id, inc.ingested_at or "")
 
     conn.commit()
@@ -235,14 +194,18 @@ def _ingest_group(
     max_pages: Optional[int] = None,
     max_age_days: Optional[int] = None,
     is_rss: bool = False,
+    incremental: bool = True,
 ) -> int:
     """
     Ingest a group of sources with incremental saving.
-    Saves incidents as they are collected to prevent data loss on errors.
+    
+    Args:
+        incremental: If True, use incremental ingestion (only new incidents)
     """
     from src.edu_cti.pipeline.phase1.incremental_save import create_db_saver
     
-    print(f"[*] Ingesting {label} …")
+    mode = "incremental" if incremental else "full historical"
+    print(f"[*] Ingesting {label} ({mode} mode)…")
     
     # Build collector arguments
     collector_kwargs = {}
@@ -253,41 +216,37 @@ def _ingest_group(
     if max_age_days is not None and is_rss:
         collector_kwargs["max_age_days"] = max_age_days
     
+    # Pass incremental flag
+    collector_kwargs["incremental"] = incremental
+    
     # Check if collector supports incremental saving (has save_callback parameter)
-    # If not, fall back to old behavior (collect all, then save)
     import inspect
     sig = inspect.signature(collector)
     supports_incremental = "save_callback" in sig.parameters
     
     if supports_incremental:
-        # Use incremental saving - create saver and pass to collector
-        # Source name will be extracted from incidents automatically
         saver = create_db_saver(conn, is_rss=is_rss, source_name=label)
         collector_kwargs["save_callback"] = saver.add_batch
         
         try:
             incidents_by_source: Dict[str, List[BaseIncident]] = collector(**collector_kwargs)
             
-            # Save any remaining incidents from sources that didn't use callback
             new_total = 0
             for source_label, incidents in incidents_by_source.items():
-                if incidents:  # Only save if there are incidents not yet saved
+                if incidents:
                     added = _ingest_batch(conn, incidents, is_rss=is_rss)
                     print(f"    {source_label}: {len(incidents)} incidents ({added} new)")
                     new_total += added
             
-            # Finish incremental saver (saves any remaining buffered incidents)
             new_total += saver.finish()
             return new_total
         except Exception as e:
-            # Save any buffered incidents before re-raising
             try:
                 saver.flush()
             except:
                 pass
             raise
     else:
-        # Fall back to old behavior for collectors that don't support incremental saving
         incidents_by_source: Dict[str, List[BaseIncident]] = collector(**collector_kwargs)
 
     new_total = 0
@@ -302,6 +261,14 @@ def main() -> None:
     args = parse_args()
     selected_groups = list(dict.fromkeys(args.groups))
     
+    # Determine incremental mode
+    incremental = not args.full_historical
+    
+    if incremental:
+        print("[*] Running in INCREMENTAL mode (only new incidents)")
+    else:
+        print("[*] Running in FULL HISTORICAL mode (all pages/incidents)")
+    
     conn = get_connection()
     init_db(conn)
 
@@ -311,13 +278,12 @@ def main() -> None:
         label, collector = GROUP_COLLECTORS[group]
         is_rss = (group == "rss")
         
-        # Determine sources parameter
         sources = None
         if args.sources is not None:
-            if group == "news" or group == "rss":
+            if group == "news" or group == "rss" or group == "curated":
                 sources = args.sources
             else:
-                print(f"Warning: --sources is not applicable for '{group}' group. Ignoring --sources for this group.")
+                print(f"Warning: --sources is not applicable for '{group}' group.")
         
         total_new += _ingest_group(
             conn,
@@ -327,6 +293,7 @@ def main() -> None:
             max_pages=args.max_pages if not is_rss else None,
             max_age_days=args.rss_max_age_days if is_rss else None,
             is_rss=is_rss,
+            incremental=incremental,
         )
 
     print(f"[done] Ingestion finished. Newly inserted incidents this run: {total_new}")

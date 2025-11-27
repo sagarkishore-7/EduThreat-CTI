@@ -368,6 +368,98 @@ def load_enriched_incidents_from_db(conn: sqlite3.Connection, use_flat_table: bo
             # Use flattened table data directly - much faster!
             # Convert flat table row to flattened dict format
             flattened = {}
+            institution_from_enrichment = None
+            
+            # Map flat table column names to CSV column names
+            # The flat table uses shorter names, CSV uses prefixed names for clarity
+            flat_to_csv_mapping = {
+                # Attack dynamics (no prefix needed for attack_vector, ransomware_family)
+                'attack_vector': 'attack_vector',
+                'ransomware_family': 'ransomware_family',
+                'was_ransom_demanded': 'ransom_demanded',
+                'ransom_paid': 'ransom_paid',
+                'data_exfiltrated': 'data_exfiltration',
+                'recovery_timeframe_days': 'recovery_timeframe_days',
+                'business_impact': 'business_impact',
+                
+                # User impact - map to user_ prefix
+                'students_affected': 'user_students_affected',
+                'staff_affected': 'user_staff_affected',
+                'faculty_affected': 'user_faculty_affected',
+                'users_affected_exact': 'user_users_affected_exact',
+                'users_affected_min': 'user_users_affected_min',
+                'users_affected_max': 'user_users_affected_max',
+                
+                # Operational impact - map to operational_ prefix
+                'teaching_disrupted': 'operational_teaching_disrupted',
+                'research_disrupted': 'operational_research_disrupted',
+                'admissions_disrupted': 'operational_admissions_disrupted',
+                'enrollment_disrupted': 'operational_enrollment_disrupted',
+                'payroll_disrupted': 'operational_payroll_disrupted',
+                'classes_cancelled': 'operational_classes_cancelled',
+                'exams_postponed': 'operational_exams_postponed',
+                'downtime_days': 'operational_downtime_days',
+                
+                # System impact - map to system_ prefix
+                'systems_affected_codes': 'system_systems_affected',
+                'critical_systems_affected': 'system_critical_systems_affected',
+                'network_compromised': 'system_network_compromised',
+                'email_system_affected': 'system_email_system_affected',
+                'student_portal_affected': 'system_student_portal_affected',
+                'research_systems_affected': 'system_research_systems_affected',
+                'hospital_systems_affected': 'system_hospital_systems_affected',
+                'cloud_services_affected': 'system_cloud_services_affected',
+                'third_party_vendor_impact': 'system_third_party_vendor_impact',
+                'vendor_name': 'system_vendor_name',
+                
+                # Data impact - map to data_ prefix
+                'data_breached': 'data_encrypted',  # Not exact match but closest
+                'records_affected_exact': 'data_records_affected_exact',
+                'records_affected_min': 'data_records_affected_min',
+                'records_affected_max': 'data_records_affected_max',
+                
+                # Financial impact - map to financial_ prefix
+                'ransom_amount': 'financial_ransom_amount_exact',
+                'ransom_currency': 'financial_ransom_currency',
+                'ransom_paid_amount': 'financial_ransom_paid_amount',
+                'recovery_costs_min': 'financial_recovery_costs_min',
+                'recovery_costs_max': 'financial_recovery_costs_max',
+                'legal_costs': 'financial_legal_costs',
+                'notification_costs': 'financial_notification_costs',
+                'insurance_claim': 'financial_insurance_claim',
+                'insurance_claim_amount': 'financial_insurance_claim_amount',
+                
+                # Regulatory impact - map to regulatory_ prefix
+                'gdpr_breach': 'regulatory_gdpr_breach',
+                'hipaa_breach': 'regulatory_hipaa_breach',
+                'ferpa_breach': 'regulatory_ferc_breach',  # Note: DB uses ferpa, CSV uses ferc
+                'breach_notification_required': 'regulatory_breach_notification_required',
+                'notifications_sent': 'regulatory_notifications_sent',
+                'fine_imposed': 'regulatory_fine_imposed',
+                'fine_amount': 'regulatory_fine_amount',
+                'lawsuits_filed': 'regulatory_lawsuits_filed',
+                'class_action': 'regulatory_class_action',
+                
+                # Recovery metrics - map to recovery_ prefix
+                'recovery_timeframe_days': 'recovery_recovery_timeframe_days',
+                'recovery_started_date': 'recovery_recovery_started_date',
+                'recovery_completed_date': 'recovery_recovery_completed_date',
+                'from_backup': 'recovery_from_backup',
+                'mfa_implemented': 'recovery_mfa_implemented',
+                'incident_response_firm': 'recovery_incident_response_firm',
+                'forensics_firm': 'recovery_forensics_firm',
+                
+                # Transparency metrics - map to transparency_ prefix
+                'public_disclosure': 'transparency_public_disclosure',
+                'public_disclosure_date': 'transparency_public_disclosure_date',
+                'disclosure_delay_days': 'transparency_disclosure_delay_days',
+                'transparency_level': 'transparency_transparency_level',
+                
+                # Timeline and MITRE - map JSON columns
+                'timeline_json': 'timeline',
+                'mitre_techniques_json': 'mitre_attack_techniques',
+            }
+            
             # Map flat table columns to flattened dict keys
             for key in row.keys():
                 if key.startswith('i.') or key in ['incident_id', 'sources']:
@@ -389,10 +481,16 @@ def load_enriched_incidents_from_db(conn: sqlite3.Connection, use_flat_table: bo
                     'mfa_implemented', 'public_disclosure'
                 ]:
                     value = bool(value) if value is not None else None
+                
+                # Store with original key
                 flattened[key] = value
+                
+                # Also store with mapped CSV key if different
+                if key in flat_to_csv_mapping:
+                    csv_key = flat_to_csv_mapping[key]
+                    flattened[csv_key] = value
             
             institution_from_enrichment = safe_get(row, "institution_name")
-            enrichment_data = None  # Not needed when using flat table
         else:
             # Fallback: Parse JSON (slower but works with old data)
             enrichment_data = None
@@ -467,10 +565,18 @@ def load_enriched_incidents_from_db(conn: sqlite3.Connection, use_flat_table: bo
             "llm_enriched_at": safe_get(row, "llm_enriched_at"),
         }
         
-        # Add flattened enrichment data (but remove institution_identified from it)
-        if 'institution_identified' in flattened:
-            del flattened['institution_identified']
+        # Add flattened enrichment data (but remove fields we handle separately)
+        keys_to_remove = ['institution_identified', 'victim_raw_name', 'university_name', 'victim_raw_name_normalized']
+        for key in keys_to_remove:
+            if key in flattened:
+                del flattened[key]
         incident_dict.update(flattened)
+        
+        # Re-set victim fields AFTER update to ensure enrichment data takes precedence
+        if victim_raw_name:
+            incident_dict['victim_raw_name'] = victim_raw_name
+            incident_dict['university_name'] = victim_raw_name
+            incident_dict['victim_raw_name_normalized'] = victim_raw_name_normalized
         
         incidents.append(incident_dict)
     
@@ -695,14 +801,19 @@ def export_enriched_dataset(
     Returns:
         Path to output CSV file, or None if no enriched incidents found
     """
+    from pathlib import Path
     from src.edu_cti.core.config import DB_PATH
     from src.edu_cti.pipeline.phase1.base_io import PROC_DIR
     
     if db_path is None:
         db_path = DB_PATH
+    elif isinstance(db_path, str):
+        db_path = Path(db_path)
     
     if output_path is None:
         output_path = PROC_DIR / "enriched_dataset.csv"
+    elif isinstance(output_path, str):
+        output_path = Path(output_path)
     
     conn = get_connection(db_path)
     

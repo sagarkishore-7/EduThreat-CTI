@@ -1,3 +1,7 @@
+# ============================================
+# EduThreat-CTI .gitignore
+# ============================================
+
 # Python
 __pycache__/
 *.py[cod]
@@ -19,13 +23,13 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
-MANIFEST
 
-# Virtual Environment
+# Virtual environments
+.venv/
 venv/
-env/
 ENV/
-.venv
+env/
+.env
 
 # IDE
 .idea/
@@ -33,45 +37,45 @@ ENV/
 *.swp
 *.swo
 *~
-.DS_Store
-
-# Project specific
-data/eduthreat.db
-data/eduthreat.db-journal
-data/eduthreat.db-shm
-data/eduthreat.db-wal
-data/raw/**/*.csv
-data/processed/*.csv
-logs/*.log
-*.log
-*.json
-!requirements*.json
-
-# Environment variables
-.env
-.env.local
+.project
+.pydevproject
+.settings/
 
 # Testing
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
-*.pytest_cache/
+.nox/
 
-# Jupyter Notebook
-.ipynb_checkpoints
+# Data files (generated at runtime)
+data/eduthreat.db
+data/eduthreat.db-shm
+data/eduthreat.db-wal
+data/raw/
+data/processed/
 
-# mypy
-.mypy_cache/
-.dmypy.json
-dmypy.json
+# Logs
+logs/
+*.log
 
-# Selenium
-chromedriver
-geckodriver
-*.crx
+# OS files
+.DS_Store
+Thumbs.db
 
 # Temporary files
 *.tmp
+*.temp
 *.bak
-*.swp
+*.cache
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Build artifacts
+*.manifest
+*.spec
+
+# Environment variables (keep .env.example)
+.env
+!.env.example

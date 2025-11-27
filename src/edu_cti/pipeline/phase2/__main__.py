@@ -149,9 +149,11 @@ def fetch_articles_phase(
     
     try:
         # Process incidents one by one and push to queue as soon as articles are fetched
+        total_incidents = len(incidents_to_process)
         for idx, incident in enumerate(incidents_to_process, 1):
             incident_id = incident["incident_id"]
-            logger.info(f"[{idx}/{len(incidents_to_process)}] Fetching articles for incident: {incident_id}")
+            progress_pct = (idx / total_incidents) * 100
+            logger.info(f"[{idx}/{total_incidents}] ({progress_pct:.1f}%) Fetching articles for incident: {incident_id}")
             
             try:
                 # Fetch articles for this single incident
@@ -222,6 +224,7 @@ def enrich_articles_phase(
     fetch_complete_event: threading.Event,
     skip_if_not_education: bool = False,
     rate_limit_delay: float = 1.0,
+    total_expected: int = 0,
 ) -> Dict[str, int]:
     """
     Phase 2: Sequential LLM enrichment (queue-based consumer).
@@ -237,6 +240,7 @@ def enrich_articles_phase(
         fetch_complete_event: Event to signal when fetching is complete
         skip_if_not_education: Whether to skip non-education incidents
         rate_limit_delay: Delay between LLM calls
+        total_expected: Total number of incidents expected (for progress tracking)
     
     Returns:
         Statistics dict with counts
@@ -288,7 +292,12 @@ def enrich_articles_phase(
             incident_id = incident_dict["incident_id"]
             stats["processed"] += 1
             
-            logger.info(f"[{stats['processed']}] Processing incident from queue: {incident_id}")
+            # Calculate progress percentage
+            if total_expected > 0:
+                progress_pct = (stats["processed"] / total_expected) * 100
+                logger.info(f"[{stats['processed']}/{total_expected}] ({progress_pct:.1f}%) Enriching: {incident_id}")
+            else:
+                logger.info(f"[{stats['processed']}] Enriching: {incident_id}")
             
             try:
                 # Read full incident data from DB (queue only has minimal data)
@@ -347,7 +356,7 @@ def enrich_articles_phase(
                         skip_if_not_education=skip_if_not_education,
                         conn=conn,  # Required: pass connection to read articles from DB
                     )
-                    logger.info(f"process_incident returned: {type(enrichment_result)}, is None: {enrichment_result is None}")
+                    logger.debug(f"process_incident returned: {type(enrichment_result)}, is None: {enrichment_result is None}")
                 except Exception as e:
                     logger.error(f"Error in process_incident for {incident_id}: {e}", exc_info=True)
                     stats["errors"] += 1
@@ -377,11 +386,27 @@ def enrich_articles_phase(
                         stats["skipped"] += 1
                         logger.warning(f"⊘ Skipped enrichment upgrade for {incident_id} - lower confidence or save failed")
                 else:
-                    # Mark as skipped
-                    reason = "Not education-related" if skip_if_not_education else "No enrichment result"
-                    mark_incident_skipped(conn, incident_id, reason)
-                    stats["skipped"] += 1
-                    logger.info(f"⊘ Skipped incident: {incident_id} - {reason}")
+                    # Check what kind of failure we have
+                    if raw_json_data and isinstance(raw_json_data, dict):
+                        if raw_json_data.get("_not_education_related"):
+                            # Explicitly not education-related - mark as skipped
+                            reason = raw_json_data.get("_reason", "Not education-related")
+                            mark_incident_skipped(conn, incident_id, f"Not education-related: {reason}")
+                            stats["skipped"] += 1
+                            logger.info(f"⊘ Skipped incident: {incident_id} - Not education-related")
+                        elif raw_json_data.get("_enrichment_failed"):
+                            # Enrichment failed (JSON parsing, etc.) - DON'T mark as skipped, will retry
+                            reason = raw_json_data.get("_reason", "Enrichment failed")
+                            stats["errors"] += 1
+                            logger.warning(f"⚠ Enrichment failed for {incident_id}: {reason} - will retry on next run")
+                        else:
+                            # Unknown error - don't mark as skipped
+                            stats["errors"] += 1
+                            logger.warning(f"⚠ Unknown enrichment result for {incident_id}")
+                    else:
+                        # No articles or other error - don't mark as skipped, will retry
+                        stats["errors"] += 1
+                        logger.warning(f"⚠ No enrichment result for {incident_id} - will retry on next run")
                 
                 # Rate limiting between LLM calls
                 if rate_limit_delay > 0:
@@ -542,6 +567,9 @@ def main() -> None:
     fetch_stats = {"processed": 0, "articles_fetched": 0, "errors": 0}
     enrich_stats = {"processed": 0, "enriched": 0, "skipped": 0, "errors": 0}
     
+    # Total incidents to process (for progress tracking)
+    total_to_process = len(unenriched)
+    
     # Start consumer thread (enrichment) - it will wait for items in queue
     def consumer_thread():
         """Consumer thread that processes incidents from queue."""
@@ -557,6 +585,7 @@ def main() -> None:
                 fetch_complete_event=fetch_complete_event,
                 skip_if_not_education=args.skip_non_education,
                 rate_limit_delay=args.rate_limit_delay,
+                total_expected=total_to_process,
             )
             logger.info(f"Consumer thread completed: {enrich_stats}")
         except Exception as e:

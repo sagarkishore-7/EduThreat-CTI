@@ -6,12 +6,20 @@ This script:
 1. Initializes the SQLite database
 2. Runs the ingestion pipeline to collect incidents from all sources
 3. Builds the unified base dataset CSV
-4. Ensures all URLs are collected in all_urls field with primary_url=None
+
+Supports incremental ingestion:
+- Default (incremental): Only fetch new incidents since last run
+- --full-historical: Fetch all pages/incidents (first-time or full refresh)
 
 Usage:
-    python -m src.edu_cti.cli.pipeline
-    python -m src.edu_cti.cli.pipeline --groups news
-    python -m src.edu_cti.cli.pipeline --groups curated news
+    # Incremental run (default - daily/regular runs)
+    python -m src.edu_cti.pipeline.phase1.orchestrator
+    
+    # Full historical run (first-time setup)
+    python -m src.edu_cti.pipeline.phase1.orchestrator --full-historical
+    
+    # Run specific groups
+    python -m src.edu_cti.pipeline.phase1.orchestrator --groups curated news
 """
 
 import argparse
@@ -34,23 +42,20 @@ def parse_args() -> argparse.Namespace:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run full pipeline (all sources)
-  python -m src.edu_cti.run_pipeline
+  # Incremental run (default - for daily/regular updates)
+  python -m src.edu_cti.pipeline.phase1.orchestrator
 
-  # Run only news sources
-  python -m src.edu_cti.run_pipeline --groups news
+  # Full historical run (first-time setup, fetches ALL pages)
+  python -m src.edu_cti.pipeline.phase1.orchestrator --full-historical
 
-  # Run only curated sources
-  python -m src.edu_cti.cli.pipeline --groups curated
+  # Run only curated sources (incremental)
+  python -m src.edu_cti.pipeline.phase1.orchestrator --groups curated
 
-  # Run with page limits (for testing)
-  python -m src.edu_cti.run_pipeline --news-max-pages 10
-  
-  # Fetch all pages (explicit)
-  python -m src.edu_cti.run_pipeline --news-max-pages all
+  # Run databreach with page limit (for testing)
+  python -m src.edu_cti.pipeline.phase1.orchestrator --groups curated --curated-sources databreach --news-max-pages 10
 
-  # Run specific news sources
-  python -m src.edu_cti.run_pipeline --groups news --news-sources darkreading krebsonsecurity
+  # Full refresh of all sources
+  python -m src.edu_cti.pipeline.phase1.orchestrator --full-historical
         """,
     )
     parser.add_argument(
@@ -76,15 +81,21 @@ Examples:
         "--news-max-pages",
         type=lambda x: None if x.lower() == "all" else int(x),
         default=None,
-        help="Maximum number of pages to fetch per source. Applies to news sources and curated sources with pagination (e.g., databreach). "
-             "Use 'all' to fetch all pages (default: all). "
-             "Specify a number to limit pages (e.g., 10 for testing).",
+        help="Maximum number of pages to fetch per source. "
+             "Use 'all' to fetch all pages (default behavior in historical mode).",
     )
     parser.add_argument(
         "--rss-max-age-days",
         type=int,
-        default=1,
-        help="Maximum age in days for RSS feed items (default: 1). Only items published within this window are included.",
+        default=30,
+        help="Maximum age in days for RSS feed items (default: 30).",
+    )
+    parser.add_argument(
+        "--full-historical",
+        action="store_true",
+        help="Perform full historical scrape (fetch all pages/incidents). "
+             "Use this for first-time setup or when you need a complete refresh. "
+             "WARNING: This can take hours for sources like DataBreaches.net (490+ pages).",
     )
     parser.add_argument(
         "--skip-ingestion",
@@ -116,8 +127,7 @@ Examples:
     parser.add_argument(
         "--fresh-collection",
         action="store_true",
-        help="Re-scrape sources for CSV building instead of using database. "
-             "By default, CSV is built from database for efficiency.",
+        help="Re-scrape sources for CSV building instead of using database.",
     )
     return parser.parse_args()
 
@@ -126,6 +136,9 @@ Examples:
 
 def main() -> None:
     args = parse_args()
+    
+    # Determine incremental mode
+    incremental = not args.full_historical
     
     # Setup logging
     log_file = args.log_file or Path("logs/pipeline.log")
@@ -141,7 +154,17 @@ def main() -> None:
     conn.close()
     print("[✓] Database initialized")
     
-    # Step 1: Run ingestion pipeline (collects incidents into database)
+    # Display mode
+    if incremental:
+        print("\n[*] Running in INCREMENTAL mode")
+        print("    → Only fetches new incidents since last ingestion")
+        print("    → Use --full-historical for complete refresh")
+    else:
+        print("\n[*] Running in FULL HISTORICAL mode")
+        print("    → Fetches ALL pages/incidents from sources")
+        print("    → This may take hours for large archives (e.g., DataBreaches 490+ pages)")
+    
+    # Step 1: Run ingestion pipeline
     if not args.skip_ingestion:
         print("\n" + "="*70)
         print("[*] Step 1: Running ingestion pipeline...")
@@ -160,7 +183,8 @@ def main() -> None:
                     label,
                     collector,
                     sources=args.curated_sources,
-                    max_pages=args.news_max_pages,  # Use same max_pages arg for curated sources too
+                    max_pages=args.news_max_pages,
+                    incremental=incremental,
                 )
             elif group == "news":
                 total_new += _ingest_group(
@@ -169,19 +193,21 @@ def main() -> None:
                     collector,
                     sources=args.news_sources,
                     max_pages=args.news_max_pages,
+                    incremental=incremental,
                 )
             elif group == "rss":
                 total_new += _ingest_group(
                     conn,
                     label,
                     collector,
-                    sources=None,  # RSS sources can be specified via --sources in ingestion.py
+                    sources=None,
                     max_age_days=args.rss_max_age_days,
                     is_rss=True,
+                    incremental=incremental,
                 )
         
         conn.close()
-        print(f"[✓] Ingestion pipeline completed. Newly inserted incidents: {total_new}")
+        print(f"[✓] Ingestion completed. New incidents: {total_new}")
     else:
         print("[*] Skipping ingestion step (--skip-ingestion)")
     
@@ -191,19 +217,15 @@ def main() -> None:
         print("[*] Step 2: Building unified base dataset...")
         print("="*70)
         
-        # Build dataset from database (production-efficient: no re-scraping)
-        # This ensures DB and CSV stay in sync and only processes new data
-        # Use --fresh-collection to re-scrape instead (for testing/debugging)
         incidents = build_dataset(
             args.groups,
             news_max_pages=args.news_max_pages,
             news_sources=args.news_sources,
             curated_sources=args.curated_sources,
             deduplicate=not args.no_deduplication,
-            from_database=not args.fresh_collection,  # Use DB by default (production mode)
+            from_database=not args.fresh_collection,
         )
         
-        # Write unified dataset
         if incidents:
             output_path = PROC_DIR / "base_dataset.csv"
             print(f"[*] Writing unified base dataset to {output_path}...")
@@ -223,9 +245,11 @@ def main() -> None:
     print("\nNext steps:")
     print("  - Review data/processed/base_dataset.csv")
     print("  - All URLs are in 'all_urls' field (primary_url=None)")
-    print("  - Ready for Phase 2: LLM enrichment to select best URL")
+    print("  - Ready for Phase 2: LLM enrichment")
+    
+    if incremental:
+        print("\nNote: Ran in incremental mode. Use --full-historical for complete refresh.")
 
 
 if __name__ == "__main__":
     main()
-

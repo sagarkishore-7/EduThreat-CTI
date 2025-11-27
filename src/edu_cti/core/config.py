@@ -38,6 +38,40 @@ NEWS_KEYWORDS: List[str] = [
     "academy",
 ]
 
+# Education keywords for RSS feed filtering
+# Focused on terms that specifically identify educational institutions in cyber attack news
+# Kept minimal to avoid false positives while catching relevant incidents
+EDUCATION_KEYWORDS: List[str] = [
+    # Core institution types (most common in breach headlines)
+    "university",
+    "college",
+    "school district",
+    "school board",
+    # Specific education terms rarely used outside education context
+    "student data",
+    "student records",
+    "student information",
+    "faculty",
+    "alumni",
+    # K-12 specific
+    "k-12",
+    "k12",
+    "high school",
+    "elementary school",
+    "middle school",
+    # Higher education specific
+    "campus",
+    "higher education",
+    # Research institutions
+    "research institute",
+    "research university",
+    "academic research",
+    # Government education bodies
+    "department of education",
+    "ministry of education",
+    "public schools",
+]
+
 # Default page-walk limits (None = fetch all pages, can be overridden per source/CLI)
 # Set to None by default to fetch all available pages
 NEWS_MAX_PAGES = None

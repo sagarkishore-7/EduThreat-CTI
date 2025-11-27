@@ -41,9 +41,16 @@ class TimelineEvent(BaseModel):
     )
     event_type: Optional[Literal[
         "initial_access",
+        "reconnaissance",
+        "lateral_movement",
+        "privilege_escalation",
+        "data_exfiltration",
+        "encryption_started",
+        "ransom_demand",
         "discovery",
         "exploitation",
         "impact",
+        "operational_impact",
         "containment",
         "eradication",
         "recovery",
@@ -51,10 +58,15 @@ class TimelineEvent(BaseModel):
         "notification",
         "investigation",
         "remediation",
+        "law_enforcement_contact",
+        "public_statement",
+        "systems_restored",
+        "response_action",
+        "security_improvement",
         "other"
     ]] = Field(
         default=None,
-        description="Type of event. Use exact tags: initial_access, discovery, exploitation, impact, containment, eradication, recovery, disclosure, notification, investigation, remediation, other"
+        description="Type of event in the incident timeline"
     )
     actor_attribution: Optional[str] = Field(
         default=None,
@@ -95,40 +107,121 @@ class AttackDynamics(BaseModel):
     """Schema for attack dynamics and modeling."""
     
     attack_vector: Optional[Literal[
+        # Email-based
+        "phishing_email",
+        "spear_phishing_email",
+        "malicious_attachment",
+        "malicious_link",
+        "business_email_compromise",
+        # Credential-based
+        "stolen_credentials",
+        "credential_stuffing",
+        "brute_force",
+        "password_spraying",
+        "credential_phishing",
+        "session_hijacking",
+        # Vulnerability exploitation
+        "vulnerability_exploit_known",
+        "vulnerability_exploit_zero_day",
+        "unpatched_system",
+        "misconfiguration",
+        "default_credentials",
+        # Web-based
+        "drive_by_download",
+        "watering_hole",
+        "malvertising",
+        "sql_injection",
+        "xss",
+        "csrf",
+        "ssrf",
+        "path_traversal",
+        # Network-based
+        "exposed_service",
+        "exposed_rdp",
+        "exposed_vpn",
+        "exposed_ssh",
+        "exposed_database",
+        "exposed_api",
+        "man_in_the_middle",
+        # Supply chain
+        "supply_chain_compromise",
+        "third_party_vendor",
+        "software_update_compromise",
+        "trusted_relationship",
+        # Physical/Social
+        "social_engineering",
+        "pretexting",
+        "baiting",
+        "tailgating",
+        "usb_drop",
+        # Insider
+        "insider_access",
+        "former_employee",
+        # Cloud-specific
+        "cloud_misconfiguration",
+        "api_key_exposure",
+        "storage_bucket_exposure",
+        # Other/Legacy (for backwards compatibility)
         "phishing",
         "spear_phishing",
         "vulnerability_exploit",
-        "credential_stuffing",
         "credential_theft",
         "malware",
         "ransomware",
         "insider_threat",
-        "social_engineering",
         "supply_chain",
         "third_party_breach",
-        "misconfiguration",
-        "brute_force",
         "ddos",
-        "sql_injection",
-        "xss",
+        "dns_hijacking",
+        "sim_swapping",
+        "unknown",
         "other"
     ]] = Field(
         default=None,
-        description="Primary attack vector. Use exact tags: phishing, spear_phishing, vulnerability_exploit, credential_stuffing, credential_theft, malware, ransomware, insider_threat, social_engineering, supply_chain, third_party_breach, misconfiguration, brute_force, ddos, sql_injection, xss, other"
+        description="Primary attack vector used for initial access"
     )
     attack_chain: Optional[List[Literal[
+        # MITRE ATT&CK Tactics (Enterprise)
         "reconnaissance",
+        "resource_development",
+        "initial_access",
+        "execution",
+        "persistence",
+        "privilege_escalation",
+        "defense_evasion",
+        "credential_access",
+        "discovery",
+        "lateral_movement",
+        "collection",
+        "command_and_control",
+        "exfiltration",
+        "impact",
+        # Legacy Cyber Kill Chain (for backwards compatibility)
         "weaponization",
         "delivery",
         "exploitation",
         "installation",
-        "command_and_control",
         "actions_on_objectives",
-        "exfiltration",
-        "impact"
+        # LLM variations (mapped from common LLM outputs)
+        "vulnerability_discovery",
+        "credential_harvesting",
+        "data_analysis",
+        "data_theft",
+        "encryption",
+        "ransom_demand",
+        "data_exfiltration",
+        # Incident response phases (LLM sometimes includes these)
+        "containment",
+        "eradication",
+        "recovery",
+        "lessons_learned",
+        "notification",
+        "disclosure",
+        "detection",
+        "investigation"
     ]]] = Field(
         default=None,
-        description="Kill chain stages observed. Use exact tags: reconnaissance, weaponization, delivery, exploitation, installation, command_and_control, actions_on_objectives, exfiltration, impact"
+        description="MITRE ATT&CK tactics or Kill chain stages observed"
     )
     ransomware_family: Optional[str] = Field(
         default=None,
@@ -167,24 +260,43 @@ class AttackDynamics(BaseModel):
         description="Business impact assessment. Use exact tags: 'critical', 'severe', 'moderate', 'limited', 'minimal'"
     )
     operational_impact: Optional[List[Literal[
+        "classes_cancelled",
+        "classes_moved_online",
+        "exams_postponed",
+        "exams_cancelled",
+        "graduation_delayed",
+        "semester_extended",
+        "campus_closed",
+        "research_halted",
+        "research_data_lost",
+        "payroll_delayed",
+        "financial_aid_delayed",
+        "admissions_suspended",
+        "registration_suspended",
+        "email_unavailable",
+        "website_down",
+        "student_portal_down",
+        "lms_unavailable",
+        "network_offline",
+        "vpn_unavailable",
+        "library_closed",
+        "it_helpdesk_overwhelmed",
+        "manual_processes_required",
+        "clinical_operations_disrupted",
+        "patient_care_affected",
+        # Legacy values for backwards compatibility
         "teaching_disrupted",
         "research_disrupted",
         "admissions_disrupted",
         "enrollment_disrupted",
         "payroll_disrupted",
-        "clinical_operations_disrupted",
         "online_learning_disrupted",
-        "classes_cancelled",
-        "exams_postponed",
-        "graduation_delayed",
         "email_system_down",
-        "student_portal_down",
         "network_down",
-        "website_down",
         "other"
     ]]] = Field(
         default=None,
-        description="Operational impacts. Use exact tags: teaching_disrupted, research_disrupted, admissions_disrupted, enrollment_disrupted, payroll_disrupted, clinical_operations_disrupted, online_learning_disrupted, classes_cancelled, exams_postponed, graduation_delayed, email_system_down, student_portal_down, network_down, website_down, other"
+        description="Operational impacts observed during the incident"
     )
 
 

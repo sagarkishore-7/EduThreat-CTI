@@ -3,13 +3,18 @@ Article fetching module for Phase 2 enrichment.
 
 Fetches and extracts article content from URLs for LLM processing.
 Uses newspaper3k for primary article extraction, with Selenium fallback.
+Includes advanced bot detection bypass for sites like DarkReading.
 """
 
 import logging
+import time
+import random
+import requests
 from typing import List, Optional, Dict
 from dataclasses import dataclass
+from urllib.parse import urlparse, quote
 
-from src.edu_cti.core.http import HttpClient, build_http_client
+from src.edu_cti.core.http import HttpClient, build_http_client, SELENIUM_AVAILABLE
 from bs4 import BeautifulSoup
 
 # Optional newspaper3k support for article extraction
@@ -21,6 +26,16 @@ except ImportError:
     NEWSPAPER_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+# Domains where Selenium doesn't work (Cloudflare protection)
+# For these, newspaper3k is the best option
+CLOUDFLARE_PROTECTED_DOMAINS = []
+
+"""[
+    "darkreading.com",
+    "securityweek.com",
+    "bleepingcomputer.com",
+]"""
 
 
 @dataclass
@@ -51,30 +66,236 @@ class ArticleFetcher:
     def __init__(self, http_client: Optional[HttpClient] = None):
         self.http_client = http_client or build_http_client()
     
-    def fetch_article(self, url: str) -> ArticleContent:
+    def _is_cloudflare_protected(self, url: str) -> bool:
+        """Check if this domain has Cloudflare protection (Selenium doesn't help)."""
+        domain = urlparse(url).netloc.lower()
+        return any(d in domain for d in CLOUDFLARE_PROTECTED_DOMAINS)
+
+    def _get_archive_url(self, url: str) -> Optional[str]:
+        """
+        Check if a URL is available on archive.org (Wayback Machine).
+        
+        Tries multiple URL variations since archive.org is exact-match:
+        - Original URL
+        - Without www.
+        - With www.
+        - HTTP instead of HTTPS
+        
+        Args:
+            url: Original URL to look up
+            
+        Returns:
+            Archive URL if available, None otherwise
+        """
+        # Generate URL variations to try
+        parsed = urlparse(url)
+        domain = parsed.netloc.lower()
+        path = parsed.path + ('?' + parsed.query if parsed.query else '')
+        
+        url_variations = [url]  # Start with original
+        
+        # Try without www
+        if domain.startswith('www.'):
+            no_www = f"{parsed.scheme}://{domain[4:]}{path}"
+            url_variations.append(no_www)
+        else:
+            # Try with www
+            with_www = f"{parsed.scheme}://www.{domain}{path}"
+            url_variations.append(with_www)
+        
+        # Also try HTTP if HTTPS
+        if parsed.scheme == 'https':
+            for var_url in list(url_variations):
+                http_url = var_url.replace('https://', 'http://')
+                url_variations.append(http_url)
+        
+        # Try each variation
+        for try_url in url_variations:
+            wayback_api = f"https://archive.org/wayback/available?url={quote(try_url, safe='')}"
+            try:
+                resp = requests.get(wayback_api, timeout=10)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    snapshots = data.get("archived_snapshots", {})
+                    closest = snapshots.get("closest", {})
+                    if closest.get("available"):
+                        archive_url = closest.get("url")
+                        timestamp = closest.get("timestamp", "unknown")
+                        logger.info(f"Found archive.org snapshot for {url} (timestamp: {timestamp})")
+                        return archive_url
+            except requests.RequestException as e:
+                logger.debug(f"Archive.org API error for {try_url}: {e}")
+            except Exception as e:
+                logger.debug(f"Error checking archive.org for {try_url}: {e}")
+        
+        return None
+
+    def _fetch_from_archive(self, original_url: str) -> Optional[ArticleContent]:
+        """
+        Attempt to fetch article from archive.org.
+        
+        Args:
+            original_url: Original URL that couldn't be fetched
+            
+        Returns:
+            ArticleContent if successful, None otherwise
+        """
+        archive_url = self._get_archive_url(original_url)
+        if not archive_url:
+            logger.debug(f"No archive.org snapshot found for {original_url}")
+            return None
+        
+        logger.info(f"Fetching from archive.org: {archive_url}")
+        
+        # Try newspaper3k on the archive URL
+        if NEWSPAPER_AVAILABLE:
+            article_content = self._fetch_with_newspaper(archive_url)
+            if article_content and article_content.fetch_successful:
+                # Update URL to original for consistency
+                article_content.url = original_url
+                logger.info(f"Successfully fetched {original_url} from archive.org ({article_content.content_length} chars)")
+                return article_content
+        
+        # Try simple HTTP fetch on archive URL
+        try:
+            resp = requests.get(archive_url, timeout=30, headers={
+                "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"
+            })
+            if resp.status_code == 200:
+                soup = BeautifulSoup(resp.text, "html.parser")
+                
+                # Remove Wayback Machine toolbar/overlay
+                for elem in soup.find_all(id=lambda x: x and 'wm-' in x):
+                    elem.decompose()
+                for elem in soup.find_all(class_=lambda x: x and 'wm-' in str(x)):
+                    elem.decompose()
+                
+                # Extract content
+                title = soup.find("title")
+                title_text = title.get_text().strip() if title else ""
+                
+                # Try common article selectors
+                article_elem = (
+                    soup.find("article") or 
+                    soup.find("div", class_="article-content") or
+                    soup.find("div", class_="entry-content") or
+                    soup.find("div", class_="post-content") or
+                    soup.find("main")
+                )
+                
+                if article_elem:
+                    content = article_elem.get_text(separator=" ", strip=True)
+                else:
+                    # Fallback to body text
+                    content = soup.get_text(separator=" ", strip=True)
+                
+                if len(content) > 200:  # Minimum content threshold
+                    return ArticleContent(
+                        url=original_url,
+                        title=title_text,
+                        content=content,
+                        fetch_successful=True,
+                        content_length=len(content)
+                    )
+        except Exception as e:
+            logger.debug(f"Failed to fetch from archive.org: {e}")
+        
+        return None
+
+    def fetch_article(self, url: str, max_retries: int = 3) -> ArticleContent:
         """
         Fetch and extract article content from a URL.
         
-        Tries newspaper3k first for better article extraction,
-        then falls back to Selenium if that fails.
+        Strategy:
+        1. For Cloudflare-protected domains:
+           a. Try newspaper3k first
+           b. Fall back to archive.org if newspaper3k fails
+        2. For other domains:
+           a. Try newspaper3k first
+           b. Fall back to Selenium if newspaper3k fails
         
         Args:
             url: URL to fetch
+            max_retries: Maximum number of retry attempts
             
         Returns:
             ArticleContent object with extracted content
         """
+        is_cloudflare = self._is_cloudflare_protected(url)
+        
+        # For Cloudflare-protected domains, try newspaper3k then archive.org
+        # (Selenium always fails against Cloudflare)
+        if is_cloudflare:
+            logger.debug(f"Cloudflare-protected domain, using newspaper3k + archive fallback: {url}")
+            
+            # Try newspaper3k first
+            if NEWSPAPER_AVAILABLE:
+                article_content = self._fetch_with_newspaper(url)
+                if article_content and article_content.fetch_successful:
+                    return article_content
+            
+            # Try archive.org as fallback
+            logger.info(f"Trying archive.org fallback for Cloudflare-protected site: {url}")
+            archive_content = self._fetch_from_archive(url)
+            if archive_content and archive_content.fetch_successful:
+                return archive_content
+            
+            # All methods failed for Cloudflare site
+            logger.warning(f"Cannot fetch Cloudflare-protected URL (no archive available): {url}")
+            return ArticleContent(
+                url=url,
+                title="",
+                content="",
+                fetch_successful=False,
+                error_message="Cloudflare-protected site, no archive available",
+                content_length=0
+            )
+        
         # Try newspaper3k first (best for article extraction)
         if NEWSPAPER_AVAILABLE:
             article_content = self._fetch_with_newspaper(url)
             if article_content and article_content.fetch_successful:
                 logger.debug(f"Successfully fetched {url} using newspaper3k")
                 return article_content
-            logger.info(f"newspaper3k failed for {url}, trying Selenium fallback...")
+            error_msg = article_content.error_message if article_content else "Unknown error"
+            logger.info(f"newspaper3k failed for {url} ({error_msg}), trying Selenium fallback...")
         
-        # Fall back to Selenium (handles bot detection)
+        # Fall back to Selenium (handles bot detection for non-Cloudflare sites)
+        if SELENIUM_AVAILABLE:
+            article_content = self._fetch_with_selenium(url)
+            if article_content and article_content.fetch_successful:
+                return article_content
+            logger.info(f"Selenium failed for {url}, trying archive.org fallback...")
+        
+        # Final fallback: Try archive.org (works for many historical articles)
+        archive_content = self._fetch_from_archive(url)
+        if archive_content and archive_content.fetch_successful:
+            logger.info(f"Successfully fetched {url} from archive.org")
+            return archive_content
+        
+        # All methods failed
+        logger.warning(f"All fetch methods failed for {url} (no archive available)")
+        return ArticleContent(
+            url=url,
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="All fetch methods failed (newspaper3k, Selenium, archive.org)",
+            content_length=0
+        )
+
+    def _fetch_with_selenium(self, url: str) -> ArticleContent:
+        """
+        Fetch article using Selenium with bot detection bypass.
+        
+        Args:
+            url: URL to fetch
+            
+        Returns:
+            ArticleContent with extracted content
+        """
         try:
-            soup = self.http_client.get_soup(url, allow_404=True)
+            soup = self.http_client.get_soup(url, allow_404=True, use_selenium_fallback=True)
             
             if soup is None:
                 return ArticleContent(
@@ -82,24 +303,20 @@ class ArticleFetcher:
                     title="",
                     content="",
                     fetch_successful=False,
-                    error_message="Failed to fetch or parse URL",
+                    error_message="Selenium fetch failed or returned None",
                     content_length=0
                 )
             
-            # Extract title
+            # Extract content
             title = self._extract_title(soup)
-            
-            # Extract main content
             content = self._extract_content(soup)
-            
-            # Extract metadata
             author = self._extract_author(soup)
             publish_date = self._extract_publish_date(soup)
             
             # Clean content
             content = self._clean_content(content)
             
-            # Only return successful if we have meaningful content
+            # Check for meaningful content
             if not content or len(content.strip()) < 100:
                 return ArticleContent(
                     url=url,
@@ -234,53 +451,245 @@ class ArticleFetcher:
         return ""
     
     def _extract_content(self, soup: BeautifulSoup) -> str:
-        """Extract main article content from soup."""
-        # Remove unwanted elements
-        for element in soup(['script', 'style', 'nav', 'header', 'footer', 'aside', 'iframe']):
+        """
+        Extract main article content from soup.
+        
+        Uses extensive selectors to cover global news sites, various CMS systems,
+        and multiple fallback mechanisms for maximum compatibility.
+        """
+        # Remove unwanted elements that typically contain non-article content
+        unwanted_tags = [
+            'script', 'style', 'nav', 'header', 'footer', 'aside', 'iframe',
+            'noscript', 'svg', 'canvas', 'video', 'audio', 'form', 'button',
+            'input', 'select', 'textarea', 'label', 'fieldset', 'legend',
+            'menu', 'menuitem', 'dialog', 'template'
+        ]
+        for element in soup(unwanted_tags):
             element.decompose()
         
-        # Try various content selectors
+        # Remove common non-content elements by class/id patterns
+        unwanted_patterns = [
+            '[class*="sidebar"]', '[id*="sidebar"]',
+            '[class*="comment"]', '[id*="comment"]',
+            '[class*="related"]', '[id*="related"]',
+            '[class*="recommend"]', '[id*="recommend"]',
+            '[class*="social"]', '[id*="social"]',
+            '[class*="share"]', '[id*="share"]',
+            '[class*="newsletter"]', '[id*="newsletter"]',
+            '[class*="subscription"]', '[id*="subscription"]',
+            '[class*="advertisement"]', '[id*="advertisement"]',
+            '[class*="ad-"]', '[id*="ad-"]',
+            '[class*="promo"]', '[id*="promo"]',
+            '[class*="widget"]', '[id*="widget"]',
+            '[class*="popup"]', '[id*="popup"]',
+            '[class*="modal"]', '[id*="modal"]',
+            '[class*="cookie"]', '[id*="cookie"]',
+            '[class*="banner"]', '[id*="banner"]',
+            '[class*="navigation"]', '[id*="navigation"]',
+            '[class*="breadcrumb"]', '[id*="breadcrumb"]',
+            '[class*="tags"]', '[id*="tags"]',
+            '[class*="meta-"]', 
+        ]
+        for pattern in unwanted_patterns:
+            try:
+                for element in soup.select(pattern):
+                    element.decompose()
+            except Exception:
+                continue
+        
+        # Comprehensive content selectors - ordered by specificity
         content_selectors = [
-            'article .entry-content',
-            'article .post-content',
-            'article .article-content',
+            # === SITE-SPECIFIC SELECTORS ===
+            # DarkReading / Informa TechTarget
+            '.ArticleBase-BodyContent',
+            '[data-testid="article-base-body-content"]',
+            '.ContentParagraph',
+            
+            # Belgian/European news (lesoir.be, etc.)
+            'article.r-article',
+            'r-article--section',
+            '.r-article--section',
+            '.article__body',
+            
+            # SecurityWeek
+            '.article-content',
+            '.entry-content',
+            
+            # BleepingComputer
+            '.articleBody',
+            '.article_section',
+            
+            # The Record / Recorded Future
+            '.post-content',
+            '.story-body',
+            
+            # === CMS-SPECIFIC SELECTORS ===
+            # WordPress
+            '.wp-content',
+            '.entry-content',
+            '.post-content',
+            '.single-post-content',
+            '.blog-post-content',
+            
+            # Drupal
+            '.field--name-body',
+            '.node__content',
+            '.content-body',
+            
+            # Joomla
+            '.item-page',
+            '.article-body',
+            
+            # Ghost
+            '.post-full-content',
+            '.kg-card-markdown',
+            
+            # Medium
+            '.section-content',
+            '[class*="postContent"]',
+            
+            # Substack
+            '.post-content',
+            '.body',
+            
+            # === SEMANTIC HTML5 SELECTORS ===
             'article .content',
-            '[class*="article-body"]',
-            '[class*="post-body"]',
-            '[class*="entry-content"]',
-            'article',
+            'article .body',
+            'article .text',
+            'article section',
+            'main article',
+            'main .content',
             '[role="article"]',
-            '.main-content',
-            '#main-content'
+            '[role="main"]',
+            
+            # === GENERIC CLASS PATTERNS ===
+            # Article body patterns
+            '[class*="article-body"]',
+            '[class*="articleBody"]',
+            '[class*="article_body"]',
+            '[class*="article-content"]',
+            '[class*="articleContent"]',
+            '[class*="article_content"]',
+            '[class*="article-text"]',
+            '[class*="articleText"]',
+            
+            # Post body patterns
+            '[class*="post-body"]',
+            '[class*="postBody"]',
+            '[class*="post_body"]',
+            '[class*="post-content"]',
+            '[class*="postContent"]',
+            '[class*="post_content"]',
+            
+            # Story patterns
+            '[class*="story-body"]',
+            '[class*="storyBody"]',
+            '[class*="story-content"]',
+            '[class*="storyContent"]',
+            
+            # News patterns
+            '[class*="news-body"]',
+            '[class*="newsBody"]',
+            '[class*="news-content"]',
+            '[class*="newsContent"]',
+            
+            # Entry patterns
+            '[class*="entry-content"]',
+            '[class*="entryContent"]',
+            '[class*="entry_content"]',
+            
+            # Content patterns
+            '[class*="content-body"]',
+            '[class*="contentBody"]',
+            '[class*="main-content"]',
+            '[class*="mainContent"]',
+            '[class*="page-content"]',
+            '[class*="pageContent"]',
+            
+            # Text patterns
+            '[class*="rich-text"]',
+            '[class*="richText"]',
+            '[class*="prose"]',
+            '[class*="text-content"]',
+            
+            # === ID-BASED SELECTORS ===
+            '#article-body',
+            '#article-content',
+            '#articleBody',
+            '#articleContent',
+            '#post-body',
+            '#post-content',
+            '#postBody',
+            '#postContent',
+            '#story-body',
+            '#story-content',
+            '#main-content',
+            '#content',
+            '#main',
+            
+            # === MICRODATA/SCHEMA.ORG ===
+            '[itemprop="articleBody"]',
+            '[itemprop="text"]',
+            
+            # === FALLBACK SELECTORS ===
+            'article',
+            'main',
+            '.content',
+            '#content',
+            '.main',
+            '#main',
         ]
         
         content_parts = []
         
         for selector in content_selectors:
-            elements = soup.select(selector)
-            for element in elements:
-                # Get all paragraphs
-                paragraphs = element.find_all(['p', 'div'], recursive=True)
-                for p in paragraphs:
-                    text = p.get_text(strip=True)
-                    # Filter out very short paragraphs (likely navigation/menus)
-                    if text and len(text) > 50:
-                        content_parts.append(text)
+            try:
+                elements = soup.select(selector)
+                for element in elements:
+                    # Get all text-containing elements
+                    text_elements = element.find_all(['p', 'div', 'span', 'li', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'], recursive=True)
+                    for el in text_elements:
+                        # Skip if it's inside a nested unwanted element
+                        if el.find_parent(['nav', 'aside', 'footer', 'header']):
+                            continue
+                        
+                        text = el.get_text(strip=True)
+                        # Filter out very short text (likely navigation/UI elements)
+                        if text and len(text) > 40 and text not in content_parts:
+                            content_parts.append(text)
+                    
+                    # If we found substantial content, stop searching
+                    total_len = len(' '.join(content_parts))
+                    if total_len > 500:
+                        break
                 
-                # If we found substantial content, break
-                if len(' '.join(content_parts)) > 500:
+                if content_parts and len(' '.join(content_parts)) > 300:
                     break
-            
-            if content_parts:
-                break
+            except Exception:
+                continue
         
-        # If no structured content found, try getting all paragraphs
-        if not content_parts:
+        # Fallback: Get all paragraphs from the page
+        if not content_parts or len(' '.join(content_parts)) < 200:
             paragraphs = soup.find_all('p')
             for p in paragraphs:
+                # Skip if inside unwanted parent
+                if p.find_parent(['nav', 'aside', 'footer', 'header', 'form']):
+                    continue
+                
                 text = p.get_text(strip=True)
-                if text and len(text) > 50:
+                if text and len(text) > 40 and text not in content_parts:
                     content_parts.append(text)
+        
+        # Final fallback: Get text from body if nothing else worked
+        if not content_parts:
+            body = soup.find('body')
+            if body:
+                text = body.get_text(separator=' ', strip=True)
+                # Clean up excessive whitespace
+                import re
+                text = re.sub(r'\s+', ' ', text)
+                if len(text) > 100:
+                    content_parts.append(text[:10000])  # Limit to first 10k chars
         
         return ' '.join(content_parts)
     
