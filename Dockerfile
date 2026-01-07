@@ -17,8 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the source code
 COPY src/ ./src/
 
-# Create data and logs directories (data will be mounted as volume)
+# Create directories and copy database
 RUN mkdir -p data logs
+COPY data/eduthreat.db ./data/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
