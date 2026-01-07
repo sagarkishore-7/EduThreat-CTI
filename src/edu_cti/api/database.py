@@ -294,10 +294,12 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
     stats["unenriched_incidents"] = total_processed - stats["total_incidents"]
     
     # Ransomware incidents
+    # Ransomware incidents - count by attack_category since ransomware_family often NULL
     cur = conn.execute(
         """
         SELECT COUNT(*) as count FROM incident_enrichments_flat 
-        WHERE ransomware_family IS NOT NULL AND ransomware_family != ''
+        WHERE is_education_related = 1 
+          AND attack_category LIKE '%ransomware%'
         """
     )
     stats["incidents_with_ransomware"] = cur.fetchone()["count"]
@@ -324,12 +326,17 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
     )
     stats["unique_threat_actors"] = cur.fetchone()["count"]
     
-    # Unique ransomware families
+    # Unique ransomware families (use threat_actor_name as fallback)
     cur = conn.execute(
         """
-        SELECT COUNT(DISTINCT ransomware_family) as count 
+        SELECT COUNT(DISTINCT COALESCE(ransomware_family, threat_actor_name)) as count 
         FROM incident_enrichments_flat 
-        WHERE ransomware_family IS NOT NULL AND ransomware_family != ''
+        WHERE is_education_related = 1
+          AND attack_category LIKE '%ransomware%'
+          AND (
+            (ransomware_family IS NOT NULL AND ransomware_family != '')
+            OR (threat_actor_name IS NOT NULL AND threat_actor_name != '')
+          )
         """
     )
     stats["unique_ransomware_families"] = cur.fetchone()["count"]
@@ -411,15 +418,24 @@ def get_incidents_by_ransomware_family(
     conn: sqlite3.Connection,
     limit: int = 15,
 ) -> List[Dict[str, Any]]:
-    """Get incident counts by ransomware family."""
+    """Get incident counts by ransomware family.
+    
+    Note: Uses threat_actor_name as fallback since LLM often stores 
+    ransomware family names there for ransomware incidents.
+    """
     cur = conn.execute(
         """
         SELECT 
-            ransomware_family as category,
+            COALESCE(ransomware_family, threat_actor_name) as category,
             COUNT(*) as count
         FROM incident_enrichments_flat
-        WHERE ransomware_family IS NOT NULL AND ransomware_family != ''
-        GROUP BY ransomware_family
+        WHERE is_education_related = 1
+          AND attack_category LIKE '%ransomware%'
+          AND (
+            (ransomware_family IS NOT NULL AND ransomware_family != '')
+            OR (threat_actor_name IS NOT NULL AND threat_actor_name != '')
+          )
+        GROUP BY category
         ORDER BY count DESC
         LIMIT ?
         """,
@@ -557,14 +573,21 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
     options["attack_categories"] = [row["attack_category"] for row in cur.fetchall()]
     
     # Ransomware families
+    # Ransomware families (use threat_actor_name as fallback for ransomware incidents)
     cur = conn.execute(
         """
-        SELECT DISTINCT ransomware_family FROM incident_enrichments_flat 
-        WHERE ransomware_family IS NOT NULL AND ransomware_family != ''
-        ORDER BY ransomware_family
+        SELECT DISTINCT COALESCE(ransomware_family, threat_actor_name) as family
+        FROM incident_enrichments_flat 
+        WHERE is_education_related = 1
+          AND attack_category LIKE '%ransomware%'
+          AND (
+            (ransomware_family IS NOT NULL AND ransomware_family != '')
+            OR (threat_actor_name IS NOT NULL AND threat_actor_name != '')
+          )
+        ORDER BY family
         """
     )
-    options["ransomware_families"] = [row["ransomware_family"] for row in cur.fetchall()]
+    options["ransomware_families"] = [row["family"] for row in cur.fetchall()]
     
     # Threat actors
     cur = conn.execute(
