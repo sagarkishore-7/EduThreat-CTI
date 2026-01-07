@@ -224,6 +224,10 @@ def get_incident_by_id(
             except:
                 incident["systems_affected"] = None
         
+        # Use enrichment institution_name as primary (LLM-extracted name)
+        if enrichment.get("institution_name"):
+            incident["university_name"] = enrichment["institution_name"]
+        
         # Merge enrichment fields
         for key, value in enrichment.items():
             if key not in incident or incident[key] is None:
