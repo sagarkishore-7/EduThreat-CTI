@@ -26,12 +26,8 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV EDU_CTI_DB_PATH=/app/data/eduthreat.db
 
-# Expose port (Railway provides PORT env var)
+# Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:${PORT:-8000}/api/health || exit 1
-
-# Default command
-CMD ["python", "-m", "src.edu_cti.api", "--host", "0.0.0.0"]
+# Use shell form so $PORT gets expanded by shell
+CMD python -m src.edu_cti.api --host 0.0.0.0
