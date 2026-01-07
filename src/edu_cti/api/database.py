@@ -36,12 +36,15 @@ def get_incidents_paginated(
     institution_type: Optional[str] = None,
     year: Optional[int] = None,
     enriched_only: bool = False,
+    education_related_only: bool = True,  # Default to only education-related
     search: Optional[str] = None,
     sort_by: str = "incident_date",
     sort_order: str = "desc",
 ) -> Tuple[List[Dict], int]:
     """
     Get paginated list of incidents with optional filters.
+    
+    By default only shows education-related incidents (confirmed by LLM).
     
     Returns:
         Tuple of (incidents list, total count)
@@ -50,9 +53,13 @@ def get_incidents_paginated(
     conditions = []
     params = []
     
+    # By default only show education-related incidents
+    if education_related_only:
+        conditions.append("ef.is_education_related = 1")
+    
     if country:
-        conditions.append("i.country = ?")
-        params.append(country)
+        conditions.append("(i.country = ? OR ef.country = ?)")
+        params.extend([country, country])
     
     if attack_category:
         conditions.append("ef.attack_category = ?")
@@ -83,10 +90,11 @@ def get_incidents_paginated(
             (i.university_name LIKE ? 
              OR i.victim_raw_name LIKE ? 
              OR i.title LIKE ?
+             OR ef.institution_name LIKE ?
              OR ef.threat_actor_name LIKE ?
              OR ef.enriched_summary LIKE ?)
         """)
-        params.extend([search_pattern] * 5)
+        params.extend([search_pattern] * 6)
     
     where_clause = " AND ".join(conditions) if conditions else "1=1"
     
@@ -100,11 +108,14 @@ def get_incidents_paginated(
     sort_column = valid_sort_columns.get(sort_by, "i.incident_date")
     sort_dir = "DESC" if sort_order.lower() == "desc" else "ASC"
     
+    # Use JOIN when filtering education-related, LEFT JOIN otherwise
+    join_type = "JOIN" if education_related_only else "LEFT JOIN"
+    
     # Count total
     count_query = f"""
         SELECT COUNT(DISTINCT i.incident_id) as total
         FROM incidents i
-        LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        {join_type} incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE {where_clause}
     """
     cur = conn.execute(count_query, params)
@@ -115,7 +126,7 @@ def get_incidents_paginated(
     query = f"""
         SELECT DISTINCT
             i.incident_id,
-            i.university_name,
+            COALESCE(ef.institution_name, i.university_name, 'Unknown') as university_name,
             i.victim_raw_name,
             COALESCE(ef.institution_type, i.institution_type) as institution_type,
             COALESCE(ef.country, i.country) as country,
@@ -134,7 +145,7 @@ def get_incidents_paginated(
             i.llm_enriched_at,
             i.ingested_at
         FROM incidents i
-        LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        {join_type} incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE {where_clause}
         ORDER BY {sort_column} {sort_dir} NULLS LAST
         LIMIT ? OFFSET ?
@@ -255,19 +266,28 @@ def get_incident_by_id(
 # ============================================================
 
 def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
-    """Get overall dashboard statistics."""
+    """Get overall dashboard statistics - only education-related incidents."""
     stats = {}
     
-    # Total incidents
-    cur = conn.execute("SELECT COUNT(*) as count FROM incidents")
+    # Total incidents = only education-related (confirmed by LLM)
+    cur = conn.execute("""
+        SELECT COUNT(*) as count FROM incidents i
+        JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        WHERE ef.is_education_related = 1
+    """)
     stats["total_incidents"] = cur.fetchone()["count"]
     
-    # Enriched incidents
-    cur = conn.execute("SELECT COUNT(*) as count FROM incidents WHERE llm_enriched = 1")
-    stats["enriched_incidents"] = cur.fetchone()["count"]
+    # Enriched incidents (same as total for education-related)
+    stats["enriched_incidents"] = stats["total_incidents"]
     
-    # Unenriched
-    stats["unenriched_incidents"] = stats["total_incidents"] - stats["enriched_incidents"]
+    # Pending analysis (not yet processed by LLM)
+    cur = conn.execute("SELECT COUNT(*) as count FROM incidents WHERE llm_enriched = 0")
+    stats["pending_analysis"] = cur.fetchone()["count"]
+    
+    # Unenriched (processed but not education-related)
+    cur = conn.execute("SELECT COUNT(*) as count FROM incidents WHERE llm_enriched = 1")
+    total_processed = cur.fetchone()["count"]
+    stats["unenriched_incidents"] = total_processed - stats["total_incidents"]
     
     # Ransomware incidents
     cur = conn.execute(
@@ -319,15 +339,17 @@ def get_incidents_by_country(
     conn: sqlite3.Connection,
     limit: int = 20,
 ) -> List[Dict[str, Any]]:
-    """Get incident counts by country."""
+    """Get incident counts by country - only education-related."""
     cur = conn.execute(
         """
         SELECT 
-            COALESCE(i.country, 'Unknown') as category,
+            COALESCE(ef.country, i.country, 'Unknown') as category,
             COUNT(*) as count
         FROM incidents i
-        WHERE i.country IS NOT NULL
-        GROUP BY i.country
+        JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        WHERE ef.is_education_related = 1
+          AND (ef.country IS NOT NULL OR i.country IS NOT NULL)
+        GROUP BY category
         ORDER BY count DESC
         LIMIT ?
         """,
@@ -352,14 +374,15 @@ def get_incidents_by_attack_type(
     conn: sqlite3.Connection,
     limit: int = 15,
 ) -> List[Dict[str, Any]]:
-    """Get incident counts by attack category."""
+    """Get incident counts by attack category - only education-related."""
     cur = conn.execute(
         """
         SELECT 
             COALESCE(ef.attack_category, i.attack_type_hint, 'unknown') as category,
             COUNT(*) as count
         FROM incidents i
-        LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        WHERE ef.is_education_related = 1
         GROUP BY category
         ORDER BY count DESC
         LIMIT ?
@@ -416,15 +439,17 @@ def get_incidents_over_time(
     conn: sqlite3.Connection,
     months: int = 24,
 ) -> List[Dict[str, Any]]:
-    """Get incident counts over time (by month)."""
+    """Get incident counts over time (by month) - only education-related."""
     cur = conn.execute(
         """
         SELECT 
-            strftime('%Y-%m', incident_date) as date,
+            strftime('%Y-%m', i.incident_date) as date,
             COUNT(*) as count
-        FROM incidents
-        WHERE incident_date IS NOT NULL
-          AND incident_date >= date('now', '-' || ? || ' months')
+        FROM incidents i
+        JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        WHERE i.incident_date IS NOT NULL
+          AND ef.is_education_related = 1
+          AND i.incident_date >= date('now', '-' || ? || ' months')
         GROUP BY date
         ORDER BY date ASC
         """,
@@ -439,12 +464,12 @@ def get_recent_incidents(
     conn: sqlite3.Connection,
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
-    """Get most recent incidents."""
+    """Get most recent incidents - only education-related."""
     cur = conn.execute(
         """
         SELECT 
             i.incident_id,
-            i.university_name,
+            COALESCE(ef.institution_name, i.university_name, 'Unknown') as university_name,
             COALESCE(ef.country, i.country) as country,
             ef.attack_category,
             ef.ransomware_family,
@@ -452,7 +477,8 @@ def get_recent_incidents(
             i.title,
             ef.threat_actor_name
         FROM incidents i
-        LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        WHERE ef.is_education_related = 1
         ORDER BY i.incident_date DESC NULLS LAST, i.ingested_at DESC
         LIMIT ?
         """,
