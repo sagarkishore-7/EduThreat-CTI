@@ -440,11 +440,150 @@ date_precision = "unknown"
 
 ---
 
+## Data Integrity & Database Protection
+
+This project maintains a production SQLite database (`data/eduthreat.db`) with curated CTI data. **Protecting data integrity is critical** since contributors may inadvertently introduce errors through:
+
+1. **LLM extraction errors** - Models may hallucinate or produce invalid data
+2. **Source parsing bugs** - Incorrect scraping logic can corrupt data
+3. **Schema violations** - Invalid field values can break downstream analysis
+
+### ⚠️ Critical Rules for Contributors
+
+#### 1. **Never Commit Database Files**
+
+The `.gitignore` already excludes `data/*.db`, but please verify:
+
+```bash
+# Check if db files are tracked
+git status data/
+
+# Should show: "nothing to commit" or files in .gitignore
+```
+
+**If you accidentally commit a database file**, contact maintainers immediately.
+
+#### 2. **Use a Sandbox Database for Development**
+
+Always work with a separate test database:
+
+```bash
+# Create a sandbox database
+export EDU_CTI_DB_PATH="data/eduthreat_sandbox.db"
+
+# Or use pytest which creates temporary databases automatically
+pytest tests/ -v
+```
+
+#### 3. **Run Validation Tests Before PRs**
+
+```bash
+# Validate your source doesn't produce schema violations
+pytest tests/phase1/test_source_contribution.py -v --source-name <your_source>
+
+# Validate LLM extraction doesn't produce validation errors
+pytest tests/phase2/test_llm_response_validation.py -v
+```
+
+### LLM Enrichment Safeguards
+
+The enrichment pipeline has built-in safeguards, but contributors should be aware:
+
+#### Validation Layers
+
+1. **JSON Schema Validation** - LLM output must match `EXTRACTION_SCHEMA`
+2. **Pydantic Validation** - Results are validated via `CTIEnrichmentResult`
+3. **Enum Normalization** - Invalid values are normalized to valid options
+4. **Null Handling** - Missing fields default to `None`, not invalid values
+
+#### Adding New Extraction Fields
+
+When extending the schema:
+
+```python
+# In extraction_schema.py - add with validation
+"new_field": {
+    "type": ["string", "null"],
+    "enum": ["valid_option1", "valid_option2", null],  # Always include null
+    "description": "Clear description for LLM"
+}
+
+# In json_to_schema_mapper.py - add normalization
+NEW_FIELD_NORMALIZATION = {
+    "variation1": "valid_option1",
+    "variation2": "valid_option2",
+}
+```
+
+### Testing LLM Extraction Locally
+
+Before running enrichment against production data:
+
+```bash
+# 1. Test with mock LLM (no API calls)
+python tests/phase2/test_comprehensive_llm_extraction.py --mock
+
+# 2. Test with real LLM on sandbox
+export EDU_CTI_DB_PATH="data/eduthreat_sandbox.db"
+python -m src.edu_cti.pipeline.phase2 --limit 5
+
+# 3. Validate enrichment results
+python -c "
+import sqlite3
+conn = sqlite3.connect('data/eduthreat_sandbox.db')
+cur = conn.execute('''
+    SELECT COUNT(*) as total,
+           SUM(CASE WHEN llm_enriched = 1 THEN 1 ELSE 0 END) as enriched
+    FROM incidents
+''')
+print(cur.fetchone())
+"
+```
+
+### Production Database Access
+
+The production database is maintained by project maintainers:
+
+- **Contributors**: Use sandbox databases only
+- **Maintainers**: Follow the release checklist before updating production
+- **Automated CI**: Runs on clean databases, never production
+
+### Rollback Procedures
+
+If bad data enters the database:
+
+```bash
+# Revert specific incidents
+python -c "
+from src.edu_cti.pipeline.phase2.utils.revert_enrichments import revert_enrichments
+revert_enrichments(incident_ids=['bad_incident_id_1', 'bad_incident_id_2'])
+"
+
+# Revert all enrichments from a specific time
+python -m src.edu_cti.pipeline.phase2.utils.revert_enrichments --after "2024-01-15T00:00:00"
+```
+
+### Dashboard Data Quality
+
+The dashboard (`EduThreat-CTI-Dashboard`) displays data from the API. Data quality issues here indicate upstream problems:
+
+1. **Missing data** → Check if source is scraping correctly
+2. **Invalid values** → Check LLM normalization maps
+3. **Duplicate incidents** → Check deduplication logic
+
+Report data quality issues as GitHub Issues with:
+- Screenshot of the problem
+- Incident ID(s) affected
+- Expected vs actual values
+
+---
+
 ## Questions?
 
 - Check existing source implementations for examples
 - Open an issue for questions
 - Review `docs/ARCHITECTURE.md` for system design
 - See `tests/README.md` for test documentation
+- For data integrity concerns, tag issue with `data-integrity` label
 
 Thank you for contributing to EduThreat-CTI!

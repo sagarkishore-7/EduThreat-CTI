@@ -126,6 +126,27 @@ EVENT_TYPE_NORMALIZATION = {
     "improve": "security_improvement",
 }
 
+DATE_PRECISION_NORMALIZATION = {
+    # Common LLM variations -> valid values
+    "exact": "day",
+    "precise": "day",
+    "specific": "day",
+    "daily": "day",
+    "full": "day",
+    "complete": "day",
+    "monthly": "month",
+    "yearly": "year",
+    "annual": "year",
+    "approx": "approximate",
+    "estimated": "approximate",
+    "rough": "approximate",
+    "unknown": "approximate",
+    "uncertain": "approximate",
+    "unclear": "approximate",
+    "vague": "approximate",
+    "imprecise": "approximate",
+}
+
 
 def normalize_enum_value(value: Any, normalization_map: Dict[str, str], valid_values: set, fallback: str = "unknown") -> Optional[str]:
     """
@@ -220,6 +241,12 @@ def normalize_event_type(value: Any) -> Optional[str]:
         "public_statement", "systems_restored", "response_action", "security_improvement", "other"
     }
     return normalize_enum_value(value, EVENT_TYPE_NORMALIZATION, valid_values, "other")
+
+
+def normalize_date_precision(value: Any) -> Optional[str]:
+    """Normalize date_precision to valid enum value."""
+    valid_values = {"day", "month", "year", "approximate"}
+    return normalize_enum_value(value, DATE_PRECISION_NORMALIZATION, valid_values, "approximate")
 
 
 OPERATIONAL_IMPACT_NORMALIZATION = {
@@ -572,13 +599,13 @@ def json_to_cti_enrichment(
         institution_identified=json_data.get("institution_name")
     )
     
-    # Timeline - normalize event_type values
+    # Timeline - normalize event_type and date_precision values
     timeline = None
     if json_data.get("timeline"):
         timeline = [
             TimelineEvent(
                 date=event.get("date"),
-                date_precision=event.get("date_precision"),
+                date_precision=normalize_date_precision(event.get("date_precision")),
                 event_description=event.get("event_description"),
                 event_type=normalize_event_type(event.get("event_type")),
                 actor_attribution=event.get("actor_attribution"),

@@ -35,6 +35,12 @@ dependencies = [
     "requests>=2.31.0",
     "undetected-chromedriver>=3.5.0",
     "selenium>=4.15.0",
+    "ollama>=0.3.0",
+    "pydantic>=2.0.0",
+    "python-dateutil>=2.8.0",
+    "newspaper3k>=0.2.8",
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
 ]
 
 [project.optional-dependencies]
@@ -52,6 +58,7 @@ eduthreat-phase1 = "src.edu_cti.pipeline.phase1.__main__:main"
 eduthreat-phase2 = "src.edu_cti.pipeline.phase2.__main__:main"
 eduthreat-orchestrator = "src.edu_cti.pipeline.phase1.orchestrator:main"
 eduthreat-build = "src.edu_cti.pipeline.phase1.build_dataset:main"
+eduthreat-api = "src.edu_cti.api.__main__:main"
 
 [tool.setuptools]
 packages = ["src.edu_cti"]

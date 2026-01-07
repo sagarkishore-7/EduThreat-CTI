@@ -48,12 +48,15 @@ htmlcov/
 .tox/
 .nox/
 
-# Data files (generated at runtime)
+# Data files (generated at runtime) - NEVER commit database files
+data/*.db
+data/*.db-shm
+data/*.db-wal
 data/eduthreat.db
-data/eduthreat.db-shm
-data/eduthreat.db-wal
+data/eduthreat_sandbox.db
 data/raw/
 data/processed/
+!data/.gitkeep
 
 # Logs
 logs/

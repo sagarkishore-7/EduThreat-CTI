@@ -391,6 +391,49 @@ Phase 2 uses `deepseek-v3.1:671b-cloud` by default (configurable via `OLLAMA_MOD
 - `eduthreat-phase2` - Phase 2 enrichment pipeline
 - `eduthreat-orchestrator` - Phase 1 full orchestrator (ingestion + dataset building)
 - `eduthreat-build` - Dataset building only
+- `eduthreat-api` - Start the REST API server
+
+### Phase 3: API Server & Dashboard
+
+**`python -m src.edu_cti.api`** - Start the REST API server:
+
+The API server exposes enriched CTI data for the dashboard and external consumers.
+
+**Examples:**
+```bash
+# Start API server (default: http://localhost:8000)
+python -m src.edu_cti.api
+
+# With custom port
+python -m src.edu_cti.api --port 9000
+
+# Development mode with auto-reload
+python -m src.edu_cti.api --reload
+
+# API documentation available at http://localhost:8000/docs
+```
+
+**API Endpoints:**
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/dashboard` | Complete dashboard data |
+| `GET /api/stats` | Summary statistics |
+| `GET /api/incidents` | Paginated incident list with filters |
+| `GET /api/incidents/{id}` | Full incident detail |
+| `GET /api/filters` | Available filter options |
+| `GET /api/analytics/*` | Various analytics endpoints |
+
+**Dashboard Website:**
+The separate [EduThreat-CTI-Dashboard](https://github.com/sagarkishore-7/EduThreat-CTI-Dashboard) project provides a modern Next.js dashboard that connects to this API.
+
+```bash
+# Clone and run the dashboard
+git clone https://github.com/sagarkishore-7/EduThreat-CTI-Dashboard.git
+cd EduThreat-CTI-Dashboard
+npm install
+npm run dev
+# Open http://localhost:3000
+```
 
 ------------------------------------------------------------------------
 
@@ -420,12 +463,18 @@ Phase 2 uses `deepseek-v3.1:671b-cloud` by default (configurable via `OLLAMA_MOD
 -   ✅ **CSV export** with standardized values
 -   ✅ **Intelligent error recovery** (retry on next run)
 
-## Phase 3 --- CTI Outputs (Planned)
+## Phase 3 --- CTI Dashboard & API ✅ Complete (v1.6.0)
 
--   Public dataset export formats
--   STIX 2.1 / TAXII feeds
--   Dashboard & analytics
--   API endpoints
+-   ✅ **REST API** (FastAPI) for serving CTI data
+-   ✅ **Interactive Dashboard** (Next.js) with:
+    - Real-time statistics and charts
+    - Incident list with filtering and search
+    - Detailed incident views with full enrichment data
+    - Timeline and MITRE ATT&CK visualizations
+    - Ransomware and threat actor tracking
+    - Geographic analysis
+-   ✅ **Production-ready** Docker deployment
+-   🔄 STIX 2.1 / TAXII feeds (planned)
 
 ------------------------------------------------------------------------
 

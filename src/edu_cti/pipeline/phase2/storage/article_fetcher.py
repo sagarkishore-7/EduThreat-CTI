@@ -500,6 +500,11 @@ class ArticleFetcher:
         # Comprehensive content selectors - ordered by specificity
         content_selectors = [
             # === SITE-SPECIFIC SELECTORS ===
+            # Wordfence Blog
+            'section.blog-post-content',
+            '.blog-post-content .container',
+            '.blog-post-content .row',
+            
             # DarkReading / Informa TechTarget
             '.ArticleBase-BodyContent',
             '[data-testid="article-base-body-content"]',
@@ -523,13 +528,40 @@ class ArticleFetcher:
             '.post-content',
             '.story-body',
             
+            # Krebs on Security
+            '.post',
+            '.entry',
+            
+            # The Hacker News
+            '.story-content',
+            '.home-right',
+            
+            # Ars Technica
+            '.article-content',
+            '.post-content',
+            
+            # Threatpost / SC Magazine
+            '.article-content',
+            '.post-body',
+            
+            # ZDNet / TechRepublic
+            '.article-body',
+            '.content-body',
+            
+            # Wired
+            '.body__inner-container',
+            '.article__body',
+            
             # === CMS-SPECIFIC SELECTORS ===
-            # WordPress
+            # WordPress (most common for security blogs)
             '.wp-content',
             '.entry-content',
             '.post-content',
             '.single-post-content',
             '.blog-post-content',
+            '.hentry',
+            '.type-post',
+            '.format-standard',
             
             # Drupal
             '.field--name-body',
@@ -561,6 +593,24 @@ class ArticleFetcher:
             'main .content',
             '[role="article"]',
             '[role="main"]',
+            
+            # Section-based (common in Bootstrap/modern sites)
+            'section.content',
+            'section.post',
+            'section.article',
+            'section.entry',
+            'section[class*="blog"]',
+            'section[class*="post"]',
+            'section[class*="article"]',
+            'section[class*="content"]',
+            
+            # Container patterns (Bootstrap, Foundation)
+            '.container .post',
+            '.container .article',
+            '.container .content',
+            '.row .col-lg-8',  # Common blog layout
+            '.row .col-md-8',
+            '.col-12.col-lg-8',  # Bootstrap 5
             
             # === GENERIC CLASS PATTERNS ===
             # Article body patterns

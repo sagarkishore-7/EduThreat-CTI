@@ -15,7 +15,6 @@ from src.edu_cti.core.db import get_connection, init_db, insert_incident
 from src.edu_cti.pipeline.phase2.enrichment import IncidentEnricher
 from src.edu_cti.pipeline.phase2.schemas import (
     EducationRelevanceCheck,
-    URLConfidenceScore,
     CTIEnrichmentResult,
     TimelineEvent,
     MITREAttackTechnique,
