@@ -17,17 +17,19 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the source code
 COPY src/ ./src/
 
-# Create directories and copy database
-RUN mkdir -p data logs
-COPY data/eduthreat.db ./data/
+# Create directories and copy database to /app/db (not /app/data to avoid volume mount)
+RUN mkdir -p db logs
+COPY data/eduthreat.db ./db/
 
 # Set environment variables
+# DB_PATH = DATA_DIR / EDU_CTI_DB_PATH, so we set DATA_DIR to /app/db
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV EDU_CTI_DB_PATH=/app/data/eduthreat.db
+ENV EDU_CTI_DATA_DIR=/app/db
+ENV EDU_CTI_DB_PATH=eduthreat.db
 
 # Expose port
 EXPOSE 8000
 
-# Use shell form so $PORT gets expanded by shell
+# Use shell form so PORT env gets read by Python
 CMD python -m src.edu_cti.api --host 0.0.0.0
