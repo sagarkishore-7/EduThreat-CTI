@@ -7,6 +7,7 @@ WORKDIR /app
 # Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
@@ -15,10 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the source code
 COPY src/ ./src/
-COPY data/ ./data/
 
-# Create logs directory
-RUN mkdir -p logs
+# Create data and logs directories (data will be mounted as volume)
+RUN mkdir -p data logs
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
@@ -32,5 +32,5 @@ EXPOSE 8000
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
     CMD curl -f http://localhost:${PORT:-8000}/api/health || exit 1
 
-# Default command (Railway overrides with railway.json)
-CMD ["python", "-m", "src.edu_cti.api", "--host", "0.0.0.0", "--port", "8000"]
+# Default command
+CMD ["python", "-m", "src.edu_cti.api", "--host", "0.0.0.0"]
