@@ -2,6 +2,7 @@
 from pathlib import Path
 from typing import List, Optional, Set, Tuple
 from datetime import datetime
+from contextlib import contextmanager
 
 import sqlite3
 
@@ -14,13 +15,76 @@ from src.edu_cti.core.deduplication import (
 )
 
 
-def get_connection(db_path: Path = DB_PATH) -> sqlite3.Connection:
+def get_connection(
+    db_path: Path = DB_PATH,
+    timeout: float = 30.0,
+    read_only: bool = False,
+) -> sqlite3.Connection:
+    """
+    Get a database connection with proper configuration for concurrent access.
+    
+    Args:
+        db_path: Path to database file
+        timeout: Connection timeout in seconds (default: 30s for writes, 5s for reads)
+        read_only: If True, opens connection in read-only mode (faster, no locks)
+    
+    Returns:
+        SQLite connection with WAL mode enabled and proper timeouts
+    """
     db_path.parent.mkdir(parents=True, exist_ok=True)
-    # Use check_same_thread=False to allow connection sharing across threads
-    # Note: SQLite handles this with proper locking, but operations should still be serialized
-    conn = sqlite3.connect(str(db_path), check_same_thread=False)
+    
+    # For read-only connections, use URI mode with ?mode=ro
+    if read_only:
+        db_uri = f"file:{db_path}?mode=ro"
+        conn = sqlite3.connect(db_uri, uri=True, timeout=5.0, check_same_thread=False)
+    else:
+        # Write connections: longer timeout for write operations
+        conn = sqlite3.connect(str(db_path), timeout=timeout, check_same_thread=False)
+    
     conn.row_factory = sqlite3.Row
+    
+    # Enable WAL (Write-Ahead Logging) mode for better concurrency
+    # WAL allows multiple readers while a writer is active
+    if not read_only:
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            # Optimize for concurrent access
+            conn.execute("PRAGMA synchronous=NORMAL")  # Balance between safety and speed
+            conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout for busy database
+            # Increase cache size for better performance
+            conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+            # Enable foreign keys
+            conn.execute("PRAGMA foreign_keys=ON")
+        except sqlite3.Error as e:
+            # If WAL mode fails (e.g., on read-only filesystem), continue with default mode
+            # This can happen on some network filesystems
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.warning(f"Could not enable WAL mode: {e}. Continuing with default journal mode.")
+    
     return conn
+
+
+@contextmanager
+def db_transaction(conn: sqlite3.Connection, commit: bool = True):
+    """
+    Context manager for database transactions.
+    
+    Ensures transactions are committed or rolled back properly,
+    and helps keep transactions short for better concurrency.
+    
+    Usage:
+        with db_transaction(conn):
+            conn.execute("INSERT INTO ...")
+            # Automatically commits on exit
+    """
+    try:
+        yield conn
+        if commit:
+            conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
 
 
 def init_db(conn: sqlite3.Connection) -> None:
@@ -32,7 +96,20 @@ def init_db(conn: sqlite3.Connection) -> None:
     - incident_sources: Tracks which sources contributed to each incident (many-to-many)
     - source_events: Tracks per-source ingestion (prevents re-ingesting same source event)
     - source_state: Tracks source ingestion state
+    
+    Also enables WAL mode for better concurrent access.
     """
+    # Enable WAL mode first (before creating tables)
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+        conn.execute("PRAGMA foreign_keys=ON")
+    except sqlite3.Error:
+        # If WAL mode fails, continue with default (e.g., read-only filesystem)
+        pass
+    
     conn.executescript(
         """
         -- Main incidents table: Deduplicated incidents only

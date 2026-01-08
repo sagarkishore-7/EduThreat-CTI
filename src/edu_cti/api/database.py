@@ -14,10 +14,21 @@ from src.edu_cti.core.config import DB_PATH
 from src.edu_cti.core.db import get_connection
 
 
-def get_api_connection() -> sqlite3.Connection:
-    """Get a database connection for API use."""
-    conn = get_connection(DB_PATH)
-    conn.row_factory = sqlite3.Row
+def get_api_connection(read_only: bool = True) -> sqlite3.Connection:
+    """
+    Get a database connection for API use.
+    
+    Args:
+        read_only: If True (default), opens read-only connection for better concurrency.
+                  Set to False only when API needs to write (e.g., admin endpoints).
+    
+    Returns:
+        SQLite connection optimized for API reads
+    """
+    # API connections are read-only by default for better concurrency
+    # Read-only connections don't acquire write locks, allowing concurrent reads
+    # even when background processes are writing
+    conn = get_connection(DB_PATH, timeout=5.0, read_only=read_only)
     return conn
 
 
