@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Depends, Header, Response
+from fastapi import APIRouter, HTTPException, Depends, Header, Response, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -362,6 +362,99 @@ async def get_scheduler_status(_: bool = Depends(authenticate)):
             "status": "unavailable",
             "message": "Scheduler module not available",
         }
+
+
+@router.post("/upload-database")
+async def upload_database(
+    file: UploadFile = File(...),
+    _: bool = Depends(authenticate),
+):
+    """
+    Upload a database file to replace the current database.
+    
+    This allows you to upload your local database file to Railway persistent storage.
+    The uploaded file will replace the existing database at /app/data/eduthreat.db
+    
+    WARNING: This will replace the existing database. Make a backup first!
+    """
+    from pathlib import Path
+    import shutil
+    
+    if not file.filename.endswith('.db'):
+        raise HTTPException(
+            status_code=400,
+            detail="File must be a .db file (SQLite database)"
+        )
+    
+    dest_dir = Path("/app/data")
+    dest_db = dest_dir / "eduthreat.db"
+    backup_db = dest_dir / f"eduthreat.db.backup.{int(datetime.now().timestamp())}"
+    
+    try:
+        # Create destination directory
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Backup existing database if it exists
+        if dest_db.exists():
+            logger.info(f"Backing up existing database to {backup_db}")
+            print(f"[UPLOAD] Backing up existing database...", flush=True)
+            shutil.copy2(dest_db, backup_db)
+        
+        # Save uploaded file
+        logger.info(f"Uploading database file: {file.filename}")
+        print(f"[UPLOAD] Uploading database file: {file.filename}", flush=True)
+        
+        with open(dest_db, "wb") as f:
+            content = await file.read()
+            f.write(content)
+        
+        # Verify the uploaded database
+        conn = get_api_connection()
+        try:
+            cur = conn.execute("SELECT COUNT(*) FROM incidents")
+            incident_count = cur.fetchone()[0]
+            
+            cur = conn.execute("SELECT COUNT(*) FROM incident_enrichments_flat WHERE is_education_related = 1")
+            enriched_count = cur.fetchone()[0]
+            
+            db_size = dest_db.stat().st_size / (1024 * 1024)  # MB
+            conn.close()
+            
+            logger.info(f"Database uploaded successfully: {incident_count} incidents")
+            print(f"[UPLOAD] ✓ Database uploaded successfully", flush=True)
+            print(f"[UPLOAD]   Incidents: {incident_count}", flush=True)
+            print(f"[UPLOAD]   Enriched (education): {enriched_count}", flush=True)
+            print(f"[UPLOAD]   Size: {db_size:.2f} MB", flush=True)
+            
+            return {
+                "success": True,
+                "message": "Database uploaded successfully",
+                "incident_count": incident_count,
+                "enriched_count": enriched_count,
+                "db_size_mb": round(db_size, 2),
+                "backup_location": str(backup_db) if dest_db.exists() and backup_db.exists() else None,
+                "destination": str(dest_db),
+            }
+        except Exception as e:
+            # Restore backup if verification failed
+            if backup_db.exists():
+                logger.warning(f"Uploaded database verification failed, restoring backup: {e}")
+                print(f"[UPLOAD] ✗ Database verification failed, restoring backup", flush=True)
+                shutil.copy2(backup_db, dest_db)
+            
+            conn.close()
+            raise HTTPException(
+                status_code=400,
+                detail=f"Uploaded file is not a valid database: {str(e)}"
+            )
+            
+    except Exception as e:
+        logger.error(f"Database upload failed: {e}", exc_info=True)
+        print(f"[UPLOAD] ✗ Failed: {e}", flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Upload failed: {str(e)}"
+        )
 
 
 @router.post("/migrate-db")
