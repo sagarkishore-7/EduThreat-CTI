@@ -199,19 +199,31 @@ class HttpClient:
         
         Args:
             headless: If True, run in headless mode. If False, show browser window.
-                     On Railway/CI, always uses headless mode.
+                     On Railway/CI with Xvfb, can use non-headless mode.
         """
         if not SELENIUM_AVAILABLE:
             raise RuntimeError("Selenium not available")
         
-        # On Railway/CI, always use headless (no display available)
+        # Check if Xvfb is available (for non-headless on Railway/CI)
+        xvfb_available = os.getenv("DISPLAY") is not None
+        
+        # On Railway/CI, allow non-headless if Xvfb is available
         is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
         is_ci = os.getenv("CI") is not None
-        force_headless = is_railway or is_ci
         
-        if force_headless:
-            headless = True
-            logger.info("Railway/CI detected - forcing headless mode")
+        # Allow non-headless on Railway if explicitly enabled via env var
+        allow_non_headless_railway = os.getenv("ALLOW_NON_HEADLESS_RAILWAY", "true").lower() == "true"
+        
+        # Only force headless if we're on Railway/CI AND (Xvfb is not available OR non-headless is disabled)
+        if (is_railway or is_ci):
+            if not xvfb_available:
+                headless = True
+                logger.info("Railway/CI detected - forcing headless mode (no Xvfb display available)")
+            elif xvfb_available and not headless and allow_non_headless_railway:
+                logger.info("Railway/CI detected - using non-headless mode with Xvfb virtual display")
+            elif xvfb_available and not allow_non_headless_railway:
+                headless = True
+                logger.info("Railway/CI detected - forcing headless mode (ALLOW_NON_HEADLESS_RAILWAY=false)")
         
         options = ChromeOptions()
         
@@ -221,8 +233,12 @@ class HttpClient:
         if headless:
             options.add_argument("--headless=new")
         else:
-            # Non-headless mode - show the browser
-            logger.info("Opening visible browser window for bot detection bypass...")
+            # Non-headless mode - will use Xvfb display if available
+            logger.info("Opening browser window (using virtual display if on Railway/CI)...")
+            # Set display if not already set
+            if not os.getenv("DISPLAY") and (is_railway or is_ci):
+                os.environ["DISPLAY"] = ":99"
+                logger.debug(f"Set DISPLAY={os.getenv('DISPLAY')} for Railway/CI")
         
         # Essential stealth arguments
         options.add_argument("--no-sandbox")

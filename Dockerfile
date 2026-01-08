@@ -30,6 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
+    xvfb \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Google Chrome (stable version) - using modern method without deprecated apt-key
@@ -65,4 +66,7 @@ ENV EDU_CTI_DB_PATH=eduthreat.db
 EXPOSE 8000
 
 # Use shell form so PORT env gets read by Python
-CMD python -m src.edu_cti.api --host 0.0.0.0
+# Start Xvfb in background for non-headless Selenium support, then run the app
+CMD Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset & \
+    export DISPLAY=:99 && \
+    python -m src.edu_cti.api --host 0.0.0.0
