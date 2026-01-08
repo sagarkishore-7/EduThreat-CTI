@@ -18,7 +18,7 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Depends, Header, Response, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, Header, Response, UploadFile, File, Query
 from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -361,14 +361,23 @@ async def export_full_csv(
     Includes all incidents from the database, whether they've been enriched or not.
     For enriched incidents, includes enrichment data. For unenriched incidents, only basic fields.
     """
+    import traceback
     from src.edu_cti.core.db import load_incident_by_id
     from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
     from src.edu_cti.core.deduplication import extract_urls_from_incident
     
-    conn = get_api_connection()
+    logger.info(f"[EXPORT] Full CSV endpoint called (education_only={education_only})")
+    print(f"[EXPORT] Full CSV endpoint called (education_only={education_only})", flush=True)
     
+    conn = None
     try:
-        logger.info(f"[EXPORT] Starting full CSV export (education_only={education_only})")
+        logger.info(f"[EXPORT] Starting full CSV export (education_only={education_only}, type={type(education_only)})")
+        print(f"[EXPORT] Starting full CSV export (education_only={education_only})", flush=True)
+        
+        conn = get_api_connection()
+        if not conn:
+            raise HTTPException(status_code=500, detail="Failed to get database connection")
+        
         # Get all incidents (check if broken_urls column exists)
         try:
             cur = conn.execute("PRAGMA table_info(incidents)")
@@ -503,18 +512,27 @@ async def export_full_csv(
                 "Content-Disposition": f"attachment; filename={filename}"
             }
         )
-    except HTTPException:
+    except HTTPException as he:
         # Re-raise HTTP exceptions (like 404)
+        logger.error(f"[EXPORT] HTTPException in full CSV export: {he.detail}")
+        print(f"[EXPORT] HTTPException: {he.detail}", flush=True)
         raise
     except Exception as e:
-        logger.error(f"[EXPORT] Full CSV export failed: {e}", exc_info=True)
-        print(f"[EXPORT] ✗ Full CSV export failed: {e}", flush=True)
+        error_msg = str(e)
+        error_trace = traceback.format_exc()
+        logger.error(f"[EXPORT] Full CSV export failed: {error_msg}\n{error_trace}")
+        print(f"[EXPORT] ✗ Full CSV export failed: {error_msg}", flush=True)
+        print(f"[EXPORT] Traceback:\n{error_trace}", flush=True)
         raise HTTPException(
             status_code=500,
-            detail=f"CSV export failed: {str(e)}"
+            detail=f"CSV export failed: {error_msg}"
         )
     finally:
-        conn.close()
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 
 @router.get("/scheduler/status")
