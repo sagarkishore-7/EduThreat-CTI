@@ -28,17 +28,30 @@ def migrate_database():
     print("Database Migration to Railway Persistent Storage")
     print("="*70)
     
-    # Source: local repo database
-    source_db = Path("data/eduthreat.db")
+    # Source: local repo database (check multiple possible locations)
+    possible_sources = [
+        Path("data/eduthreat.db"),
+        Path("/app/data/eduthreat.db"),  # Already in Railway
+        Path("../data/eduthreat.db"),  # If running from scripts/
+    ]
+    
+    source_db = None
+    for path in possible_sources:
+        if path.exists():
+            source_db = path
+            break
     
     # Destination: Railway persistent volume
     dest_dir = Path("/app/data")
     dest_db = dest_dir / "eduthreat.db"
     
     # Check if source exists
-    if not source_db.exists():
-        print(f"❌ Source database not found: {source_db}")
+    if source_db is None:
+        print(f"❌ Source database not found in any of these locations:")
+        for path in possible_sources:
+            print(f"   - {path.absolute()}")
         print("   If this is a fresh Railway deployment, the DB will be created automatically.")
+        print("   If DB already exists at /app/data, migration is not needed.")
         return False
     
     print(f"📦 Source: {source_db.absolute()}")

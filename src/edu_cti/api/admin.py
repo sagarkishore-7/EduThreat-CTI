@@ -361,6 +361,68 @@ async def get_scheduler_status(_: bool = Depends(authenticate)):
         }
 
 
+@router.post("/migrate-db")
+async def migrate_database_endpoint(_: bool = Depends(authenticate)):
+    """
+    Migrate database from repo to Railway persistent storage.
+    
+    This copies data/eduthreat.db to /app/data/eduthreat.db if it exists.
+    """
+    import shutil
+    from pathlib import Path
+    
+    source_db = Path("data/eduthreat.db")
+    dest_dir = Path("/app/data")
+    dest_db = dest_dir / "eduthreat.db"
+    
+    try:
+        # Check if source exists
+        if not source_db.exists():
+            return {
+                "success": False,
+                "message": f"Source database not found: {source_db}. If this is a fresh deployment, the DB will be created automatically.",
+            }
+        
+        # Create destination directory
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Get source size
+        source_size = source_db.stat().st_size / (1024 * 1024)  # MB
+        
+        # Copy database
+        shutil.copy2(source_db, dest_db)
+        
+        # Verify
+        if not dest_db.exists():
+            return {
+                "success": False,
+                "message": "Database copy failed - destination not found",
+            }
+        
+        dest_size = dest_db.stat().st_size / (1024 * 1024)  # MB
+        
+        # Verify integrity
+        conn = get_api_connection()
+        cur = conn.execute("SELECT COUNT(*) FROM incidents")
+        incident_count = cur.fetchone()[0]
+        conn.close()
+        
+        return {
+            "success": True,
+            "message": "Database migrated successfully",
+            "source_size_mb": round(source_size, 2),
+            "dest_size_mb": round(dest_size, 2),
+            "incident_count": incident_count,
+            "destination": str(dest_db),
+        }
+    except Exception as e:
+        logger.error(f"Migration failed: {e}", exc_info=True)
+        return {
+            "success": False,
+            "message": f"Migration failed: {str(e)}",
+        }
+
+
 @router.post("/scheduler/trigger/{job_type}")
 async def trigger_scheduler_job(
     job_type: str,
@@ -374,6 +436,12 @@ async def trigger_scheduler_job(
     - weekly: Run weekly full ingestion
     - enrich: Run LLM enrichment
     """
+    import logging
+    import sys
+    from io import StringIO
+    
+    logger = logging.getLogger(__name__)
+    
     allowed_jobs = ["rss", "weekly", "enrich"]
     
     if job_type not in allowed_jobs:
@@ -382,25 +450,74 @@ async def trigger_scheduler_job(
             detail=f"Invalid job type. Allowed: {allowed_jobs}"
         )
     
+    # Capture logs
+    log_capture = StringIO()
+    handler = logging.StreamHandler(log_capture)
+    handler.setLevel(logging.INFO)
+    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    handler.setFormatter(formatter)
+    
+    # Add handler to root logger temporarily
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    
     try:
         from src.edu_cti.scheduler.scheduler import IngestionScheduler
+        from src.edu_cti.core.metrics import get_metrics, start_timer, stop_timer
+        
+        metrics = get_metrics()
+        start_timer(f"scheduler_job_{job_type}")
+        
+        logger.info(f"[ADMIN] Triggering scheduler job: {job_type}")
+        print(f"[ADMIN] Triggering scheduler job: {job_type}", flush=True)
         
         scheduler = IngestionScheduler(enable_enrichment=True)
         
         if job_type == "rss":
+            logger.info("[ADMIN] Starting RSS ingestion...")
+            print("[ADMIN] Starting RSS ingestion...", flush=True)
             scheduler._run_rss_ingestion()
         elif job_type == "weekly":
+            logger.info("[ADMIN] Starting weekly ingestion...")
+            print("[ADMIN] Starting weekly ingestion...", flush=True)
             scheduler._run_weekly_ingestion()
         elif job_type == "enrich":
+            logger.info("[ADMIN] Starting LLM enrichment...")
+            print("[ADMIN] Starting LLM enrichment...", flush=True)
             scheduler._run_enrichment()
+        
+        duration = stop_timer(f"scheduler_job_{job_type}")
+        metrics.increment(f"scheduler_job_{job_type}_total", labels={"status": "success"})
+        
+        # Get captured logs
+        log_output = log_capture.getvalue()
+        
+        logger.info(f"[ADMIN] Job {job_type} completed in {duration:.2f}s")
+        print(f"[ADMIN] Job {job_type} completed in {duration:.2f}s", flush=True)
+        
+        # Log metrics summary
+        metrics.log_summary()
         
         return {
             "success": True,
             "job_type": job_type,
+            "duration_seconds": duration,
             "message": f"Job {job_type} completed",
+            "logs": log_output.split("\n")[-50:],  # Last 50 lines
         }
     except Exception as e:
+        from src.edu_cti.core.metrics import get_metrics
+        metrics = get_metrics()
+        metrics.increment(f"scheduler_job_{job_type}_total", labels={"status": "error"})
+        
+        logger.error(f"[ADMIN] Job {job_type} failed: {e}", exc_info=True)
+        print(f"[ADMIN] Job {job_type} failed: {e}", flush=True)
+        
+        log_output = log_capture.getvalue()
+        
         raise HTTPException(
             status_code=500,
-            detail=f"Job failed: {str(e)}"
+            detail=f"Job failed: {str(e)}",
         )
+    finally:
+        root_logger.removeHandler(handler)

@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the source code
 COPY src/ ./src/
 
+# Copy scripts for migration and utilities
+COPY scripts/ ./scripts/
+
 # Create directories for logs (data dir will be mounted as Railway volume)
 RUN mkdir -p logs
 
