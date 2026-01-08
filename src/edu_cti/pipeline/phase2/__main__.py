@@ -389,6 +389,9 @@ def enrich_articles_phase(
                     # Save enrichment result (with raw JSON data for country/region/city extraction)
                     saved = save_enrichment_result(conn, incident_id, enrichment_result, raw_json_data=raw_json_data)
                     if saved:
+                        # Commit immediately after each save to prevent long-running transactions
+                        # This allows API reads to proceed while enrichment is running
+                        conn.commit()
                         stats["enriched"] += 1
                         logger.info(f"✓✓✓ Successfully enriched and saved incident: {incident_id}")
                         # Verify it was saved
@@ -408,6 +411,7 @@ def enrich_articles_phase(
                             # Explicitly not education-related - mark as skipped
                             reason = raw_json_data.get("_reason", "Not education-related")
                             mark_incident_skipped(conn, incident_id, f"Not education-related: {reason}")
+                            conn.commit()  # Commit skip marker immediately
                             stats["skipped"] += 1
                             logger.info(f"⊘ Skipped incident: {incident_id} - Not education-related")
                         elif raw_json_data.get("_enrichment_failed"):
@@ -415,6 +419,12 @@ def enrich_articles_phase(
                             reason = raw_json_data.get("_reason", "Enrichment failed")
                             stats["errors"] += 1
                             logger.warning(f"⚠ Enrichment failed for {incident_id}: {reason} - will retry on next run")
+                    else:
+                        # No enrichment result and no error info - mark as skipped
+                        mark_incident_skipped(conn, incident_id, "Enrichment returned no result")
+                        conn.commit()  # Commit skip marker immediately
+                        stats["skipped"] += 1
+                        logger.warning(f"⊘ Skipped incident: {incident_id} - No enrichment result")
                         else:
                             # Unknown error - don't mark as skipped
                             stats["errors"] += 1
