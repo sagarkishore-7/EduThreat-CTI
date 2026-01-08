@@ -20,11 +20,21 @@ Extract detailed CTI information from the article and output a valid JSON object
 CRITICAL OUTPUT REQUIREMENTS:
 
 1. EDUCATION RELEVANCE (MANDATORY FIRST ANALYSIS):
-   - is_edu_cyber_incident: Set to true ONLY if the incident involves an educational institution
-     (university, college, school, school district, research institute, etc.)
+   - is_edu_cyber_incident: Set to true if the incident involves an educational institution
+     (university, college, school, school district, research institute, theological seminary, etc.)
+   - CRITICAL: Pay special attention to:
+     * Data breach notifications and formal regulatory filings (e.g., Maine Attorney General filings)
+     * Organizations explicitly marked as "Type of Organization: Education" in breach notifications
+     * Theological seminaries, religious educational institutions, Bible colleges
+     * Any institution with "seminary", "academy", "institute", "college", "university", "school" in the name
+     * Educational service providers, student information systems, learning management systems
    - education_relevance_reasoning: Provide a 1-2 sentence explanation WHY this is or isn't
      education-related, citing specific evidence from the article
-   - Examples of education-related: "University of X", "XYZ School District", "College of ABC"
+   - Examples of education-related: 
+     * "University of X", "XYZ School District", "College of ABC"
+     * "Asbury Theological Seminary" (theological seminary = educational institution)
+     * "Type of Organization: Education" in data breach notifications
+     * Any formal breach filing mentioning educational institutions
    - Examples of NOT education-related: general companies, government agencies (unless education dept)
 
 2. OUTPUT FORMAT:

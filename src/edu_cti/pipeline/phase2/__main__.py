@@ -302,8 +302,20 @@ def enrich_articles_phase(
             except queue.Empty:
                 # Check if fetching is complete
                 if fetch_complete_event.is_set():
-                    logger.info(f"Fetching complete and queue is empty - stopping consumer (processed {items_processed} items)")
-                    break
+                    # Double-check: wait a bit longer in case items are still being added
+                    # This handles race conditions where fetching just completed
+                    logger.info(f"Fetching complete and queue is empty - waiting 10s for any remaining items...")
+                    time.sleep(10.0)
+                    # Check one more time
+                    try:
+                        incident_dict = incident_queue.get(timeout=1.0)
+                        # Found an item, process it
+                        logger.info(f"Found item after wait, continuing processing...")
+                        # Continue to process this item (will be handled below)
+                    except queue.Empty:
+                        # Really empty now
+                        logger.info(f"Queue confirmed empty after wait - stopping consumer (processed {items_processed} items)")
+                        break
                 # Continue waiting
                 logger.debug(f"Queue empty, waiting... (processed {items_processed} items so far)")
                 continue
