@@ -307,7 +307,7 @@ async def export_table_csv(
 
 @router.get("/export/csv/enriched")
 async def export_enriched_csv(
-    education_only: bool = Query(True, description="Filter to education-related incidents only"),
+    education_only: Optional[str] = Query("true", description="Filter to education-related incidents only (true/false)"),
     _: bool = Depends(authenticate),
 ):
     """
@@ -318,15 +318,18 @@ async def export_enriched_csv(
     """
     from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
     
-    logger.info(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only})")
-    print(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only})", flush=True)
+    # Parse education_only string to boolean
+    education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
+    
+    logger.info(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only} -> {education_only_bool})")
+    print(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only} -> {education_only_bool})", flush=True)
     
     conn = None
     try:
         conn = get_api_connection()
         incidents = load_enriched_incidents_from_db(conn, use_flat_table=True)
         
-        if education_only:
+        if education_only_bool:
             incidents = [i for i in incidents if i.get("is_education_related")]
         
         if not incidents:
@@ -372,7 +375,7 @@ async def export_enriched_csv(
 
 @router.get("/export/csv/full")
 async def export_full_csv(
-    education_only: bool = Query(False, description="Filter to education-related incidents only"),
+    education_only: Optional[str] = Query("false", description="Filter to education-related incidents only (true/false)"),
     _: bool = Depends(authenticate),
 ):
     """
@@ -383,9 +386,12 @@ async def export_full_csv(
     """
     import traceback
     
+    # Parse education_only string to boolean
+    education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
+    
     # Log immediately to verify function is called
-    logger.info(f"[EXPORT] Full CSV endpoint called (education_only={education_only})")
-    print(f"[EXPORT] Full CSV endpoint called (education_only={education_only})", flush=True)
+    logger.info(f"[EXPORT] Full CSV endpoint called (education_only={education_only} -> {education_only_bool})")
+    print(f"[EXPORT] Full CSV endpoint called (education_only={education_only} -> {education_only_bool})", flush=True)
     
     try:
         from src.edu_cti.core.db import load_incident_by_id
@@ -398,8 +404,8 @@ async def export_full_csv(
     
     conn = None
     try:
-        logger.info(f"[EXPORT] Starting full CSV export (education_only={education_only}, type={type(education_only)})")
-        print(f"[EXPORT] Starting full CSV export (education_only={education_only})", flush=True)
+        logger.info(f"[EXPORT] Starting full CSV export (education_only={education_only_bool})")
+        print(f"[EXPORT] Starting full CSV export (education_only={education_only_bool})", flush=True)
         
         conn = get_api_connection()
         if not conn:
@@ -500,7 +506,7 @@ async def export_full_csv(
                         incident_dict[key] = value
             
             # Apply education filter if requested
-            if education_only:
+            if education_only_bool:
                 is_education = incident_dict.get("is_education_related", False)
                 if not is_education:
                     continue
