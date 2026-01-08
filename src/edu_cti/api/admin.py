@@ -376,30 +376,22 @@ async def export_full_csv(
         except:
             has_broken_urls = False
         
-        # Build query with optional broken_urls field
-        if has_broken_urls:
-            query = """
-                SELECT 
-                    i.*,
-                    GROUP_CONCAT(DISTINCT isrc.source) as sources
-                FROM incidents i
-                LEFT JOIN incident_sources isrc ON i.incident_id = isrc.incident_id
-                GROUP BY i.incident_id
-                ORDER BY i.ingested_at DESC
-            """
-        else:
-            query = """
-                SELECT 
-                    i.*,
-                    NULL as broken_urls,
-                    GROUP_CONCAT(DISTINCT isrc.source) as sources
-                FROM incidents i
-                LEFT JOIN incident_sources isrc ON i.incident_id = isrc.incident_id
-                GROUP BY i.incident_id
-                ORDER BY i.ingested_at DESC
-            """
+        # Build query - always select all columns from incidents
+        query = """
+            SELECT 
+                i.*,
+                GROUP_CONCAT(DISTINCT isrc.source) as sources
+            FROM incidents i
+            LEFT JOIN incident_sources isrc ON i.incident_id = isrc.incident_id
+            GROUP BY i.incident_id
+            ORDER BY i.ingested_at DESC
+        """
         
         cur = conn.execute(query)
+        
+        # Get column names from the query result BEFORE fetching rows
+        column_names = [description[0] for description in cur.description] if cur.description else []
+        
         all_incidents = cur.fetchall()
         
         # Get enriched incidents with their enrichment data
@@ -417,33 +409,43 @@ async def export_full_csv(
         
         for row in all_incidents:
             incident_id = row["incident_id"]
-            is_enriched = row["llm_enriched"] == 1
+            is_enriched = row["llm_enriched"] == 1 if row["llm_enriched"] else False
+            
+            # Helper function to safely get row value
+            def safe_get(key, default=""):
+                try:
+                    if key in column_names:
+                        value = row[key]
+                        return value if value is not None else default
+                    return default
+                except (KeyError, IndexError):
+                    return default
             
             # Start with basic incident data
             incident_dict = {
                 "incident_id": incident_id,
-                "sources": row["sources"] or "",
-                "university_name": row["university_name"] or "",
-                "victim_raw_name": row["victim_raw_name"] or "",
-                "institution_type": row["institution_type"] or "",
-                "country": row["country"] or "",
-                "region": row["region"] or "",
-                "city": row["city"] or "",
-                "incident_date": row["incident_date"] or "",
-                "date_precision": row["date_precision"] or "",
-                "source_published_date": row["source_published_date"] or "",
-                "ingested_at": row["ingested_at"] or "",
-                "title": row["title"] or "",
-                "subtitle": row["subtitle"] or "",
-                "primary_url": row["primary_url"] or "",
-                "all_urls": row["all_urls"] or "",
-                "broken_urls": (row.get("broken_urls") or "") if has_broken_urls else "",
-                "attack_type_hint": row["attack_type_hint"] or "",
-                "status": row["status"] or "",
-                "source_confidence": row["source_confidence"] or "",
-                "notes": row["notes"] or "",
+                "sources": safe_get("sources"),
+                "university_name": safe_get("university_name"),
+                "victim_raw_name": safe_get("victim_raw_name"),
+                "institution_type": safe_get("institution_type"),
+                "country": safe_get("country"),
+                "region": safe_get("region"),
+                "city": safe_get("city"),
+                "incident_date": safe_get("incident_date"),
+                "date_precision": safe_get("date_precision"),
+                "source_published_date": safe_get("source_published_date"),
+                "ingested_at": safe_get("ingested_at"),
+                "title": safe_get("title"),
+                "subtitle": safe_get("subtitle"),
+                "primary_url": safe_get("primary_url"),
+                "all_urls": safe_get("all_urls"),
+                "broken_urls": safe_get("broken_urls") if has_broken_urls else "",
+                "attack_type_hint": safe_get("attack_type_hint"),
+                "status": safe_get("status"),
+                "source_confidence": safe_get("source_confidence"),
+                "notes": safe_get("notes"),
                 "llm_enriched": "Yes" if is_enriched else "No",
-                "llm_enriched_at": row["llm_enriched_at"] or "",
+                "llm_enriched_at": safe_get("llm_enriched_at"),
             }
             
             # Add enrichment data if available
