@@ -368,6 +368,7 @@ async def export_full_csv(
     conn = get_api_connection()
     
     try:
+        logger.info(f"[EXPORT] Starting full CSV export (education_only={education_only})")
         # Get all incidents (check if broken_urls column exists)
         try:
             cur = conn.execute("PRAGMA table_info(incidents)")
@@ -407,45 +408,49 @@ async def export_full_csv(
         combined_incidents = []
         fieldnames_set = set()
         
+        # Helper function to safely get row value (defined outside loop for efficiency)
+        def safe_get(row, key, default=""):
+            try:
+                if key in column_names:
+                    value = row[key]
+                    return value if value is not None else default
+                return default
+            except (KeyError, IndexError, TypeError):
+                return default
+        
         for row in all_incidents:
-            incident_id = row["incident_id"]
-            is_enriched = row["llm_enriched"] == 1 if row["llm_enriched"] else False
+            incident_id = safe_get(row, "incident_id", "")
+            if not incident_id:
+                continue  # Skip rows without incident_id
             
-            # Helper function to safely get row value
-            def safe_get(key, default=""):
-                try:
-                    if key in column_names:
-                        value = row[key]
-                        return value if value is not None else default
-                    return default
-                except (KeyError, IndexError):
-                    return default
+            llm_enriched_val = safe_get(row, "llm_enriched", 0)
+            is_enriched = llm_enriched_val == 1 if llm_enriched_val else False
             
             # Start with basic incident data
             incident_dict = {
                 "incident_id": incident_id,
-                "sources": safe_get("sources"),
-                "university_name": safe_get("university_name"),
-                "victim_raw_name": safe_get("victim_raw_name"),
-                "institution_type": safe_get("institution_type"),
-                "country": safe_get("country"),
-                "region": safe_get("region"),
-                "city": safe_get("city"),
-                "incident_date": safe_get("incident_date"),
-                "date_precision": safe_get("date_precision"),
-                "source_published_date": safe_get("source_published_date"),
-                "ingested_at": safe_get("ingested_at"),
-                "title": safe_get("title"),
-                "subtitle": safe_get("subtitle"),
-                "primary_url": safe_get("primary_url"),
-                "all_urls": safe_get("all_urls"),
-                "broken_urls": safe_get("broken_urls") if has_broken_urls else "",
-                "attack_type_hint": safe_get("attack_type_hint"),
-                "status": safe_get("status"),
-                "source_confidence": safe_get("source_confidence"),
-                "notes": safe_get("notes"),
+                "sources": safe_get(row, "sources"),
+                "university_name": safe_get(row, "university_name"),
+                "victim_raw_name": safe_get(row, "victim_raw_name"),
+                "institution_type": safe_get(row, "institution_type"),
+                "country": safe_get(row, "country"),
+                "region": safe_get(row, "region"),
+                "city": safe_get(row, "city"),
+                "incident_date": safe_get(row, "incident_date"),
+                "date_precision": safe_get(row, "date_precision"),
+                "source_published_date": safe_get(row, "source_published_date"),
+                "ingested_at": safe_get(row, "ingested_at"),
+                "title": safe_get(row, "title"),
+                "subtitle": safe_get(row, "subtitle"),
+                "primary_url": safe_get(row, "primary_url"),
+                "all_urls": safe_get(row, "all_urls"),
+                "broken_urls": safe_get(row, "broken_urls") if has_broken_urls else "",
+                "attack_type_hint": safe_get(row, "attack_type_hint"),
+                "status": safe_get(row, "status"),
+                "source_confidence": safe_get(row, "source_confidence"),
+                "notes": safe_get(row, "notes"),
                 "llm_enriched": "Yes" if is_enriched else "No",
-                "llm_enriched_at": safe_get("llm_enriched_at"),
+                "llm_enriched_at": safe_get(row, "llm_enriched_at"),
             }
             
             # Add enrichment data if available
@@ -489,12 +494,24 @@ async def export_full_csv(
         
         filename = f"eduthreat_full_all_incidents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
+        logger.info(f"[EXPORT] Generated CSV with {len(combined_incidents)} incidents, {len(fieldnames)} columns")
+        
         return StreamingResponse(
             iter([csv_content]),
             media_type="text/csv",
             headers={
                 "Content-Disposition": f"attachment; filename={filename}"
             }
+        )
+    except HTTPException:
+        # Re-raise HTTP exceptions (like 404)
+        raise
+    except Exception as e:
+        logger.error(f"[EXPORT] Full CSV export failed: {e}", exc_info=True)
+        print(f"[EXPORT] ✗ Full CSV export failed: {e}", flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"CSV export failed: {str(e)}"
         )
     finally:
         conn.close()
