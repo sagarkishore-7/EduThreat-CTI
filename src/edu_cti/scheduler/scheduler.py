@@ -222,30 +222,77 @@ class IngestionScheduler:
     
     def _run_enrichment(self):
         """Run LLM enrichment on unenriched incidents."""
+        from src.edu_cti.core.metrics import get_metrics, start_timer, stop_timer, increment
+        
+        metrics = get_metrics()
+        start_timer("enrichment")
+        
         logger.info("[SCHEDULER] Running LLM enrichment...")
+        print("[SCHEDULER] Running LLM enrichment...", flush=True)
         
         try:
             from src.edu_cti.pipeline.phase2.__main__ import main as enrich_main
+            from src.edu_cti.core.db import get_connection
             import sys
             
-            # Build args for enrichment
+            # Get count before
+            conn = get_connection()
+            cur = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 1")
+            enriched_before = cur.fetchone()[0]
+            cur = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 0")
+            unenriched_before = cur.fetchone()[0]
+            conn.close()
+            
+            print(f"[SCHEDULER] Current status: {enriched_before} enriched, {unenriched_before} unenriched", flush=True)
+            
+            # Build args for enrichment (use valid arguments only)
             original_argv = sys.argv
             sys.argv = [
                 "eduthreat-enrich",
                 "--limit", str(self.enrichment_batch_size),
                 "--rate-limit-delay", str(self.enrichment_delay),
-                "--skip-fetch",  # Skip article fetching, just enrich with existing data
+                "--skip-non-education",  # Skip incidents not related to education
             ]
             
             try:
                 enrich_main()
             finally:
                 sys.argv = original_argv
-                
-            logger.info("[SCHEDULER] LLM enrichment complete")
             
+            # Get count after
+            conn = get_connection()
+            cur = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 1")
+            enriched_after = cur.fetchone()[0]
+            cur = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 0")
+            unenriched_after = cur.fetchone()[0]
+            conn.close()
+            
+            duration = stop_timer("enrichment")
+            new_enriched = enriched_after - enriched_before
+            increment("enrichment_incidents", new_enriched)
+            increment("enrichment_runs", labels={"status": "success"})
+            
+            logger.info(f"[SCHEDULER] LLM enrichment complete. New enriched: {new_enriched}")
+            print(f"[SCHEDULER] ✓ LLM enrichment complete!", flush=True)
+            print(f"[SCHEDULER]   New enriched: {new_enriched}", flush=True)
+            print(f"[SCHEDULER]   Total enriched: {enriched_after} (was {enriched_before})", flush=True)
+            print(f"[SCHEDULER]   Remaining unenriched: {unenriched_after}", flush=True)
+            print(f"[SCHEDULER]   Duration: {duration:.2f}s", flush=True)
+            
+        except SystemExit as e:
+            # argparse exits with SystemExit(2) on errors
+            if e.code == 2:
+                logger.error("[SCHEDULER] LLM enrichment argument error - check CLI arguments")
+                print(f"[SCHEDULER] ✗ LLM enrichment failed: Invalid arguments", flush=True)
+                increment("enrichment_runs", labels={"status": "error"})
+                raise
+            raise
         except Exception as e:
+            stop_timer("enrichment")
+            increment("enrichment_runs", labels={"status": "error"})
             logger.error(f"[SCHEDULER] LLM enrichment failed: {e}", exc_info=True)
+            print(f"[SCHEDULER] ✗ LLM enrichment failed: {e}", flush=True)
+            raise
     
     def _scheduler_loop(self):
         """Main scheduler loop."""
