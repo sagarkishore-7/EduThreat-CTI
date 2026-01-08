@@ -17,15 +17,15 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the source code
 COPY src/ ./src/
 
-# Create directories and copy database to /app/db (not /app/data to avoid volume mount)
-RUN mkdir -p db logs
-COPY data/eduthreat.db ./db/
+# Create directories for logs (data dir will be mounted as Railway volume)
+RUN mkdir -p logs
 
 # Set environment variables
-# DB_PATH = DATA_DIR / EDU_CTI_DB_PATH, so we set DATA_DIR to /app/db
+# Railway persistent storage is mounted at /app/data
+# DB will be created/used from persistent volume
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
-ENV EDU_CTI_DATA_DIR=/app/db
+ENV EDU_CTI_DATA_DIR=/app/data
 ENV EDU_CTI_DB_PATH=eduthreat.db
 
 # Expose port

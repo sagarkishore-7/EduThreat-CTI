@@ -83,10 +83,16 @@ SOURCE_THERECORD = "therecord"
 SOURCE_DARKREADING = "darkreading"
 
 # Environment variable configuration
+# Railway persistent storage is typically at /app/data
+# For local dev, use ./data
 DATA_DIR = Path(os.getenv("EDU_CTI_DATA_DIR", "data"))
 DB_PATH = DATA_DIR / os.getenv("EDU_CTI_DB_PATH", "eduthreat.db")
 LOG_LEVEL = os.getenv("EDU_CTI_LOG_LEVEL", "INFO")
 LOG_FILE = Path(os.getenv("EDU_CTI_LOG_FILE", "logs/pipeline.log"))
+
+# Ensure data directory exists
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
 # ---- Phase 2: LLM Enrichment ----
 

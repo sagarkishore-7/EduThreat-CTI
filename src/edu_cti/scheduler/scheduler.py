@@ -67,16 +67,31 @@ class IngestionScheduler:
         
     def _run_rss_ingestion(self):
         """Run RSS feed ingestion."""
-        logger.info("="*50)
+        from src.edu_cti.core.metrics import get_metrics, start_timer, stop_timer, increment
+        
+        metrics = get_metrics()
+        start_timer("rss_ingestion")
+        
+        logger.info("="*70)
         logger.info("[SCHEDULER] Starting RSS feed ingestion...")
-        logger.info("="*50)
+        logger.info("="*70)
+        print("="*70, flush=True)
+        print("[SCHEDULER] Starting RSS feed ingestion...", flush=True)
+        print("="*70, flush=True)
         
         try:
             ensure_dirs()
             conn = get_connection()
             init_db(conn)
             
+            # Get count before
+            cur = conn.execute("SELECT COUNT(*) FROM incidents")
+            count_before = cur.fetchone()[0]
+            print(f"[SCHEDULER] Current incidents in DB: {count_before}", flush=True)
+            
             label, collector = GROUP_COLLECTORS["rss"]
+            print(f"[SCHEDULER] Running RSS collector: {label}", flush=True)
+            
             new_count = _ingest_group(
                 conn,
                 label,
@@ -87,34 +102,68 @@ class IngestionScheduler:
                 incremental=True,
             )
             
+            # Get count after
+            cur = conn.execute("SELECT COUNT(*) FROM incidents")
+            count_after = cur.fetchone()[0]
+            
             conn.close()
             self._last_rss_run = datetime.now()
-            logger.info(f"[SCHEDULER] RSS ingestion complete. New incidents: {new_count}")
+            
+            duration = stop_timer("rss_ingestion")
+            increment("rss_ingestion_incidents", new_count)
+            increment("rss_ingestion_runs", labels={"status": "success"})
+            
+            logger.info(f"[SCHEDULER] RSS ingestion complete. New incidents: {new_count} (total: {count_after})")
+            print(f"[SCHEDULER] ✓ RSS ingestion complete!", flush=True)
+            print(f"[SCHEDULER]   New incidents: {new_count}", flush=True)
+            print(f"[SCHEDULER]   Total incidents: {count_after} (was {count_before})", flush=True)
+            print(f"[SCHEDULER]   Duration: {duration:.2f}s", flush=True)
             
             # Run enrichment if enabled
             if self.enable_enrichment and new_count > 0:
+                print(f"[SCHEDULER] Triggering enrichment for {new_count} new incidents...", flush=True)
                 self._run_enrichment()
+            else:
+                print(f"[SCHEDULER] Skipping enrichment (enabled={self.enable_enrichment}, new={new_count})", flush=True)
                 
         except Exception as e:
+            stop_timer("rss_ingestion")
+            increment("rss_ingestion_runs", labels={"status": "error"})
             logger.error(f"[SCHEDULER] RSS ingestion failed: {e}", exc_info=True)
+            print(f"[SCHEDULER] ✗ RSS ingestion failed: {e}", flush=True)
+            raise
     
     def _run_weekly_ingestion(self):
         """Run full weekly ingestion (curated + news)."""
-        logger.info("="*50)
+        from src.edu_cti.core.metrics import get_metrics, start_timer, stop_timer, increment
+        
+        metrics = get_metrics()
+        start_timer("weekly_ingestion")
+        
+        logger.info("="*70)
         logger.info("[SCHEDULER] Starting weekly full ingestion...")
-        logger.info("="*50)
+        logger.info("="*70)
+        print("="*70, flush=True)
+        print("[SCHEDULER] Starting weekly full ingestion...", flush=True)
+        print("="*70, flush=True)
         
         try:
             ensure_dirs()
             conn = get_connection()
             init_db(conn)
             
+            # Get count before
+            cur = conn.execute("SELECT COUNT(*) FROM incidents")
+            count_before = cur.fetchone()[0]
+            print(f"[SCHEDULER] Current incidents in DB: {count_before}", flush=True)
+            
             total_new = 0
             
             # Run curated sources
             logger.info("[SCHEDULER] Running curated sources...")
+            print("[SCHEDULER] Running curated sources...", flush=True)
             label, collector = GROUP_COLLECTORS["curated"]
-            total_new += _ingest_group(
+            curated_new = _ingest_group(
                 conn,
                 label,
                 collector,
@@ -122,11 +171,14 @@ class IngestionScheduler:
                 max_pages=None,  # Fetch all new pages
                 incremental=True,
             )
+            total_new += curated_new
+            print(f"[SCHEDULER]   Curated sources: {curated_new} new incidents", flush=True)
             
             # Run news sources
             logger.info("[SCHEDULER] Running news sources...")
+            print("[SCHEDULER] Running news sources...", flush=True)
             label, collector = GROUP_COLLECTORS["news"]
-            total_new += _ingest_group(
+            news_new = _ingest_group(
                 conn,
                 label,
                 collector,
@@ -134,17 +186,39 @@ class IngestionScheduler:
                 max_pages=None,  # Fetch all new pages
                 incremental=True,
             )
+            total_new += news_new
+            print(f"[SCHEDULER]   News sources: {news_new} new incidents", flush=True)
+            
+            # Get count after
+            cur = conn.execute("SELECT COUNT(*) FROM incidents")
+            count_after = cur.fetchone()[0]
             
             conn.close()
             self._last_weekly_run = datetime.now()
-            logger.info(f"[SCHEDULER] Weekly ingestion complete. New incidents: {total_new}")
+            
+            duration = stop_timer("weekly_ingestion")
+            increment("weekly_ingestion_incidents", total_new)
+            increment("weekly_ingestion_runs", labels={"status": "success"})
+            
+            logger.info(f"[SCHEDULER] Weekly ingestion complete. New incidents: {total_new} (total: {count_after})")
+            print(f"[SCHEDULER] ✓ Weekly ingestion complete!", flush=True)
+            print(f"[SCHEDULER]   New incidents: {total_new} (curated: {curated_new}, news: {news_new})", flush=True)
+            print(f"[SCHEDULER]   Total incidents: {count_after} (was {count_before})", flush=True)
+            print(f"[SCHEDULER]   Duration: {duration:.2f}s", flush=True)
             
             # Run enrichment if enabled
             if self.enable_enrichment and total_new > 0:
+                print(f"[SCHEDULER] Triggering enrichment for {total_new} new incidents...", flush=True)
                 self._run_enrichment()
+            else:
+                print(f"[SCHEDULER] Skipping enrichment (enabled={self.enable_enrichment}, new={total_new})", flush=True)
                 
         except Exception as e:
+            stop_timer("weekly_ingestion")
+            increment("weekly_ingestion_runs", labels={"status": "error"})
             logger.error(f"[SCHEDULER] Weekly ingestion failed: {e}", exc_info=True)
+            print(f"[SCHEDULER] ✗ Weekly ingestion failed: {e}", flush=True)
+            raise
     
     def _run_enrichment(self):
         """Run LLM enrichment on unenriched incidents."""

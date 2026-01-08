@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import random
 import time
 import logging
@@ -198,9 +199,19 @@ class HttpClient:
         
         Args:
             headless: If True, run in headless mode. If False, show browser window.
+                     On Railway/CI, always uses headless mode.
         """
         if not SELENIUM_AVAILABLE:
             raise RuntimeError("Selenium not available")
+        
+        # On Railway/CI, always use headless (no display available)
+        is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
+        is_ci = os.getenv("CI") is not None
+        force_headless = is_railway or is_ci
+        
+        if force_headless:
+            headless = True
+            logger.info("Railway/CI detected - forcing headless mode")
         
         options = ChromeOptions()
         

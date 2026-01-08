@@ -9,7 +9,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 from datetime import datetime
 
-from fastapi import FastAPI, Query, HTTPException, Depends
+from fastapi import FastAPI, Query, HTTPException, Depends, Response
 from fastapi.middleware.cors import CORSMiddleware
 
 from .models import (
@@ -134,6 +134,18 @@ async def api_health_check():
             "error": str(e),
             "timestamp": datetime.utcnow().isoformat(),
         }
+
+
+@app.get("/metrics")
+async def prometheus_metrics():
+    """Prometheus metrics endpoint."""
+    from src.edu_cti.core.metrics import get_metrics
+    
+    metrics = get_metrics()
+    return Response(
+        content=metrics.format_prometheus(),
+        media_type="text/plain; version=0.0.4",
+    )
 
 
 # ============================================================
