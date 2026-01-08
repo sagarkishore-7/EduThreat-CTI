@@ -220,7 +220,7 @@ class IngestionScheduler:
             print(f"[SCHEDULER] ✗ Weekly ingestion failed: {e}", flush=True)
             raise
     
-    def _run_enrichment(self, limit: Optional[int] = None) -> None:
+    def _run_enrichment(self, limit: Optional[int] = None, manual_trigger: bool = False) -> None:
         """
         Run LLM enrichment on unenriched incidents.
         
@@ -234,6 +234,9 @@ class IngestionScheduler:
         
         logger.info("[SCHEDULER] Running LLM enrichment...")
         print("[SCHEDULER] Running LLM enrichment...", flush=True)
+        
+        # Mark if this is a manual trigger
+        self._manual_trigger = manual_trigger
         
         try:
             from src.edu_cti.pipeline.phase2.__main__ import main as enrich_main
@@ -258,11 +261,18 @@ class IngestionScheduler:
                 "--skip-non-education",  # Skip incidents not related to education
             ]
             
-            # Only add --limit if specified (None means process all)
+            # Only add --limit if explicitly specified
+            # When limit=None is passed (manual trigger), process ALL unenriched incidents
+            # When limit is not passed (automatic trigger), use batch size
             if limit is not None:
+                # Explicit limit provided (e.g., limit=50)
                 args.extend(["--limit", str(limit)])
+            elif manual_trigger:
+                # Manual trigger with limit=None means process all
+                # Don't add --limit flag - process all unenriched incidents
+                pass
             elif self.enrichment_batch_size > 0:
-                # Use batch size if no limit specified
+                # Automatic trigger: use batch size
                 args.extend(["--limit", str(self.enrichment_batch_size)])
             # If both are None/0, process all (no --limit flag)
             

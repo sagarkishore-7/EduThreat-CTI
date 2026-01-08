@@ -546,10 +546,11 @@ def save_enrichment_result(
     ]
     
     # Update incident_date if LLM extracted it
+    # Always use LLM-extracted date (it's more accurate than source_published_date)
     if llm_incident_date:
         update_fields += """,
-        incident_date = COALESCE(incident_date, ?),
-        date_precision = COALESCE(date_precision, ?)
+        incident_date = ?,
+        date_precision = ?
         """
         update_params.extend([llm_incident_date, llm_date_precision or "approximate"])
     
