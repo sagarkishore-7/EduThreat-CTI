@@ -529,6 +529,135 @@ class HttpClient:
         else:
             logger.debug("No cookie consent popup found or already dismissed")
 
+    def _handle_darkreading_interstitial(self, driver: webdriver.Chrome, url: str) -> bool:
+        """
+        Handle DarkReading.com's interstitial ad page.
+        
+        DarkReading shows an ad page that either:
+        1. Auto-redirects after 15 seconds
+        2. Has a "Continue to site" button in the top right
+        
+        Args:
+            driver: Selenium WebDriver instance
+            url: Original URL being accessed
+            
+        Returns:
+            True if interstitial was handled (clicked button or waited for redirect), False otherwise
+        """
+        domain = self._get_domain(url)
+        if "darkreading.com" not in domain:
+            return False
+        
+        try:
+            # Check if we're on an interstitial/ad page
+            # DarkReading interstitial typically has specific indicators
+            page_source = driver.page_source.lower()
+            interstitial_indicators = [
+                "continue to site",
+                "continue to darkreading",
+                "skip ad",
+                "skip to content",
+            ]
+            
+            is_interstitial = any(indicator in page_source for indicator in interstitial_indicators)
+            
+            if not is_interstitial:
+                # Check current URL - if it's not the original article URL, might be on interstitial
+                current_url = driver.current_url.lower()
+                if "darkreading.com" in current_url and url.lower() not in current_url:
+                    # Might be on interstitial, check for redirect
+                    is_interstitial = True
+            
+            if not is_interstitial:
+                return False
+            
+            logger.info("Detected DarkReading interstitial ad page, attempting to bypass...")
+            
+            # Try to find and click "Continue to site" button
+            # Common selectors for the continue button (top right)
+            continue_button_selectors = [
+                # Text-based selectors
+                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue to site')]",
+                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue to site')]",
+                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
+                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
+                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'skip')]",
+                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'skip')]",
+                
+                # CSS selectors (common patterns)
+                "button[class*='continue']",
+                "a[class*='continue']",
+                "button[class*='skip']",
+                "a[class*='skip']",
+                "[class*='continue-to-site']",
+                "[class*='skip-ad']",
+                "[id*='continue']",
+                "[id*='skip']",
+                
+                # Top-right positioned buttons
+                "button[style*='right']",
+                "a[style*='right']",
+                "[class*='top-right'] button",
+                "[class*='top-right'] a",
+            ]
+            
+            button_clicked = False
+            for selector in continue_button_selectors:
+                try:
+                    if selector.startswith("//"):
+                        # XPath selector
+                        elements = driver.find_elements(By.XPATH, selector)
+                    else:
+                        # CSS selector
+                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
+                    
+                    for elem in elements:
+                        try:
+                            if elem.is_displayed() and elem.is_enabled():
+                                # Check if button text contains "continue" or "skip"
+                                elem_text = elem.text.lower().strip()
+                                if any(keyword in elem_text for keyword in ["continue", "skip", "proceed"]):
+                                    elem.click()
+                                    logger.info(f"Clicked 'Continue to site' button on DarkReading interstitial")
+                                    button_clicked = True
+                                    time.sleep(2)  # Wait for redirect
+                                    break
+                        except Exception as e:
+                            logger.debug(f"Could not click button with selector {selector}: {e}")
+                            continue
+                    
+                    if button_clicked:
+                        break
+                except Exception:
+                    continue
+            
+            # If button not found, wait for auto-redirect (up to 16 seconds)
+            if not button_clicked:
+                logger.info("Continue button not found, waiting for auto-redirect (up to 16 seconds)...")
+                original_url = driver.current_url
+                
+                # Wait up to 16 seconds for redirect, checking every 0.5 seconds
+                for _ in range(32):  # 32 * 0.5 = 16 seconds
+                    time.sleep(0.5)
+                    current_url = driver.current_url
+                    if current_url != original_url:
+                        logger.info(f"Auto-redirected from interstitial: {current_url}")
+                        button_clicked = True
+                        break
+                
+                if not button_clicked:
+                    logger.warning("DarkReading interstitial did not redirect after 16 seconds")
+            
+            # Wait a bit more for page to fully load after redirect/click
+            if button_clicked:
+                time.sleep(2)
+            
+            return button_clicked
+            
+        except Exception as e:
+            logger.debug(f"Error handling DarkReading interstitial: {e}")
+            return False
+
     def _handle_ad_popups(self, driver: webdriver.Chrome) -> None:
         """
         Close ad popups and overlays that may block content.
@@ -651,6 +780,9 @@ class HttpClient:
             
             # Random initial delay
             time.sleep(random.uniform(2, 4))
+            
+            # Handle DarkReading interstitial ad (must be done early, before other handlers)
+            self._handle_darkreading_interstitial(driver, url)
             
             # Handle cookie consent
             self._handle_cookie_consent(driver)
