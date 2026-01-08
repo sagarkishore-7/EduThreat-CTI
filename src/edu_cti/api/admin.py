@@ -305,15 +305,16 @@ async def export_table_csv(
         conn.close()
 
 
-@router.get("/export/csv/full")
-async def export_full_csv(
+@router.get("/export/csv/enriched")
+async def export_enriched_csv(
     education_only: bool = True,
     _: bool = Depends(authenticate),
 ):
     """
-    Export full enriched dataset as CSV.
+    Export enriched dataset as CSV (only incidents that have been enriched).
     
     Joins incidents with enrichments for complete data.
+    Only includes incidents that have been processed by LLM enrichment.
     """
     from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
     
@@ -326,7 +327,7 @@ async def export_full_csv(
             incidents = [i for i in incidents if i.get("is_education_related")]
         
         if not incidents:
-            raise HTTPException(status_code=404, detail="No incidents found")
+            raise HTTPException(status_code=404, detail="No enriched incidents found")
         
         # Generate CSV
         output = io.StringIO()
@@ -336,7 +337,155 @@ async def export_full_csv(
         
         csv_content = output.getvalue()
         
-        filename = f"eduthreat_full_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        filename = f"eduthreat_enriched_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        return StreamingResponse(
+            iter([csv_content]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+    finally:
+        conn.close()
+
+
+@router.get("/export/csv/full")
+async def export_full_csv(
+    education_only: bool = False,
+    _: bool = Depends(authenticate),
+):
+    """
+    Export ALL incidents as CSV (enriched and unenriched).
+    
+    Includes all incidents from the database, whether they've been enriched or not.
+    For enriched incidents, includes enrichment data. For unenriched incidents, only basic fields.
+    """
+    from src.edu_cti.core.db import load_incident_by_id
+    from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
+    from src.edu_cti.core.deduplication import extract_urls_from_incident
+    
+    conn = get_api_connection()
+    
+    try:
+        # Get all incidents (check if broken_urls column exists)
+        try:
+            cur = conn.execute("PRAGMA table_info(incidents)")
+            columns = [row[1] for row in cur.fetchall()]
+            has_broken_urls = "broken_urls" in columns
+        except:
+            has_broken_urls = False
+        
+        # Build query with optional broken_urls field
+        if has_broken_urls:
+            query = """
+                SELECT 
+                    i.*,
+                    GROUP_CONCAT(DISTINCT isrc.source) as sources
+                FROM incidents i
+                LEFT JOIN incident_sources isrc ON i.incident_id = isrc.incident_id
+                GROUP BY i.incident_id
+                ORDER BY i.ingested_at DESC
+            """
+        else:
+            query = """
+                SELECT 
+                    i.*,
+                    NULL as broken_urls,
+                    GROUP_CONCAT(DISTINCT isrc.source) as sources
+                FROM incidents i
+                LEFT JOIN incident_sources isrc ON i.incident_id = isrc.incident_id
+                GROUP BY i.incident_id
+                ORDER BY i.ingested_at DESC
+            """
+        
+        cur = conn.execute(query)
+        all_incidents = cur.fetchall()
+        
+        # Get enriched incidents with their enrichment data
+        enriched_incidents_data = {}
+        try:
+            enriched_list = load_enriched_incidents_from_db(conn, use_flat_table=True)
+            for inc in enriched_list:
+                enriched_incidents_data[inc.get("incident_id")] = inc
+        except Exception as e:
+            logger.warning(f"Could not load enriched incidents: {e}")
+        
+        # Build combined dataset
+        combined_incidents = []
+        fieldnames_set = set()
+        
+        for row in all_incidents:
+            incident_id = row["incident_id"]
+            is_enriched = row["llm_enriched"] == 1
+            
+            # Start with basic incident data
+            incident_dict = {
+                "incident_id": incident_id,
+                "sources": row["sources"] or "",
+                "university_name": row["university_name"] or "",
+                "victim_raw_name": row["victim_raw_name"] or "",
+                "institution_type": row["institution_type"] or "",
+                "country": row["country"] or "",
+                "region": row["region"] or "",
+                "city": row["city"] or "",
+                "incident_date": row["incident_date"] or "",
+                "date_precision": row["date_precision"] or "",
+                "source_published_date": row["source_published_date"] or "",
+                "ingested_at": row["ingested_at"] or "",
+                "title": row["title"] or "",
+                "subtitle": row["subtitle"] or "",
+                "primary_url": row["primary_url"] or "",
+                "all_urls": row["all_urls"] or "",
+                "broken_urls": (row.get("broken_urls") or "") if has_broken_urls else "",
+                "attack_type_hint": row["attack_type_hint"] or "",
+                "status": row["status"] or "",
+                "source_confidence": row["source_confidence"] or "",
+                "notes": row["notes"] or "",
+                "llm_enriched": "Yes" if is_enriched else "No",
+                "llm_enriched_at": row["llm_enriched_at"] or "",
+            }
+            
+            # Add enrichment data if available
+            if is_enriched and incident_id in enriched_incidents_data:
+                enriched_data = enriched_incidents_data[incident_id]
+                # Add all enrichment fields
+                for key, value in enriched_data.items():
+                    if key not in incident_dict:  # Don't overwrite basic fields
+                        incident_dict[key] = value
+            
+            # Apply education filter if requested
+            if education_only:
+                is_education = incident_dict.get("is_education_related", False)
+                if not is_education:
+                    continue
+            
+            combined_incidents.append(incident_dict)
+            fieldnames_set.update(incident_dict.keys())
+        
+        if not combined_incidents:
+            raise HTTPException(status_code=404, detail="No incidents found")
+        
+        # Sort fieldnames: basic fields first, then enrichment fields
+        basic_fields = [
+            "incident_id", "sources", "university_name", "victim_raw_name", "victim_raw_name_normalized",
+            "institution_type", "country", "region", "city", "incident_date", "date_precision",
+            "source_published_date", "ingested_at", "title", "subtitle", "primary_url", "all_urls",
+            "broken_urls", "attack_type_hint", "status", "source_confidence", "notes",
+            "llm_enriched", "llm_enriched_at"
+        ]
+        enrichment_fields = sorted([f for f in fieldnames_set if f not in basic_fields])
+        fieldnames = [f for f in basic_fields if f in fieldnames_set] + enrichment_fields
+        
+        # Generate CSV
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(combined_incidents)
+        
+        csv_content = output.getvalue()
+        
+        filename = f"eduthreat_full_all_incidents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
         return StreamingResponse(
             iter([csv_content]),
