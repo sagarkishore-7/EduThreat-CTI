@@ -13,6 +13,7 @@ import io
 import sqlite3
 import secrets
 import hashlib
+import logging
 from datetime import datetime, timedelta
 from typing import Optional, Dict, Any, List
 from pathlib import Path
@@ -23,6 +24,8 @@ from pydantic import BaseModel
 
 from src.edu_cti.core.config import DB_PATH, DATA_DIR
 from src.edu_cti.api.database import get_api_connection
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
