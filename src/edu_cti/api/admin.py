@@ -307,7 +307,7 @@ async def export_table_csv(
 
 @router.get("/export/csv/enriched")
 async def export_enriched_csv(
-    education_only: Optional[str] = Query("true", description="Filter to education-related incidents only (true/false)"),
+    education_only: str = "true",
     _: bool = Depends(authenticate),
 ):
     """
@@ -375,7 +375,7 @@ async def export_enriched_csv(
 
 @router.get("/export/csv/full")
 async def export_full_csv(
-    education_only: Optional[str] = Query("false", description="Filter to education-related incidents only (true/false)"),
+    education_only: str = "false",
     _: bool = Depends(authenticate),
 ):
     """
