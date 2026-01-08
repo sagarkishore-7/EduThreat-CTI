@@ -4,8 +4,9 @@ from pathlib import Path
 from typing import List
 
 from src.edu_cti.core.models import BaseIncident
+from src.edu_cti.core.config import DATA_DIR
 
-DATA_DIR = Path("data")
+# Use DATA_DIR from config (auto-detects Railway vs local)
 RAW_DIR = DATA_DIR / "raw"
 RAW_CURATED_DIR = RAW_DIR / "curated"
 RAW_NEWS_DIR = RAW_DIR / "news"
@@ -14,6 +15,7 @@ PROC_DIR = DATA_DIR / "processed"
 
 
 def ensure_dirs() -> None:
+    """Ensure all required directories exist."""
     for path in (
         DATA_DIR,
         RAW_DIR,

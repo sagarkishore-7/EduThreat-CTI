@@ -83,16 +83,89 @@ SOURCE_THERECORD = "therecord"
 SOURCE_DARKREADING = "darkreading"
 
 # Environment variable configuration
-# Railway persistent storage is typically at /app/data
-# For local dev, use ./data
-DATA_DIR = Path(os.getenv("EDU_CTI_DATA_DIR", "data"))
+# Auto-detect Railway environment and use persistent storage
+def _detect_railway() -> bool:
+    """Detect if running on Railway platform."""
+    # Check Railway-specific environment variables first (most reliable)
+    if (
+        os.getenv("RAILWAY_ENVIRONMENT") is not None
+        or os.getenv("RAILWAY_PROJECT_ID") is not None
+        or os.getenv("RAILWAY_SERVICE_ID") is not None
+    ):
+        return True
+    
+    # Check if /app/data exists and is writable (Railway volume mount)
+    railway_data = Path("/app/data")
+    if railway_data.exists() and os.access(railway_data, os.W_OK):
+        return True
+    
+    return False
+
+def _get_data_dir() -> Path:
+    """Get data directory based on environment."""
+    # Check for explicit override (highest priority)
+    if os.getenv("EDU_CTI_DATA_DIR"):
+        data_dir = Path(os.getenv("EDU_CTI_DATA_DIR"))
+        try:
+            data_dir.mkdir(parents=True, exist_ok=True)
+        except (OSError, PermissionError):
+            pass  # Directory creation will be retried later if needed
+        return data_dir
+    
+    # Auto-detect Railway
+    if _detect_railway():
+        # Railway persistent storage
+        railway_data = Path("/app/data")
+        # Try to create, but don't fail if we can't (e.g., testing locally)
+        try:
+            if railway_data.parent.exists() and os.access(railway_data.parent, os.W_OK):
+                railway_data.mkdir(parents=True, exist_ok=True)
+        except (OSError, PermissionError):
+            # If we can't create /app/data, we're probably not on Railway
+            # Fall through to local data directory
+            pass
+        else:
+            return railway_data
+    
+    # Local development - use ./data
+    local_data = Path("data")
+    try:
+        local_data.mkdir(parents=True, exist_ok=True)
+    except (OSError, PermissionError):
+        pass  # Will be created when actually needed
+    return local_data
+
+# Set data directory and database path
+DATA_DIR = _get_data_dir()
 DB_PATH = DATA_DIR / os.getenv("EDU_CTI_DB_PATH", "eduthreat.db")
+
+# Logging configuration
 LOG_LEVEL = os.getenv("EDU_CTI_LOG_LEVEL", "INFO")
 LOG_FILE = Path(os.getenv("EDU_CTI_LOG_FILE", "logs/pipeline.log"))
 
-# Ensure data directory exists
-DATA_DIR.mkdir(parents=True, exist_ok=True)
-LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+# Ensure directories exist (with error handling)
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except (OSError, PermissionError) as e:
+    # Log but don't fail - directory creation will be retried when actually needed
+    pass
+
+try:
+    LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
+except (OSError, PermissionError):
+    pass
+
+# Log the detected configuration (only if logging is configured)
+try:
+    import logging
+    _logger = logging.getLogger(__name__)
+    if _logger.isEnabledFor(logging.INFO):
+        _logger.info(f"Data directory: {DATA_DIR.absolute()}")
+        _logger.info(f"Database path: {DB_PATH.absolute()}")
+        if _detect_railway():
+            _logger.info("Railway environment detected - using persistent storage")
+except:
+    pass  # Logging not configured yet
 
 # ---- Phase 2: LLM Enrichment ----
 

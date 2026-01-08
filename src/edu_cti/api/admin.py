@@ -25,6 +25,9 @@ from pydantic import BaseModel
 from src.edu_cti.core.config import DB_PATH, DATA_DIR
 from src.edu_cti.api.database import get_api_connection
 
+# Use DATA_DIR from config (auto-detects Railway)
+PERSISTENT_DATA_DIR = DATA_DIR
+
 logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/admin", tags=["admin"])
@@ -372,8 +375,8 @@ async def upload_database(
     """
     Upload a database file to replace the current database.
     
-    This allows you to upload your local database file to Railway persistent storage.
-    The uploaded file will replace the existing database at /app/data/eduthreat.db
+    This allows you to upload your local database file to persistent storage.
+    The uploaded file will replace the existing database.
     
     WARNING: This will replace the existing database. Make a backup first!
     """
@@ -386,8 +389,9 @@ async def upload_database(
             detail="File must be a .db file (SQLite database)"
         )
     
-    dest_dir = Path("/app/data")
-    dest_db = dest_dir / "eduthreat.db"
+    # Use DATA_DIR from config (auto-detects Railway vs local)
+    dest_dir = PERSISTENT_DATA_DIR
+    dest_db = DB_PATH
     backup_db = dest_dir / f"eduthreat.db.backup.{int(datetime.now().timestamp())}"
     
     try:
@@ -460,11 +464,12 @@ async def upload_database(
 @router.post("/migrate-db")
 async def migrate_database_endpoint(_: bool = Depends(authenticate)):
     """
-    Migrate database from repo to Railway persistent storage.
+    Migrate database from repo to persistent storage.
     
-    This copies data/eduthreat.db to /app/data/eduthreat.db if it exists.
+    This copies data/eduthreat.db from repository to the configured data directory.
     If source doesn't exist, initializes a fresh database.
-    On Railway, if volume is mounted at /app/data, data/eduthreat.db may resolve to the same location.
+    On Railway, uses /app/data (persistent volume).
+    On local, uses ./data directory.
     """
     import shutil
     from pathlib import Path
@@ -472,14 +477,16 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
     from src.edu_cti.pipeline.phase2.storage.db import init_incident_enrichments_table
     
     # Possible source locations (in order of preference)
+    # Check if there's a database in the repo (for migration)
     possible_sources = [
-        Path("data/eduthreat.db"),  # Relative path
-        Path("/app/data/eduthreat.db"),  # Absolute path (Railway volume)
+        Path("data/eduthreat.db"),  # Relative path (local repo)
         Path("../data/eduthreat.db"),  # If running from different directory
+        DB_PATH,  # Current database location (may be same as dest)
     ]
     
-    dest_dir = Path("/app/data")
-    dest_db = dest_dir / "eduthreat.db"
+    # Use DATA_DIR from config (auto-detects Railway vs local)
+    dest_dir = PERSISTENT_DATA_DIR
+    dest_db = DB_PATH
     
     try:
         # Create destination directory
