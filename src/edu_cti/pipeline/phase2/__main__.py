@@ -419,20 +419,16 @@ def enrich_articles_phase(
                             reason = raw_json_data.get("_reason", "Enrichment failed")
                             stats["errors"] += 1
                             logger.warning(f"⚠ Enrichment failed for {incident_id}: {reason} - will retry on next run")
+                        else:
+                            # Unknown error in raw_json_data - don't mark as skipped
+                            stats["errors"] += 1
+                            logger.warning(f"⚠ Unknown enrichment result for {incident_id}")
                     else:
                         # No enrichment result and no error info - mark as skipped
                         mark_incident_skipped(conn, incident_id, "Enrichment returned no result")
                         conn.commit()  # Commit skip marker immediately
                         stats["skipped"] += 1
                         logger.warning(f"⊘ Skipped incident: {incident_id} - No enrichment result")
-                        else:
-                            # Unknown error - don't mark as skipped
-                            stats["errors"] += 1
-                            logger.warning(f"⚠ Unknown enrichment result for {incident_id}")
-                    else:
-                        # No articles or other error - don't mark as skipped, will retry
-                        stats["errors"] += 1
-                        logger.warning(f"⚠ No enrichment result for {incident_id} - will retry on next run")
                 
                 # Rate limiting between LLM calls
                 if rate_limit_delay > 0:
