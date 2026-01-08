@@ -712,3 +712,145 @@ async def trigger_scheduler_job(
         )
     finally:
         root_logger.removeHandler(handler)
+
+
+@router.post("/fix-incident-dates")
+async def fix_incident_dates_endpoint(
+    apply: bool = False,
+    _: bool = Depends(authenticate),
+):
+    """
+    Fix incident dates from timeline data.
+    
+    This updates incident_date for enriched incidents by extracting
+    the earliest date from their timeline events.
+    
+    Args:
+        apply: If True, actually apply changes. If False, dry-run only.
+    """
+    import json
+    from datetime import datetime
+    
+    logger.info(f"[ADMIN] Fixing incident dates (apply={apply})")
+    print(f"[ADMIN] Fixing incident dates (apply={apply})", flush=True)
+    
+    conn = get_api_connection(read_only=False)  # Need write access
+    
+    try:
+        # Get all enriched incidents with timeline data
+        cur = conn.execute("""
+            SELECT 
+                i.incident_id,
+                i.incident_date,
+                i.date_precision,
+                i.source_published_date,
+                e.enrichment_data
+            FROM incidents i
+            JOIN incident_enrichments e ON i.incident_id = e.incident_id
+            WHERE i.llm_enriched = 1
+            AND e.enrichment_data IS NOT NULL
+        """)
+        
+        incidents = cur.fetchall()
+        logger.info(f"[ADMIN] Found {len(incidents)} enriched incidents to check")
+        print(f"[ADMIN] Found {len(incidents)} enriched incidents to check", flush=True)
+        
+        fixed_count = 0
+        skipped_count = 0
+        fixed_incidents = []
+        
+        def parse_date(date_str: str):
+            """Parse date string to datetime."""
+            try:
+                return datetime.strptime(date_str, "%Y-%m-%d")
+            except:
+                return None
+        
+        for row in incidents:
+            incident_id = row["incident_id"]
+            current_date = row["incident_date"]
+            source_pub_date = row["source_published_date"]
+            enrichment_data = json.loads(row["enrichment_data"])
+            
+            # Get timeline from enrichment
+            timeline = enrichment_data.get("timeline", [])
+            if not timeline:
+                skipped_count += 1
+                continue
+            
+            # Find earliest date in timeline
+            dated_events = [e for e in timeline if e.get("date")]
+            if not dated_events:
+                skipped_count += 1
+                continue
+            
+            earliest_event = min(dated_events, key=lambda e: e["date"])
+            timeline_date = earliest_event["date"]
+            timeline_precision = earliest_event.get("date_precision") or "approximate"
+            
+            # Check if current date is likely a published date or if timeline date is earlier
+            current_dt = parse_date(current_date) if current_date else None
+            timeline_dt = parse_date(timeline_date) if timeline_date else None
+            source_dt = parse_date(source_pub_date) if source_pub_date else None
+            
+            should_update = False
+            reason = ""
+            
+            if current_dt and timeline_dt:
+                # Update if timeline date is earlier than current date
+                # OR if current date matches source published date (likely wrong)
+                if timeline_dt < current_dt:
+                    should_update = True
+                    reason = f"Timeline date ({timeline_date}) is earlier than current date ({current_date})"
+                elif current_date == source_pub_date:
+                    should_update = True
+                    reason = f"Current date ({current_date}) matches source published date, using timeline date ({timeline_date})"
+            
+            if should_update:
+                if apply:
+                    conn.execute("""
+                        UPDATE incidents
+                        SET incident_date = ?,
+                            date_precision = ?
+                        WHERE incident_id = ?
+                    """, (timeline_date, timeline_precision, incident_id))
+                    conn.commit()
+                    logger.info(f"[ADMIN] Updated {incident_id}: {current_date} -> {timeline_date}")
+                    print(f"[ADMIN] ✓ Updated {incident_id}: {current_date} -> {timeline_date}", flush=True)
+                else:
+                    logger.info(f"[ADMIN] [DRY RUN] Would update {incident_id}: {current_date} -> {timeline_date}")
+                
+                fixed_incidents.append({
+                    "incident_id": incident_id,
+                    "old_date": current_date,
+                    "new_date": timeline_date,
+                    "reason": reason
+                })
+                fixed_count += 1
+        
+        summary = {
+            "success": True,
+            "apply": apply,
+            "fixed": fixed_count,
+            "skipped": skipped_count,
+            "total_checked": len(incidents),
+            "message": f"{'Fixed' if apply else 'Would fix'} {fixed_count} incidents" if fixed_count > 0 else "No incidents need fixing",
+        }
+        
+        if fixed_count > 0 and fixed_count <= 20:  # Only include details if not too many
+            summary["fixed_incidents"] = fixed_incidents
+        
+        logger.info(f"[ADMIN] Date fix complete: {summary}")
+        print(f"[ADMIN] Date fix complete: {summary}", flush=True)
+        
+        return summary
+        
+    except Exception as e:
+        logger.error(f"[ADMIN] Date fix failed: {e}", exc_info=True)
+        print(f"[ADMIN] ✗ Date fix failed: {e}", flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Date fix failed: {str(e)}",
+        )
+    finally:
+        conn.close()
