@@ -62,6 +62,36 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     """Application lifespan manager."""
     logger.info("Starting EduThreat-CTI API...")
+    
+    # Initialize database on startup
+    try:
+        from src.edu_cti.core.db import get_connection, init_db
+        from src.edu_cti.core.config import DB_PATH
+        from src.edu_cti.pipeline.phase2.storage.db import init_incident_enrichments_table
+        
+        logger.info(f"Initializing database at: {DB_PATH}")
+        print(f"[API] Initializing database at: {DB_PATH}", flush=True)
+        
+        # Ensure data directory exists
+        DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize database (creates tables if they don't exist)
+        conn = get_connection()
+        init_db(conn)
+        
+        # Initialize enrichment tables
+        init_incident_enrichments_table(conn)
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info("Database initialized successfully")
+        print("[API] ✓ Database initialized successfully", flush=True)
+    except Exception as e:
+        logger.error(f"Failed to initialize database: {e}", exc_info=True)
+        print(f"[API] ✗ Database initialization failed: {e}", flush=True)
+        # Don't fail startup - let it try again on first request
+    
     yield
     logger.info("Shutting down EduThreat-CTI API...")
 

@@ -367,56 +367,81 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
     Migrate database from repo to Railway persistent storage.
     
     This copies data/eduthreat.db to /app/data/eduthreat.db if it exists.
+    If source doesn't exist, initializes a fresh database.
     """
     import shutil
     from pathlib import Path
+    from src.edu_cti.core.db import init_db
+    from src.edu_cti.pipeline.phase2.storage.db import init_incident_enrichments_table
     
     source_db = Path("data/eduthreat.db")
     dest_dir = Path("/app/data")
     dest_db = dest_dir / "eduthreat.db"
     
     try:
-        # Check if source exists
-        if not source_db.exists():
-            return {
-                "success": False,
-                "message": f"Source database not found: {source_db}. If this is a fresh deployment, the DB will be created automatically.",
-            }
-        
         # Create destination directory
         dest_dir.mkdir(parents=True, exist_ok=True)
         
-        # Get source size
-        source_size = source_db.stat().st_size / (1024 * 1024)  # MB
-        
-        # Copy database
-        shutil.copy2(source_db, dest_db)
-        
-        # Verify
-        if not dest_db.exists():
+        # Check if source exists
+        if source_db.exists():
+            # Migrate existing database
+            logger.info(f"Migrating database from {source_db} to {dest_db}")
+            print(f"[MIGRATION] Copying database from {source_db} to {dest_db}", flush=True)
+            
+            # Get source size
+            source_size = source_db.stat().st_size / (1024 * 1024)  # MB
+            
+            # Copy database
+            shutil.copy2(source_db, dest_db)
+            
+            # Verify
+            if not dest_db.exists():
+                return {
+                    "success": False,
+                    "message": "Database copy failed - destination not found",
+                }
+            
+            dest_size = dest_db.stat().st_size / (1024 * 1024)  # MB
+            
+            # Verify integrity
+            conn = get_api_connection()
+            cur = conn.execute("SELECT COUNT(*) FROM incidents")
+            incident_count = cur.fetchone()[0]
+            conn.close()
+            
             return {
-                "success": False,
-                "message": "Database copy failed - destination not found",
+                "success": True,
+                "message": "Database migrated successfully",
+                "source_size_mb": round(source_size, 2),
+                "dest_size_mb": round(dest_size, 2),
+                "incident_count": incident_count,
+                "destination": str(dest_db),
             }
-        
-        dest_size = dest_db.stat().st_size / (1024 * 1024)  # MB
-        
-        # Verify integrity
-        conn = get_api_connection()
-        cur = conn.execute("SELECT COUNT(*) FROM incidents")
-        incident_count = cur.fetchone()[0]
-        conn.close()
-        
-        return {
-            "success": True,
-            "message": "Database migrated successfully",
-            "source_size_mb": round(source_size, 2),
-            "dest_size_mb": round(dest_size, 2),
-            "incident_count": incident_count,
-            "destination": str(dest_db),
-        }
+        else:
+            # Source doesn't exist - initialize fresh database
+            logger.info(f"Source database not found, initializing fresh database at {dest_db}")
+            print(f"[MIGRATION] Source database not found, initializing fresh database", flush=True)
+            
+            # Initialize fresh database
+            conn = get_api_connection()
+            init_db(conn)
+            init_incident_enrichments_table(conn)
+            conn.commit()
+            
+            cur = conn.execute("SELECT COUNT(*) FROM incidents")
+            incident_count = cur.fetchone()[0]
+            conn.close()
+            
+            return {
+                "success": True,
+                "message": "Fresh database initialized successfully",
+                "incident_count": incident_count,
+                "destination": str(dest_db),
+                "note": "No source database found - created new empty database. Run historical ingestion to populate data.",
+            }
     except Exception as e:
         logger.error(f"Migration failed: {e}", exc_info=True)
+        print(f"[MIGRATION] ✗ Failed: {e}", flush=True)
         return {
             "success": False,
             "message": f"Migration failed: {str(e)}",
