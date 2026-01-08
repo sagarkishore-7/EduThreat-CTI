@@ -135,6 +135,7 @@ def init_db(conn: sqlite3.Connection) -> None:
 
             primary_url          TEXT,  -- Phase 2: LLM-selected best URL
             all_urls             TEXT,  -- Semicolon-separated URLs
+            broken_urls          TEXT,  -- Semicolon-separated URLs that failed to fetch
 
             leak_site_url        TEXT,
             source_detail_url     TEXT,
@@ -189,6 +190,23 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_incident_sources_source ON incident_sources(source);
         """
     )
+    
+    # Migration: Add broken_urls column if it doesn't exist (for existing databases)
+    try:
+        cur = conn.execute("PRAGMA table_info(incidents)")
+        columns = [row[1] for row in cur.fetchall()]
+        if "broken_urls" not in columns:
+            conn.execute("ALTER TABLE incidents ADD COLUMN broken_urls TEXT")
+            conn.commit()
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("Added broken_urls column to incidents table (migration)")
+    except sqlite3.Error as e:
+        # If migration fails, log but don't fail (column might already exist)
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Migration check for broken_urls column: {e}")
+    
     conn.commit()
 
 
@@ -413,6 +431,100 @@ def find_duplicate_incident_by_urls(
                 return (existing_incident_id, False, False)
     
     return None
+
+
+def mark_urls_as_broken(conn: sqlite3.Connection, incident_id: str, broken_urls: List[str]) -> None:
+    """
+    Mark URLs as broken for an incident.
+    
+    Args:
+        conn: Database connection
+        incident_id: Incident ID
+        broken_urls: List of URLs that failed to fetch
+    """
+    if not broken_urls:
+        return
+    
+    # Get existing broken URLs
+    cur = conn.execute("SELECT broken_urls FROM incidents WHERE incident_id = ?", (incident_id,))
+    row = cur.fetchone()
+    existing_broken = set()
+    if row and row["broken_urls"]:
+        existing_broken = {url.strip() for url in row["broken_urls"].split(";") if url.strip()}
+    
+    # Add new broken URLs (normalize for consistency)
+    new_broken = {normalize_url(url) for url in broken_urls}
+    all_broken = existing_broken | new_broken
+    
+    # Update database
+    broken_urls_str = ";".join(sorted(all_broken))
+    conn.execute(
+        "UPDATE incidents SET broken_urls = ? WHERE incident_id = ?",
+        (broken_urls_str, incident_id)
+    )
+
+
+def get_broken_urls(conn: sqlite3.Connection, incident_id: str) -> Set[str]:
+    """
+    Get set of broken URLs for an incident.
+    
+    Args:
+        conn: Database connection
+        incident_id: Incident ID
+        
+    Returns:
+        Set of normalized broken URLs
+    """
+    cur = conn.execute("SELECT broken_urls FROM incidents WHERE incident_id = ?", (incident_id,))
+    row = cur.fetchone()
+    if row and row["broken_urls"]:
+        return {normalize_url(url.strip()) for url in row["broken_urls"].split(";") if url.strip()}
+    return set()
+
+
+def has_broken_urls(conn: sqlite3.Connection, incident_id: str) -> bool:
+    """
+    Check if an incident has any broken URLs.
+    
+    Args:
+        conn: Database connection
+        incident_id: Incident ID
+        
+    Returns:
+        True if incident has broken URLs, False otherwise
+    """
+    broken = get_broken_urls(conn, incident_id)
+    return len(broken) > 0
+
+
+def clear_broken_urls(conn: sqlite3.Connection, incident_id: str, urls: List[str]) -> None:
+    """
+    Clear URLs from broken_urls list (e.g., when they're successfully fetched).
+    
+    Args:
+        conn: Database connection
+        incident_id: Incident ID
+        urls: List of URLs to remove from broken list
+    """
+    broken = get_broken_urls(conn, incident_id)
+    if not broken:
+        return
+    
+    urls_to_remove = {normalize_url(url) for url in urls}
+    remaining_broken = broken - urls_to_remove
+    
+    if remaining_broken:
+        broken_urls_str = ";".join(sorted(remaining_broken))
+        conn.execute(
+            "UPDATE incidents SET broken_urls = ? WHERE incident_id = ?",
+            (broken_urls_str, incident_id)
+        )
+    else:
+        # No broken URLs left
+        conn.execute(
+            "UPDATE incidents SET broken_urls = NULL WHERE incident_id = ?",
+            (incident_id,)
+        )
 
 
 def load_incident_by_id(

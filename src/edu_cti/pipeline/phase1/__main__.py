@@ -125,8 +125,36 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
             event_key = inc.incident_id
 
         # Step 1: Check per-source deduplication
+        # BUT: Allow updates if existing incident has broken URLs and new incident has new URLs
         if source_event_exists(conn, source, event_key):
-            continue
+            # Check if we should allow update due to broken URLs
+            from src.edu_cti.core.db import find_duplicate_incident_by_urls, has_broken_urls
+            duplicate_result = find_duplicate_incident_by_urls(conn, inc)
+            
+            if duplicate_result:
+                duplicate_incident_id, _, _ = duplicate_result
+                if has_broken_urls(conn, duplicate_incident_id):
+                    # Existing incident has broken URLs - check if new incident has different URLs
+                    existing_incident = load_incident_by_id(conn, duplicate_incident_id)
+                    if existing_incident:
+                        existing_urls = set(existing_incident.all_urls or [])
+                        new_urls = set(inc.all_urls or [])
+                        # If new incident has URLs not in existing incident, allow update
+                        if new_urls - existing_urls:
+                            logger.info(
+                                f"Allowing URL update for incident {duplicate_incident_id} "
+                                f"(has broken URLs, new URLs available from {source})"
+                            )
+                            # Continue to cross-source deduplication logic below
+                        else:
+                            # No new URLs, skip
+                            continue
+                else:
+                    # No broken URLs, skip per normal deduplication
+                    continue
+            else:
+                # Not a duplicate, skip per normal deduplication
+                continue
 
         # Step 2: Check for cross-source duplicates (URL matching)
         duplicate_result = find_duplicate_incident_by_urls(conn, inc)

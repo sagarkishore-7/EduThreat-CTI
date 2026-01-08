@@ -161,10 +161,28 @@ def fetch_articles_phase(
                 
                 articles = results.get(incident_id, [])
                 successful_articles = [a for a in articles if a.fetch_successful]
+                failed_articles = [a for a in articles if not a.fetch_successful]
+                
+                # Mark broken URLs in database
+                if failed_articles:
+                    from src.edu_cti.core.db import mark_urls_as_broken
+                    broken_urls = [a.url for a in failed_articles if a.url]
+                    if broken_urls:
+                        mark_urls_as_broken(conn, incident_id, broken_urls)
+                        logger.info(f"Marked {len(broken_urls)} URL(s) as broken for incident {incident_id}")
+                        conn.commit()
                 
                 if successful_articles:
                     stats["articles_fetched"] += 1
                     logger.info(f"✓ Fetched {len(successful_articles)} article(s) for incident {incident_id} - pushing to queue")
+                    
+                    # Clear broken status for successfully fetched URLs
+                    if successful_articles:
+                        from src.edu_cti.core.db import clear_broken_urls
+                        successful_urls = [a.url for a in successful_articles if a.url]
+                        if successful_urls:
+                            clear_broken_urls(conn, incident_id, successful_urls)
+                            conn.commit()
                     
                     # Push incident to queue immediately after fetching articles
                     # This allows enrichment to start processing while we continue fetching
@@ -195,6 +213,12 @@ def fetch_articles_phase(
                     logger.info(f"✓ Pushed incident {incident_id} to enrichment queue (queue size: {incident_queue.qsize()})")
                 else:
                     logger.warning(f"⊘ No articles fetched for incident {incident_id}")
+                    # Mark all URLs as broken if none were fetched
+                    all_urls = incident.get("all_urls", [])
+                    if all_urls:
+                        from src.edu_cti.core.db import mark_urls_as_broken
+                        mark_urls_as_broken(conn, incident_id, all_urls)
+                        conn.commit()
                     stats["errors"] += 1
                 
                 stats["processed"] += 1
