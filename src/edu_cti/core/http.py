@@ -545,6 +545,82 @@ class HttpClient:
         else:
             logger.debug("No cookie consent popup found or already dismissed")
 
+    def _handle_perimeterx_challenge(self, driver: webdriver.Chrome, url: str) -> bool:
+        """
+        Handle PerimeterX bot detection challenges (used by wavy.com and other sites).
+        
+        PerimeterX shows a "Press & Hold" captcha challenge. Sometimes it auto-resolves
+        after a delay, or we can wait for the challenge to complete.
+        
+        Args:
+            driver: Selenium WebDriver instance
+            url: Original URL being accessed
+            
+        Returns:
+            True if PerimeterX challenge was detected and handled, False otherwise
+        """
+        try:
+            page_source = driver.page_source.lower()
+            is_perimeterx = (
+                "px-captcha" in page_source or 
+                "perimeterx" in page_source or 
+                "press & hold" in page_source or
+                "access to this page has been denied" in page_source
+            )
+            
+            if not is_perimeterx:
+                return False
+            
+            logger.info("Detected PerimeterX challenge, waiting for potential auto-resolution...")
+            
+            # Wait for challenge to potentially auto-resolve (some sites auto-approve after delay)
+            time.sleep(10)
+            
+            # Try to find and interact with the challenge button if it exists
+            try:
+                # Look for "Press & Hold" button
+                press_hold_selectors = [
+                    "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'press')]",
+                    "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'hold')]",
+                    "//div[contains(@class, 'px-captcha')]//button",
+                    "[class*='px-captcha'] button",
+                    "[class*='press'] button",
+                    "[class*='hold'] button",
+                ]
+                
+                for selector in press_hold_selectors:
+                    try:
+                        if selector.startswith("//"):
+                            button = driver.find_element(By.XPATH, selector)
+                        else:
+                            button = driver.find_element(By.CSS_SELECTOR, selector)
+                        
+                        if button.is_displayed():
+                            # Try clicking and holding (simulate press & hold)
+                            actions = ActionChains(driver)
+                            actions.click_and_hold(button).pause(2).release(button).perform()
+                            logger.info("Attempted to interact with PerimeterX challenge button")
+                            time.sleep(5)  # Wait for challenge to process
+                            break
+                    except Exception:
+                        continue
+            except Exception as e:
+                logger.debug(f"Could not interact with PerimeterX challenge button: {e}")
+            
+            # Check if we're still on the challenge page
+            current_page = driver.page_source.lower()
+            if "px-captcha" not in current_page and "press & hold" not in current_page:
+                logger.info("PerimeterX challenge appears to have been resolved")
+                return True
+            else:
+                logger.warning("PerimeterX challenge still present - may require manual interaction")
+                # Still return True to indicate we tried - sometimes content is still accessible
+                return True
+                
+        except Exception as e:
+            logger.debug(f"Error handling PerimeterX challenge: {e}")
+            return False
+
     def _handle_darkreading_interstitial(self, driver: webdriver.Chrome, url: str) -> bool:
         """
         Handle DarkReading.com's interstitial ad page.
@@ -799,6 +875,9 @@ class HttpClient:
             
             # Handle DarkReading interstitial ad (must be done early, before other handlers)
             self._handle_darkreading_interstitial(driver, url)
+            
+            # Handle PerimeterX bot detection (wavy.com, etc.) - must be done early
+            self._handle_perimeterx_challenge(driver, url)
             
             # Handle cookie consent
             self._handle_cookie_consent(driver)
