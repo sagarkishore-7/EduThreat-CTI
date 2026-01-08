@@ -238,6 +238,272 @@ async def export_database(_: bool = Depends(authenticate)):
     )
 
 
+# IMPORTANT: Specific routes must come BEFORE parameterized routes
+# Otherwise FastAPI will match /export/csv/full to /export/csv/{table_name}
+
+@router.get("/export/csv/full")
+async def export_full_csv(
+    education_only: str = "false",
+    _: bool = Depends(authenticate),
+):
+    """
+    Export ALL incidents as CSV (enriched and unenriched).
+    
+    Includes all incidents from the database, whether they've been enriched or not.
+    For enriched incidents, includes enrichment data. For unenriched incidents, only basic fields.
+    """
+    import traceback
+    
+    # Parse education_only string to boolean
+    education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
+    
+    # Log immediately to verify function is called
+    logger.info(f"[EXPORT] Full CSV endpoint called (education_only={education_only} -> {education_only_bool})")
+    print(f"[EXPORT] Full CSV endpoint called (education_only={education_only} -> {education_only_bool})", flush=True)
+    
+    try:
+        from src.edu_cti.core.db import load_incident_by_id
+        from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
+        from src.edu_cti.core.deduplication import extract_urls_from_incident
+    except ImportError as e:
+        logger.error(f"[EXPORT] Import error: {e}", exc_info=True)
+        print(f"[EXPORT] ✗ Import error: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Import error: {str(e)}")
+    
+    conn = None
+    try:
+        logger.info(f"[EXPORT] Starting full CSV export (education_only={education_only_bool})")
+        print(f"[EXPORT] Starting full CSV export (education_only={education_only_bool})", flush=True)
+        
+        conn = get_api_connection()
+        if not conn:
+            raise HTTPException(status_code=500, detail="Failed to get database connection")
+        
+        # Get all incidents (check if broken_urls column exists)
+        try:
+            cur = conn.execute("PRAGMA table_info(incidents)")
+            columns = [row[1] for row in cur.fetchall()]
+            has_broken_urls = "broken_urls" in columns
+        except:
+            has_broken_urls = False
+        
+        # Build query - always select all columns from incidents
+        query = """
+            SELECT 
+                i.*,
+                GROUP_CONCAT(DISTINCT isrc.source) as sources
+            FROM incidents i
+            LEFT JOIN incident_sources isrc ON i.incident_id = isrc.incident_id
+            GROUP BY i.incident_id
+            ORDER BY i.ingested_at DESC
+        """
+        
+        cur = conn.execute(query)
+        
+        # Get column names from the query result BEFORE fetching rows
+        column_names = [description[0] for description in cur.description] if cur.description else []
+        
+        all_incidents = cur.fetchall()
+        
+        # Get enriched incidents with their enrichment data
+        enriched_incidents_data = {}
+        try:
+            enriched_list = load_enriched_incidents_from_db(conn, use_flat_table=True)
+            for inc in enriched_list:
+                enriched_incidents_data[inc.get("incident_id")] = inc
+        except Exception as e:
+            logger.warning(f"Could not load enriched incidents: {e}")
+        
+        # Build combined dataset
+        combined_incidents = []
+        fieldnames_set = set()
+        
+        # Helper function to safely get row value (defined outside loop for efficiency)
+        def safe_get(row, key, default=""):
+            try:
+                if key in column_names:
+                    value = row[key]
+                    return value if value is not None else default
+                return default
+            except (KeyError, IndexError, TypeError):
+                return default
+        
+        for row in all_incidents:
+            incident_id = safe_get(row, "incident_id", "")
+            if not incident_id:
+                continue  # Skip rows without incident_id
+            
+            llm_enriched_val = safe_get(row, "llm_enriched", 0)
+            is_enriched = llm_enriched_val == 1 if llm_enriched_val else False
+            
+            # Start with basic incident data
+            incident_dict = {
+                "incident_id": incident_id,
+                "sources": safe_get(row, "sources"),
+                "university_name": safe_get(row, "university_name"),
+                "victim_raw_name": safe_get(row, "victim_raw_name"),
+                "institution_type": safe_get(row, "institution_type"),
+                "country": safe_get(row, "country"),
+                "region": safe_get(row, "region"),
+                "city": safe_get(row, "city"),
+                "incident_date": safe_get(row, "incident_date"),
+                "date_precision": safe_get(row, "date_precision"),
+                "source_published_date": safe_get(row, "source_published_date"),
+                "ingested_at": safe_get(row, "ingested_at"),
+                "title": safe_get(row, "title"),
+                "subtitle": safe_get(row, "subtitle"),
+                "primary_url": safe_get(row, "primary_url"),
+                "all_urls": safe_get(row, "all_urls"),
+                "broken_urls": safe_get(row, "broken_urls") if has_broken_urls else "",
+                "attack_type_hint": safe_get(row, "attack_type_hint"),
+                "status": safe_get(row, "status"),
+                "source_confidence": safe_get(row, "source_confidence"),
+                "notes": safe_get(row, "notes"),
+                "llm_enriched": "Yes" if is_enriched else "No",
+                "llm_enriched_at": safe_get(row, "llm_enriched_at"),
+            }
+            
+            # Add enrichment data if available
+            if is_enriched and incident_id in enriched_incidents_data:
+                enriched_data = enriched_incidents_data[incident_id]
+                # Add all enrichment fields
+                for key, value in enriched_data.items():
+                    if key not in incident_dict:  # Don't overwrite basic fields
+                        incident_dict[key] = value
+            
+            # Apply education filter if requested
+            if education_only_bool:
+                is_education = incident_dict.get("is_education_related", False)
+                if not is_education:
+                    continue
+            
+            combined_incidents.append(incident_dict)
+            fieldnames_set.update(incident_dict.keys())
+        
+        if not combined_incidents:
+            raise HTTPException(status_code=404, detail="No incidents found")
+        
+        # Sort fieldnames: basic fields first, then enrichment fields
+        basic_fields = [
+            "incident_id", "sources", "university_name", "victim_raw_name", "victim_raw_name_normalized",
+            "institution_type", "country", "region", "city", "incident_date", "date_precision",
+            "source_published_date", "ingested_at", "title", "subtitle", "primary_url", "all_urls",
+            "broken_urls", "attack_type_hint", "status", "source_confidence", "notes",
+            "llm_enriched", "llm_enriched_at"
+        ]
+        enrichment_fields = sorted([f for f in fieldnames_set if f not in basic_fields])
+        fieldnames = [f for f in basic_fields if f in fieldnames_set] + enrichment_fields
+        
+        # Generate CSV
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
+        writer.writeheader()
+        writer.writerows(combined_incidents)
+        
+        csv_content = output.getvalue()
+        
+        filename = f"eduthreat_full_all_incidents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        logger.info(f"[EXPORT] Generated CSV with {len(combined_incidents)} incidents, {len(fieldnames)} columns")
+        
+        return StreamingResponse(
+            iter([csv_content]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+    except HTTPException as he:
+        # Re-raise HTTP exceptions (like 404)
+        logger.error(f"[EXPORT] HTTPException in full CSV export: {he.detail}")
+        print(f"[EXPORT] HTTPException: {he.detail}", flush=True)
+        raise
+    except Exception as e:
+        error_msg = str(e)
+        error_trace = traceback.format_exc()
+        logger.error(f"[EXPORT] Full CSV export failed: {error_msg}\n{error_trace}")
+        print(f"[EXPORT] ✗ Full CSV export failed: {error_msg}", flush=True)
+        print(f"[EXPORT] Traceback:\n{error_trace}", flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"CSV export failed: {error_msg}"
+        )
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+
+@router.get("/export/csv/enriched")
+async def export_enriched_csv(
+    education_only: str = "true",
+    _: bool = Depends(authenticate),
+):
+    """
+    Export enriched dataset as CSV (only incidents that have been enriched).
+    
+    Joins incidents with enrichments for complete data.
+    Only includes incidents that have been processed by LLM enrichment.
+    """
+    from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
+    
+    # Parse education_only string to boolean
+    education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
+    
+    logger.info(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only} -> {education_only_bool})")
+    print(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only} -> {education_only_bool})", flush=True)
+    
+    conn = None
+    try:
+        conn = get_api_connection()
+        incidents = load_enriched_incidents_from_db(conn, use_flat_table=True)
+        
+        if education_only_bool:
+            incidents = [i for i in incidents if i.get("is_education_related")]
+        
+        if not incidents:
+            raise HTTPException(status_code=404, detail="No enriched incidents found")
+        
+        # Generate CSV
+        output = io.StringIO()
+        writer = csv.DictWriter(output, fieldnames=incidents[0].keys())
+        writer.writeheader()
+        writer.writerows(incidents)
+        
+        csv_content = output.getvalue()
+        
+        filename = f"eduthreat_enriched_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        logger.info(f"[EXPORT] Generated enriched CSV with {len(incidents)} incidents")
+        
+        return StreamingResponse(
+            iter([csv_content]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}"
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[EXPORT] Enriched CSV export failed: {e}", exc_info=True)
+        print(f"[EXPORT] ✗ Enriched CSV export failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"CSV export failed: {str(e)}"
+        )
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
+
+
 @router.get("/export/csv/{table_name}")
 async def export_table_csv(
     table_name: str,
