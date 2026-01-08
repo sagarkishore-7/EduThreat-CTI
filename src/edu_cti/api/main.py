@@ -97,6 +97,10 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
+# Include admin router
+from .admin import router as admin_router
+app.include_router(admin_router, prefix="/api")
+
 
 # ============================================================
 # Health Check

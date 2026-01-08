@@ -505,31 +505,63 @@ def save_enrichment_result(
     if enrichment_result.attack_dynamics:
         attack_dynamics_json = enrichment_result.attack_dynamics.model_dump_json(indent=2)
     
-    # Update incident record
-    conn.execute(
+    # Extract incident_date from LLM response (timeline first event or direct field)
+    llm_incident_date = None
+    llm_date_precision = None
+    
+    # Try to get incident_date from raw JSON data (direct extraction)
+    if raw_json_data:
+        llm_incident_date = raw_json_data.get("incident_date")
+        llm_date_precision = raw_json_data.get("incident_date_precision")
+    
+    # Fallback: Try to extract from timeline (earliest event)
+    if not llm_incident_date and enrichment_result.timeline:
+        # Get the earliest date from timeline events
+        dated_events = [e for e in enrichment_result.timeline if e.date]
+        if dated_events:
+            # Sort by date and get earliest
+            earliest_event = min(dated_events, key=lambda e: e.date)
+            llm_incident_date = earliest_event.date
+            llm_date_precision = earliest_event.date_precision or "approximate"
+    
+    # Update incident record - include incident_date if LLM extracted it and we don't have one
+    update_fields = """
+        llm_enriched = 1,
+        llm_enriched_at = ?,
+        primary_url = ?,
+        llm_summary = ?,
+        llm_timeline = ?,
+        llm_mitre_attack = ?,
+        llm_attack_dynamics = ?,
+        last_updated_at = ?
+    """
+    update_params = [
+        now,
+        primary_url,
+        summary,
+        timeline_json,
+        mitre_json,
+        attack_dynamics_json,
+        now,
+    ]
+    
+    # Update incident_date if LLM extracted it
+    if llm_incident_date:
+        update_fields += """,
+        incident_date = COALESCE(incident_date, ?),
+        date_precision = COALESCE(date_precision, ?)
         """
+        update_params.extend([llm_incident_date, llm_date_precision or "approximate"])
+    
+    update_params.append(incident_id)
+    
+    conn.execute(
+        f"""
         UPDATE incidents
-        SET 
-            llm_enriched = 1,
-            llm_enriched_at = ?,
-            primary_url = ?,
-            llm_summary = ?,
-            llm_timeline = ?,
-            llm_mitre_attack = ?,
-            llm_attack_dynamics = ?,
-            last_updated_at = ?
+        SET {update_fields}
         WHERE incident_id = ?
         """,
-        (
-            now,
-            primary_url,
-            summary,
-            timeline_json,
-            mitre_json,
-            attack_dynamics_json,
-            now,
-            incident_id,
-        )
+        tuple(update_params)
     )
     
     # Save full JSON to incident_enrichments table
