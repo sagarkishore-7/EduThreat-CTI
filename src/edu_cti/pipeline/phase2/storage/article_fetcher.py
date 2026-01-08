@@ -295,9 +295,11 @@ class ArticleFetcher:
             ArticleContent with extracted content
         """
         try:
+            logger.debug(f"Selenium: Fetching soup for {url}")
             soup = self.http_client.get_soup(url, allow_404=True, use_selenium_fallback=True)
             
             if soup is None:
+                logger.warning(f"Selenium: soup is None for {url}")
                 return ArticleContent(
                     url=url,
                     title="",
@@ -308,16 +310,30 @@ class ArticleFetcher:
                 )
             
             # Extract content
+            logger.debug(f"Selenium: Extracting content from {url}")
             title = self._extract_title(soup)
             content = self._extract_content(soup)
             author = self._extract_author(soup)
             publish_date = self._extract_publish_date(soup)
             
-            # Clean content
-            content = self._clean_content(content)
+            logger.debug(f"Selenium: Extracted title length: {len(title) if title else 0}, content length: {len(content) if content else 0}")
             
-            # Check for meaningful content
-            if not content or len(content.strip()) < 100:
+            # Clean content
+            content_before_clean = content
+            content = self._clean_content(content)
+            logger.debug(f"Selenium: Content length after cleaning: {len(content) if content else 0} (was {len(content_before_clean) if content_before_clean else 0})")
+            
+            # Check for meaningful content - lower threshold for databreaches.net and similar sites
+            min_length = 50 if "databreaches.net" in url.lower() else 100
+            content_stripped = content.strip() if content else ""
+            
+            if not content or len(content_stripped) < min_length:
+                logger.warning(
+                    f"Selenium: Content too short for {url}: "
+                    f"length={len(content_stripped)}, min={min_length}, "
+                    f"title={title[:50] if title else 'None'}, "
+                    f"content_preview={content_stripped[:100] if content_stripped else 'None'}"
+                )
                 return ArticleContent(
                     url=url,
                     title=title or "",
@@ -325,10 +341,11 @@ class ArticleFetcher:
                     author=author,
                     publish_date=publish_date,
                     fetch_successful=False,
-                    error_message="Extracted content too short or empty",
+                    error_message=f"Extracted content too short or empty (length: {len(content_stripped)}, min: {min_length})",
                     content_length=len(content) if content else 0
                 )
             
+            logger.info(f"Selenium: Successfully extracted content from {url}: {len(content)} chars")
             return ArticleContent(
                 url=url,
                 title=title,
@@ -340,13 +357,13 @@ class ArticleFetcher:
             )
             
         except Exception as e:
-            logger.error(f"Error fetching article from {url}: {e}")
+            logger.error(f"Error fetching article from {url} with Selenium: {e}", exc_info=True)
             return ArticleContent(
                 url=url,
                 title="",
                 content="",
                 fetch_successful=False,
-                error_message=str(e),
+                error_message=f"Selenium exception: {str(e)}",
                 content_length=0
             )
     
@@ -364,14 +381,25 @@ class ArticleFetcher:
             ArticleContent if successful, None otherwise
         """
         try:
+            logger.debug(f"newspaper3k: Fetching {url}")
             article = Article(url, language='en')
             article.download()
             article.parse()
             
-            # Check if we got meaningful content
-            if not article.text or len(article.text.strip()) < 100:
-                logger.debug(f"newspaper3k extracted content too short for {url}")
+            # Check if we got meaningful content - lower threshold for databreaches.net
+            min_length = 50 if "databreaches.net" in url.lower() else 100
+            text_stripped = article.text.strip() if article.text else ""
+            
+            if not article.text or len(text_stripped) < min_length:
+                logger.debug(
+                    f"newspaper3k extracted content too short for {url}: "
+                    f"length={len(text_stripped)}, min={min_length}, "
+                    f"title={article.title[:50] if article.title else 'None'}, "
+                    f"content_preview={text_stripped[:100] if text_stripped else 'None'}"
+                )
                 return None
+            
+            logger.debug(f"newspaper3k: Successfully extracted {len(text_stripped)} chars from {url}")
             
             # Extract publish date and normalize
             publish_date = None
@@ -554,8 +582,11 @@ class ArticleFetcher:
             
             # === CMS-SPECIFIC SELECTORS ===
             # WordPress (most common for security blogs)
-            '.wp-content',
+            # databreaches.net specific - try these first
+            'article .entry-content',
             '.entry-content',
+            '.post .entry-content',
+            '.wp-content',
             '.post-content',
             '.single-post-content',
             '.blog-post-content',
