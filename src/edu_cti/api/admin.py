@@ -318,9 +318,12 @@ async def export_enriched_csv(
     """
     from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
     
-    conn = get_api_connection()
+    logger.info(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only})")
+    print(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only})", flush=True)
     
+    conn = None
     try:
+        conn = get_api_connection()
         incidents = load_enriched_incidents_from_db(conn, use_flat_table=True)
         
         if education_only:
@@ -339,6 +342,8 @@ async def export_enriched_csv(
         
         filename = f"eduthreat_enriched_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
+        logger.info(f"[EXPORT] Generated enriched CSV with {len(incidents)} incidents")
+        
         return StreamingResponse(
             iter([csv_content]),
             media_type="text/csv",
@@ -346,8 +351,23 @@ async def export_enriched_csv(
                 "Content-Disposition": f"attachment; filename={filename}"
             }
         )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[EXPORT] Enriched CSV export failed: {e}", exc_info=True)
+        print(f"[EXPORT] ✗ Enriched CSV export failed: {e}", flush=True)
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(
+            status_code=500,
+            detail=f"CSV export failed: {str(e)}"
+        )
     finally:
-        conn.close()
+        if conn:
+            try:
+                conn.close()
+            except:
+                pass
 
 
 @router.get("/export/csv/full")
