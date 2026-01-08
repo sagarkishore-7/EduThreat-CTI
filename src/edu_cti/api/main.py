@@ -9,8 +9,10 @@ from contextlib import asynccontextmanager
 from typing import Optional
 from datetime import datetime
 
-from fastapi import FastAPI, Query, HTTPException, Depends, Response
+from fastapi import FastAPI, Query, HTTPException, Depends, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 
 from .models import (
     IncidentListResponse,
@@ -126,6 +128,20 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
+# Add exception handler for validation errors
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    """Handle FastAPI validation errors with detailed logging."""
+    logger.error(f"Validation error on {request.method} {request.url}: {exc.errors()}")
+    print(f"[VALIDATION ERROR] {request.method} {request.url}: {exc.errors()}", flush=True)
+    return JSONResponse(
+        status_code=400,
+        content={
+            "detail": exc.errors(),
+            "body": exc.body,
+        }
+    )
 
 # Include admin router
 from .admin import router as admin_router

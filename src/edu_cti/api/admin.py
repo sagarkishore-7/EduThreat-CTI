@@ -382,12 +382,19 @@ async def export_full_csv(
     For enriched incidents, includes enrichment data. For unenriched incidents, only basic fields.
     """
     import traceback
-    from src.edu_cti.core.db import load_incident_by_id
-    from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
-    from src.edu_cti.core.deduplication import extract_urls_from_incident
     
+    # Log immediately to verify function is called
     logger.info(f"[EXPORT] Full CSV endpoint called (education_only={education_only})")
     print(f"[EXPORT] Full CSV endpoint called (education_only={education_only})", flush=True)
+    
+    try:
+        from src.edu_cti.core.db import load_incident_by_id
+        from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
+        from src.edu_cti.core.deduplication import extract_urls_from_incident
+    except ImportError as e:
+        logger.error(f"[EXPORT] Import error: {e}", exc_info=True)
+        print(f"[EXPORT] ✗ Import error: {e}", flush=True)
+        raise HTTPException(status_code=500, detail=f"Import error: {str(e)}")
     
     conn = None
     try:
@@ -395,6 +402,8 @@ async def export_full_csv(
         print(f"[EXPORT] Starting full CSV export (education_only={education_only})", flush=True)
         
         conn = get_api_connection()
+        if not conn:
+            raise HTTPException(status_code=500, detail="Failed to get database connection")
         if not conn:
             raise HTTPException(status_code=500, detail="Failed to get database connection")
         
