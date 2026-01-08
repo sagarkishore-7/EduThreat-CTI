@@ -255,26 +255,62 @@ class ArticleFetcher:
         if NEWSPAPER_AVAILABLE:
             article_content = self._fetch_with_newspaper(url)
             if article_content and article_content.fetch_successful:
-                logger.debug(f"Successfully fetched {url} using newspaper3k")
+                logger.info(f"✓ Successfully fetched {url} using newspaper3k ({article_content.content_length} chars)")
                 return article_content
             error_msg = article_content.error_message if article_content else "Unknown error"
-            logger.info(f"newspaper3k failed for {url} ({error_msg}), trying Selenium fallback...")
+            content_len = article_content.content_length if article_content else 0
+            logger.warning(
+                f"✗ newspaper3k failed for {url}: {error_msg} "
+                f"(content_length: {content_len})"
+            )
+            print(
+                f"[NEWSPAPER3K FAILED] {url} | Error: {error_msg} | Content length: {content_len}",
+                flush=True
+            )
+        else:
+            logger.warning("newspaper3k not available, skipping...")
         
         # Fall back to Selenium (handles bot detection for non-Cloudflare sites)
         if SELENIUM_AVAILABLE:
             article_content = self._fetch_with_selenium(url)
             if article_content and article_content.fetch_successful:
+                logger.info(f"✓ Successfully fetched {url} using Selenium ({article_content.content_length} chars)")
                 return article_content
-            logger.info(f"Selenium failed for {url}, trying archive.org fallback...")
+            error_msg = article_content.error_message if article_content else "Unknown error"
+            content_len = article_content.content_length if article_content else 0
+            logger.warning(
+                f"✗ Selenium failed for {url}: {error_msg} "
+                f"(content_length: {content_len})"
+            )
+            print(
+                f"[SELENIUM FAILED] {url} | Error: {error_msg} | Content length: {content_len}",
+                flush=True
+            )
+        else:
+            logger.warning("Selenium not available, skipping...")
         
         # Final fallback: Try archive.org (works for many historical articles)
+        logger.info(f"Trying archive.org fallback for {url}...")
         archive_content = self._fetch_from_archive(url)
         if archive_content and archive_content.fetch_successful:
-            logger.info(f"Successfully fetched {url} from archive.org")
+            logger.info(f"✓ Successfully fetched {url} from archive.org ({archive_content.content_length} chars)")
             return archive_content
+        else:
+            logger.warning(f"✗ archive.org fallback failed for {url}")
         
         # All methods failed
-        logger.warning(f"All fetch methods failed for {url} (no archive available)")
+        logger.error(
+            f"✗✗✗ All fetch methods failed for {url} "
+            f"(newspaper3k: {'available' if NEWSPAPER_AVAILABLE else 'unavailable'}, "
+            f"Selenium: {'available' if SELENIUM_AVAILABLE else 'unavailable'}, "
+            f"archive.org: {'tried' if archive_content is None else 'no snapshot'})"
+        )
+        print(
+            f"[ALL METHODS FAILED] {url} | "
+            f"newspaper3k: {'available' if NEWSPAPER_AVAILABLE else 'unavailable'} | "
+            f"Selenium: {'available' if SELENIUM_AVAILABLE else 'unavailable'}",
+            flush=True
+        )
         return ArticleContent(
             url=url,
             title="",
