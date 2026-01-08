@@ -674,7 +674,8 @@ async def trigger_scheduler_job(
         elif job_type == "enrich":
             logger.info("[ADMIN] Starting LLM enrichment...")
             print("[ADMIN] Starting LLM enrichment...", flush=True)
-            scheduler._run_enrichment()
+            # Process all unenriched incidents when triggered manually (no limit)
+            scheduler._run_enrichment(limit=None)
         
         duration = stop_timer(f"scheduler_job_{job_type}")
         metrics.increment(f"scheduler_job_{job_type}_total", labels={"status": "success"})

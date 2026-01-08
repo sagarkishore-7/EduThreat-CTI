@@ -220,8 +220,13 @@ class IngestionScheduler:
             print(f"[SCHEDULER] ✗ Weekly ingestion failed: {e}", flush=True)
             raise
     
-    def _run_enrichment(self):
-        """Run LLM enrichment on unenriched incidents."""
+    def _run_enrichment(self, limit: Optional[int] = None) -> None:
+        """
+        Run LLM enrichment on unenriched incidents.
+        
+        Args:
+            limit: Maximum number of incidents to process. If None, processes all unenriched.
+        """
         from src.edu_cti.core.metrics import get_metrics, start_timer, stop_timer, increment
         
         metrics = get_metrics()
@@ -247,12 +252,21 @@ class IngestionScheduler:
             
             # Build args for enrichment (use valid arguments only)
             original_argv = sys.argv
-            sys.argv = [
+            args = [
                 "eduthreat-enrich",
-                "--limit", str(self.enrichment_batch_size),
                 "--rate-limit-delay", str(self.enrichment_delay),
                 "--skip-non-education",  # Skip incidents not related to education
             ]
+            
+            # Only add --limit if specified (None means process all)
+            if limit is not None:
+                args.extend(["--limit", str(limit)])
+            elif self.enrichment_batch_size > 0:
+                # Use batch size if no limit specified
+                args.extend(["--limit", str(self.enrichment_batch_size)])
+            # If both are None/0, process all (no --limit flag)
+            
+            sys.argv = args
             
             try:
                 enrich_main()

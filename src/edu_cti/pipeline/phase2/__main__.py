@@ -358,10 +358,26 @@ def enrich_articles_phase(
                     )
                     logger.debug(f"process_incident returned: {type(enrichment_result)}, is None: {enrichment_result is None}")
                 except Exception as e:
-                    logger.error(f"Error in process_incident for {incident_id}: {e}", exc_info=True)
-                    stats["errors"] += 1
-                    incident_queue.task_done()
-                    continue
+                    # Check if it's a rate limit error that should stop enrichment
+                    from src.edu_cti.pipeline.phase2.llm_client import RateLimitError
+                    if isinstance(e, RateLimitError):
+                        logger.error(f"Rate limit error in process_incident for {incident_id}: {e}")
+                        print(f"[RATE LIMIT] ✗ Stopping enrichment due to persistent rate limit errors", flush=True)
+                        stats["errors"] += 1
+                        # Mark remaining items as done and break out of loop
+                        while not incident_queue.empty():
+                            try:
+                                incident_queue.get_nowait()
+                                incident_queue.task_done()
+                            except queue.Empty:
+                                break
+                        # Signal that we're stopping due to rate limit
+                        break
+                    else:
+                        logger.error(f"Error in process_incident for {incident_id}: {e}", exc_info=True)
+                        stats["errors"] += 1
+                        incident_queue.task_done()
+                        continue
                 
                 # process_incident returns tuple (enrichment_result, raw_json_data)
                 if isinstance(enrichment_result, tuple):

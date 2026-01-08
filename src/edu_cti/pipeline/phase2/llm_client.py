@@ -7,8 +7,14 @@ Handles communication with Ollama Cloud for structured CTI enrichment.
 import os
 import json
 import logging
+import time
 from typing import Optional, Dict, Any, Iterator
 from pydantic import BaseModel
+
+
+class RateLimitError(Exception):
+    """Raised when rate limit is encountered and cannot be recovered."""
+    pass
 
 try:
     from ollama import Client
@@ -68,6 +74,25 @@ class OllamaLLMClient:
             headers={'Authorization': f'Bearer {self.api_key}'}
         )
     
+    def _is_rate_limit_error(self, error: Exception) -> bool:
+        """Check if error is a rate limit error."""
+        error_str = str(error).lower()
+        error_type = type(error).__name__.lower()
+        
+        # Check for common rate limit indicators
+        rate_limit_indicators = [
+            'rate limit',
+            'rate_limit',
+            'too many requests',
+            '429',
+            'quota',
+            'throttle',
+            'limit exceeded',
+            'request limit',
+        ]
+        
+        return any(indicator in error_str or indicator in error_type for indicator in rate_limit_indicators)
+    
     def chat(
         self,
         messages: list[Dict[str, str]],
@@ -86,6 +111,9 @@ class OllamaLLMClient:
             
         Returns:
             Response dict or iterator of response parts if streaming
+            
+        Raises:
+            RateLimitError: If rate limit persists after exponential backoff
         """
         try:
             response = self.client.chat(
@@ -99,6 +127,9 @@ class OllamaLLMClient:
             )
             return response
         except Exception as e:
+            if self._is_rate_limit_error(e):
+                logger.warning(f"Rate limit detected in Ollama API: {e}")
+                raise RateLimitError(f"Ollama API rate limit: {e}") from e
             logger.error(f"Error calling Ollama API: {e}")
             raise
     
@@ -1084,8 +1115,13 @@ class OllamaLLMClient:
         logger.debug(f"  Messages count: {len(messages)}")
         logger.debug(f"  Format schema keys: {list(format_schema.keys())[:5] if isinstance(format_schema, dict) else 'N/A'}...")
         
-        # Retry logic for empty/invalid responses
+        # Retry logic with exponential backoff for rate limits
         last_error = None
+        rate_limit_errors = 0
+        max_rate_limit_retries = 5  # Maximum consecutive rate limit errors before giving up
+        base_backoff = 2.0  # Base backoff in seconds (2^attempt)
+        max_backoff = 300.0  # Maximum backoff: 5 minutes
+        
         for attempt in range(max_retries + 1):
             try:
                 # Make API call
@@ -1096,13 +1132,39 @@ class OllamaLLMClient:
                     stream=False,
                 )
                 logger.debug(f"LLM API call successful, response type: {type(response)}")
+                # Reset rate limit error counter on success
+                rate_limit_errors = 0
                 break
+            except RateLimitError as e:
+                rate_limit_errors += 1
+                last_error = e
+                
+                if rate_limit_errors >= max_rate_limit_retries:
+                    logger.error(f"Rate limit persisted after {max_rate_limit_retries} attempts. Stopping enrichment.")
+                    print(f"[RATE LIMIT] ✗ Rate limit error persisted after {max_rate_limit_retries} attempts. Stopping enrichment.", flush=True)
+                    raise RateLimitError(
+                        f"Rate limit persisted after {max_rate_limit_retries} attempts. "
+                        f"Please wait and retry later. Last error: {e}"
+                    ) from e
+                
+                # Exponential backoff for rate limits
+                backoff_time = min(base_backoff ** rate_limit_errors, max_backoff)
+                logger.warning(
+                    f"Rate limit error (attempt {rate_limit_errors}/{max_rate_limit_retries}): {e}. "
+                    f"Waiting {backoff_time:.1f}s before retry..."
+                )
+                print(
+                    f"[RATE LIMIT] ⚠ Rate limit detected (attempt {rate_limit_errors}/{max_rate_limit_retries}). "
+                    f"Waiting {backoff_time:.1f}s...",
+                    flush=True
+                )
+                time.sleep(backoff_time)
+                
             except Exception as e:
                 last_error = e
                 if attempt < max_retries:
                     logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying...")
-                    import time
-                    time.sleep(1.0 * (attempt + 1))  # Exponential backoff
+                    time.sleep(1.0 * (attempt + 1))  # Linear backoff for non-rate-limit errors
                 else:
                     raise
         
