@@ -898,13 +898,27 @@ class HttpClient:
             # Try closing popups again (some appear after scrolling)
             self._handle_ad_popups(driver)
             
-            # Check for common block indicators
+            # Check for common block indicators (but exclude PerimeterX which we handled)
             page_source = driver.page_source.lower()
+            
+            # Check if PerimeterX challenge is still present (after our handling attempt)
+            is_perimeterx_still_present = (
+                "px-captcha" in page_source or 
+                ("perimeterx" in page_source and "press & hold" in page_source)
+            )
+            
+            # If PerimeterX is still blocking, log but don't fail immediately
+            # Sometimes the page content is still accessible even with challenge present
+            if is_perimeterx_still_present:
+                logger.warning(f"PerimeterX challenge still present on {url} - attempting to extract content anyway")
+                # Don't return None - try to extract content even with challenge present
+            
+            # Check for other block indicators (excluding PerimeterX)
             block_indicators = [
-                "access denied",
                 "blocked",
                 "bot detected",
-                "captcha",
+                # Exclude "access denied" if it's PerimeterX (we handle that separately)
+                # Exclude "captcha" if it's PerimeterX
                 "please verify",
                 "checking your browser",
                 "just a moment",
@@ -912,9 +926,16 @@ class HttpClient:
                 "ddos protection",
             ]
             
-            if any(indicator in page_source for indicator in block_indicators):
-                logger.warning(f"Bot detection triggered on {url}")
-                return None
+            # Only fail on block indicators if it's NOT PerimeterX (which we already handled)
+            if not is_perimeterx_still_present:
+                if any(indicator in page_source for indicator in block_indicators):
+                    logger.warning(f"Bot detection triggered on {url}")
+                    return None
+            else:
+                # For PerimeterX, check if it's a generic "access denied" (not PerimeterX-specific)
+                if "access denied" in page_source and not is_perimeterx_still_present:
+                    logger.warning(f"Access denied on {url} (not PerimeterX)")
+                    return None
             
             # Handle cookie consent again (some appear after page fully loads)
             self._handle_cookie_consent(driver)
