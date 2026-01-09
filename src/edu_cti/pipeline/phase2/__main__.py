@@ -336,12 +336,14 @@ def enrich_articles_phase(
             incident_id = incident_dict["incident_id"]
             stats["processed"] += 1
             
-            # Calculate progress percentage
+            # Calculate progress percentage - log every 10th or at milestones
             if total_expected > 0:
                 progress_pct = (stats["processed"] / total_expected) * 100
-                logger.info(f"[{stats['processed']}/{total_expected}] ({progress_pct:.1f}%) Enriching: {incident_id}")
+                if stats["processed"] % 10 == 0 or progress_pct % 10 < 1:  # Every 10 or every 10%
+                    logger.info(f"Enriching [{stats['processed']}/{total_expected}] ({progress_pct:.1f}%)")
             else:
-                logger.info(f"[{stats['processed']}] Enriching: {incident_id}")
+                if stats["processed"] % 10 == 0:
+                    logger.info(f"Enriching [{stats['processed']}]")
             
             try:
                 # Read full incident data from DB (queue only has minimal data)
