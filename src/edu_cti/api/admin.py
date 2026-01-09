@@ -1322,3 +1322,45 @@ async def fix_incident_dates_endpoint(
         )
     finally:
         conn.close()
+
+
+@router.post("/normalize-countries")
+async def normalize_countries_endpoint(
+    _: bool = Depends(authenticate),
+):
+    """
+    Normalize all country codes to full country names in the database.
+    This merges duplicates like "US" and "United States".
+    """
+    import logging
+    from src.edu_cti.core.db import get_connection
+    from src.edu_cti.core.countries import normalize_countries_in_database
+    
+    logger = logging.getLogger(__name__)
+    
+    conn = None
+    try:
+        logger.info("Starting country normalization...")
+        print(f"[ADMIN] Normalizing countries in database...", flush=True)
+        
+        conn = get_connection()
+        updated_count = normalize_countries_in_database(conn)
+        
+        logger.info(f"Country normalization complete: {updated_count} rows updated")
+        print(f"[ADMIN] Country normalization complete: {updated_count} rows updated", flush=True)
+        
+        return {
+            "success": True,
+            "updated": updated_count,
+            "message": f"Normalized {updated_count} country entries"
+        }
+    except Exception as e:
+        logger.error(f"Country normalization failed: {e}", exc_info=True)
+        print(f"[ADMIN] Country normalization failed: {e}", flush=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Country normalization failed: {str(e)}",
+        )
+    finally:
+        if conn:
+            conn.close()

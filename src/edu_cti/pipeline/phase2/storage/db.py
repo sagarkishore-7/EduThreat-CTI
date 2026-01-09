@@ -223,12 +223,17 @@ def _flatten_enrichment_for_db(
     def raw_get(key, default=None):
         return raw.get(key, default)
     
+    # Normalize country to full name
+    from src.edu_cti.core.countries import normalize_country
+    country_raw = raw_get("country")
+    country_normalized = normalize_country(country_raw) if country_raw else None
+    
     flat = {
         'incident_id': None,  # Will be set by caller
         'is_education_related': enrichment.education_relevance.is_education_related if enrichment.education_relevance else raw_get("is_edu_cyber_incident"),
         'institution_name': enrichment.education_relevance.institution_identified if enrichment.education_relevance else raw_get("institution_name"),
         'institution_type': raw_get("institution_type"),
-        'country': raw_get("country"),
+        'country': country_normalized,
         'region': raw_get("region"),
         'city': raw_get("city"),
         
@@ -482,7 +487,12 @@ def save_enrichment_result(
     
     # Use LLM-extracted values if available (from raw JSON), otherwise fallback to incident table
     institution_type = raw_json_data.get("institution_type") if raw_json_data else institution_type_fallback
-    country = raw_json_data.get("country") if raw_json_data else country_fallback
+    
+    # Normalize country to full name (not code)
+    from src.edu_cti.core.countries import normalize_country
+    country_raw = raw_json_data.get("country") if raw_json_data else country_fallback
+    country = normalize_country(country_raw) if country_raw else None
+    
     region = raw_json_data.get("region") if raw_json_data else region_fallback
     city = raw_json_data.get("city") if raw_json_data else city_fallback
     
@@ -524,7 +534,7 @@ def save_enrichment_result(
             llm_incident_date = earliest_event.date
             llm_date_precision = earliest_event.date_precision or "approximate"
     
-    # Update incident record - include incident_date if LLM extracted it and we don't have one
+    # Update incident record - include incident_date and country if LLM extracted them
     update_fields = """
         llm_enriched = 1,
         llm_enriched_at = ?,
@@ -535,6 +545,7 @@ def save_enrichment_result(
         llm_attack_dynamics = ?,
         last_updated_at = ?
     """
+    
     update_params = [
         now,
         primary_url,
@@ -544,6 +555,11 @@ def save_enrichment_result(
         attack_dynamics_json,
         now,
     ]
+    
+    # Also update country in incidents table if we have a normalized value
+    if country:
+        update_fields += ",\n        country = ?"
+        update_params.append(country)
     
     # Update incident_date if LLM extracted it
     # Always use LLM-extracted date (it's more accurate than source_published_date)

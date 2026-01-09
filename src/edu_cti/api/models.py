@@ -251,6 +251,8 @@ class CountByCategory(BaseModel):
     category: str
     count: int
     percentage: float = 0.0
+    country_code: Optional[str] = None
+    flag_emoji: Optional[str] = None
 
 
 class TimeSeriesPoint(BaseModel):

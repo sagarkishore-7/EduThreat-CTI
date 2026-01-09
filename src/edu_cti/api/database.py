@@ -69,8 +69,12 @@ def get_incidents_paginated(
         conditions.append("ef.is_education_related = 1")
     
     if country:
-        conditions.append("(i.country = ? OR ef.country = ?)")
-        params.extend([country, country])
+        # Normalize country for filtering (handle both codes and names)
+        from src.edu_cti.core.countries import normalize_country
+        country_normalized = normalize_country(country) or country
+        # Check both original and normalized values
+        conditions.append("(i.country = ? OR ef.country = ? OR i.country = ? OR ef.country = ?)")
+        params.extend([country, country, country_normalized, country_normalized])
     
     if attack_category:
         conditions.append("ef.attack_category = ?")
@@ -362,6 +366,8 @@ def get_incidents_by_country(
     limit: int = 20,
 ) -> List[Dict[str, Any]]:
     """Get incident counts by country - only education-related."""
+    from src.edu_cti.core.countries import normalize_country, get_country_code, get_flag_emoji
+    
     cur = conn.execute(
         """
         SELECT 
@@ -379,15 +385,43 @@ def get_incidents_by_country(
     )
     rows = cur.fetchall()
     
-    # Calculate percentages
+    # Calculate percentages and normalize countries
     total = sum(r["count"] for r in rows)
     result = []
+    seen_countries = {}  # Track normalized names to merge duplicates
+    
     for row in rows:
+        country_raw = row["category"]
+        if country_raw == "Unknown":
+            country_name = "Unknown"
+            country_code = None
+        else:
+            country_name = normalize_country(country_raw) or country_raw
+            country_code = get_country_code(country_name)
+        
+        # Merge duplicates (e.g., "US" and "United States")
+        if country_name in seen_countries:
+            seen_countries[country_name]["count"] += row["count"]
+        else:
+            seen_countries[country_name] = {
+                "category": country_name,
+                "count": row["count"],
+                "country_code": country_code,
+                "flag_emoji": get_flag_emoji(country_name) if country_code else "🌍"
+            }
+    
+    # Convert to list and recalculate percentages
+    for country_name, data in seen_countries.items():
         result.append({
-            "category": row["category"],
-            "count": row["count"],
-            "percentage": round(row["count"] / total * 100, 1) if total > 0 else 0
+            "category": data["category"],
+            "count": data["count"],
+            "percentage": round(data["count"] / total * 100, 1) if total > 0 else 0,
+            "country_code": data["country_code"],
+            "flag_emoji": data["flag_emoji"]
         })
+    
+    # Re-sort by count after merging
+    result.sort(key=lambda x: x["count"], reverse=True)
     
     return result
 
@@ -563,7 +597,8 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
     """Get available filter options for the UI."""
     options = {}
     
-    # Countries
+    # Countries - normalize and deduplicate
+    from src.edu_cti.core.countries import normalize_country
     cur = conn.execute(
         """
         SELECT DISTINCT country FROM incidents 
@@ -571,7 +606,13 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
         ORDER BY country
         """
     )
-    options["countries"] = [row["country"] for row in cur.fetchall()]
+    raw_countries = [row["country"] for row in cur.fetchall()]
+    # Normalize and deduplicate
+    normalized_countries = set()
+    for country in raw_countries:
+        normalized = normalize_country(country) or country
+        normalized_countries.add(normalized)
+    options["countries"] = sorted(normalized_countries)
     
     # Attack categories
     cur = conn.execute(
