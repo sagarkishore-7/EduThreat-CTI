@@ -404,7 +404,7 @@ async def export_full_csv(
         
         filename = f"eduthreat_full_all_incidents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
-        logger.info(f"[EXPORT] Generated CSV with {len(combined_incidents)} incidents, {len(fieldnames)} columns")
+        logger.info(f"Generated CSV: {len(combined_incidents)} incidents, {len(fieldnames)} columns")
         
         return StreamingResponse(
             iter([csv_content]),
@@ -415,13 +415,11 @@ async def export_full_csv(
         )
     except HTTPException as he:
         # Re-raise HTTP exceptions (like 404)
-        logger.error(f"[EXPORT] HTTPException in full CSV export: {he.detail}")
         logger.error(f"HTTPException: {str(he.detail)[:100]}")
         raise
     except Exception as e:
         error_msg = str(e)
         error_trace = traceback.format_exc()
-        logger.error(f"[EXPORT] Full CSV export failed: {error_msg}\n{error_trace}")
         logger.error(f"Full CSV export failed: {error_msg[:200]}")
         raise HTTPException(
             status_code=500,
@@ -803,7 +801,7 @@ async def export_full_csv(
         
         filename = f"eduthreat_full_all_incidents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
-        logger.info(f"[EXPORT] Generated CSV with {len(combined_incidents)} incidents, {len(fieldnames)} columns")
+        logger.info(f"Generated CSV: {len(combined_incidents)} incidents, {len(fieldnames)} columns")
         
         return StreamingResponse(
             iter([csv_content]),
@@ -814,13 +812,11 @@ async def export_full_csv(
         )
     except HTTPException as he:
         # Re-raise HTTP exceptions (like 404)
-        logger.error(f"[EXPORT] HTTPException in full CSV export: {he.detail}")
         logger.error(f"HTTPException: {str(he.detail)[:100]}")
         raise
     except Exception as e:
         error_msg = str(e)
         error_trace = traceback.format_exc()
-        logger.error(f"[EXPORT] Full CSV export failed: {error_msg}\n{error_trace}")
         logger.error(f"Full CSV export failed: {error_msg[:200]}")
         raise HTTPException(
             status_code=500,
@@ -1207,7 +1203,7 @@ async def fix_incident_dates_endpoint(
     import json
     from datetime import datetime
     
-    logger.info(f"[ADMIN] Fixing incident dates (apply={apply})")
+    logger.info(f"Fixing incident dates (apply={apply})")
     logger.info(f"Fixing incident dates (apply={apply})")
     
     conn = get_api_connection(read_only=False)  # Need write access

@@ -297,8 +297,7 @@ def enrich_articles_phase(
     # SENTINEL value to signal end of queue
     SENTINEL = None
     
-    logger.info("Waiting for incidents in queue...")
-    logger.info(f"Queue initial state: empty={incident_queue.empty()}, size={incident_queue.qsize()}")
+    logger.debug(f"Queue initial state: empty={incident_queue.empty()}, size={incident_queue.qsize()}")
     
     # CONSUMER LOOP: Process incidents from queue as they arrive
     items_processed = 0
