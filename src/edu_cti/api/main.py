@@ -354,6 +354,42 @@ async def list_incidents(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/incidents/{incident_id}/report")
+async def get_incident_report(incident_id: str):
+    """
+    Generate and download a CTI report for an incident.
+    
+    Returns a markdown-formatted report following industry-standard frameworks.
+    """
+    try:
+        from src.edu_cti.api.reports import generate_cti_report
+        from src.edu_cti.api.database import get_api_connection, get_incident_by_id
+        
+        conn = get_api_connection()
+        incident_data = get_incident_by_id(conn, incident_id)
+        conn.close()
+        
+        if not incident_data:
+            raise HTTPException(status_code=404, detail="Incident not found")
+        
+        report = generate_cti_report(incident_data)
+        
+        from fastapi.responses import Response
+        return Response(
+            content=report,
+            media_type="text/markdown",
+            headers={
+                "Content-Disposition": f'attachment; filename="cti-report-{incident_id}.md"'
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating report for incident {incident_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/incidents/{incident_id}", response_model=IncidentDetail)
 async def get_incident(incident_id: str):
     """
@@ -448,6 +484,7 @@ async def get_incident(incident_id: str):
             victim_raw_name=incident_data.get("victim_raw_name"),
             institution_type=incident_data.get("institution_type"),
             country=incident_data.get("country"),
+            country_code=incident_data.get("country_code"),
             region=incident_data.get("region"),
             city=incident_data.get("city"),
             incident_date=incident_data.get("incident_date"),

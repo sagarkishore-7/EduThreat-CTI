@@ -55,7 +55,8 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             is_education_related INTEGER,
             institution_name TEXT,
             institution_type TEXT,
-            country TEXT,
+            country TEXT,  -- Full country name (normalized)
+            country_code TEXT,  -- ISO 3166-1 alpha-2 code (e.g., "US", "GB")
             region TEXT,
             city TEXT,
             
@@ -223,10 +224,11 @@ def _flatten_enrichment_for_db(
     def raw_get(key, default=None):
         return raw.get(key, default)
     
-    # Normalize country to full name
-    from src.edu_cti.core.countries import normalize_country
+    # Normalize country to full name and get ISO code
+    from src.edu_cti.core.countries import normalize_country, get_country_code
     country_raw = raw_get("country")
     country_normalized = normalize_country(country_raw) if country_raw else None
+    country_code = get_country_code(country_normalized) if country_normalized else None
     
     flat = {
         'incident_id': None,  # Will be set by caller
@@ -234,6 +236,7 @@ def _flatten_enrichment_for_db(
         'institution_name': enrichment.education_relevance.institution_identified if enrichment.education_relevance else raw_get("institution_name"),
         'institution_type': raw_get("institution_type"),
         'country': country_normalized,
+        'country_code': country_code,
         'region': raw_get("region"),
         'city': raw_get("city"),
         
@@ -488,10 +491,11 @@ def save_enrichment_result(
     # Use LLM-extracted values if available (from raw JSON), otherwise fallback to incident table
     institution_type = raw_json_data.get("institution_type") if raw_json_data else institution_type_fallback
     
-    # Normalize country to full name (not code)
-    from src.edu_cti.core.countries import normalize_country
+    # Normalize country to full name and get ISO code
+    from src.edu_cti.core.countries import normalize_country, get_country_code
     country_raw = raw_json_data.get("country") if raw_json_data else country_fallback
     country = normalize_country(country_raw) if country_raw else None
+    country_code = get_country_code(country) if country else None
     
     region = raw_json_data.get("region") if raw_json_data else region_fallback
     city = raw_json_data.get("city") if raw_json_data else city_fallback
@@ -556,10 +560,13 @@ def save_enrichment_result(
         now,
     ]
     
-    # Also update country in incidents table if we have a normalized value
+    # Also update country and country_code in incidents table if we have normalized values
     if country:
         update_fields += ",\n        country = ?"
         update_params.append(country)
+    if country_code:
+        update_fields += ",\n        country_code = ?"
+        update_params.append(country_code)
     
     # Update incident_date if LLM extracted it
     # Always use LLM-extracted date (it's more accurate than source_published_date)
@@ -616,6 +623,8 @@ def save_enrichment_result(
         flat_data['institution_type'] = institution_type
     if not flat_data.get('country'):
         flat_data['country'] = country
+    if not flat_data.get('country_code'):
+        flat_data['country_code'] = country_code
     if not flat_data.get('region'):
         flat_data['region'] = region
     if not flat_data.get('city'):

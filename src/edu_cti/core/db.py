@@ -120,7 +120,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             university_name      TEXT,
             victim_raw_name      TEXT,
             institution_type     TEXT,
-            country              TEXT,
+            country              TEXT,  -- Full country name (normalized)
+            country_code         TEXT,  -- ISO 3166-1 alpha-2 code (e.g., "US", "GB")
             region               TEXT,
             city                 TEXT,
 
@@ -206,6 +207,21 @@ def init_db(conn: sqlite3.Connection) -> None:
         import logging
         logger = logging.getLogger(__name__)
         logger.debug(f"Migration check for broken_urls column: {e}")
+    
+    # Migration: Add country_code column if it doesn't exist (for existing databases)
+    try:
+        cur = conn.execute("PRAGMA table_info(incidents)")
+        columns = [row[1] for row in cur.fetchall()]
+        if "country_code" not in columns:
+            conn.execute("ALTER TABLE incidents ADD COLUMN country_code TEXT")
+            conn.commit()
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("Added country_code column to incidents table (migration)")
+    except sqlite3.Error as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Migration check for country_code column: {e}")
     
     conn.commit()
 
