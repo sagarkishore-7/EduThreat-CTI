@@ -72,7 +72,7 @@ async def lifespan(app: FastAPI):
         from src.edu_cti.pipeline.phase2.storage.db import init_incident_enrichments_table
         
         logger.info(f"Initializing database at: {DB_PATH}")
-        print(f"[API] Initializing database at: {DB_PATH}", flush=True)
+        logger.info(f"Initializing database at: {DB_PATH}")
         
         # Ensure data directory exists
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -88,10 +88,10 @@ async def lifespan(app: FastAPI):
         conn.close()
         
         logger.info("Database initialized successfully")
-        print("[API] ✓ Database initialized successfully", flush=True)
+        logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}", exc_info=True)
-        print(f"[API] ✗ Database initialization failed: {e}", flush=True)
+        logger.error(f"Database initialization failed: {str(e)[:200]}")
         # Don't fail startup - let it try again on first request
     
     yield
@@ -134,7 +134,7 @@ app = create_app()
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     """Handle FastAPI validation errors with detailed logging."""
     logger.error(f"Validation error on {request.method} {request.url}: {exc.errors()}")
-    print(f"[VALIDATION ERROR] {request.method} {request.url}: {exc.errors()}", flush=True)
+    logger.error(f"Validation error {request.method} {request.url}: {str(exc.errors())[:200]}")
     return JSONResponse(
         status_code=400,
         content={

@@ -424,12 +424,12 @@ class SmartArticleFetchingStrategy:
                                 article=article_content,
                             )
                             logger.info(
-                                f"✓ Successfully fetched and saved article from {domain} "
+                                f"Fetched article from {domain} "
                                 f"({len(article_content.content)} chars)"
                             )
                         except Exception as save_error:
                             logger.error(
-                                f"✗ Failed to save article to database for {url}: {save_error}",
+                                f"Failed to save article for {url}: {str(save_error)[:100]}",
                                 exc_info=True
                             )
                             # Still count as fetched even if save failed
@@ -437,14 +437,10 @@ class SmartArticleFetchingStrategy:
                         error_msg = article_content.error_message or "Unknown error"
                         content_len = article_content.content_length or 0
                         logger.warning(
-                            f"✗ Failed to fetch from {domain}: {error_msg} "
+                            f"Failed to fetch from {domain}: {error_msg[:100]} "
                             f"(content_length: {content_len}, title: {article_content.title[:50] if article_content.title else 'None'})"
                         )
-                        print(
-                            f"[FETCH FAILED] {incident_id} | {domain} | {url} | "
-                            f"Error: {error_msg} | Content length: {content_len}",
-                            flush=True
-                        )
+                        logger.debug(f"Fetch failed {incident_id} {domain}: {error_msg[:100]}")
                         
                         # If multiple failures from same domain, consider blocking
                         if "403" in error_msg or "Forbidden" in error_msg:
@@ -455,14 +451,10 @@ class SmartArticleFetchingStrategy:
                     
                 except Exception as e:
                     logger.error(
-                        f"✗ Exception while fetching article from {url}: {e}",
+                        f"Exception fetching {url}: {str(e)[:100]}",
                         exc_info=True
                     )
-                    print(
-                        f"[FETCH EXCEPTION] {incident_id} | {domain} | {url} | "
-                        f"Exception: {str(e)}",
-                        flush=True
-                    )
+                    logger.error(f"Fetch exception {incident_id} {domain}: {str(e)[:200]}")
                     self.rate_limiter.record_fetch(domain, success=False)
             
             results[incident_id] = incident_articles
@@ -472,11 +464,7 @@ class SmartArticleFetchingStrategy:
                     f"No articles fetched for incident {incident_id} "
                     f"(tried {len(all_urls)} URL(s))"
                 )
-                print(
-                    f"[NO ARTICLES] {incident_id} | Tried {len(all_urls)} URL(s) | "
-                    f"URLs: {', '.join(all_urls[:3])}{'...' if len(all_urls) > 3 else ''}",
-                    flush=True
-                )
+                logger.warning(f"No articles for {incident_id} (tried {len(all_urls)} URLs)")
             else:
                 logger.info(
                     f"Fetched {len(incident_articles)} articles for incident {incident_id}"

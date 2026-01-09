@@ -1,13 +1,13 @@
 """
-NordVPN integration for IP rotation during web scraping.
+ProtonVPN integration for IP rotation during web scraping.
 
-Provides automatic IP rotation by connecting to different NordVPN servers.
-Requires NordVPN CLI to be installed and authenticated.
+Provides automatic IP rotation by connecting to different ProtonVPN servers.
+Requires ProtonVPN CLI to be installed and authenticated.
 
 Usage:
-    from src.edu_cti.core.vpn import NordVPNManager
+    from src.edu_cti.core.vpn import ProtonVPNManager
     
-    vpn = NordVPNManager()
+    vpn = ProtonVPNManager()
     vpn.connect()  # Connect to fastest server
     vpn.rotate()   # Connect to different server
     vpn.disconnect()
@@ -36,28 +36,28 @@ class VPNStatus:
 
 # Popular server countries for web scraping (good speeds, stable connections)
 PREFERRED_COUNTRIES = [
-    "United_States",
-    "United_Kingdom", 
-    "Germany",
-    "Netherlands",
-    "Switzerland",
-    "Canada",
-    "Sweden",
-    "France",
-    "Japan",
-    "Singapore",
+    "US",  # United States
+    "GB",  # United Kingdom
+    "DE",  # Germany
+    "NL",  # Netherlands
+    "CH",  # Switzerland
+    "CA",  # Canada
+    "SE",  # Sweden
+    "FR",  # France
+    "JP",  # Japan
+    "SG",  # Singapore
 ]
 
 
-class NordVPNManager:
+class ProtonVPNManager:
     """
-    Manager for NordVPN connections with IP rotation support.
+    Manager for ProtonVPN connections with IP rotation support.
     
-    Requires NordVPN CLI to be installed and logged in:
-    - macOS: brew install --cask nordvpn
-    - Linux: Download from nordvpn.com
+    Requires ProtonVPN CLI to be installed and logged in:
+    - macOS: brew install protonvpn-cli
+    - Linux: See https://protonvpn.com/support/linux-vpn-tool/
     
-    Login first: nordvpn login
+    Login first: protonvpn-cli login <username>
     """
     
     def __init__(
@@ -71,7 +71,7 @@ class NordVPNManager:
         Initialize VPN manager.
         
         Args:
-            preferred_countries: List of countries to rotate through
+            preferred_countries: List of country codes to rotate through (e.g., ["US", "GB"])
             rotation_interval_requests: Rotate IP every N requests (if auto_rotate)
             cooldown_seconds: Wait time after connecting before requests
             auto_rotate: Automatically rotate IP after interval
@@ -86,29 +86,30 @@ class NordVPNManager:
         self._connected = False
     
     def _run_command(self, args: List[str], timeout: int = 60) -> tuple[int, str, str]:
-        """Run NordVPN CLI command."""
+        """Run ProtonVPN CLI command."""
         try:
             result = subprocess.run(
-                ["nordvpn"] + args,
+                ["protonvpn-cli"] + args,
                 capture_output=True,
                 text=True,
                 timeout=timeout,
             )
             return result.returncode, result.stdout, result.stderr
         except FileNotFoundError:
-            return -1, "", "NordVPN CLI not found. Install from: brew install --cask nordvpn (macOS)"
+            return -1, "", "ProtonVPN CLI not found. Install: brew install protonvpn-cli (macOS)"
         except subprocess.TimeoutExpired:
             return -1, "", f"Command timed out after {timeout}s"
         except Exception as e:
             return -1, "", str(e)
     
     def is_available(self) -> bool:
-        """Check if NordVPN CLI is available and logged in."""
+        """Check if ProtonVPN CLI is available and logged in."""
         code, stdout, stderr = self._run_command(["status"])
         if code == -1:
-            logger.warning(f"NordVPN not available: {stderr}")
+            logger.warning(f"ProtonVPN not available: {stderr}")
             return False
-        return True
+        # Check if logged in (status command should work even if disconnected)
+        return "not logged in" not in stdout.lower() and "login" not in stderr.lower()
     
     def get_status(self) -> VPNStatus:
         """Get current VPN connection status."""
@@ -118,19 +119,26 @@ class NordVPNManager:
             return VPNStatus(connected=False, error=stderr or "Failed to get status")
         
         # Parse status output
-        connected = "Connected" in stdout or "Status: Connected" in stdout
+        # ProtonVPN CLI output format varies, try to parse common patterns
+        connected = "connected" in stdout.lower() and "disconnected" not in stdout.lower()
         server = None
         country = None
         ip = None
         
         for line in stdout.splitlines():
             line = line.strip()
-            if line.startswith("Server:") or line.startswith("Current server:"):
-                server = line.split(":", 1)[1].strip()
-            elif line.startswith("Country:"):
-                country = line.split(":", 1)[1].strip()
-            elif line.startswith("IP:") or line.startswith("Your new IP:"):
-                ip = line.split(":", 1)[1].strip()
+            if "server:" in line.lower() or "connected to:" in line.lower():
+                parts = line.split(":", 1)
+                if len(parts) > 1:
+                    server = parts[1].strip()
+            elif "country:" in line.lower():
+                parts = line.split(":", 1)
+                if len(parts) > 1:
+                    country = parts[1].strip()
+            elif "ip:" in line.lower() or "your ip:" in line.lower():
+                parts = line.split(":", 1)
+                if len(parts) > 1:
+                    ip = parts[1].strip()
         
         self._connected = connected
         return VPNStatus(
@@ -142,10 +150,10 @@ class NordVPNManager:
     
     def connect(self, country: Optional[str] = None) -> VPNStatus:
         """
-        Connect to NordVPN.
+        Connect to ProtonVPN.
         
         Args:
-            country: Specific country to connect to (e.g., "United_States")
+            country: Specific country code to connect to (e.g., "US")
                     If None, connects to fastest available server
         
         Returns:
@@ -157,14 +165,16 @@ class NordVPNManager:
         
         args = ["connect"]
         if country:
-            args.append(country)
+            args.extend(["--cc", country])
+        else:
+            args.append("--fastest")
         
-        logger.info(f"Connecting to NordVPN{f' ({country})' if country else ''}...")
+        logger.info(f"Connecting to ProtonVPN{f' ({country})' if country else ' (fastest)'}...")
         code, stdout, stderr = self._run_command(args, timeout=30)
         
         if code != 0:
             error = stderr or stdout or "Connection failed"
-            logger.error(f"NordVPN connection failed: {error}")
+            logger.error(f"ProtonVPN connection failed: {error}")
             return VPNStatus(connected=False, error=error)
         
         # Wait for connection to stabilize
@@ -173,20 +183,20 @@ class NordVPNManager:
         # Get and return status
         status = self.get_status()
         if status.connected:
-            logger.info(f"Connected to NordVPN: {status.server} ({status.country}), IP: {status.ip}")
+            logger.info(f"Connected to ProtonVPN: {status.server} ({status.country}), IP: {status.ip}")
         else:
             logger.warning("Connection command succeeded but status shows disconnected")
         
         return status
     
     def disconnect(self) -> bool:
-        """Disconnect from NordVPN."""
-        logger.info("Disconnecting from NordVPN...")
+        """Disconnect from ProtonVPN."""
+        logger.info("Disconnecting from ProtonVPN...")
         code, stdout, stderr = self._run_command(["disconnect"], timeout=15)
         
         if code == 0 or "not connected" in stdout.lower():
             self._connected = False
-            logger.info("Disconnected from NordVPN")
+            logger.info("Disconnected from ProtonVPN")
             return True
         
         logger.error(f"Failed to disconnect: {stderr or stdout}")
@@ -236,10 +246,10 @@ class NordVPNManager:
 
 
 # Singleton instance for easy access
-_vpn_manager: Optional[NordVPNManager] = None
+_vpn_manager: Optional[ProtonVPNManager] = None
 
 
-def get_vpn_manager() -> Optional[NordVPNManager]:
+def get_vpn_manager() -> Optional[ProtonVPNManager]:
     """Get the singleton VPN manager instance."""
     global _vpn_manager
     
@@ -248,7 +258,7 @@ def get_vpn_manager() -> Optional[NordVPNManager]:
         return None
     
     if _vpn_manager is None:
-        _vpn_manager = NordVPNManager(
+        _vpn_manager = ProtonVPNManager(
             auto_rotate=os.getenv("EDUTHREAT_VPN_AUTO_ROTATE", "").lower() in ("1", "true", "yes"),
             rotation_interval_requests=int(os.getenv("EDUTHREAT_VPN_ROTATE_INTERVAL", "50")),
         )
@@ -261,31 +271,31 @@ def get_vpn_manager() -> Optional[NordVPNManager]:
     return _vpn_manager
 
 
-def setup_vpn_login(email: str, password: str) -> bool:
+def setup_vpn_login(username: str) -> bool:
     """
-    Setup NordVPN login (one-time setup).
-    
-    Note: This uses the legacy login method. Recommended to use:
-    nordvpn login --token <token>
+    Setup ProtonVPN login (one-time setup).
     
     Args:
-        email: NordVPN account email
-        password: NordVPN account password
+        username: ProtonVPN account username
     
     Returns:
         True if login successful
     """
-    logger.info("Setting up NordVPN login...")
+    logger.info("Setting up ProtonVPN login...")
     
-    # NordVPN login via CLI is interactive, this is a simplified version
-    # In practice, use: nordvpn login --token <your-token>
-    logger.warning(
-        "For security, use token-based login instead:\n"
-        "1. Go to https://my.nordaccount.com/dashboard/nordvpn/\n"
-        "2. Generate an access token\n"
-        "3. Run: nordvpn login --token <your-token>"
-    )
+    # ProtonVPN login via CLI
+    code, stdout, stderr = subprocess.run(
+        ["protonvpn-cli", "login", username],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    ).returncode, "", ""
     
+    if code == 0:
+        logger.info("ProtonVPN login successful")
+        return True
+    
+    logger.error(f"ProtonVPN login failed: {stderr or stdout}")
     return False
 
 
@@ -295,10 +305,10 @@ if __name__ == "__main__":
     
     logging.basicConfig(level=logging.INFO)
     
-    vpn = NordVPNManager()
+    vpn = ProtonVPNManager()
     
     if not vpn.is_available():
-        print("NordVPN CLI not available")
+        print("ProtonVPN CLI not available")
         sys.exit(1)
     
     print("Current status:")

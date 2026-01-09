@@ -258,22 +258,22 @@ async def export_full_csv(
     education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
     
     # Log immediately to verify function is called
-    logger.info(f"[EXPORT] Full CSV endpoint called (education_only={education_only} -> {education_only_bool})")
-    print(f"[EXPORT] Full CSV endpoint called (education_only={education_only} -> {education_only_bool})", flush=True)
+    logger.debug(f"Full CSV export called (education_only={education_only_bool})")
+    logger.debug(f"Full CSV export called (education_only={education_only_bool})")
     
     try:
         from src.edu_cti.core.db import load_incident_by_id
         from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
         from src.edu_cti.core.deduplication import extract_urls_from_incident
     except ImportError as e:
-        logger.error(f"[EXPORT] Import error: {e}", exc_info=True)
-        print(f"[EXPORT] ✗ Import error: {e}", flush=True)
+        logger.error(f"Import error: {str(e)[:100]}")
+        logger.error(f"Import error: {str(e)[:100]}")
         raise HTTPException(status_code=500, detail=f"Import error: {str(e)}")
     
     conn = None
     try:
-        logger.info(f"[EXPORT] Starting full CSV export (education_only={education_only_bool})")
-        print(f"[EXPORT] Starting full CSV export (education_only={education_only_bool})", flush=True)
+        logger.info(f"Starting full CSV export (education_only={education_only_bool})")
+        logger.info(f"Starting full CSV export (education_only={education_only_bool})")
         
         conn = get_api_connection()
         if not conn:
@@ -416,14 +416,13 @@ async def export_full_csv(
     except HTTPException as he:
         # Re-raise HTTP exceptions (like 404)
         logger.error(f"[EXPORT] HTTPException in full CSV export: {he.detail}")
-        print(f"[EXPORT] HTTPException: {he.detail}", flush=True)
+        logger.error(f"HTTPException: {str(he.detail)[:100]}")
         raise
     except Exception as e:
         error_msg = str(e)
         error_trace = traceback.format_exc()
         logger.error(f"[EXPORT] Full CSV export failed: {error_msg}\n{error_trace}")
-        print(f"[EXPORT] ✗ Full CSV export failed: {error_msg}", flush=True)
-        print(f"[EXPORT] Traceback:\n{error_trace}", flush=True)
+        logger.error(f"Full CSV export failed: {error_msg[:200]}")
         raise HTTPException(
             status_code=500,
             detail=f"CSV export failed: {error_msg}"
@@ -452,8 +451,8 @@ async def export_enriched_csv(
     # Parse education_only string to boolean
     education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
     
-    logger.info(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only} -> {education_only_bool})")
-    print(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only} -> {education_only_bool})", flush=True)
+    logger.debug(f"Enriched CSV export called (education_only={education_only_bool})")
+    logger.debug(f"Enriched CSV export called (education_only={education_only_bool})")
     
     conn = None
     try:
@@ -476,7 +475,7 @@ async def export_enriched_csv(
         
         filename = f"eduthreat_enriched_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
-        logger.info(f"[EXPORT] Generated enriched CSV with {len(incidents)} incidents")
+        logger.info(f"Generated enriched CSV: {len(incidents)} incidents")
         
         return StreamingResponse(
             iter([csv_content]),
@@ -488,8 +487,8 @@ async def export_enriched_csv(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[EXPORT] Enriched CSV export failed: {e}", exc_info=True)
-        print(f"[EXPORT] ✗ Enriched CSV export failed: {e}", flush=True)
+        logger.error(f"Enriched CSV export failed: {str(e)[:200]}")
+        logger.error(f"Enriched CSV export failed: {str(e)[:200]}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -587,8 +586,8 @@ async def export_enriched_csv(
     # Parse education_only string to boolean
     education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
     
-    logger.info(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only} -> {education_only_bool})")
-    print(f"[EXPORT] Enriched CSV endpoint called (education_only={education_only} -> {education_only_bool})", flush=True)
+    logger.debug(f"Enriched CSV export called (education_only={education_only_bool})")
+    logger.debug(f"Enriched CSV export called (education_only={education_only_bool})")
     
     conn = None
     try:
@@ -611,7 +610,7 @@ async def export_enriched_csv(
         
         filename = f"eduthreat_enriched_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
         
-        logger.info(f"[EXPORT] Generated enriched CSV with {len(incidents)} incidents")
+        logger.info(f"Generated enriched CSV: {len(incidents)} incidents")
         
         return StreamingResponse(
             iter([csv_content]),
@@ -623,8 +622,8 @@ async def export_enriched_csv(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"[EXPORT] Enriched CSV export failed: {e}", exc_info=True)
-        print(f"[EXPORT] ✗ Enriched CSV export failed: {e}", flush=True)
+        logger.error(f"Enriched CSV export failed: {str(e)[:200]}")
+        logger.error(f"Enriched CSV export failed: {str(e)[:200]}")
         import traceback
         traceback.print_exc()
         raise HTTPException(
@@ -656,22 +655,22 @@ async def export_full_csv(
     education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
     
     # Log immediately to verify function is called
-    logger.info(f"[EXPORT] Full CSV endpoint called (education_only={education_only} -> {education_only_bool})")
-    print(f"[EXPORT] Full CSV endpoint called (education_only={education_only} -> {education_only_bool})", flush=True)
+    logger.debug(f"Full CSV export called (education_only={education_only_bool})")
+    logger.debug(f"Full CSV export called (education_only={education_only_bool})")
     
     try:
         from src.edu_cti.core.db import load_incident_by_id
         from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
         from src.edu_cti.core.deduplication import extract_urls_from_incident
     except ImportError as e:
-        logger.error(f"[EXPORT] Import error: {e}", exc_info=True)
-        print(f"[EXPORT] ✗ Import error: {e}", flush=True)
+        logger.error(f"Import error: {str(e)[:100]}")
+        logger.error(f"Import error: {str(e)[:100]}")
         raise HTTPException(status_code=500, detail=f"Import error: {str(e)}")
     
     conn = None
     try:
-        logger.info(f"[EXPORT] Starting full CSV export (education_only={education_only_bool})")
-        print(f"[EXPORT] Starting full CSV export (education_only={education_only_bool})", flush=True)
+        logger.info(f"Starting full CSV export (education_only={education_only_bool})")
+        logger.info(f"Starting full CSV export (education_only={education_only_bool})")
         
         conn = get_api_connection()
         if not conn:
@@ -816,14 +815,13 @@ async def export_full_csv(
     except HTTPException as he:
         # Re-raise HTTP exceptions (like 404)
         logger.error(f"[EXPORT] HTTPException in full CSV export: {he.detail}")
-        print(f"[EXPORT] HTTPException: {he.detail}", flush=True)
+        logger.error(f"HTTPException: {str(he.detail)[:100]}")
         raise
     except Exception as e:
         error_msg = str(e)
         error_trace = traceback.format_exc()
         logger.error(f"[EXPORT] Full CSV export failed: {error_msg}\n{error_trace}")
-        print(f"[EXPORT] ✗ Full CSV export failed: {error_msg}", flush=True)
-        print(f"[EXPORT] Traceback:\n{error_trace}", flush=True)
+        logger.error(f"Full CSV export failed: {error_msg[:200]}")
         raise HTTPException(
             status_code=500,
             detail=f"CSV export failed: {error_msg}"
@@ -888,12 +886,12 @@ async def upload_database(
         # Backup existing database if it exists
         if dest_db.exists():
             logger.info(f"Backing up existing database to {backup_db}")
-            print(f"[UPLOAD] Backing up existing database...", flush=True)
+            logger.info("Backing up existing database")
             shutil.copy2(dest_db, backup_db)
         
         # Save uploaded file
         logger.info(f"Uploading database file: {file.filename}")
-        print(f"[UPLOAD] Uploading database file: {file.filename}", flush=True)
+        logger.info(f"Uploading database: {file.filename}")
         
         with open(dest_db, "wb") as f:
             content = await file.read()
@@ -912,10 +910,7 @@ async def upload_database(
             conn.close()
             
             logger.info(f"Database uploaded successfully: {incident_count} incidents")
-            print(f"[UPLOAD] ✓ Database uploaded successfully", flush=True)
-            print(f"[UPLOAD]   Incidents: {incident_count}", flush=True)
-            print(f"[UPLOAD]   Enriched (education): {enriched_count}", flush=True)
-            print(f"[UPLOAD]   Size: {db_size:.2f} MB", flush=True)
+            logger.info(f"Database uploaded: {incident_count} incidents, {enriched_count} enriched, {db_size:.2f} MB")
             
             return {
                 "success": True,
@@ -930,7 +925,7 @@ async def upload_database(
             # Restore backup if verification failed
             if backup_db.exists():
                 logger.warning(f"Uploaded database verification failed, restoring backup: {e}")
-                print(f"[UPLOAD] ✗ Database verification failed, restoring backup", flush=True)
+                logger.error("Database verification failed, restoring backup")
                 shutil.copy2(backup_db, dest_db)
             
             conn.close()
@@ -941,7 +936,7 @@ async def upload_database(
             
     except Exception as e:
         logger.error(f"Database upload failed: {e}", exc_info=True)
-        print(f"[UPLOAD] ✗ Failed: {e}", flush=True)
+        logger.error(f"Upload failed: {str(e)[:200]}")
         raise HTTPException(
             status_code=500,
             detail=f"Upload failed: {str(e)}"
@@ -992,7 +987,7 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
                 if source_db.samefile(dest_db):
                     # Already in the right place!
                     logger.info(f"Database already at destination: {dest_db}")
-                    print(f"[MIGRATION] ✓ Database already at destination: {dest_db}", flush=True)
+                    logger.info(f"Database already at destination: {dest_db}")
                     
                     # Verify integrity
                     conn = get_api_connection()
@@ -1017,7 +1012,7 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
         # If source exists and is different from destination, copy it
         if source_db and source_db != dest_db:
             logger.info(f"Migrating database from {source_db} to {dest_db}")
-            print(f"[MIGRATION] Copying database from {source_db} to {dest_db}", flush=True)
+            logger.info(f"Copying database from {source_db} to {dest_db}")
             
             # Get source size
             source_size = source_db.stat().st_size / (1024 * 1024)  # MB
@@ -1052,7 +1047,7 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
             # No source found - check if destination already has data
             if dest_db.exists():
                 logger.info(f"Database already exists at {dest_db}")
-                print(f"[MIGRATION] Database already exists at {dest_db}", flush=True)
+                logger.info(f"Database already exists at {dest_db}")
                 
                 conn = get_api_connection()
                 cur = conn.execute("SELECT COUNT(*) FROM incidents")
@@ -1072,7 +1067,7 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
             else:
                 # Initialize fresh database
                 logger.info(f"Initializing fresh database at {dest_db}")
-                print(f"[MIGRATION] Initializing fresh database at {dest_db}", flush=True)
+                logger.info(f"Initializing fresh database at {dest_db}")
                 
                 # Initialize fresh database
                 conn = get_api_connection()
@@ -1093,7 +1088,7 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
                 }
     except Exception as e:
         logger.error(f"Migration failed: {e}", exc_info=True)
-        print(f"[MIGRATION] ✗ Failed: {e}", flush=True)
+        logger.error(f"Migration failed: {str(e)[:200]}")
         return {
             "success": False,
             "message": f"Migration failed: {str(e)}",
@@ -1145,22 +1140,18 @@ async def trigger_scheduler_job(
         metrics = get_metrics()
         start_timer(f"scheduler_job_{job_type}")
         
-        logger.info(f"[ADMIN] Triggering scheduler job: {job_type}")
-        print(f"[ADMIN] Triggering scheduler job: {job_type}", flush=True)
+        logger.info(f"Triggering scheduler job: {job_type}")
         
         scheduler = IngestionScheduler(enable_enrichment=True)
         
         if job_type == "rss":
-            logger.info("[ADMIN] Starting RSS ingestion...")
-            print("[ADMIN] Starting RSS ingestion...", flush=True)
+            logger.info("Starting RSS ingestion")
             scheduler._run_rss_ingestion()
         elif job_type == "weekly":
-            logger.info("[ADMIN] Starting weekly ingestion...")
-            print("[ADMIN] Starting weekly ingestion...", flush=True)
+            logger.info("Starting weekly ingestion")
             scheduler._run_weekly_ingestion()
         elif job_type == "enrich":
-            logger.info("[ADMIN] Starting LLM enrichment...")
-            print("[ADMIN] Starting LLM enrichment...", flush=True)
+            logger.info("Starting LLM enrichment")
             # Process all unenriched incidents when triggered manually (no limit)
             scheduler._run_enrichment(limit=None, manual_trigger=True)
         
@@ -1170,8 +1161,7 @@ async def trigger_scheduler_job(
         # Get captured logs
         log_output = log_capture.getvalue()
         
-        logger.info(f"[ADMIN] Job {job_type} completed in {duration:.2f}s")
-        print(f"[ADMIN] Job {job_type} completed in {duration:.2f}s", flush=True)
+        logger.info(f"Job {job_type} completed in {duration:.2f}s")
         
         # Log metrics summary
         metrics.log_summary()
@@ -1188,8 +1178,7 @@ async def trigger_scheduler_job(
         metrics = get_metrics()
         metrics.increment(f"scheduler_job_{job_type}_total", labels={"status": "error"})
         
-        logger.error(f"[ADMIN] Job {job_type} failed: {e}", exc_info=True)
-        print(f"[ADMIN] Job {job_type} failed: {e}", flush=True)
+        logger.error(f"Job {job_type} failed: {str(e)[:200]}")
         
         log_output = log_capture.getvalue()
         
@@ -1219,7 +1208,7 @@ async def fix_incident_dates_endpoint(
     from datetime import datetime
     
     logger.info(f"[ADMIN] Fixing incident dates (apply={apply})")
-    print(f"[ADMIN] Fixing incident dates (apply={apply})", flush=True)
+    logger.info(f"Fixing incident dates (apply={apply})")
     
     conn = get_api_connection(read_only=False)  # Need write access
     
@@ -1239,8 +1228,7 @@ async def fix_incident_dates_endpoint(
         """)
         
         incidents = cur.fetchall()
-        logger.info(f"[ADMIN] Found {len(incidents)} enriched incidents to check")
-        print(f"[ADMIN] Found {len(incidents)} enriched incidents to check", flush=True)
+        logger.info(f"Found {len(incidents)} enriched incidents to check")
         
         fixed_count = 0
         skipped_count = 0
@@ -1302,10 +1290,9 @@ async def fix_incident_dates_endpoint(
                         WHERE incident_id = ?
                     """, (timeline_date, timeline_precision, incident_id))
                     conn.commit()
-                    logger.info(f"[ADMIN] Updated {incident_id}: {current_date} -> {timeline_date}")
-                    print(f"[ADMIN] ✓ Updated {incident_id}: {current_date} -> {timeline_date}", flush=True)
+                    logger.info(f"Updated {incident_id}: {current_date} -> {timeline_date}")
                 else:
-                    logger.info(f"[ADMIN] [DRY RUN] Would update {incident_id}: {current_date} -> {timeline_date}")
+                    logger.debug(f"[DRY RUN] Would update {incident_id}: {current_date} -> {timeline_date}")
                 
                 fixed_incidents.append({
                     "incident_id": incident_id,
@@ -1327,14 +1314,12 @@ async def fix_incident_dates_endpoint(
         if fixed_count > 0 and fixed_count <= 20:  # Only include details if not too many
             summary["fixed_incidents"] = fixed_incidents
         
-        logger.info(f"[ADMIN] Date fix complete: {summary}")
-        print(f"[ADMIN] Date fix complete: {summary}", flush=True)
+        logger.info(f"Date fix complete: fixed={fixed_count}, skipped={skipped_count}")
         
         return summary
         
     except Exception as e:
-        logger.error(f"[ADMIN] Date fix failed: {e}", exc_info=True)
-        print(f"[ADMIN] ✗ Date fix failed: {e}", flush=True)
+        logger.error(f"Date fix failed: {str(e)[:200]}")
         raise HTTPException(
             status_code=500,
             detail=f"Date fix failed: {str(e)}",

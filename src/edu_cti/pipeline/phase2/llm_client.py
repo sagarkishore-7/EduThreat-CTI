@@ -1141,7 +1141,7 @@ class OllamaLLMClient:
                 
                 if rate_limit_errors >= max_rate_limit_retries:
                     logger.error(f"Rate limit persisted after {max_rate_limit_retries} attempts. Stopping enrichment.")
-                    print(f"[RATE LIMIT] ✗ Rate limit error persisted after {max_rate_limit_retries} attempts. Stopping enrichment.", flush=True)
+                    logger.error(f"Rate limit error persisted after {max_rate_limit_retries} attempts. Stopping enrichment.")
                     raise RateLimitError(
                         f"Rate limit persisted after {max_rate_limit_retries} attempts. "
                         f"Please wait and retry later. Last error: {e}"

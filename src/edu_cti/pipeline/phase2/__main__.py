@@ -103,9 +103,7 @@ def fetch_articles_phase(
         Statistics dict with counts
     """
     logger = logging.getLogger(__name__)
-    logger.info("=" * 60)
-    logger.info("PHASE 1: Smart Article Fetching (Producer - Pushing to Queue)")
-    logger.info("=" * 60)
+    logger.info("PHASE 1: Article Fetching")
     
     from src.edu_cti.pipeline.phase2.utils.fetching_strategy import (
         SmartArticleFetchingStrategy,
@@ -153,7 +151,8 @@ def fetch_articles_phase(
         for idx, incident in enumerate(incidents_to_process, 1):
             incident_id = incident["incident_id"]
             progress_pct = (idx / total_incidents) * 100
-            logger.info(f"[{idx}/{total_incidents}] ({progress_pct:.1f}%) Fetching articles for incident: {incident_id}")
+            if idx % 10 == 0 or idx == total_incidents:  # Log every 10th or last
+                logger.info(f"Fetching [{idx}/{total_incidents}] ({progress_pct:.1f}%)")
             
             try:
                 # Check if incident already has articles in database
@@ -184,7 +183,7 @@ def fetch_articles_phase(
                 
                 if successful_articles:
                     stats["articles_fetched"] += 1
-                    logger.info(f"✓ Fetched {len(successful_articles)} new article(s) for incident {incident_id}")
+                    logger.info(f"Fetched {len(successful_articles)} articles for {incident_id}")
                     
                     # Clear broken status for successfully fetched URLs
                     from src.edu_cti.core.db import clear_broken_urls
@@ -196,10 +195,10 @@ def fetch_articles_phase(
                     should_push_to_queue = True
                 elif has_existing_articles:
                     # Incident already has articles in DB from previous fetch attempts
-                    logger.info(f"✓ Incident {incident_id} already has {len(existing_articles)} article(s) in database - pushing to queue for enrichment")
+                    logger.info(f"Incident {incident_id} has {len(existing_articles)} articles in DB")
                     should_push_to_queue = True
                 else:
-                    logger.warning(f"⊘ No articles available for incident {incident_id} (no new articles fetched, no existing articles in DB)")
+                    logger.warning(f"No articles for {incident_id}")
                     # Mark all URLs as broken if none were fetched and no existing articles
                     all_urls = incident.get("all_urls", [])
                     if all_urls:
@@ -236,24 +235,19 @@ def fetch_articles_phase(
                     
                     # Push to queue - enrichment consumer will pick it up
                     incident_queue.put(incident_dict)
-                    logger.info(f"✓ Pushed incident {incident_id} to enrichment queue (queue size: {incident_queue.qsize()})")
+                    logger.debug(f"Pushed {incident_id} to queue (size: {incident_queue.qsize()})")
                 
                 stats["processed"] += 1
                 
             except Exception as e:
                 stats["errors"] += 1
-                logger.error(f"✗ Error fetching articles for incident {incident_id}: {e}", exc_info=True)
+                logger.error(f"Error fetching articles for {incident_id}: {e}")
         
     except Exception as e:
         stats["errors"] += len(incidents_to_process)
-        logger.error(f"✗ Error during article fetching: {e}", exc_info=True)
+        logger.error(f"Error during article fetching: {e}")
     
-    logger.info("=" * 60)
-    logger.info("Article Fetching Complete")
-    logger.info(f"  Processed: {stats['processed']}")
-    logger.info(f"  Articles Fetched: {stats['articles_fetched']}")
-    logger.info(f"  Errors: {stats['errors']}")
-    logger.info("=" * 60)
+    logger.info(f"Fetching complete: {stats['processed']} processed, {stats['articles_fetched']} fetched, {stats['errors']} errors")
     
     return stats
 
@@ -287,9 +281,7 @@ def enrich_articles_phase(
         Statistics dict with counts
     """
     logger = logging.getLogger(__name__)
-    logger.info("=" * 60)
-    logger.info("PHASE 2: Sequential LLM Enrichment (Consumer - Processing from Queue)")
-    logger.info("=" * 60)
+    logger.info("PHASE 2: LLM Enrichment")
     
     # Initialize articles table
     from src.edu_cti.pipeline.phase2.storage.article_storage import init_articles_table
@@ -402,7 +394,7 @@ def enrich_articles_phase(
                 incident = dict_to_incident(full_incident_dict, conn=conn)
                 
                 # Process incident (reads articles from DB) - SEQUENTIAL, ONE AT A TIME
-                logger.info(f"Calling process_incident for {incident_id}...")
+                logger.debug(f"Processing {incident_id}")
                 try:
                     enrichment_result = enricher.process_incident(
                         incident=incident,
@@ -415,7 +407,7 @@ def enrich_articles_phase(
                     from src.edu_cti.pipeline.phase2.llm_client import RateLimitError
                     if isinstance(e, RateLimitError):
                         logger.error(f"Rate limit error in process_incident for {incident_id}: {e}")
-                        print(f"[RATE LIMIT] ✗ Stopping enrichment due to persistent rate limit errors", flush=True)
+                        logger.error("Stopping enrichment due to persistent rate limit errors")
                         stats["errors"] += 1
                         # Mark remaining items as done and break out of loop
                         while not incident_queue.empty():
@@ -446,17 +438,10 @@ def enrich_articles_phase(
                         # This allows API reads to proceed while enrichment is running
                         conn.commit()
                         stats["enriched"] += 1
-                        logger.info(f"✓✓✓ Successfully enriched and saved incident: {incident_id}")
-                        # Verify it was saved
-                        cur = conn.execute("SELECT llm_enriched FROM incidents WHERE incident_id = ?", (incident_id,))
-                        verify_row = cur.fetchone()
-                        if verify_row and verify_row["llm_enriched"] == 1:
-                            logger.info(f"✓ Verified: incident {incident_id} marked as enriched in database")
-                        else:
-                            logger.error(f"✗ ERROR: incident {incident_id} NOT marked as enriched in database!")
+                        logger.info(f"Enriched {incident_id}")
                     else:
                         stats["skipped"] += 1
-                        logger.warning(f"⊘ Skipped enrichment upgrade for {incident_id} - lower confidence or save failed")
+                        logger.warning(f"Skipped {incident_id} - lower confidence")
                 else:
                     # Check what kind of failure we have
                     if raw_json_data and isinstance(raw_json_data, dict):
@@ -466,22 +451,22 @@ def enrich_articles_phase(
                             mark_incident_skipped(conn, incident_id, f"Not education-related: {reason}")
                             conn.commit()  # Commit skip marker immediately
                             stats["skipped"] += 1
-                            logger.info(f"⊘ Skipped incident: {incident_id} - Not education-related")
+                            logger.debug(f"Skipped {incident_id} - not education-related")
                         elif raw_json_data.get("_enrichment_failed"):
                             # Enrichment failed (JSON parsing, etc.) - DON'T mark as skipped, will retry
                             reason = raw_json_data.get("_reason", "Enrichment failed")
                             stats["errors"] += 1
-                            logger.warning(f"⚠ Enrichment failed for {incident_id}: {reason} - will retry on next run")
+                            logger.warning(f"Enrichment failed for {incident_id}: {reason[:100]}")
                         else:
                             # Unknown error in raw_json_data - don't mark as skipped
                             stats["errors"] += 1
-                            logger.warning(f"⚠ Unknown enrichment result for {incident_id}")
+                            logger.warning(f"Unknown enrichment result for {incident_id}")
                     else:
                         # No enrichment result and no error info - mark as skipped
                         mark_incident_skipped(conn, incident_id, "Enrichment returned no result")
                         conn.commit()  # Commit skip marker immediately
                         stats["skipped"] += 1
-                        logger.warning(f"⊘ Skipped incident: {incident_id} - No enrichment result")
+                        logger.warning(f"Skipped {incident_id} - no enrichment result")
                 
                 # Rate limiting between LLM calls
                 if rate_limit_delay > 0:
@@ -503,13 +488,7 @@ def enrich_articles_phase(
             logger.error(f"✗ Error in consumer loop: {e}", exc_info=True)
             stats["errors"] += 1
     
-    logger.info("=" * 60)
-    logger.info("LLM Enrichment Complete")
-    logger.info(f"  Processed: {stats['processed']}")
-    logger.info(f"  Enriched: {stats['enriched']}")
-    logger.info(f"  Skipped: {stats['skipped']}")
-    logger.info(f"  Errors: {stats['errors']}")
-    logger.info("=" * 60)
+    logger.info(f"Enrichment complete: {stats['processed']} processed, {stats['enriched']} enriched, {stats['skipped']} skipped, {stats['errors']} errors")
     
     return stats
 

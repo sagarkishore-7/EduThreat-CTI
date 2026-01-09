@@ -255,18 +255,15 @@ class ArticleFetcher:
         if NEWSPAPER_AVAILABLE:
             article_content = self._fetch_with_newspaper(url)
             if article_content and article_content.fetch_successful:
-                logger.info(f"✓ Successfully fetched {url} using newspaper3k ({article_content.content_length} chars)")
+                logger.debug(f"Fetched {url} via newspaper3k ({article_content.content_length} chars)")
                 return article_content
             error_msg = article_content.error_message if article_content else "Unknown error"
             content_len = article_content.content_length if article_content else 0
             logger.warning(
-                f"✗ newspaper3k failed for {url}: {error_msg} "
+                f"newspaper3k failed for {url}: {error_msg[:100]} "
                 f"(content_length: {content_len})"
             )
-            print(
-                f"[NEWSPAPER3K FAILED] {url} | Error: {error_msg} | Content length: {content_len}",
-                flush=True
-            )
+            logger.debug(f"newspaper3k failed {url}: {error_msg[:100]}")
         else:
             logger.warning("newspaper3k not available, skipping...")
         
@@ -274,18 +271,15 @@ class ArticleFetcher:
         if SELENIUM_AVAILABLE:
             article_content = self._fetch_with_selenium(url)
             if article_content and article_content.fetch_successful:
-                logger.info(f"✓ Successfully fetched {url} using Selenium ({article_content.content_length} chars)")
+                logger.debug(f"Fetched {url} via Selenium ({article_content.content_length} chars)")
                 return article_content
             error_msg = article_content.error_message if article_content else "Unknown error"
             content_len = article_content.content_length if article_content else 0
             logger.warning(
-                f"✗ Selenium failed for {url}: {error_msg} "
+                f"Selenium failed for {url}: {error_msg[:100]} "
                 f"(content_length: {content_len})"
             )
-            print(
-                f"[SELENIUM FAILED] {url} | Error: {error_msg} | Content length: {content_len}",
-                flush=True
-            )
+            logger.debug(f"Selenium failed {url}: {error_msg[:100]}")
         else:
             logger.warning("Selenium not available, skipping...")
         
@@ -293,24 +287,19 @@ class ArticleFetcher:
         logger.info(f"Trying archive.org fallback for {url}...")
         archive_content = self._fetch_from_archive(url)
         if archive_content and archive_content.fetch_successful:
-            logger.info(f"✓ Successfully fetched {url} from archive.org ({archive_content.content_length} chars)")
+            logger.debug(f"Fetched {url} from archive.org ({archive_content.content_length} chars)")
             return archive_content
         else:
-            logger.warning(f"✗ archive.org fallback failed for {url}")
+            logger.debug(f"archive.org fallback failed for {url}")
         
         # All methods failed
         logger.error(
-            f"✗✗✗ All fetch methods failed for {url} "
+            f"All fetch methods failed for {url} "
             f"(newspaper3k: {'available' if NEWSPAPER_AVAILABLE else 'unavailable'}, "
             f"Selenium: {'available' if SELENIUM_AVAILABLE else 'unavailable'}, "
             f"archive.org: {'tried' if archive_content is None else 'no snapshot'})"
         )
-        print(
-            f"[ALL METHODS FAILED] {url} | "
-            f"newspaper3k: {'available' if NEWSPAPER_AVAILABLE else 'unavailable'} | "
-            f"Selenium: {'available' if SELENIUM_AVAILABLE else 'unavailable'}",
-            flush=True
-        )
+        logger.warning(f"All methods failed for {url}")
         return ArticleContent(
             url=url,
             title="",
