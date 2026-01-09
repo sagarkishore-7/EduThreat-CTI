@@ -139,6 +139,27 @@ def fetch_articles_phase(
         exclude_domains=[],  # Can add recently blocked domains here
     )
     
+    # If we got fewer incidents than requested due to domain filtering,
+    # try again with less strict filtering
+    if len(incidents_to_process) < num_incidents and num_incidents < len(unenriched):
+        logger.warning(
+            f"Only selected {len(incidents_to_process)}/{num_incidents} incidents due to domain filtering. "
+            f"Retrying with less strict filtering..."
+        )
+        # Get more incidents, including those with potentially blocked domains
+        additional_needed = num_incidents - len(incidents_to_process)
+        additional = fetching_strategy.get_random_incidents_for_enrichment(
+            limit=additional_needed * 2,  # Get 2x to account for filtering
+            exclude_domains=[],  # Don't exclude any domains
+        )
+        # Add unique incidents
+        existing_ids = {inc["incident_id"] for inc in incidents_to_process}
+        for inc in additional:
+            if inc["incident_id"] not in existing_ids:
+                incidents_to_process.append(inc)
+                if len(incidents_to_process) >= num_incidents:
+                    break
+    
     if not incidents_to_process:
         logger.warning("No incidents available for fetching")
         return stats
@@ -310,19 +331,23 @@ def enrich_articles_phase(
             except queue.Empty:
                 # Check if fetching is complete
                 if fetch_complete_event.is_set():
-                    # Double-check: wait a bit longer in case items are still being added
-                    # This handles race conditions where fetching just completed
-                    logger.info(f"Fetching complete and queue is empty - waiting 10s for any remaining items...")
-                    time.sleep(10.0)
-                    # Check one more time
-                    try:
-                        incident_dict = incident_queue.get(timeout=1.0)
-                        # Found an item, process it
-                        logger.info(f"Found item after wait, continuing processing...")
-                        # Continue to process this item (will be handled below)
-                    except queue.Empty:
+                    # Double-check: wait longer and check multiple times
+                    logger.info(f"Fetching complete and queue is empty - waiting 30s for any remaining items...")
+                    time.sleep(30.0)  # Increased from 10s to 30s
+                    # Check multiple times
+                    found_items = False
+                    for check_attempt in range(3):
+                        try:
+                            incident_dict = incident_queue.get(timeout=2.0)
+                            found_items = True
+                            logger.info(f"Found item after wait (attempt {check_attempt + 1}), continuing processing...")
+                            break
+                        except queue.Empty:
+                            continue
+                    
+                    if not found_items:
                         # Really empty now
-                        logger.info(f"Queue confirmed empty after wait - stopping consumer (processed {items_processed} items)")
+                        logger.info(f"Queue confirmed empty after extended wait - stopping consumer (processed {items_processed} items)")
                         break
                 # Continue waiting
                 logger.debug(f"Queue empty, waiting... (processed {items_processed} items so far)")
@@ -407,18 +432,17 @@ def enrich_articles_phase(
                     # Check if it's a rate limit error that should stop enrichment
                     from src.edu_cti.pipeline.phase2.llm_client import RateLimitError
                     if isinstance(e, RateLimitError):
-                        logger.error(f"Rate limit error in process_incident for {incident_id}: {e}")
-                        logger.error("Stopping enrichment due to persistent rate limit errors")
+                        logger.warning(f"Rate limit error in process_incident for {incident_id}: {e}")
+                        # Instead of breaking, wait longer and retry
+                        wait_time = 60.0  # Wait 60 seconds before retrying
+                        logger.info(f"Waiting {wait_time}s before retrying due to rate limit...")
+                        time.sleep(wait_time)
+                        # Retry this incident instead of breaking
                         stats["errors"] += 1
-                        # Mark remaining items as done and break out of loop
-                        while not incident_queue.empty():
-                            try:
-                                incident_queue.get_nowait()
-                                incident_queue.task_done()
-                            except queue.Empty:
-                                break
-                        # Signal that we're stopping due to rate limit
-                        break
+                        incident_queue.task_done()
+                        # Re-queue the incident for retry
+                        incident_queue.put(incident_dict)
+                        continue
                     else:
                         logger.error(f"Error in process_incident for {incident_id}: {e}", exc_info=True)
                         stats["errors"] += 1
@@ -675,7 +699,10 @@ def main() -> None:
     
     # Wait for consumer thread to finish processing remaining items
     logger.info("Waiting for enrichment consumer to finish processing queue...")
-    consumer.join(timeout=300)  # Wait up to 5 minutes
+    # Calculate timeout based on remaining items (estimate 2 seconds per incident)
+    estimated_timeout = max(300, total_to_process * 2)  # At least 5 min, or 2s per incident
+    logger.info(f"Consumer timeout set to {estimated_timeout}s (estimated {total_to_process} incidents)")
+    consumer.join(timeout=estimated_timeout)
     
     if consumer.is_alive():
         logger.warning("Consumer thread did not finish within timeout - may still be processing")

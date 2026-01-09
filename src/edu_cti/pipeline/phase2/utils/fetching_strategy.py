@@ -221,7 +221,7 @@ class SmartArticleFetchingStrategy:
             LIMIT ?
         """
         
-        cur = self.conn.execute(query, (limit * 3,))  # Get 3x more for filtering
+        cur = self.conn.execute(query, (limit * 5,))  # Get 5x more for filtering (increased from 3x)
         rows = cur.fetchall()
         
         if not rows:
