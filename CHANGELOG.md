@@ -5,6 +5,76 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.6.0] - 2026-01-08
+
+### LLM Enrichment Reliability & Production Improvements
+
+This release focuses on preventing premature stopping of LLM enrichment and improving production reliability for processing large datasets (4k+ incidents).
+
+#### Added
+- **Rate Limit Retry Logic**: Rate limit errors now retry with exponential backoff instead of stopping all enrichment
+  - 60-second wait before retrying failed incidents
+  - Automatic re-queuing of failed incidents
+  - Prevents complete pipeline shutdown on temporary rate limits
+- **Dynamic Consumer Timeout**: Consumer thread timeout now scales with incident count
+  - Minimum 5 minutes, or 2 seconds per incident
+  - Supports processing 4k+ incidents without premature timeout
+- **Enhanced Queue Empty Detection**: Improved logic for detecting when queue is truly empty
+  - Extended wait time from 10s to 30s
+  - Multiple check attempts (3 attempts with 2s timeout each)
+  - Prevents race conditions where items are still being added
+- **Fallback Incident Selection**: Automatic retry with less strict filtering when domain filtering reduces selection
+  - Ensures all available incidents are considered
+  - Handles cases where many domains are blocked/rate-limited
+- **Country Normalization System**: Comprehensive country code to name mapping
+  - Full country names instead of codes in database
+  - ISO 3166-1 alpha-2 code storage for CTI reports
+  - Flag emoji generation for visualization
+  - Automatic normalization of existing data
+- **CTI Report Generation**: Comprehensive Markdown reports for each incident
+  - Executive summary, incident overview, MITRE ATT&CK mapping
+  - Threat actor analysis, impact assessment, timeline
+  - IOCs, recovery & response, regulatory & compliance
+  - Downloadable reports for researchers and analysts
+- **Admin Panel Enhancements**: New admin endpoints for database management
+  - Normalize countries endpoint
+  - CSV export endpoints (enriched and full)
+  - Improved error handling and logging
+
+#### Changed
+- **Fetching Strategy Buffer**: Increased from 3x to 5x for better domain diversity
+- **Logging Optimization**: Removed emojis, truncated long messages, reduced verbosity
+  - Optimized for Railway's 500 logs/sec limit
+  - Compact console format, full file format
+  - Progress logs every 10th item instead of every item
+- **Country Data Storage**: Both `country` (full name) and `country_code` (ISO code) stored
+  - Enables CTI-level standard reports
+  - Supports both human-readable and machine-readable formats
+
+#### Fixed
+- **Premature Enrichment Stopping**: Fixed multiple issues causing enrichment to stop early
+  - Rate limit errors no longer stop entire pipeline
+  - Consumer timeout now scales with workload
+  - Queue empty detection more robust
+  - Incident selection ensures all incidents are processed
+- **Database Concurrency**: Improved WAL mode and immediate commits prevent dashboard blocking
+- **Incident Date Accuracy**: LLM-extracted timeline dates now correctly override source published dates
+- **Broken URL Handling**: Improved tracking and updating of broken URLs
+- **Article Fetching**: Enhanced handling for databreaches.net and wavy.com
+  - Lower content threshold for databreaches.net
+  - PerimeterX bot detection handler for wavy.com
+- **Selenium on Railway**: Non-headless mode support using Xvfb virtual display
+  - Enables bypassing advanced bot detection
+  - Works with sites requiring visible browser
+
+#### Technical Improvements
+- **VPN Integration**: NordVPN support for IP rotation and bot detection evasion
+- **Logging System**: Custom truncating formatter for optimal log visibility
+- **Error Handling**: Comprehensive exception handling with detailed logging
+- **Database Migrations**: Automatic migration for new columns (country_code, broken_urls)
+
+---
+
 ## [1.5.0] - 2025-11-27
 
 ### Enhanced Article Extraction & Cookie Consent Handling

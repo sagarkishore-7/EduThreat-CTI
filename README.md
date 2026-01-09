@@ -1,6 +1,6 @@
 # EduThreat-CTI
 
-[![Version](https://img.shields.io/badge/version-1.5.0-blue.svg)](CHANGELOG.md)
+[![Version](https://img.shields.io/badge/version-1.6.0-blue.svg)](CHANGELOG.md)
 [![License](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.9+-blue.svg)](https://python.org)
 
@@ -10,7 +10,7 @@ EduThreat-CTI is an open-source cyber threat intelligence (CTI) framework focuse
 
 This project is inspired by large-scale cyber-incident measurement studies (e.g., USENIX Security research) and extends that approach **vertically** into the education domain.
 
-> **Latest Release (v1.5.0)**: Enhanced article extraction with 80+ dynamic CSS selectors, automatic cookie consent handling, and progress tracking. Reliable content fetching from international news sites including DarkReading, SecurityWeek, and European sources. See [CHANGELOG.md](CHANGELOG.md) for details.
+> **Latest Release (v1.6.0)**: Improved LLM enrichment reliability with rate limit retry logic, dynamic timeouts, and enhanced queue management. Added country normalization, CTI report generation, and comprehensive admin panel features. Prevents premature stopping when processing 4k+ incidents. See [CHANGELOG.md](CHANGELOG.md) for details.
 
 ------------------------------------------------------------------------
 
@@ -420,8 +420,13 @@ python -m src.edu_cti.api --reload
 | `GET /api/stats` | Summary statistics |
 | `GET /api/incidents` | Paginated incident list with filters |
 | `GET /api/incidents/{id}` | Full incident detail |
+| `GET /api/incidents/{id}/report` | Download CTI report (Markdown) |
 | `GET /api/filters` | Available filter options |
 | `GET /api/analytics/*` | Various analytics endpoints |
+| `POST /api/admin/*` | Admin endpoints (authentication required) |
+| `POST /api/admin/export/*` | Database and CSV export |
+| `POST /api/admin/scheduler/trigger/*` | Trigger ingestion/enrichment jobs |
+| `POST /api/admin/normalize-countries` | Normalize country data |
 
 **Dashboard Website:**
 The separate [EduThreat-CTI-Dashboard](https://github.com/sagarkishore-7/EduThreat-CTI-Dashboard) project provides a modern Next.js dashboard that connects to this API.
@@ -464,6 +469,24 @@ npm run dev
 -   ✅ **Intelligent error recovery** (retry on next run)
 
 ## Phase 3 --- CTI Dashboard & API ✅ Complete (v1.6.0)
+
+-   ✅ **REST API** (FastAPI) for serving CTI data
+-   ✅ **Interactive Dashboard** (Next.js) with:
+    - Real-time statistics and charts
+    - Incident list with filtering and search
+    - Detailed incident views with full enrichment data
+    - Timeline and MITRE ATT&CK visualizations
+    - Ransomware and threat actor tracking
+    - Geographic analysis with country normalization
+    - CTI report downloads for researchers
+-   ✅ **Admin Panel** with:
+    - Database export (full DB and CSV)
+    - Scheduler controls (RSS, weekly, enrichment jobs)
+    - Country normalization tools
+    - Incident date correction utilities
+-   ✅ **Production-ready** Docker deployment on Railway
+-   ✅ **Country Normalization**: Full country names with ISO codes and flag emojis
+-   ✅ **CTI Report Generation**: Comprehensive Markdown reports following security frameworks
 
 -   ✅ **REST API** (FastAPI) for serving CTI data
 -   ✅ **Interactive Dashboard** (Next.js) with:
