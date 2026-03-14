@@ -22,7 +22,6 @@ from src.edu_cti.core.db import (
     get_last_pubdate,
     set_last_pubdate,
     source_event_exists,
-    register_source_event,
 )
 from src.edu_cti.core.http import HttpClient
 from src.edu_cti.core.models import BaseIncident, make_incident_id
@@ -213,9 +212,6 @@ def build_databreaches_rss_incidents(
                 source_confidence="medium",
                 notes=f"rss_source={SOURCE_NAME};categories={','.join(categories)}",
             )
-            
-            # Register source event to prevent re-ingestion
-            register_source_event(conn, SOURCE_NAME, guid, incident_id, ingested_at)
             
             incidents.append(incident)
             logger.info(f"Collected incident: {title} (published: {pub_date_str})")

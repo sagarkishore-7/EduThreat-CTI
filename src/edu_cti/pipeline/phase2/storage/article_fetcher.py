@@ -2,8 +2,8 @@
 Article fetching module for Phase 2 enrichment.
 
 Fetches and extracts article content from URLs for LLM processing.
-Uses newspaper3k for primary article extraction, with Selenium fallback.
-Includes advanced bot detection bypass for sites like DarkReading.
+Uses newspaper3k for primary article extraction, with curl_cffi/Playwright fallback.
+Includes advanced bot detection bypass via TLS fingerprinting and headless browser.
 """
 
 import logging
@@ -14,7 +14,7 @@ from typing import List, Optional, Dict
 from dataclasses import dataclass
 from urllib.parse import urlparse, quote
 
-from src.edu_cti.core.http import HttpClient, build_http_client, SELENIUM_AVAILABLE
+from src.edu_cti.core.http import HttpClient, build_http_client
 from bs4 import BeautifulSoup
 
 # Optional newspaper3k support for article extraction
@@ -27,15 +27,13 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Domains where Selenium doesn't work (Cloudflare protection)
-# For these, newspaper3k is the best option
-CLOUDFLARE_PROTECTED_DOMAINS = []
-
-"""[
+# Domains with Cloudflare protection (curl_cffi handles these via TLS impersonation)
+CLOUDFLARE_PROTECTED_DOMAINS = [
     "darkreading.com",
     "securityweek.com",
     "bleepingcomputer.com",
-]"""
+    "databreaches.net",
+]
 
 
 @dataclass
@@ -67,7 +65,7 @@ class ArticleFetcher:
         self.http_client = http_client or build_http_client()
     
     def _is_cloudflare_protected(self, url: str) -> bool:
-        """Check if this domain has Cloudflare protection (Selenium doesn't help)."""
+        """Check if this domain has Cloudflare protection."""
         domain = urlparse(url).netloc.lower()
         return any(d in domain for d in CLOUDFLARE_PROTECTED_DOMAINS)
 
@@ -212,7 +210,7 @@ class ArticleFetcher:
            b. Fall back to archive.org if newspaper3k fails
         2. For other domains:
            a. Try newspaper3k first
-           b. Fall back to Selenium if newspaper3k fails
+           b. Fall back to HttpClient (curl_cffi/Playwright) if newspaper3k fails
         
         Args:
             url: URL to fetch
@@ -224,7 +222,7 @@ class ArticleFetcher:
         is_cloudflare = self._is_cloudflare_protected(url)
         
         # For Cloudflare-protected domains, try newspaper3k then archive.org
-        # (Selenium always fails against Cloudflare)
+        # (curl_cffi handles Cloudflare via TLS fingerprint impersonation)
         if is_cloudflare:
             logger.debug(f"Cloudflare-protected domain, using newspaper3k + archive fallback: {url}")
             
@@ -263,25 +261,17 @@ class ArticleFetcher:
                 f"newspaper3k failed for {url}: {error_msg[:100]} "
                 f"(content_length: {content_len})"
             )
-            logger.debug(f"newspaper3k failed {url}: {error_msg[:100]}")
         else:
             logger.warning("newspaper3k not available, skipping...")
-        
-        # Fall back to Selenium (handles bot detection for non-Cloudflare sites)
-        if SELENIUM_AVAILABLE:
-            article_content = self._fetch_with_selenium(url)
-            if article_content and article_content.fetch_successful:
-                logger.debug(f"Fetched {url} via Selenium ({article_content.content_length} chars)")
-                return article_content
-            error_msg = article_content.error_message if article_content else "Unknown error"
-            content_len = article_content.content_length if article_content else 0
-            logger.warning(
-                f"Selenium failed for {url}: {error_msg[:100]} "
-                f"(content_length: {content_len})"
-            )
-            logger.debug(f"Selenium failed {url}: {error_msg[:100]}")
-        else:
-            logger.warning("Selenium not available, skipping...")
+
+        # Fall back to HttpClient (curl_cffi + Playwright for bot detection bypass)
+        article_content = self._fetch_with_browser(url)
+        if article_content and article_content.fetch_successful:
+            logger.debug(f"Fetched {url} via HttpClient ({article_content.content_length} chars)")
+            return article_content
+        if article_content:
+            error_msg = article_content.error_message or "Unknown error"
+            logger.warning(f"HttpClient failed for {url}: {error_msg[:100]}")
         
         # Final fallback: Try archive.org (works for many historical articles)
         logger.info(f"Trying archive.org fallback for {url}...")
@@ -296,7 +286,6 @@ class ArticleFetcher:
         logger.error(
             f"All fetch methods failed for {url} "
             f"(newspaper3k: {'available' if NEWSPAPER_AVAILABLE else 'unavailable'}, "
-            f"Selenium: {'available' if SELENIUM_AVAILABLE else 'unavailable'}, "
             f"archive.org: {'tried' if archive_content is None else 'no snapshot'})"
         )
         logger.warning(f"All methods failed for {url}")
@@ -305,48 +294,53 @@ class ArticleFetcher:
             title="",
             content="",
             fetch_successful=False,
-            error_message="All fetch methods failed (newspaper3k, Selenium, archive.org)",
+            error_message="All fetch methods failed (newspaper3k, curl_cffi/Playwright, archive.org)",
             content_length=0
         )
 
-    def _fetch_with_selenium(self, url: str) -> ArticleContent:
+    def _fetch_with_browser(self, url: str) -> ArticleContent:
         """
-        Fetch article using Selenium with bot detection bypass.
-        
+        Fetch article using HttpClient (curl_cffi + Playwright).
+
+        Uses the multi-tier fallback chain in HttpClient:
+        1. curl_cffi with Chrome TLS fingerprint (bypasses most Cloudflare)
+        2. Playwright headless with stealth patches (JS rendering)
+        3. Plain requests (simple pages)
+
         Args:
             url: URL to fetch
-            
+
         Returns:
             ArticleContent with extracted content
         """
         try:
-            logger.debug(f"Selenium: Fetching soup for {url}")
-            soup = self.http_client.get_soup(url, allow_404=True, use_selenium_fallback=True)
-            
+            logger.debug(f"HttpClient: Fetching soup for {url}")
+            soup = self.http_client.get_soup(url, allow_404=True)
+
             if soup is None:
-                logger.warning(f"Selenium: soup is None for {url}")
+                logger.warning(f"HttpClient: soup is None for {url}")
                 return ArticleContent(
                     url=url,
                     title="",
                     content="",
                     fetch_successful=False,
-                    error_message="Selenium fetch failed or returned None",
+                    error_message="HttpClient fetch failed or returned None",
                     content_length=0
                 )
             
             # Extract content
-            logger.debug(f"Selenium: Extracting content from {url}")
+            logger.debug(f"HttpClient: Extracting content from {url}")
             title = self._extract_title(soup)
             content = self._extract_content(soup)
             author = self._extract_author(soup)
             publish_date = self._extract_publish_date(soup)
             
-            logger.debug(f"Selenium: Extracted title length: {len(title) if title else 0}, content length: {len(content) if content else 0}")
+            logger.debug(f"HttpClient: Extracted title length: {len(title) if title else 0}, content length: {len(content) if content else 0}")
             
             # Clean content
             content_before_clean = content
             content = self._clean_content(content)
-            logger.debug(f"Selenium: Content length after cleaning: {len(content) if content else 0} (was {len(content_before_clean) if content_before_clean else 0})")
+            logger.debug(f"HttpClient: Content length after cleaning: {len(content) if content else 0} (was {len(content_before_clean) if content_before_clean else 0})")
             
             # Check for meaningful content - lower threshold for databreaches.net and similar sites
             min_length = 50 if "databreaches.net" in url.lower() else 100
@@ -354,7 +348,7 @@ class ArticleFetcher:
             
             if not content or len(content_stripped) < min_length:
                 logger.warning(
-                    f"Selenium: Content too short for {url}: "
+                    f"HttpClient: Content too short for {url}: "
                     f"length={len(content_stripped)}, min={min_length}, "
                     f"title={title[:50] if title else 'None'}, "
                     f"content_preview={content_stripped[:100] if content_stripped else 'None'}"
@@ -370,7 +364,7 @@ class ArticleFetcher:
                     content_length=len(content) if content else 0
                 )
             
-            logger.info(f"Selenium: Successfully extracted content from {url}: {len(content)} chars")
+            logger.info(f"HttpClient: Successfully extracted content from {url}: {len(content)} chars")
             return ArticleContent(
                 url=url,
                 title=title,
@@ -382,13 +376,13 @@ class ArticleFetcher:
             )
             
         except Exception as e:
-            logger.error(f"Error fetching article from {url} with Selenium: {e}", exc_info=True)
+            logger.error(f"Error fetching article from {url} with HttpClient: {e}", exc_info=True)
             return ArticleContent(
                 url=url,
                 title="",
                 content="",
                 fetch_successful=False,
-                error_message=f"Selenium exception: {str(e)}",
+                error_message=f"HttpClient exception: {str(e)}",
                 content_length=0
             )
     
@@ -458,12 +452,12 @@ class ArticleFetcher:
             
         except Exception as e:
             # Log the specific error for debugging, but don't fail completely
-            # We'll fall back to Selenium which handles bot detection better
+            # We'll fall back to HttpClient which handles bot detection better
             error_msg = str(e)
             if '403' in error_msg or 'Forbidden' in error_msg:
-                logger.debug(f"newspaper3k got 403 Forbidden for {url}, will try Selenium fallback")
+                logger.debug(f"newspaper3k got 403 Forbidden for {url}, will try HttpClient fallback")
             else:
-                logger.debug(f"newspaper3k failed for {url}: {e}, will try Selenium fallback")
+                logger.debug(f"newspaper3k failed for {url}: {e}, will try HttpClient fallback")
             return None
     
     def _extract_title(self, soup: BeautifulSoup) -> str:

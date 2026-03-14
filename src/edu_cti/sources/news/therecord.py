@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import logging
-import random
-import time
 from typing import Callable, Iterable, List, Optional, Sequence
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse
 
@@ -19,16 +17,6 @@ from .common import (
     matches_keywords,
     prepare_keywords,
 )
-
-# Try to import Selenium for JavaScript-rendered content
-try:
-    import undetected_chromedriver as uc
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    SELENIUM_AVAILABLE = True
-except ImportError:
-    SELENIUM_AVAILABLE = False
 
 SOURCE_NAME = config.SOURCE_THERECORD
 BASE_URL = "https://therecord.media/search-results"
@@ -109,70 +97,6 @@ def _find_next_page_link(soup: BeautifulSoup, current_url: str) -> Optional[str]
     return urljoin(current_url, href)
 
 
-def _fetch_with_selenium(url: str) -> Optional[BeautifulSoup]:
-    """
-    Fetch The Record search page using Selenium to wait for Algolia results to load.
-    The Record uses Algolia search which loads results dynamically via JavaScript.
-    """
-    if not SELENIUM_AVAILABLE:
-        logger.warning("Selenium not available, cannot fetch JavaScript-rendered content from The Record")
-        return None
-    
-    try:
-        options = uc.ChromeOptions()
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--disable-gpu")
-        
-        driver = uc.Chrome(options=options, version_main=None)
-        try:
-            driver.get(url)
-            
-            # Wait for page to load and Algolia search to execute
-            try:
-                # First wait for the page structure to be present
-                WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
-                )
-                
-                # Wait for Algolia to load - check for the hits container or any loading indicators to disappear
-                # Algolia might show a loading state, so we wait for results
-                WebDriverWait(driver, 25).until(
-                    lambda d: d.find_elements(By.CSS_SELECTOR, "li.ais-Hits-item") or 
-                              d.find_elements(By.CSS_SELECTOR, "ol.ais-Hits-list")
-                )
-                
-                # Wait for at least one article item to be present (search completed)
-                WebDriverWait(driver, 15).until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "li.ais-Hits-item"))
-                )
-                
-                # Additional wait to ensure all content is fully rendered
-                time.sleep(2)
-                
-                # Verify we actually have results
-                hits = driver.find_elements(By.CSS_SELECTOR, "li.ais-Hits-item")
-                if hits:
-                    logger.debug(f"Found {len(hits)} article items on page")
-                else:
-                    logger.warning(f"No article items found on {url} after waiting")
-                    
-            except Exception as e:
-                logger.warning(f"Timeout waiting for Algolia results on {url}: {e}")
-                # Still try to get the page source even if timeout
-                time.sleep(2)  # Give it a bit more time
-            
-            html = driver.page_source
-            return BeautifulSoup(html, "html.parser")
-        finally:
-            driver.quit()
-    except Exception as e:
-        logger.error(f"Selenium fetch failed for {url}: {e}")
-        return None
-
-
 def _select_nodes(soup: BeautifulSoup) -> List[BeautifulSoup]:
     """Select article nodes from The Record's search results."""
     # Articles are in li.ais-Hits-item elements
@@ -187,12 +111,12 @@ def _iter_pages(
 ) -> Iterable[tuple[int, Optional[BeautifulSoup]]]:
     """
     Iterate through pages by following the 'next page' button in pagination.
-    First tries get_soup (faster), falls back to Selenium if no articles found (Algolia JS).
+    Uses HttpClient with Playwright-based wait_selector for JS-rendered Algolia content.
     Continues until max_pages is reached (if specified) or no more next page exists.
     """
     current_url = _search_url(term)
     page_number = 1
-    
+
     while True:
         # Check if we've reached the max_pages limit
         if max_pages is not None and page_number > max_pages:
@@ -202,23 +126,16 @@ def _iter_pages(
                 max_pages,
             )
             break
-        
-        # Fetch the current page - try get_soup first (faster)
+
+        # Fetch the current page
         logger.debug("The Record term '%s' fetching page %s from %s", term, page_number, current_url)
-        soup = client.get_soup(current_url, use_selenium_fallback=True)
-        
+        soup = client.get_soup(current_url, wait_selector="li.ais-Hits-item")
+
         # Check if we got results
         nodes = []
         if soup is not None:
             nodes = _select_nodes(soup)
-        
-        # If get_soup failed or no articles found, try Selenium (Algolia is JS-rendered)
-        if soup is None or not nodes:
-            logger.info(f"The Record: get_soup failed or no articles on page {page_number}, trying Selenium (Algolia JS)")
-            soup = _fetch_with_selenium(current_url)
-            if soup is not None:
-                nodes = _select_nodes(soup)
-        
+
         if soup is None:
             logger.warning("The Record term '%s' failed to fetch page %s", term, page_number)
             break

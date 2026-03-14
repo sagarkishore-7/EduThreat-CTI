@@ -36,6 +36,15 @@ from src.edu_cti.sources.rss import (
     build_bleepingcomputer_rss_incidents,
 )
 
+# Import API-based source builders (free APIs, no scraping)
+from src.edu_cti.sources.api.ransomwatch import build_ransomlook_incidents
+from src.edu_cti.sources.api.cisa_kev import build_cisa_kev_incidents
+from src.edu_cti.sources.api.otx_alienvault import build_otx_incidents
+
+# Import new RSS sources
+from src.edu_cti.sources.rss.cisa_rss import build_cisa_rss_incidents
+from src.edu_cti.sources.rss.international_rss import build_international_rss_incidents
+
 # Curated sources registry (sources with dedicated education sector endpoints/sections)
 CURATED_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "konbriefing": build_konbriefing_base_incidents,
@@ -56,6 +65,15 @@ NEWS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
 RSS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "databreaches_rss": build_databreaches_rss_incidents,
     "bleepingcomputer": build_bleepingcomputer_rss_incidents,
+    "cisa_rss": build_cisa_rss_incidents,
+    "international_rss": build_international_rss_incidents,
+}
+
+# API-based sources registry (free APIs, no web scraping needed)
+API_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
+    "ransomlook": build_ransomlook_incidents,
+    "cisa_kev": build_cisa_kev_incidents,
+    "otx_alienvault": build_otx_incidents,
 }
 
 # All sources (for reference)
@@ -63,6 +81,7 @@ ALL_SOURCES = {
     "curated": list(CURATED_SOURCE_REGISTRY.keys()),
     "news": list(NEWS_SOURCE_REGISTRY.keys()),
     "rss": list(RSS_SOURCE_REGISTRY.keys()),
+    "api": list(API_SOURCE_REGISTRY.keys()),
 }
 
 
@@ -105,6 +124,16 @@ def get_rss_builder(source_name: str) -> Optional[Callable[..., List[BaseInciden
     return RSS_SOURCE_REGISTRY.get(source_name)
 
 
+def get_api_sources() -> List[str]:
+    """Get list of all registered API source names."""
+    return list(API_SOURCE_REGISTRY.keys())
+
+
+def get_api_builder(source_name: str) -> Optional[Callable[..., List[BaseIncident]]]:
+    """Get the builder function for an API source."""
+    return API_SOURCE_REGISTRY.get(source_name)
+
+
 def validate_sources(
     group: str,
     sources: Optional[Sequence[str]] = None,
@@ -131,8 +160,10 @@ def validate_sources(
         registry = NEWS_SOURCE_REGISTRY
     elif group == "rss":
         registry = RSS_SOURCE_REGISTRY
+    elif group == "api":
+        registry = API_SOURCE_REGISTRY
     else:
-        raise ValueError(f"Unknown group: {group}. Valid groups: curated, news, rss")
+        raise ValueError(f"Unknown group: {group}. Valid groups: curated, news, rss, api")
     
     invalid = [s for s in sources if s not in registry]
     if invalid:

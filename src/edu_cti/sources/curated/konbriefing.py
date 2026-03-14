@@ -22,7 +22,6 @@ from src.edu_cti.core.db import (
     get_last_pubdate,
     set_last_pubdate,
     source_event_exists,
-    register_source_event,
 )
 from src.edu_cti.core.http import HttpClient, build_http_client
 from src.edu_cti.core.models import BaseIncident, make_incident_id
@@ -103,12 +102,12 @@ def fetch_konbriefing_listing(client: Optional[HttpClient] = None) -> pd.DataFra
     """
     Scrape the KonBriefing EDU cyber-attacks page and return a raw DataFrame
     with listing-level metadata (no LLM, no article fetch).
-    Uses HttpClient with automatic Selenium fallback if needed.
+    Uses HttpClient with automatic curl_cffi/Playwright fallback if needed.
     """
     http_client = client or build_http_client()
 
-    # Try get_soup first (faster), with automatic Selenium fallback if blocked
-    soup = http_client.get_soup(LISTING_URL, use_selenium_fallback=True)
+    # Uses smart fallback: curl_cffi → Playwright → requests
+    soup = http_client.get_soup(LISTING_URL)
     
     if soup is None:
         raise Exception(f"Failed to fetch KonBriefing listing page: {LISTING_URL}")
@@ -296,9 +295,6 @@ def build_konbriefing_base_incidents(
 
             notes=None,
         )
-        
-        # Register source event to prevent re-ingestion
-        register_source_event(conn, SOURCE_NAME, source_event_id, incident.incident_id, ingested_at)
         
         incidents.append(incident)
         total_new += 1

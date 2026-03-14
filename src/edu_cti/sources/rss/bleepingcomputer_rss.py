@@ -28,7 +28,6 @@ from src.edu_cti.core.db import (
     get_last_pubdate,
     set_last_pubdate,
     source_event_exists,
-    register_source_event,
 )
 from src.edu_cti.core.http import HttpClient
 from src.edu_cti.core.models import BaseIncident, make_incident_id
@@ -275,9 +274,6 @@ def build_bleepingcomputer_rss_incidents(
                 source_confidence="high",
                 notes=f"rss_source={SOURCE_NAME};categories={','.join(categories)};author={author or 'unknown'}",
             )
-            
-            # Register source event
-            register_source_event(conn, SOURCE_NAME, guid, incident_id, ingested_at)
             
             incidents.append(incident)
             logger.info(f"✓ Collected education incident: {title}")

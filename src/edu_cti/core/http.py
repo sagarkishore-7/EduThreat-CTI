@@ -1,83 +1,156 @@
+"""
+Advanced HTTP client with multi-tier bot evasion for EduThreat-CTI.
+
+Scraping strategy (2 steps):
+  Step 1: Search for news using keywords (requires JS rendering for search results)
+  Step 2: Fetch article content (needs to bypass Cloudflare/bot detection)
+
+Fallback chain:
+  1. curl_cffi with TLS fingerprint impersonation (fastest, bypasses most Cloudflare)
+  2. Playwright headless with stealth patches (JS rendering, search pages)
+  3. Plain requests with retry (RSS feeds, APIs, simple pages)
+
+All modes are headless-only (no display required on backend).
+"""
+
 from __future__ import annotations
 
+import logging
 import os
 import random
 import time
-import logging
-from dataclasses import dataclass
-from typing import Callable, Iterable, Optional, List
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from typing import Callable, Iterable, Optional
+from urllib.parse import urlparse
 
-import requests
 from bs4 import BeautifulSoup
 
 from src.edu_cti.core import config
 
 logger = logging.getLogger(__name__)
 
-# Optional selenium support for bot detection bypass
+# ── Optional imports ─────────────────────────────────────────────────
+
+# curl_cffi: TLS fingerprint impersonation (best for Cloudflare bypass)
 try:
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options as ChromeOptions
-    from selenium.webdriver.chrome.service import Service as ChromeService
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    from selenium.webdriver.common.action_chains import ActionChains
-    from selenium.webdriver.common.keys import Keys
-    SELENIUM_AVAILABLE = True
-except ImportError:
-    SELENIUM_AVAILABLE = False
-    logger.warning("Selenium not available. Install with: pip install selenium")
+    from curl_cffi import requests as cffi_requests
 
-# Try to import undetected_chromedriver as optional enhancement
+    CFFI_AVAILABLE = True
+except ImportError:
+    CFFI_AVAILABLE = False
+    logger.debug("curl_cffi not available – install with: pip install curl_cffi")
+
+# Playwright: headless browser for JS-rendered pages
 try:
-    import undetected_chromedriver as uc
-    UC_AVAILABLE = True
+    from playwright.sync_api import sync_playwright, Page, Browser, BrowserContext
+    from playwright_stealth import Stealth
+
+    PLAYWRIGHT_AVAILABLE = True
 except ImportError:
-    UC_AVAILABLE = False
-    logger.debug("undetected_chromedriver not available, using regular selenium")
+    PLAYWRIGHT_AVAILABLE = False
+    logger.debug("playwright not available – install with: pip install playwright playwright-stealth")
 
+# Plain requests fallback
+import requests as plain_requests
 
-# Bot detection bypass configurations
-BOT_EVASION_USER_AGENTS = [
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+# ── Constants ────────────────────────────────────────────────────────
+
+# Chrome versions that curl_cffi can impersonate (TLS fingerprint match)
+CFFI_IMPERSONATE_TARGETS = [
+    "chrome131",
+    "chrome130",
+    "chrome124",
+    "chrome120",
+    "chrome116",
+    "chrome110",
+    "chrome107",
+    "chrome104",
+    "chrome101",
+    "chrome100",
+    "chrome99",
 ]
 
-VIEWPORT_SIZES = [
-    (1920, 1080),
-    (1440, 900),
-    (1366, 768),
-    (1536, 864),
-    (2560, 1440),
+# Realistic browser fingerprints (UA + viewport + platform)
+BROWSER_PROFILES = [
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "viewport": {"width": 1920, "height": 1080},
+        "platform": "macOS",
+        "locale": "en-US",
+    },
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "viewport": {"width": 1536, "height": 864},
+        "platform": "Windows",
+        "locale": "en-US",
+    },
+    {
+        "ua": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        "viewport": {"width": 1440, "height": 900},
+        "platform": "Linux",
+        "locale": "en-US",
+    },
+    {
+        "ua": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.1 Safari/605.1.15",
+        "viewport": {"width": 2560, "height": 1440},
+        "platform": "macOS",
+        "locale": "en-US",
+    },
+    {
+        "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:133.0) Gecko/20100101 Firefox/133.0",
+        "viewport": {"width": 1366, "height": 768},
+        "platform": "Windows",
+        "locale": "en-US",
+    },
 ]
 
-# Sites known to have aggressive bot detection (Cloudflare)
-# Note: These sites block Selenium entirely; handled at article_fetcher level
-AGGRESSIVE_BOT_DETECTION_DOMAINS = []
+# Known domains that need specific handling
+CLOUDFLARE_DOMAINS = [
+    "databreaches.net",
+    "darkreading.com",
+    "securityweek.com",
+    "therecord.media",
+    "bleepingcomputer.com",
+]
+
+# Domains that need JS rendering (search results, dynamic content)
+JS_REQUIRED_DOMAINS = [
+    "darkreading.com",
+    "securityweek.com",
+    "therecord.media",
+    "thehackernews.com",
+]
 
 
 @dataclass
 class HttpResponse:
+    """HTTP response wrapper."""
     url: str
     status_code: int
     text: str
     headers: dict
+    method_used: str = "requests"  # Track which method succeeded
 
 
 class HttpClient:
     """
-    HTTP client with advanced bot detection bypass capabilities.
-    
-    Features:
-    - Rotating User-Agent headers
-    - Randomized delays between calls
-    - Retry with exponential backoff
-    - Selenium fallback with multiple evasion techniques
-    - Non-headless browser fallback for stubborn sites
+    Multi-tier HTTP client with advanced bot evasion.
+
+    All operations are headless – no display or manual interaction required.
+
+    Tier 1: curl_cffi with Chrome TLS fingerprint impersonation
+        → Fastest, bypasses most Cloudflare challenges without a browser
+        → Impersonates real Chrome TLS handshake at the socket level
+
+    Tier 2: Playwright headless + stealth patches
+        → Full JS rendering for search pages, Algolia, SPAs
+        → playwright-stealth hides automation signals
+        → Handles cookie consent, popups, interstitials automatically
+
+    Tier 3: Plain requests with retry
+        → RSS feeds, JSON APIs, simple HTML pages
+        → Exponential backoff on failures
     """
 
     def __init__(
@@ -88,18 +161,54 @@ class HttpClient:
         min_delay: float = config.HTTP_MIN_DELAY,
         max_delay: float = config.HTTP_MAX_DELAY,
     ) -> None:
-        self.session = requests.Session()
         self.timeout = timeout
-        self.user_agents = list(user_agents or config.HTTP_USER_AGENTS)
+        self.user_agents = list(user_agents or [p["ua"] for p in BROWSER_PROFILES])
         self.min_delay = min_delay
         self.max_delay = max_delay
-        self._failed_domains: dict = {}  # Track domains that failed with requests
+        self._failed_domains: dict[str, int] = {}
+        self._profile = random.choice(BROWSER_PROFILES)
+
+        # Plain requests session (Tier 3)
+        self.session = plain_requests.Session()
+
+        # Playwright browser (lazy-initialized, reused across calls)
+        self._pw = None
+        self._stealth_cm = None
+        self._browser: Browser | None = None
+        self._browser_context: BrowserContext | None = None
+
+    def close(self) -> None:
+        """Clean up browser resources."""
+        if self._browser_context:
+            try:
+                self._browser_context.close()
+            except Exception:
+                pass
+            self._browser_context = None
+        if self._browser:
+            try:
+                self._browser.close()
+            except Exception:
+                pass
+            self._browser = None
+        if hasattr(self, '_stealth_cm') and self._stealth_cm:
+            try:
+                self._stealth_cm.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._stealth_cm = None
+        self._pw = None
+
+    def __del__(self):
+        self.close()
+
+    # ── Internal helpers ─────────────────────────────────────────────
 
     def _random_headers(self) -> dict:
         ua = random.choice(self.user_agents)
         return {
             "User-Agent": ua,
-            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
             "Accept-Language": "en-US,en;q=0.9",
             "Accept-Encoding": "gzip, deflate, br",
             "Connection": "keep-alive",
@@ -109,985 +218,597 @@ class HttpClient:
             "Sec-Fetch-Site": "none",
             "Sec-Fetch-User": "?1",
             "Cache-Control": "max-age=0",
+            "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": f'"{self._profile["platform"]}"',
         }
 
-    def _sleep_a_bit(self) -> None:
-        delay = random.uniform(self.min_delay, self.max_delay)
-        time.sleep(delay)
+    def _sleep(self, lo: float | None = None, hi: float | None = None) -> None:
+        time.sleep(random.uniform(lo or self.min_delay, hi or self.max_delay))
 
-    def _get_domain(self, url: str) -> str:
-        """Extract domain from URL."""
-        from urllib.parse import urlparse
+    @staticmethod
+    def _domain(url: str) -> str:
         return urlparse(url).netloc.lower()
 
-    def _is_aggressive_domain(self, url: str) -> bool:
-        """Check if domain has aggressive bot detection."""
-        domain = self._get_domain(url)
-        return any(d in domain for d in AGGRESSIVE_BOT_DETECTION_DOMAINS)
+    def _needs_js(self, url: str) -> bool:
+        domain = self._domain(url)
+        return any(d in domain for d in JS_REQUIRED_DOMAINS)
 
-    def _should_use_selenium_first(self, url: str) -> bool:
-        """Check if we should skip requests and use Selenium first for this domain."""
-        domain = self._get_domain(url)
-        # If this domain failed recently, use Selenium directly
-        if domain in self._failed_domains:
-            fail_count = self._failed_domains[domain]
-            if fail_count >= 2:
-                return True
-        # Use Selenium first for known aggressive domains
-        return self._is_aggressive_domain(url)
+    def _has_cloudflare(self, url: str) -> bool:
+        domain = self._domain(url)
+        return any(d in domain for d in CLOUDFLARE_DOMAINS)
 
-    def _mark_domain_failed(self, url: str) -> None:
-        """Mark a domain as having failed with requests."""
-        domain = self._get_domain(url)
-        self._failed_domains[domain] = self._failed_domains.get(domain, 0) + 1
+    def _mark_failed(self, url: str) -> None:
+        d = self._domain(url)
+        self._failed_domains[d] = self._failed_domains.get(d, 0) + 1
 
-    def get(
+    def _should_skip_requests(self, url: str) -> bool:
+        d = self._domain(url)
+        return self._failed_domains.get(d, 0) >= 2 or self._needs_js(url)
+
+    # ── Tier 1: curl_cffi (TLS fingerprint impersonation) ────────────
+
+    def _cffi_get(self, url: str, *, allow_404: bool = False) -> HttpResponse | None:
+        """
+        Fetch URL using curl_cffi with Chrome TLS fingerprint.
+
+        This makes the request indistinguishable from a real Chrome browser
+        at the TLS handshake level – the most effective Cloudflare bypass
+        without running a full browser.
+        """
+        if not CFFI_AVAILABLE:
+            return None
+
+        target = random.choice(CFFI_IMPERSONATE_TARGETS)
+        headers = self._random_headers()
+
+        for attempt in range(3):
+            try:
+                self._sleep(0.3, 1.0)
+                resp = cffi_requests.get(
+                    url,
+                    headers=headers,
+                    impersonate=target,
+                    timeout=self.timeout,
+                    allow_redirects=True,
+                )
+
+                if allow_404 and resp.status_code == 404:
+                    return None
+
+                if resp.status_code == 200:
+                    return HttpResponse(
+                        url=str(resp.url),
+                        status_code=resp.status_code,
+                        text=resp.text,
+                        headers=dict(resp.headers),
+                        method_used=f"curl_cffi/{target}",
+                    )
+
+                if resp.status_code in (403, 503):
+                    # Cloudflare challenge page – try different impersonation
+                    target = random.choice(CFFI_IMPERSONATE_TARGETS)
+                    logger.debug(f"curl_cffi got {resp.status_code}, retrying with {target}")
+                    self._sleep(1.0, 3.0)
+                    continue
+
+                if resp.status_code == 429:
+                    wait = 2 ** (attempt + 1)
+                    logger.warning(f"curl_cffi rate limited on {url}, waiting {wait}s")
+                    time.sleep(wait)
+                    continue
+
+                # Other errors
+                logger.debug(f"curl_cffi got {resp.status_code} for {url}")
+                return HttpResponse(
+                    url=str(resp.url),
+                    status_code=resp.status_code,
+                    text=resp.text,
+                    headers=dict(resp.headers),
+                    method_used=f"curl_cffi/{target}",
+                )
+
+            except Exception as e:
+                logger.debug(f"curl_cffi attempt {attempt + 1} failed for {url}: {e}")
+                self._sleep(1.0, 2.0)
+                continue
+
+        return None
+
+    # ── Tier 2: Playwright (headless browser with stealth) ───────────
+
+    def _ensure_browser(self) -> BrowserContext:
+        """Lazy-initialize Playwright browser with stealth configuration."""
+        if self._browser_context is not None:
+            return self._browser_context
+
+        if not PLAYWRIGHT_AVAILABLE:
+            raise RuntimeError("Playwright not available")
+
+        profile = self._profile
+
+        # Use Stealth wrapper to auto-apply evasion scripts to all pages
+        stealth = Stealth()
+        self._stealth_cm = stealth.use_sync(sync_playwright())
+        self._pw = self._stealth_cm.__enter__()
+        self._browser = self._pw.chromium.launch(
+            headless=True,
+            args=[
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-infobars",
+                "--disable-background-networking",
+                "--disable-default-apps",
+                "--disable-extensions",
+                "--disable-sync",
+                "--disable-translate",
+                "--metrics-recording-only",
+                "--no-first-run",
+                f"--window-size={profile['viewport']['width']},{profile['viewport']['height']}",
+            ],
+        )
+
+        self._browser_context = self._browser.new_context(
+            viewport=profile["viewport"],
+            user_agent=profile["ua"],
+            locale=profile["locale"],
+            timezone_id="America/New_York",
+            geolocation={"longitude": -73.935242, "latitude": 40.730610},
+            permissions=["geolocation"],
+            java_script_enabled=True,
+            bypass_csp=True,
+            extra_http_headers={
+                "Accept-Language": "en-US,en;q=0.9",
+                "sec-ch-ua": '"Chromium";v="131", "Not_A Brand";v="24"',
+                "sec-ch-ua-mobile": "?0",
+                "sec-ch-ua-platform": f'"{profile["platform"]}"',
+            },
+        )
+
+        return self._browser_context
+
+    def _playwright_get(
         self,
         url: str,
         *,
-        allow_status: Optional[Iterable[int]] = None,
-        to_soup: bool = False,
         allow_404: bool = False,
-    ) -> BeautifulSoup | HttpResponse | None:
+        wait_selector: str | None = None,
+        wait_timeout: int = 20000,
+    ) -> HttpResponse | None:
         """
-        Perform a GET with retries.
-        """
-        retries = 0
-        allow_status = set(allow_status or [])
+        Fetch URL using Playwright headless browser with stealth.
 
-        while True:
-            self._sleep_a_bit()
+        Features:
+        - playwright-stealth patches (hides webdriver, plugins, etc.)
+        - Automatic cookie consent dismissal
+        - Human-like scrolling and delays
+        - Waits for specific selectors (for JS-rendered search results)
+        """
+        if not PLAYWRIGHT_AVAILABLE:
+            return None
+
+        try:
+            ctx = self._ensure_browser()
+            page = ctx.new_page()
+
+            # Stealth patches auto-applied via Stealth().use_sync() wrapper
+
+            # Navigate
+            response = page.goto(url, timeout=self.timeout * 1000, wait_until="domcontentloaded")
+
+            if response is None:
+                page.close()
+                return None
+
+            status = response.status
+
+            if allow_404 and status == 404:
+                page.close()
+                return None
+
+            # Wait for page to stabilize (networkidle may fail on busy pages - that's OK)
+            try:
+                page.wait_for_load_state("networkidle", timeout=10000)
+            except Exception:
+                pass  # Page may have ongoing network activity (ads, tracking, etc.)
+
+            # Handle Cloudflare challenge (wait for it to resolve)
+            if status == 403 or self._is_cloudflare_challenge(page):
+                logger.info(f"Cloudflare challenge detected on {url}, waiting...")
+                resolved = self._wait_for_cloudflare(page)
+                if not resolved:
+                    logger.warning(f"Cloudflare challenge not resolved for {url}")
+                    page.close()
+                    return None
+
+            # Dismiss cookie consent
+            self._dismiss_cookies(page)
+
+            # Simulate human behavior
+            self._human_scroll(page)
+
+            # Wait for specific content if requested
+            if wait_selector:
+                try:
+                    page.wait_for_selector(wait_selector, timeout=wait_timeout)
+                except Exception:
+                    logger.debug(f"Selector '{wait_selector}' not found on {url}")
+
+            # Small delay for any lazy-loaded content
+            self._sleep(0.5, 1.5)
+
+            content = page.content()
+            final_url = page.url
+
+            page.close()
+
+            return HttpResponse(
+                url=final_url,
+                status_code=200,
+                text=content,
+                headers={},
+                method_used="playwright",
+            )
+
+        except Exception as e:
+            logger.warning(f"Playwright failed for {url}: {e}")
+            try:
+                page.close()
+            except Exception:
+                pass
+            return None
+
+    def _is_cloudflare_challenge(self, page: Page) -> bool:
+        """Detect Cloudflare challenge page."""
+        try:
+            title = page.title().lower()
+            if "just a moment" in title or "attention required" in title:
+                return True
+            # Check for Cloudflare turnstile or challenge elements
+            cf_markers = page.query_selector_all(
+                "#challenge-running, #challenge-form, .cf-turnstile, [id*='cf-challenge']"
+            )
+            return len(cf_markers) > 0
+        except Exception:
+            return False
+
+    def _wait_for_cloudflare(self, page: Page, max_wait: int = 30) -> bool:
+        """Wait for Cloudflare challenge to auto-resolve (up to max_wait seconds)."""
+        for _ in range(max_wait // 2):
+            time.sleep(2)
+            if not self._is_cloudflare_challenge(page):
+                logger.info("Cloudflare challenge resolved")
+                return True
+        return False
+
+    def _dismiss_cookies(self, page: Page) -> None:
+        """Dismiss cookie consent popups."""
+        selectors = [
+            "#onetrust-accept-btn-handler",
+            ".onetrust-accept-btn-handler",
+            "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
+            "[data-testid='cookie-accept']",
+            ".evidon-banner-acceptbutton",
+            "#_evidon-accept-button",
+            "button[id*='cookie-accept']",
+            "button[class*='cookie-accept']",
+            "button[id*='consent-accept']",
+            "button[class*='accept-all']",
+        ]
+
+        for sel in selectors:
+            try:
+                btn = page.query_selector(sel)
+                if btn and btn.is_visible():
+                    btn.click()
+                    logger.debug(f"Dismissed cookie banner: {sel}")
+                    self._sleep(0.3, 0.7)
+                    return
+            except Exception:
+                continue
+
+        # Fallback: find buttons by text
+        for text in ["Accept All", "Accept", "I Agree", "Allow All", "Got it", "OK"]:
+            try:
+                btn = page.get_by_role("button", name=text, exact=False).first
+                if btn and btn.is_visible():
+                    btn.click()
+                    logger.debug(f"Dismissed cookie banner via text: {text}")
+                    self._sleep(0.3, 0.7)
+                    return
+            except Exception:
+                continue
+
+    def _human_scroll(self, page: Page) -> None:
+        """Simulate human-like scrolling behavior."""
+        try:
+            # Scroll down gradually
+            for _ in range(random.randint(1, 3)):
+                scroll_amount = random.randint(200, 600)
+                page.evaluate(f"window.scrollBy(0, {scroll_amount})")
+                self._sleep(0.3, 0.8)
+
+            # Scroll back up slightly
+            page.evaluate(f"window.scrollBy(0, -{random.randint(50, 200)})")
+            self._sleep(0.2, 0.5)
+        except Exception:
+            pass
+
+    # ── Tier 3: Plain requests ───────────────────────────────────────
+
+    def _requests_get(
+        self,
+        url: str,
+        *,
+        allow_404: bool = False,
+        allow_status: set[int] | None = None,
+    ) -> HttpResponse | None:
+        """Plain requests with retry and exponential backoff."""
+        allow_status = allow_status or set()
+        retries = 0
+
+        while retries <= config.HTTP_MAX_RETRIES:
+            self._sleep()
             try:
                 resp = self.session.get(
                     url,
                     timeout=self.timeout,
                     headers=self._random_headers(),
                 )
-            except requests.RequestException:
+            except plain_requests.RequestException:
                 retries += 1
                 if retries > config.HTTP_MAX_RETRIES:
-                    raise
+                    return None
                 time.sleep(config.HTTP_BACKOFF_BASE * retries)
                 continue
 
             if allow_404 and resp.status_code == 404:
                 return None
 
-            if resp.status_code >= 400 and resp.status_code not in allow_status:
+            if resp.status_code == 200 or resp.status_code in allow_status:
+                return HttpResponse(
+                    url=resp.url,
+                    status_code=resp.status_code,
+                    text=resp.text,
+                    headers=dict(resp.headers),
+                    method_used="requests",
+                )
+
+            if resp.status_code in (403, 429, 503):
+                self._mark_failed(url)
                 retries += 1
-                if retries > config.HTTP_MAX_RETRIES:
-                    resp.raise_for_status()
                 time.sleep(config.HTTP_BACKOFF_BASE * retries)
                 continue
 
-            result = HttpResponse(
+            if resp.status_code >= 400:
+                retries += 1
+                if retries > config.HTTP_MAX_RETRIES:
+                    return HttpResponse(
+                        url=resp.url,
+                        status_code=resp.status_code,
+                        text=resp.text,
+                        headers=dict(resp.headers),
+                        method_used="requests",
+                    )
+                time.sleep(config.HTTP_BACKOFF_BASE * retries)
+                continue
+
+            return HttpResponse(
                 url=resp.url,
                 status_code=resp.status_code,
                 text=resp.text,
-                headers=resp.headers,
+                headers=dict(resp.headers),
+                method_used="requests",
             )
-            if to_soup:
-                try:
-                    return BeautifulSoup(resp.text, "lxml")
-                except Exception:
-                    return BeautifulSoup(resp.text, "html.parser")
-            return result
 
-    def _create_stealth_driver(self, headless: bool = True) -> webdriver.Chrome:
-        """
-        Create a Chrome driver with stealth settings using regular Selenium.
-        
-        Args:
-            headless: If True, run in headless mode. If False, show browser window.
-                     On Railway/CI with Xvfb, can use non-headless mode.
-        """
-        if not SELENIUM_AVAILABLE:
-            raise RuntimeError("Selenium not available")
-        
-        # Check if Xvfb is available (for non-headless on Railway/CI)
-        xvfb_available = os.getenv("DISPLAY") is not None
-        
-        # On Railway/CI, allow non-headless if Xvfb is available
-        is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
-        is_ci = os.getenv("CI") is not None
-        
-        # Allow non-headless on Railway if explicitly enabled via env var
-        allow_non_headless_railway = os.getenv("ALLOW_NON_HEADLESS_RAILWAY", "true").lower() == "true"
-        
-        # Only force headless if we're on Railway/CI AND (Xvfb is not available OR non-headless is disabled)
-        if (is_railway or is_ci):
-            if not xvfb_available:
-                headless = True
-                logger.info("Railway/CI detected - forcing headless mode (no Xvfb display available)")
-            elif xvfb_available and not headless and allow_non_headless_railway:
-                logger.info("Railway/CI detected - using non-headless mode with Xvfb virtual display")
-            elif xvfb_available and not allow_non_headless_railway:
-                headless = True
-                logger.info("Railway/CI detected - forcing headless mode (ALLOW_NON_HEADLESS_RAILWAY=false)")
-        
-        options = ChromeOptions()
-        
-        # Viewport size
-        width, height = random.choice(VIEWPORT_SIZES)
-        
-        if headless:
-            options.add_argument("--headless=new")
-        else:
-            # Non-headless mode - will use Xvfb display if available
-            logger.info("Opening browser window (using virtual display if on Railway/CI)...")
-            # Set display if not already set
-            if not os.getenv("DISPLAY") and (is_railway or is_ci):
-                os.environ["DISPLAY"] = ":99"
-                logger.debug(f"Set DISPLAY={os.getenv('DISPLAY')} for Railway/CI")
-        
-        # Essential stealth arguments
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument(f"--window-size={width},{height}")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--disable-infobars")
-        options.add_argument("--ignore-certificate-errors")
-        options.add_argument("--ignore-ssl-errors")
-        options.add_argument("--disable-popup-blocking")
-        options.add_argument("--disable-notifications")
-        
-        # Random user agent
-        ua = random.choice(BOT_EVASION_USER_AGENTS)
-        options.add_argument(f"--user-agent={ua}")
-        
-        # Language and locale
-        options.add_argument("--lang=en-US,en")
-        
-        # Use experimental options to appear more human
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option("useAutomationExtension", False)
-        
-        prefs = {
-            "credentials_enable_service": False,
-            "profile.password_manager_enabled": False,
-            "profile.default_content_setting_values.notifications": 2,
-        }
-        options.add_experimental_option("prefs", prefs)
-        
-        # Create driver with regular selenium
-        driver = webdriver.Chrome(options=options)
-        
-        # Execute stealth scripts
-        self._apply_stealth_scripts(driver)
-        
-        return driver
+        return None
 
-    def _apply_stealth_scripts(self, driver: webdriver.Chrome) -> None:
-        """Apply JavaScript to make browser appear more human."""
-        try:
-            # Override navigator.webdriver
-            driver.execute_cdp_cmd("Page.addScriptToEvaluateOnNewDocument", {
-                "source": """
-                    Object.defineProperty(navigator, 'webdriver', {
-                        get: () => undefined
-                    });
-                    
-                    // Override navigator.plugins
-                    Object.defineProperty(navigator, 'plugins', {
-                        get: () => [1, 2, 3, 4, 5]
-                    });
-                    
-                    // Override navigator.languages
-                    Object.defineProperty(navigator, 'languages', {
-                        get: () => ['en-US', 'en']
-                    });
-                    
-                    // Override chrome runtime
-                    window.chrome = {
-                        runtime: {}
-                    };
-                    
-                    // Override permissions
-                    const originalQuery = window.navigator.permissions.query;
-                    window.navigator.permissions.query = (parameters) => (
-                        parameters.name === 'notifications' ?
-                            Promise.resolve({ state: Notification.permission }) :
-                            originalQuery(parameters)
-                    );
-                """
-            })
-        except Exception as e:
-            logger.debug(f"Could not apply stealth scripts: {e}")
+    # ── Public API ───────────────────────────────────────────────────
 
-    def _simulate_human_behavior(self, driver: webdriver.Chrome) -> None:
-        """Simulate human-like behavior on the page."""
-        try:
-            actions = ActionChains(driver)
-            
-            # Random mouse movements
-            for _ in range(random.randint(2, 5)):
-                x = random.randint(100, 800)
-                y = random.randint(100, 600)
-                actions.move_by_offset(x, y)
-                time.sleep(random.uniform(0.1, 0.3))
-            
-            # Random scroll
-            scroll_amount = random.randint(100, 500)
-            driver.execute_script(f"window.scrollBy(0, {scroll_amount});")
-            time.sleep(random.uniform(0.5, 1.0))
-            
-            # Scroll back up a bit
-            driver.execute_script(f"window.scrollBy(0, -{scroll_amount // 2});")
-            
-        except Exception as e:
-            logger.debug(f"Could not simulate human behavior: {e}")
+    def get(
+        self,
+        url: str,
+        *,
+        allow_status: Iterable[int] | None = None,
+        to_soup: bool = False,
+        allow_404: bool = False,
+    ) -> BeautifulSoup | HttpResponse | None:
+        """
+        GET a URL with automatic fallback chain.
 
-    def _handle_cookie_consent(self, driver: webdriver.Chrome) -> None:
-        """Try to accept cookie consent popups."""
-        cookie_selectors = [
-            "button[id*='accept']",
-            "button[class*='accept']",
-            "button[id*='cookie']",
-            "button[class*='cookie']",
-            "button[id*='consent']",
-            "button[class*='consent']",
-            "a[id*='accept']",
-            "a[class*='accept']",
-            "[id*='onetrust-accept']",
-            ".onetrust-accept-btn-handler",
-            "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
-            "[data-testid='cookie-accept']",
-            ".cookie-accept",
-            "#cookie-accept",
-        ]
-        
-        for selector in cookie_selectors:
-            try:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                for elem in elements:
-                    if elem.is_displayed():
-                        elem.click()
-                        logger.debug(f"Clicked cookie consent button: {selector}")
-                        time.sleep(0.5)
-                        return
-            except Exception:
-                continue
+        For HTML pages: uses curl_cffi → Playwright → requests.
+        For APIs/RSS: uses requests directly (or curl_cffi for Cloudflare sites).
 
-    def _handle_cookie_consent(self, driver: webdriver.Chrome) -> None:
+        Returns HttpResponse or BeautifulSoup (if to_soup=True) or None.
         """
-        Handle cookie consent popups by clicking Accept/Agree buttons.
-        
-        Handles common cookie consent patterns including:
-        - GDPR cookie banners
-        - OneTrust consent
-        - Cookiebot
-        - TechTarget/DarkReading consent
-        - Generic cookie accept buttons
-        - Consent dialogs in iframes
-        """
-        # Common cookie consent button selectors - ordered by specificity
-        cookie_accept_selectors = [
-            # OneTrust (used by many news sites including DarkReading)
-            "#onetrust-accept-btn-handler",
-            ".onetrust-accept-btn-handler",
-            "[id*='onetrust-accept']",
-            ".ot-pc-refuse-all-handler",  # OneTrust refuse/accept all
-            
-            # TechTarget/DarkReading/SecurityWeek specific
-            ".evidon-banner-acceptbutton",
-            "#_evidon-accept-button",
-            "#evidon-banner-acceptbutton",
-            ".evidon-consent-button",
-            "[class*='evidon'] button",
-            
-            # Cookiebot
-            "#CybotCookiebotDialogBodyLevelButtonLevelOptinAllowAll",
-            "#CybotCookiebotDialogBodyButtonAccept",
-            "[id*='CybotCookiebotDialogBodyLevelButtonAccept']",
-            
-            # SP Consent (SourcePoint - used by DarkReading parent company)
-            "[title='SP Consent Message']",
-            ".sp_choice_type_11",  # Accept All button in SourcePoint
-            ".sp_choice_type_ACCEPT_ALL",
-            "[class*='sp_choice'] button",
-            
-            # Generic cookie consent buttons
-            "[class*='cookie'] button[class*='accept']",
-            "[class*='cookie'] [class*='accept']",
-            "[class*='consent'] button[class*='accept']",
-            "[class*='consent'] [class*='accept']",
-            "[class*='gdpr'] button[class*='accept']",
-            "[class*='gdpr'] [class*='accept']",
-            
-            # Text-based selectors (Accept All, I Accept, etc.)
-            "button[class*='accept-all']",
-            "[class*='accept-all']",
-            "button[class*='acceptAll']",
-            "[class*='acceptAll']",
-            
-            # Common button texts via aria-label
-            "[aria-label*='Accept']",
-            "[aria-label*='accept']",
-            "[aria-label*='Accept all']",
-            "[aria-label*='Accept cookies']",
-            
-            # Generic banner dismiss buttons
-            "[class*='cookie-banner'] button",
-            "[class*='cookie-notice'] button",
-            "[class*='privacy-banner'] button",
-            "[id*='cookie-banner'] button",
-            "[id*='cookie-notice'] button",
-            
-            # TrustArc
-            ".truste_accept_btn",
-            "#truste-consent-button",
-            ".trustarc-agree-btn",
-            
-            # Quantcast
-            ".qc-cmp-button",
-            ".qc-cmp2-summary-buttons button:first-child",
-            
-            # Generic patterns
-            ".cc-accept",
-            ".cc-btn.cc-allow",
-            "#accept-cookies",
-            ".accept-cookies",
-            "button[data-action='accept']",
-            "[data-testid*='accept']",
-            "[data-testid*='cookie'] button",
-        ]
-        
-        # Accept keywords to look for in button text
-        accept_keywords = ['accept', 'agree', 'allow', 'ok', 'got it', 'i understand', 'continue', 'yes', 'consent']
-        accept_exact_texts = ['accept all', 'accept', 'agree', 'i agree', 'allow all', 'allow', 'ok', 'got it', 
-                             'accept cookies', 'accept all cookies', 'yes, i agree', 'i accept']
-        
-        def try_click_consent_buttons(context_name: str = "main") -> bool:
-            """Try clicking consent buttons in current context (main page or iframe)."""
-            for selector in cookie_accept_selectors:
-                try:
-                    elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    for elem in elements:
-                        try:
-                            if elem.is_displayed() and elem.is_enabled():
-                                btn_text = elem.text.lower().strip()
-                                if any(word in btn_text for word in accept_keywords) or not btn_text:
-                                    elem.click()
-                                    logger.info(f"Accepted cookie consent in {context_name} using: {selector} (text: '{elem.text}')")
-                                    time.sleep(0.5)
-                                    return True
-                        except Exception as e:
-                            logger.debug(f"Failed to click {selector} in {context_name}: {e}")
-                            continue
-                except Exception:
-                    continue
-            
-            # Try finding buttons by text content
-            try:
-                buttons = driver.find_elements(By.TAG_NAME, "button")
-                for btn in buttons:
-                    try:
-                        btn_text = btn.text.lower().strip()
-                        if btn.is_displayed() and btn.is_enabled():
-                            if btn_text in accept_exact_texts:
-                                btn.click()
-                                logger.info(f"Accepted cookie consent in {context_name} via button text: '{btn.text}'")
-                                time.sleep(0.5)
-                                return True
-                    except Exception:
-                        continue
-            except Exception:
-                pass
-            
-            return False
-        
-        # First try in main page context
-        accepted = try_click_consent_buttons("main page")
-        
-        # If not found, try looking in iframes (many consent dialogs are in iframes)
-        if not accepted:
-            try:
-                iframes = driver.find_elements(By.TAG_NAME, "iframe")
-                consent_iframe_hints = ['consent', 'cookie', 'privacy', 'gdpr', 'sp_message', 'evidon', 'onetrust', 'sourcepoint']
-                
-                for iframe in iframes:
-                    try:
-                        iframe_id = iframe.get_attribute("id") or ""
-                        iframe_name = iframe.get_attribute("name") or ""
-                        iframe_src = iframe.get_attribute("src") or ""
-                        iframe_title = iframe.get_attribute("title") or ""
-                        iframe_identifiers = f"{iframe_id} {iframe_name} {iframe_src} {iframe_title}".lower()
-                        
-                        # Check if this iframe might be a consent dialog
-                        if any(hint in iframe_identifiers for hint in consent_iframe_hints) or iframe.is_displayed():
-                            logger.debug(f"Checking iframe for consent: id={iframe_id}, title={iframe_title}")
-                            driver.switch_to.frame(iframe)
-                            
-                            if try_click_consent_buttons(f"iframe:{iframe_id or iframe_title or 'unnamed'}"):
-                                accepted = True
-                                driver.switch_to.default_content()
-                                break
-                            
-                            driver.switch_to.default_content()
-                    except Exception as e:
-                        logger.debug(f"Error checking iframe: {e}")
-                        try:
-                            driver.switch_to.default_content()
-                        except:
-                            pass
-                        continue
-            except Exception as e:
-                logger.debug(f"Error searching iframes for consent: {e}")
-                try:
-                    driver.switch_to.default_content()
-                except:
-                    pass
-        
-        if accepted:
-            logger.info("Cookie consent handled successfully")
-            time.sleep(1)  # Extra wait for consent dialog to fully close
-        else:
-            logger.debug("No cookie consent popup found or already dismissed")
+        allow_set = set(allow_status or [])
 
-    def _handle_perimeterx_challenge(self, driver: webdriver.Chrome, url: str) -> bool:
-        """
-        Handle PerimeterX bot detection challenges (used by wavy.com and other sites).
-        
-        PerimeterX shows a "Press & Hold" captcha challenge. Sometimes it auto-resolves
-        after a delay, or we can wait for the challenge to complete.
-        
-        Args:
-            driver: Selenium WebDriver instance
-            url: Original URL being accessed
-            
-        Returns:
-            True if PerimeterX challenge was detected and handled, False otherwise
-        """
-        try:
-            page_source = driver.page_source.lower()
-            is_perimeterx = (
-                "px-captcha" in page_source or 
-                "perimeterx" in page_source or 
-                "press & hold" in page_source or
-                "access to this page has been denied" in page_source
-            )
-            
-            if not is_perimeterx:
-                return False
-            
-            logger.info("Detected PerimeterX challenge, waiting for potential auto-resolution...")
-            
-            # Wait for challenge to potentially auto-resolve (some sites auto-approve after delay)
-            time.sleep(10)
-            
-            # Try to find and interact with the challenge button if it exists
-            try:
-                # Look for "Press & Hold" button
-                press_hold_selectors = [
-                    "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'press')]",
-                    "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'hold')]",
-                    "//div[contains(@class, 'px-captcha')]//button",
-                    "[class*='px-captcha'] button",
-                    "[class*='press'] button",
-                    "[class*='hold'] button",
-                ]
-                
-                for selector in press_hold_selectors:
-                    try:
-                        if selector.startswith("//"):
-                            button = driver.find_element(By.XPATH, selector)
-                        else:
-                            button = driver.find_element(By.CSS_SELECTOR, selector)
-                        
-                        if button.is_displayed():
-                            # Try clicking and holding (simulate press & hold)
-                            actions = ActionChains(driver)
-                            actions.click_and_hold(button).pause(2).release(button).perform()
-                            logger.info("Attempted to interact with PerimeterX challenge button")
-                            time.sleep(5)  # Wait for challenge to process
-                            break
-                    except Exception:
-                        continue
-            except Exception as e:
-                logger.debug(f"Could not interact with PerimeterX challenge button: {e}")
-            
-            # Check if we're still on the challenge page
-            current_page = driver.page_source.lower()
-            if "px-captcha" not in current_page and "press & hold" not in current_page:
-                logger.info("PerimeterX challenge appears to have been resolved")
-                return True
-            else:
-                logger.warning("PerimeterX challenge still present - may require manual interaction")
-                # Still return True to indicate we tried - sometimes content is still accessible
-                return True
-                
-        except Exception as e:
-            logger.debug(f"Error handling PerimeterX challenge: {e}")
-            return False
-
-    def _handle_darkreading_interstitial(self, driver: webdriver.Chrome, url: str) -> bool:
-        """
-        Handle DarkReading.com's interstitial ad page.
-        
-        DarkReading shows an ad page that either:
-        1. Auto-redirects after 15 seconds
-        2. Has a "Continue to site" button in the top right
-        
-        Args:
-            driver: Selenium WebDriver instance
-            url: Original URL being accessed
-            
-        Returns:
-            True if interstitial was handled (clicked button or waited for redirect), False otherwise
-        """
-        domain = self._get_domain(url)
-        if "darkreading.com" not in domain:
-            return False
-        
-        try:
-            # Check if we're on an interstitial/ad page
-            # DarkReading interstitial typically has specific indicators
-            page_source = driver.page_source.lower()
-            interstitial_indicators = [
-                "continue to site",
-                "continue to darkreading",
-                "skip ad",
-                "skip to content",
-            ]
-            
-            is_interstitial = any(indicator in page_source for indicator in interstitial_indicators)
-            
-            if not is_interstitial:
-                # Check current URL - if it's not the original article URL, might be on interstitial
-                current_url = driver.current_url.lower()
-                if "darkreading.com" in current_url and url.lower() not in current_url:
-                    # Might be on interstitial, check for redirect
-                    is_interstitial = True
-            
-            if not is_interstitial:
-                return False
-            
-            logger.info("Detected DarkReading interstitial ad page, attempting to bypass...")
-            
-            # Try to find and click "Continue to site" button
-            # Common selectors for the continue button (top right)
-            continue_button_selectors = [
-                # Text-based selectors
-                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue to site')]",
-                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue to site')]",
-                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
-                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'continue')]",
-                "//button[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'skip')]",
-                "//a[contains(translate(text(), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ', 'abcdefghijklmnopqrstuvwxyz'), 'skip')]",
-                
-                # CSS selectors (common patterns)
-                "button[class*='continue']",
-                "a[class*='continue']",
-                "button[class*='skip']",
-                "a[class*='skip']",
-                "[class*='continue-to-site']",
-                "[class*='skip-ad']",
-                "[id*='continue']",
-                "[id*='skip']",
-                
-                # Top-right positioned buttons
-                "button[style*='right']",
-                "a[style*='right']",
-                "[class*='top-right'] button",
-                "[class*='top-right'] a",
-            ]
-            
-            button_clicked = False
-            for selector in continue_button_selectors:
-                try:
-                    if selector.startswith("//"):
-                        # XPath selector
-                        elements = driver.find_elements(By.XPATH, selector)
-                    else:
-                        # CSS selector
-                        elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                    
-                    for elem in elements:
-                        try:
-                            if elem.is_displayed() and elem.is_enabled():
-                                # Check if button text contains "continue" or "skip"
-                                elem_text = elem.text.lower().strip()
-                                if any(keyword in elem_text for keyword in ["continue", "skip", "proceed"]):
-                                    elem.click()
-                                    logger.info(f"Clicked 'Continue to site' button on DarkReading interstitial")
-                                    button_clicked = True
-                                    time.sleep(2)  # Wait for redirect
-                                    break
-                        except Exception as e:
-                            logger.debug(f"Could not click button with selector {selector}: {e}")
-                            continue
-                    
-                    if button_clicked:
-                        break
-                except Exception:
-                    continue
-            
-            # If button not found, wait for auto-redirect (up to 16 seconds)
-            if not button_clicked:
-                logger.info("Continue button not found, waiting for auto-redirect (up to 16 seconds)...")
-                original_url = driver.current_url
-                
-                # Wait up to 16 seconds for redirect, checking every 0.5 seconds
-                for _ in range(32):  # 32 * 0.5 = 16 seconds
-                    time.sleep(0.5)
-                    current_url = driver.current_url
-                    if current_url != original_url:
-                        logger.info(f"Auto-redirected from interstitial: {current_url}")
-                        button_clicked = True
-                        break
-                
-                if not button_clicked:
-                    logger.warning("DarkReading interstitial did not redirect after 16 seconds")
-            
-            # Wait a bit more for page to fully load after redirect/click
-            if button_clicked:
-                time.sleep(2)
-            
-            return button_clicked
-            
-        except Exception as e:
-            logger.debug(f"Error handling DarkReading interstitial: {e}")
-            return False
-
-    def _handle_ad_popups(self, driver: webdriver.Chrome) -> None:
-        """
-        Close ad popups and overlays that may block content.
-        
-        Handles common popup patterns including:
-        - SecurityWeek popmake ads
-        - Modal overlays
-        - Newsletter signup popups
-        - Generic close buttons on overlays
-        """
-        # Common popup close button selectors
-        popup_close_selectors = [
-            # SecurityWeek specific (popmake plugin)
-            ".pum-close",
-            ".popmake-close",
-            "button.pum-close",
-            ".pum-container.active .pum-close",
-            
-            # Generic modal/popup close buttons
-            ".modal-close",
-            ".popup-close",
-            ".overlay-close",
-            "[class*='close-button']",
-            "[class*='close-btn']",
-            "[class*='closeButton']",
-            "[aria-label='Close']",
-            "[aria-label='close']",
-            
-            # Common overlay dismiss buttons
-            ".dismiss",
-            ".dismiss-button",
-            "[class*='dismiss']",
-            
-            # Newsletter/subscription popups
-            ".newsletter-close",
-            ".subscribe-close",
-            "[class*='newsletter'] [class*='close']",
-            
-            # Generic X buttons in popups
-            ".popup button[class*='close']",
-            ".modal button[class*='close']",
-            ".overlay button[class*='close']",
-            
-            # Ad-specific close buttons
-            ".ad-close",
-            "[class*='ad-close']",
-            ".close-ad",
-        ]
-        
-        closed_count = 0
-        for selector in popup_close_selectors:
-            try:
-                elements = driver.find_elements(By.CSS_SELECTOR, selector)
-                for elem in elements:
-                    try:
-                        if elem.is_displayed():
-                            elem.click()
-                            logger.debug(f"Closed popup using: {selector}")
-                            closed_count += 1
-                            time.sleep(0.3)  # Brief pause after closing
-                    except Exception:
-                        continue
-            except Exception:
-                continue
-        
-        # Also try closing by pressing Escape key (works on many modals)
-        if closed_count == 0:
-            try:
-                from selenium.webdriver.common.keys import Keys
-                driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-                logger.debug("Sent Escape key to close potential popups")
-                time.sleep(0.3)
-            except Exception:
-                pass
-        
-        # Click outside popups to dismiss them (click on body)
-        try:
-            # Find and click on the main content area to dismiss overlays
-            body = driver.find_element(By.TAG_NAME, "body")
-            actions = ActionChains(driver)
-            actions.move_to_element_with_offset(body, 10, 10).click().perform()
-            time.sleep(0.2)
-        except Exception:
-            pass
-        
-        if closed_count > 0:
-            logger.info(f"Closed {closed_count} popup(s)/overlay(s)")
-
-    def _get_with_selenium_advanced(
-        self, 
-        url: str, 
-        headless: bool = True,
-        wait_time: int = 15,
-        simulate_human: bool = True,
-    ) -> Optional[BeautifulSoup]:
-        """
-        Advanced Selenium fetching with bot evasion techniques.
-        
-        Args:
-            url: URL to fetch
-            headless: If True, run in headless mode
-            wait_time: Seconds to wait for page load
-            simulate_human: If True, simulate human-like behavior
-        """
-        if not SELENIUM_AVAILABLE:
-            return None
-        
-        driver = None
-        try:
-            driver = self._create_stealth_driver(headless=headless)
-            
-            # Navigate to URL
-            logger.debug(f"Selenium navigating to: {url}")
-            driver.get(url)
-            
-            # Wait for body to load
-            WebDriverWait(driver, wait_time).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            
-            # Random initial delay
-            time.sleep(random.uniform(2, 4))
-            
-            # Handle DarkReading interstitial ad (must be done early, before other handlers)
-            self._handle_darkreading_interstitial(driver, url)
-            
-            # Handle PerimeterX bot detection (wavy.com, etc.) - must be done early
-            self._handle_perimeterx_challenge(driver, url)
-            
-            # Handle cookie consent
-            self._handle_cookie_consent(driver)
-            
-            # Wait a bit for any delayed popups (ads often load after page)
-            time.sleep(random.uniform(1, 2))
-            
-            # Close any ad popups or overlays
-            self._handle_ad_popups(driver)
-            
-            # Simulate human behavior
-            if simulate_human:
-                self._simulate_human_behavior(driver)
-            
-            # Additional wait for dynamic content
-            time.sleep(random.uniform(1, 2))
-            
-            # Try closing popups again (some appear after scrolling)
-            self._handle_ad_popups(driver)
-            
-            # Check for common block indicators (but exclude PerimeterX which we handled)
-            page_source = driver.page_source.lower()
-            
-            # Check if PerimeterX challenge is still present (after our handling attempt)
-            is_perimeterx_still_present = (
-                "px-captcha" in page_source or 
-                ("perimeterx" in page_source and "press & hold" in page_source)
-            )
-            
-            # If PerimeterX is still blocking, log but don't fail immediately
-            # Sometimes the page content is still accessible even with challenge present
-            if is_perimeterx_still_present:
-                logger.warning(f"PerimeterX challenge still present on {url} - attempting to extract content anyway")
-                # Don't return None - try to extract content even with challenge present
-            
-            # Check for other block indicators (excluding PerimeterX)
-            block_indicators = [
-                "blocked",
-                "bot detected",
-                # Exclude "access denied" if it's PerimeterX (we handle that separately)
-                # Exclude "captcha" if it's PerimeterX
-                "please verify",
-                "checking your browser",
-                "just a moment",
-                "cloudflare",
-                "ddos protection",
-            ]
-            
-            # Only fail on block indicators if it's NOT PerimeterX (which we already handled)
-            if not is_perimeterx_still_present:
-                if any(indicator in page_source for indicator in block_indicators):
-                    logger.warning(f"Bot detection triggered on {url}")
-                    return None
-            else:
-                # For PerimeterX, check if it's a generic "access denied" (not PerimeterX-specific)
-                if "access denied" in page_source and not is_perimeterx_still_present:
-                    logger.warning(f"Access denied on {url} (not PerimeterX)")
-                    return None
-            
-            # Handle cookie consent again (some appear after page fully loads)
-            self._handle_cookie_consent(driver)
-            
-            # Success - return the page content
-            html = driver.page_source
-            return BeautifulSoup(html, "html.parser")
-            
-        except Exception as e:
-            logger.warning(f"Selenium failed for {url}: {e}")
-            return None
-        finally:
-            if driver:
-                try:
-                    driver.quit()
-                except Exception:
-                    pass
-
-    def _get_with_selenium(self, url: str) -> Optional[BeautifulSoup]:
-        """
-        Fallback to undetected-chromedriver with multiple attempts.
-        
-        Strategy:
-        1. Try headless with stealth settings
-        2. Try headless with more aggressive human simulation
-        3. Try non-headless (visible browser) as last resort
-        """
-        if not SELENIUM_AVAILABLE:
-            logger.warning("Selenium not available for bot detection bypass")
-            return None
-        
-        domain = self._get_domain(url)
-        is_aggressive = self._is_aggressive_domain(url)
-        
-        # Attempt 1: Headless with stealth
-        logger.info(f"Selenium attempt 1 (headless stealth) for {url}")
-        result = self._get_with_selenium_advanced(url, headless=True, simulate_human=True)
-        if result is not None:
-            return result
-        
-        # Attempt 2: Headless with longer wait
-        logger.info(f"Selenium attempt 2 (headless, longer wait) for {url}")
-        result = self._get_with_selenium_advanced(url, headless=True, wait_time=25, simulate_human=True)
-        if result is not None:
-            return result
-        
-        # Attempt 3: Non-headless (visible browser) for aggressive domains
-        if is_aggressive or domain in self._failed_domains:
-            logger.info(f"Selenium attempt 3 (visible browser) for {url}")
-            logger.info("Opening visible browser window - this may take a moment...")
-            result = self._get_with_selenium_advanced(url, headless=False, wait_time=30, simulate_human=True)
+        # For non-HTML (APIs, RSS) – try requests first, then cffi
+        if not to_soup and not self._needs_js(url):
+            result = self._requests_get(url, allow_404=allow_404, allow_status=allow_set)
             if result is not None:
                 return result
-        
-        logger.warning(f"All Selenium attempts failed for {url}")
-        return None
+            result = self._cffi_get(url, allow_404=allow_404)
+            if result is not None:
+                return result
+            return None
+
+        # For HTML pages – use the full fallback chain
+        result = self._smart_get(url, allow_404=allow_404)
+        if result is None:
+            return None
+
+        if to_soup:
+            return self._to_soup(result.text)
+        return result
 
     def get_soup(
         self,
         url: str,
         *,
         allow_404: bool = False,
-        allow_status: Optional[Iterable[int]] = None,
-        use_selenium_fallback: bool = True,
-    ) -> Optional[BeautifulSoup]:
+        allow_status: Iterable[int] | None = None,
+        use_selenium_fallback: bool = True,  # Kept for backward compatibility
+        wait_selector: str | None = None,
+    ) -> BeautifulSoup | None:
         """
-        Get page as BeautifulSoup with intelligent bot detection bypass.
-        
-        Strategy:
-        1. For known aggressive domains, use Selenium directly
-        2. Otherwise, try requests first
-        3. Fall back to Selenium with multiple attempts if blocked
+        Fetch page and return as BeautifulSoup.
+
+        Uses the smart fallback chain:
+        1. curl_cffi (TLS fingerprint – fast, bypasses most Cloudflare)
+        2. Playwright headless (JS rendering – search pages, SPAs)
+        3. Plain requests (simple pages, RSS feeds)
+
+        Args:
+            url: URL to fetch
+            allow_404: Return None instead of raising on 404
+            wait_selector: CSS selector to wait for (Playwright only, for JS-rendered content)
         """
-        BLOCKED_STATUS_CODES = (403, 429, 503)
-        
-        # For aggressive domains or previously failed domains, skip requests
-        if self._should_use_selenium_first(url):
-            if use_selenium_fallback and SELENIUM_AVAILABLE:
-                logger.info(f"Using Selenium directly for aggressive domain: {url}")
-                return self._get_with_selenium(url)
-            else:
-                logger.warning(f"Aggressive domain {url} but Selenium not available")
-                return None
-        
-        # Try requests first
-        try:
-            self._sleep_a_bit()
-            resp = self.session.get(url, timeout=self.timeout, headers=self._random_headers())
-            
-            if resp.status_code in BLOCKED_STATUS_CODES:
-                self._mark_domain_failed(url)
-                if use_selenium_fallback and SELENIUM_AVAILABLE:
-                    logger.info(f"Requests blocked ({resp.status_code}) for {url}, trying Selenium...")
-                    return self._get_with_selenium(url)
-                logger.warning(f"Blocked ({resp.status_code}) for {url}, Selenium not available")
-                return None
-            
-            if allow_404 and resp.status_code == 404:
-                return None
-            if resp.status_code >= 400 and resp.status_code not in (allow_status or set()):
-                resp.raise_for_status()
-            
-            try:
-                return BeautifulSoup(resp.text, "lxml")
-            except Exception:
-                return BeautifulSoup(resp.text, "html.parser")
-                
-        except requests.HTTPError as e:
-            if e.response is not None and e.response.status_code in BLOCKED_STATUS_CODES:
-                self._mark_domain_failed(url)
-                if use_selenium_fallback and SELENIUM_AVAILABLE:
-                    logger.info(f"Requests blocked ({e.response.status_code}) for {url}, trying Selenium...")
-                    return self._get_with_selenium(url)
-                return None
-            raise
-        except requests.RequestException as e:
-            logger.warning(f"Request failed for {url}: {e}")
-            if use_selenium_fallback and SELENIUM_AVAILABLE:
-                return self._get_with_selenium(url)
-            raise
-    
+        result = self._smart_get(url, allow_404=allow_404, wait_selector=wait_selector)
+        if result is None:
+            return None
+        return self._to_soup(result.text)
+
     def get_soup_with_fallback(
         self,
         url: str,
         *,
         allow_404: bool = False,
-        allow_status: Optional[Iterable[int]] = None,
-        check_content: Optional[Callable[[BeautifulSoup], bool]] = None,
+        allow_status: Iterable[int] | None = None,
+        check_content: Callable[[BeautifulSoup], bool] | None = None,
         use_selenium_fallback: bool = True,
-    ) -> Optional[BeautifulSoup]:
+        wait_selector: str | None = None,
+    ) -> BeautifulSoup | None:
         """
-        Get page as BeautifulSoup with content validation.
+        Fetch page with content validation.
+
+        If check_content returns False, retries with Playwright.
         """
-        soup = self.get_soup(
-            url,
-            allow_404=allow_404,
-            allow_status=allow_status,
-            use_selenium_fallback=use_selenium_fallback,
-        )
-        
+        soup = self.get_soup(url, allow_404=allow_404, wait_selector=wait_selector)
+
         if soup is not None and check_content is not None:
             if not check_content(soup):
-                if use_selenium_fallback and SELENIUM_AVAILABLE:
-                    logger.info(f"Content check failed for {url}, trying Selenium...")
-                    selenium_result = self._get_with_selenium(url)
-                    if selenium_result is not None and check_content(selenium_result):
-                            return selenium_result
-                    logger.warning(f"Selenium result also failed content check for {url}")
+                logger.info(f"Content check failed for {url}, retrying with Playwright")
+                result = self._playwright_get(url, allow_404=allow_404, wait_selector=wait_selector)
+                if result:
+                    pw_soup = self._to_soup(result.text)
+                    if pw_soup and (check_content is None or check_content(pw_soup)):
+                        return pw_soup
                 return None
-        
+
         return soup
 
+    # ── Smart routing ────────────────────────────────────────────────
 
-def build_http_client() -> HttpClient:
-    return HttpClient()
+    def _smart_get(
+        self,
+        url: str,
+        *,
+        allow_404: bool = False,
+        wait_selector: str | None = None,
+    ) -> HttpResponse | None:
+        """
+        Intelligently route request through the best tier.
+
+        Routing logic:
+        - Known JS-required domains → Playwright first, cffi fallback
+        - Known Cloudflare domains → cffi first, Playwright fallback
+        - Previously failed domains → skip requests, try cffi → Playwright
+        - Everything else → cffi → requests → Playwright
+        """
+        domain = self._domain(url)
+
+        # Route 1: JS-required domains (search pages, SPAs)
+        if self._needs_js(url):
+            logger.debug(f"JS-required domain: {domain}, using Playwright")
+            result = self._playwright_get(
+                url, allow_404=allow_404, wait_selector=wait_selector
+            )
+            if result:
+                return result
+            # Fallback to cffi (some content may still be in HTML)
+            result = self._cffi_get(url, allow_404=allow_404)
+            if result:
+                return result
+            return None
+
+        # Route 2: Known Cloudflare domains
+        if self._has_cloudflare(url):
+            logger.debug(f"Cloudflare domain: {domain}, using curl_cffi")
+            result = self._cffi_get(url, allow_404=allow_404)
+            if result:
+                return result
+            # Fallback to Playwright
+            result = self._playwright_get(
+                url, allow_404=allow_404, wait_selector=wait_selector
+            )
+            if result:
+                return result
+            return None
+
+        # Route 3: Previously failed domains
+        if self._should_skip_requests(url):
+            logger.debug(f"Previously failed domain: {domain}, skipping requests")
+            result = self._cffi_get(url, allow_404=allow_404)
+            if result:
+                return result
+            result = self._playwright_get(
+                url, allow_404=allow_404, wait_selector=wait_selector
+            )
+            if result:
+                return result
+            return None
+
+        # Route 4: Default – try everything
+        # Try cffi first (fastest and handles most sites)
+        result = self._cffi_get(url, allow_404=allow_404)
+        if result:
+            return result
+
+        # Try plain requests
+        result = self._requests_get(url, allow_404=allow_404)
+        if result:
+            return result
+
+        # Last resort: Playwright
+        result = self._playwright_get(
+            url, allow_404=allow_404, wait_selector=wait_selector
+        )
+        if result:
+            return result
+
+        logger.warning(f"All tiers failed for {url}")
+        return None
+
+    # ── Utilities ────────────────────────────────────────────────────
+
+    @staticmethod
+    def _to_soup(html: str) -> BeautifulSoup | None:
+        if not html:
+            return None
+        try:
+            return BeautifulSoup(html, "lxml")
+        except Exception:
+            try:
+                return BeautifulSoup(html, "html.parser")
+            except Exception:
+                return None
+
+
+# ── Module-level convenience ─────────────────────────────────────────
+
+_default_client: HttpClient | None = None
+
+
+def build_http_client(**kwargs) -> HttpClient:
+    """Create a new HttpClient instance."""
+    return HttpClient(**kwargs)
+
+
+def default_client() -> HttpClient:
+    """Get or create the default shared HttpClient."""
+    global _default_client
+    if _default_client is None:
+        _default_client = HttpClient()
+    return _default_client

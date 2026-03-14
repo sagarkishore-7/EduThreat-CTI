@@ -30,7 +30,7 @@ PERSISTENT_DATA_DIR = DATA_DIR
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+router = APIRouter(prefix="/admin", tags=["Admin"])
 
 # Admin authentication - use environment variables for credentials
 ADMIN_USERNAME = os.getenv("EDUTHREAT_ADMIN_USERNAME", "admin")
@@ -52,8 +52,9 @@ def hash_password(password: str) -> str:
 def verify_password(password: str) -> bool:
     """Verify password against stored hash."""
     if not ADMIN_PASSWORD_HASH:
-        # If no hash configured, use default for development
-        default_hash = hash_password("admin123")  # Change in production!
+        # Default for development only — set EDUTHREAT_ADMIN_PASSWORD_HASH in production
+        logger.warning("No EDUTHREAT_ADMIN_PASSWORD_HASH set — using development default")
+        default_hash = hash_password(os.getenv("EDUTHREAT_ADMIN_PASSWORD", "admin123"))
         return hash_password(password) == default_hash
     return hash_password(password) == ADMIN_PASSWORD_HASH
 
@@ -259,7 +260,6 @@ async def export_full_csv(
     
     # Log immediately to verify function is called
     logger.debug(f"Full CSV export called (education_only={education_only_bool})")
-    logger.debug(f"Full CSV export called (education_only={education_only_bool})")
     
     try:
         from src.edu_cti.core.db import load_incident_by_id
@@ -267,12 +267,10 @@ async def export_full_csv(
         from src.edu_cti.core.deduplication import extract_urls_from_incident
     except ImportError as e:
         logger.error(f"Import error: {str(e)[:100]}")
-        logger.error(f"Import error: {str(e)[:100]}")
         raise HTTPException(status_code=500, detail=f"Import error: {str(e)}")
     
     conn = None
     try:
-        logger.info(f"Starting full CSV export (education_only={education_only_bool})")
         logger.info(f"Starting full CSV export (education_only={education_only_bool})")
         
         conn = get_api_connection()
@@ -450,7 +448,6 @@ async def export_enriched_csv(
     education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
     
     logger.debug(f"Enriched CSV export called (education_only={education_only_bool})")
-    logger.debug(f"Enriched CSV export called (education_only={education_only_bool})")
     
     conn = None
     try:
@@ -485,7 +482,6 @@ async def export_enriched_csv(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Enriched CSV export failed: {str(e)[:200]}")
         logger.error(f"Enriched CSV export failed: {str(e)[:200]}")
         import traceback
         traceback.print_exc()
@@ -568,268 +564,6 @@ async def export_table_csv(
         conn.close()
 
 
-@router.get("/export/csv/enriched")
-async def export_enriched_csv(
-    education_only: str = "true",
-    _: bool = Depends(authenticate),
-):
-    """
-    Export enriched dataset as CSV (only incidents that have been enriched).
-    
-    Joins incidents with enrichments for complete data.
-    Only includes incidents that have been processed by LLM enrichment.
-    """
-    from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
-    
-    # Parse education_only string to boolean
-    education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
-    
-    logger.debug(f"Enriched CSV export called (education_only={education_only_bool})")
-    logger.debug(f"Enriched CSV export called (education_only={education_only_bool})")
-    
-    conn = None
-    try:
-        conn = get_api_connection()
-        incidents = load_enriched_incidents_from_db(conn, use_flat_table=True)
-        
-        if education_only_bool:
-            incidents = [i for i in incidents if i.get("is_education_related")]
-        
-        if not incidents:
-            raise HTTPException(status_code=404, detail="No enriched incidents found")
-        
-        # Generate CSV
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=incidents[0].keys())
-        writer.writeheader()
-        writer.writerows(incidents)
-        
-        csv_content = output.getvalue()
-        
-        filename = f"eduthreat_enriched_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        
-        logger.info(f"Generated enriched CSV: {len(incidents)} incidents")
-        
-        return StreamingResponse(
-            iter([csv_content]),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Enriched CSV export failed: {str(e)[:200]}")
-        logger.error(f"Enriched CSV export failed: {str(e)[:200]}")
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(
-            status_code=500,
-            detail=f"CSV export failed: {str(e)}"
-        )
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except:
-                pass
-
-
-@router.get("/export/csv/full")
-async def export_full_csv(
-    education_only: str = "false",
-    _: bool = Depends(authenticate),
-):
-    """
-    Export ALL incidents as CSV (enriched and unenriched).
-    
-    Includes all incidents from the database, whether they've been enriched or not.
-    For enriched incidents, includes enrichment data. For unenriched incidents, only basic fields.
-    """
-    import traceback
-    
-    # Parse education_only string to boolean
-    education_only_bool = education_only and education_only.lower() in ("true", "1", "yes", "on")
-    
-    # Log immediately to verify function is called
-    logger.debug(f"Full CSV export called (education_only={education_only_bool})")
-    logger.debug(f"Full CSV export called (education_only={education_only_bool})")
-    
-    try:
-        from src.edu_cti.core.db import load_incident_by_id
-        from src.edu_cti.pipeline.phase2.csv_export import load_enriched_incidents_from_db
-        from src.edu_cti.core.deduplication import extract_urls_from_incident
-    except ImportError as e:
-        logger.error(f"Import error: {str(e)[:100]}")
-        logger.error(f"Import error: {str(e)[:100]}")
-        raise HTTPException(status_code=500, detail=f"Import error: {str(e)}")
-    
-    conn = None
-    try:
-        logger.info(f"Starting full CSV export (education_only={education_only_bool})")
-        logger.info(f"Starting full CSV export (education_only={education_only_bool})")
-        
-        conn = get_api_connection()
-        if not conn:
-            raise HTTPException(status_code=500, detail="Failed to get database connection")
-        if not conn:
-            raise HTTPException(status_code=500, detail="Failed to get database connection")
-        
-        # Get all incidents (check if broken_urls column exists)
-        try:
-            cur = conn.execute("PRAGMA table_info(incidents)")
-            columns = [row[1] for row in cur.fetchall()]
-            has_broken_urls = "broken_urls" in columns
-        except:
-            has_broken_urls = False
-        
-        # Build query - always select all columns from incidents
-        query = """
-            SELECT 
-                i.*,
-                GROUP_CONCAT(DISTINCT isrc.source) as sources
-            FROM incidents i
-            LEFT JOIN incident_sources isrc ON i.incident_id = isrc.incident_id
-            GROUP BY i.incident_id
-            ORDER BY i.ingested_at DESC
-        """
-        
-        cur = conn.execute(query)
-        
-        # Get column names from the query result BEFORE fetching rows
-        column_names = [description[0] for description in cur.description] if cur.description else []
-        
-        all_incidents = cur.fetchall()
-        
-        # Get enriched incidents with their enrichment data
-        enriched_incidents_data = {}
-        try:
-            enriched_list = load_enriched_incidents_from_db(conn, use_flat_table=True)
-            for inc in enriched_list:
-                enriched_incidents_data[inc.get("incident_id")] = inc
-        except Exception as e:
-            logger.warning(f"Could not load enriched incidents: {e}")
-        
-        # Build combined dataset
-        combined_incidents = []
-        fieldnames_set = set()
-        
-        # Helper function to safely get row value (defined outside loop for efficiency)
-        def safe_get(row, key, default=""):
-            try:
-                if key in column_names:
-                    value = row[key]
-                    return value if value is not None else default
-                return default
-            except (KeyError, IndexError, TypeError):
-                return default
-        
-        for row in all_incidents:
-            incident_id = safe_get(row, "incident_id", "")
-            if not incident_id:
-                continue  # Skip rows without incident_id
-            
-            llm_enriched_val = safe_get(row, "llm_enriched", 0)
-            is_enriched = llm_enriched_val == 1 if llm_enriched_val else False
-            
-            # Start with basic incident data
-            incident_dict = {
-                "incident_id": incident_id,
-                "sources": safe_get(row, "sources"),
-                "university_name": safe_get(row, "university_name"),
-                "victim_raw_name": safe_get(row, "victim_raw_name"),
-                "institution_type": safe_get(row, "institution_type"),
-                "country": safe_get(row, "country"),
-                "region": safe_get(row, "region"),
-                "city": safe_get(row, "city"),
-                "incident_date": safe_get(row, "incident_date"),
-                "date_precision": safe_get(row, "date_precision"),
-                "source_published_date": safe_get(row, "source_published_date"),
-                "ingested_at": safe_get(row, "ingested_at"),
-                "title": safe_get(row, "title"),
-                "subtitle": safe_get(row, "subtitle"),
-                "primary_url": safe_get(row, "primary_url"),
-                "all_urls": safe_get(row, "all_urls"),
-                "broken_urls": safe_get(row, "broken_urls") if has_broken_urls else "",
-                "attack_type_hint": safe_get(row, "attack_type_hint"),
-                "status": safe_get(row, "status"),
-                "source_confidence": safe_get(row, "source_confidence"),
-                "notes": safe_get(row, "notes"),
-                "llm_enriched": "Yes" if is_enriched else "No",
-                "llm_enriched_at": safe_get(row, "llm_enriched_at"),
-            }
-            
-            # Add enrichment data if available
-            if is_enriched and incident_id in enriched_incidents_data:
-                enriched_data = enriched_incidents_data[incident_id]
-                # Add all enrichment fields
-                for key, value in enriched_data.items():
-                    if key not in incident_dict:  # Don't overwrite basic fields
-                        incident_dict[key] = value
-            
-            # Apply education filter if requested
-            if education_only_bool:
-                is_education = incident_dict.get("is_education_related", False)
-                if not is_education:
-                    continue
-            
-            combined_incidents.append(incident_dict)
-            fieldnames_set.update(incident_dict.keys())
-        
-        if not combined_incidents:
-            raise HTTPException(status_code=404, detail="No incidents found")
-        
-        # Sort fieldnames: basic fields first, then enrichment fields
-        basic_fields = [
-            "incident_id", "sources", "university_name", "victim_raw_name", "victim_raw_name_normalized",
-            "institution_type", "country", "region", "city", "incident_date", "date_precision",
-            "source_published_date", "ingested_at", "title", "subtitle", "primary_url", "all_urls",
-            "broken_urls", "attack_type_hint", "status", "source_confidence", "notes",
-            "llm_enriched", "llm_enriched_at"
-        ]
-        enrichment_fields = sorted([f for f in fieldnames_set if f not in basic_fields])
-        fieldnames = [f for f in basic_fields if f in fieldnames_set] + enrichment_fields
-        
-        # Generate CSV
-        output = io.StringIO()
-        writer = csv.DictWriter(output, fieldnames=fieldnames, extrasaction='ignore')
-        writer.writeheader()
-        writer.writerows(combined_incidents)
-        
-        csv_content = output.getvalue()
-        
-        filename = f"eduthreat_full_all_incidents_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-        
-        logger.info(f"Generated CSV: {len(combined_incidents)} incidents, {len(fieldnames)} columns")
-        
-        return StreamingResponse(
-            iter([csv_content]),
-            media_type="text/csv",
-            headers={
-                "Content-Disposition": f"attachment; filename={filename}"
-            }
-        )
-    except HTTPException as he:
-        # Re-raise HTTP exceptions (like 404)
-        logger.error(f"HTTPException: {str(he.detail)[:100]}")
-        raise
-    except Exception as e:
-        error_msg = str(e)
-        error_trace = traceback.format_exc()
-        logger.error(f"Full CSV export failed: {error_msg[:200]}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"CSV export failed: {error_msg}"
-        )
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except:
-                pass
-
-
 @router.get("/scheduler/status")
 async def get_scheduler_status(_: bool = Depends(authenticate)):
     """Get scheduler status if running."""
@@ -882,12 +616,10 @@ async def upload_database(
         # Backup existing database if it exists
         if dest_db.exists():
             logger.info(f"Backing up existing database to {backup_db}")
-            logger.info("Backing up existing database")
             shutil.copy2(dest_db, backup_db)
         
         # Save uploaded file
         logger.info(f"Uploading database file: {file.filename}")
-        logger.info(f"Uploading database: {file.filename}")
         
         with open(dest_db, "wb") as f:
             content = await file.read()
@@ -905,7 +637,6 @@ async def upload_database(
             db_size = dest_db.stat().st_size / (1024 * 1024)  # MB
             conn.close()
             
-            logger.info(f"Database uploaded successfully: {incident_count} incidents")
             logger.info(f"Database uploaded: {incident_count} incidents, {enriched_count} enriched, {db_size:.2f} MB")
             
             return {
@@ -921,7 +652,6 @@ async def upload_database(
             # Restore backup if verification failed
             if backup_db.exists():
                 logger.warning(f"Uploaded database verification failed, restoring backup: {e}")
-                logger.error("Database verification failed, restoring backup")
                 shutil.copy2(backup_db, dest_db)
             
             conn.close()
@@ -932,7 +662,6 @@ async def upload_database(
             
     except Exception as e:
         logger.error(f"Database upload failed: {e}", exc_info=True)
-        logger.error(f"Upload failed: {str(e)[:200]}")
         raise HTTPException(
             status_code=500,
             detail=f"Upload failed: {str(e)}"
@@ -983,7 +712,6 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
                 if source_db.samefile(dest_db):
                     # Already in the right place!
                     logger.info(f"Database already at destination: {dest_db}")
-                    logger.info(f"Database already at destination: {dest_db}")
                     
                     # Verify integrity
                     conn = get_api_connection()
@@ -1008,7 +736,6 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
         # If source exists and is different from destination, copy it
         if source_db and source_db != dest_db:
             logger.info(f"Migrating database from {source_db} to {dest_db}")
-            logger.info(f"Copying database from {source_db} to {dest_db}")
             
             # Get source size
             source_size = source_db.stat().st_size / (1024 * 1024)  # MB
@@ -1043,7 +770,6 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
             # No source found - check if destination already has data
             if dest_db.exists():
                 logger.info(f"Database already exists at {dest_db}")
-                logger.info(f"Database already exists at {dest_db}")
                 
                 conn = get_api_connection()
                 cur = conn.execute("SELECT COUNT(*) FROM incidents")
@@ -1062,7 +788,6 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
                 }
             else:
                 # Initialize fresh database
-                logger.info(f"Initializing fresh database at {dest_db}")
                 logger.info(f"Initializing fresh database at {dest_db}")
                 
                 # Initialize fresh database
@@ -1084,7 +809,6 @@ async def migrate_database_endpoint(_: bool = Depends(authenticate)):
                 }
     except Exception as e:
         logger.error(f"Migration failed: {e}", exc_info=True)
-        logger.error(f"Migration failed: {str(e)[:200]}")
         return {
             "success": False,
             "message": f"Migration failed: {str(e)}",
@@ -1097,94 +821,355 @@ async def trigger_scheduler_job(
     _: bool = Depends(authenticate),
 ):
     """
-    Manually trigger a scheduler job.
-    
+    Manually trigger a scheduler job (runs in background via PipelineManager).
+
     Job types:
     - rss: Run RSS feed ingestion
-    - weekly: Run weekly full ingestion
+    - weekly: Run weekly full ingestion (curated + news)
     - enrich: Run LLM enrichment
+
+    Returns immediately with a run_id. Poll /admin/pipeline/status or
+    connect to /admin/pipeline/logs/stream for progress.
     """
-    import logging
-    import sys
-    from io import StringIO
-    
-    logger = logging.getLogger(__name__)
-    
-    allowed_jobs = ["rss", "weekly", "enrich"]
-    
-    if job_type not in allowed_jobs:
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    job_to_phase = {
+        "rss": "rss",
+        "weekly": "weekly",
+        "enrich": "enrich",
+    }
+
+    if job_type not in job_to_phase:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid job type. Allowed: {allowed_jobs}"
+            detail=f"Invalid job type. Allowed: {list(job_to_phase.keys())}",
         )
-    
-    # Capture logs
-    log_capture = StringIO()
-    handler = logging.StreamHandler(log_capture)
-    handler.setLevel(logging.INFO)
-    formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
-    handler.setFormatter(formatter)
-    
-    # Add handler to root logger temporarily
-    root_logger = logging.getLogger()
-    root_logger.addHandler(handler)
-    
+
+    manager = get_pipeline_manager()
+
+    if manager.is_running:
+        current = manager.current_run
+        raise HTTPException(
+            status_code=409,
+            detail=f"Pipeline already running: {current.phase} (run_id={current.run_id})",
+        )
+
+    phase = job_to_phase[job_type]
+    params = {}
+    if job_type == "enrich":
+        params["limit"] = None  # No limit for manual trigger
+
     try:
-        from src.edu_cti.scheduler.scheduler import IngestionScheduler
-        from src.edu_cti.core.metrics import get_metrics, start_timer, stop_timer
-        
-        metrics = get_metrics()
-        start_timer(f"scheduler_job_{job_type}")
-        
-        logger.info(f"Triggering scheduler job: {job_type}")
-        
-        scheduler = IngestionScheduler(enable_enrichment=True)
-        
-        if job_type == "rss":
-            logger.info("Starting RSS ingestion")
-            scheduler._run_rss_ingestion()
-        elif job_type == "weekly":
-            logger.info("Starting weekly ingestion")
-            scheduler._run_weekly_ingestion()
-        elif job_type == "enrich":
-            logger.info("Starting LLM enrichment")
-            # Process all unenriched incidents when triggered manually (no limit)
-            scheduler._run_enrichment(limit=None, manual_trigger=True)
-        
-        duration = stop_timer(f"scheduler_job_{job_type}")
-        metrics.increment(f"scheduler_job_{job_type}_total", labels={"status": "success"})
-        
-        # Get captured logs
-        log_output = log_capture.getvalue()
-        
-        logger.info(f"Job {job_type} completed in {duration:.2f}s")
-        
-        # Log metrics summary
-        metrics.log_summary()
-        
+        run = manager.start_phase(phase, params)
+        logger.info(f"Scheduler job triggered: {job_type} -> run_id={run.run_id}")
         return {
             "success": True,
             "job_type": job_type,
-            "duration_seconds": duration,
-            "message": f"Job {job_type} completed",
-            "logs": log_output.split("\n")[-50:],  # Last 50 lines
+            "run_id": run.run_id,
+            "message": f"Job {job_type} started in background. Poll /admin/pipeline/status for progress.",
         }
-    except Exception as e:
-        from src.edu_cti.core.metrics import get_metrics
-        metrics = get_metrics()
-        metrics.increment(f"scheduler_job_{job_type}_total", labels={"status": "error"})
-        
-        logger.error(f"Job {job_type} failed: {str(e)[:200]}")
-        
-        log_output = log_capture.getvalue()
-        
-        raise HTTPException(
-            status_code=500,
-            detail=f"Job failed: {str(e)}",
-        )
-    finally:
-        root_logger.removeHandler(handler)
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
 
+
+# ============================================================
+# Pipeline Control Endpoints
+# ============================================================
+
+VALID_PHASES = ["ingest", "enrich", "historical", "daily", "ingest_source", "rss", "weekly"]
+
+
+class PipelineStartRequest(BaseModel):
+    phase: str
+    params: Optional[Dict[str, Any]] = None
+
+
+class PipelineRunResponse(BaseModel):
+    run_id: str
+    phase: str
+    status: str
+    started_at: Optional[str] = None
+    finished_at: Optional[str] = None
+    duration_seconds: Optional[float] = None
+    progress: Dict[str, Any] = {}
+    result: Dict[str, Any] = {}
+    error: Optional[str] = None
+    params: Dict[str, Any] = {}
+
+
+@router.post("/pipeline/start", response_model=PipelineRunResponse)
+async def start_pipeline(
+    request: PipelineStartRequest,
+    _: bool = Depends(authenticate),
+):
+    """
+    Start a pipeline phase in the background.
+
+    Phases:
+    - **ingest**: Run Phase 1 ingestion (all source groups)
+    - **enrich**: Run Phase 2 LLM enrichment
+    - **historical**: Full historical collection (2019+) then enrich
+    - **daily**: Incremental ingestion + enrichment
+    - **ingest_source**: Ingest a specific source group (pass group in params)
+    - **rss**: RSS feed ingestion only
+    - **weekly**: Weekly full ingestion (curated + news)
+
+    Params (optional, varies by phase):
+    - full_historical: bool - Full scrape vs incremental
+    - groups: list[str] - Source groups to ingest
+    - sources: list[str] - Specific sources within group
+    - max_pages: int - Max pages per source
+    - limit: int - Max incidents to enrich
+    - skip_enrich: bool - Skip enrichment in historical/daily
+    - group: str - For ingest_source phase
+    """
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    if request.phase not in VALID_PHASES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid phase '{request.phase}'. Valid: {VALID_PHASES}",
+        )
+
+    manager = get_pipeline_manager()
+
+    if manager.is_running:
+        current = manager.current_run
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": f"Pipeline already running: {current.phase}",
+                "run_id": current.run_id,
+                "phase": current.phase,
+                "started_at": current.started_at,
+            },
+        )
+
+    try:
+        run = manager.start_phase(request.phase, request.params or {})
+        logger.info(f"Pipeline started: phase={request.phase}, run_id={run.run_id}")
+        return PipelineRunResponse(
+            run_id=run.run_id,
+            phase=run.phase,
+            status=run.status.value,
+            started_at=run.started_at,
+            params=run.params,
+            progress=run.progress,
+        )
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@router.get("/pipeline/status")
+async def get_pipeline_status(_: bool = Depends(authenticate)):
+    """
+    Get current pipeline execution status.
+
+    Returns the currently running pipeline (if any) and its progress.
+    """
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    manager = get_pipeline_manager()
+    current = manager.current_run
+
+    if current is None:
+        return {
+            "running": False,
+            "current_run": None,
+        }
+
+    return {
+        "running": manager.is_running,
+        "current_run": current.to_dict(),
+    }
+
+
+@router.post("/pipeline/stop")
+async def stop_pipeline(_: bool = Depends(authenticate)):
+    """
+    Request cancellation of the current pipeline run.
+
+    The pipeline will stop at the next safe checkpoint (between source groups
+    or enrichment batches). It will not abort mid-operation.
+    """
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    manager = get_pipeline_manager()
+
+    if not manager.is_running:
+        raise HTTPException(status_code=400, detail="No pipeline is currently running")
+
+    cancelled = manager.request_cancel()
+    if cancelled:
+        return {
+            "success": True,
+            "message": "Cancel requested. Pipeline will stop at next checkpoint.",
+            "run_id": manager.current_run.run_id,
+        }
+    raise HTTPException(status_code=400, detail="Failed to cancel pipeline")
+
+
+@router.get("/pipeline/history")
+async def get_pipeline_history(
+    limit: int = Query(20, ge=1, le=50),
+    _: bool = Depends(authenticate),
+):
+    """
+    Get pipeline run history.
+
+    Returns the most recent pipeline runs (up to limit).
+    """
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    manager = get_pipeline_manager()
+    history = manager.get_history(limit=limit)
+    return {"runs": history, "total": len(history)}
+
+
+@router.get("/pipeline/runs/{run_id}")
+async def get_pipeline_run(
+    run_id: str,
+    _: bool = Depends(authenticate),
+):
+    """Get details for a specific pipeline run, including logs."""
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    manager = get_pipeline_manager()
+    run = manager.get_run(run_id)
+
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
+
+    return run.to_dict(include_logs=True)
+
+
+@router.get("/pipeline/logs")
+async def get_pipeline_logs(
+    run_id: Optional[str] = Query(None, description="Specific run ID (default: current)"),
+    offset: int = Query(0, ge=0, description="Log line offset"),
+    limit: int = Query(200, ge=1, le=2000, description="Max lines to return"),
+    _: bool = Depends(authenticate),
+):
+    """
+    Get pipeline logs with pagination.
+
+    If no run_id, returns logs for the current/most recent run.
+    Use offset for polling: pass the last offset+count to get only new lines.
+    """
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    manager = get_pipeline_manager()
+
+    if run_id:
+        run = manager.get_run(run_id)
+    else:
+        run = manager.current_run
+        if run is None and manager._history:
+            run = manager._history[-1]
+
+    if run is None:
+        return {"logs": [], "total": 0, "offset": 0, "has_more": False}
+
+    all_logs = list(run.logs)
+    total = len(all_logs)
+    page = all_logs[offset : offset + limit]
+
+    return {
+        "run_id": run.run_id,
+        "status": run.status.value,
+        "logs": page,
+        "total": total,
+        "offset": offset,
+        "has_more": (offset + limit) < total,
+    }
+
+
+@router.get("/pipeline/logs/stream")
+async def stream_pipeline_logs(
+    run_id: Optional[str] = Query(None),
+    _: bool = Depends(authenticate),
+):
+    """
+    Server-Sent Events (SSE) endpoint for real-time pipeline log streaming.
+
+    Connect from the frontend with EventSource:
+    ```js
+    const es = new EventSource('/api/admin/pipeline/logs/stream?run_id=xxx',
+      { headers: { 'X-Session-Token': token } });
+    es.onmessage = (e) => console.log(JSON.parse(e.data));
+    ```
+
+    Events:
+    - `log`: New log line
+    - `progress`: Progress update
+    - `status`: Status change (completed/failed/cancelled)
+    - `done`: Stream ended
+    """
+    import asyncio
+    from starlette.responses import StreamingResponse as StarletteStreamingResponse
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    manager = get_pipeline_manager()
+
+    if run_id:
+        run = manager.get_run(run_id)
+    else:
+        run = manager.current_run
+
+    if run is None:
+        raise HTTPException(status_code=404, detail="No active pipeline run")
+
+    async def event_generator():
+        import json
+
+        last_log_idx = 0
+        last_status = run.status.value
+        last_progress = dict(run.progress)
+
+        # Send initial state
+        yield f"data: {json.dumps({'type': 'status', 'status': run.status.value, 'phase': run.phase, 'run_id': run.run_id})}\n\n"
+
+        while True:
+            # Send new log lines
+            current_logs = list(run.logs)
+            if len(current_logs) > last_log_idx:
+                for line in current_logs[last_log_idx:]:
+                    yield f"data: {json.dumps({'type': 'log', 'line': line})}\n\n"
+                last_log_idx = len(current_logs)
+
+            # Send progress updates
+            current_progress = dict(run.progress)
+            if current_progress != last_progress:
+                yield f"data: {json.dumps({'type': 'progress', **current_progress})}\n\n"
+                last_progress = current_progress
+
+            # Send status changes
+            current_status = run.status.value
+            if current_status != last_status:
+                yield f"data: {json.dumps({'type': 'status', 'status': current_status})}\n\n"
+                last_status = current_status
+
+            # End stream when run is done
+            if run.status.value in ("completed", "failed", "cancelled"):
+                yield f"data: {json.dumps({'type': 'done', 'status': current_status, 'duration': run.duration_seconds, 'result': run.result, 'error': run.error})}\n\n"
+                break
+
+            await asyncio.sleep(0.5)
+
+    return StarletteStreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+# ============================================================
+# Data Maintenance Endpoints
+# ============================================================
 
 @router.post("/fix-incident-dates")
 async def fix_incident_dates_endpoint(
@@ -1203,7 +1188,6 @@ async def fix_incident_dates_endpoint(
     import json
     from datetime import datetime
     
-    logger.info(f"Fixing incident dates (apply={apply})")
     logger.info(f"Fixing incident dates (apply={apply})")
     
     conn = get_api_connection(read_only=False)  # Need write access
@@ -1332,22 +1316,17 @@ async def normalize_countries_endpoint(
     Normalize all country codes to full country names in the database.
     This merges duplicates like "US" and "United States".
     """
-    import logging
     from src.edu_cti.core.db import get_connection
     from src.edu_cti.core.countries import normalize_countries_in_database
-    
-    logger = logging.getLogger(__name__)
-    
+
     conn = None
     try:
         logger.info("Starting country normalization...")
-        print(f"[ADMIN] Normalizing countries in database...", flush=True)
         
         conn = get_connection()
         updated_count = normalize_countries_in_database(conn)
         
         logger.info(f"Country normalization complete: {updated_count} rows updated")
-        print(f"[ADMIN] Country normalization complete: {updated_count} rows updated", flush=True)
         
         return {
             "success": True,
@@ -1356,7 +1335,6 @@ async def normalize_countries_endpoint(
         }
     except Exception as e:
         logger.error(f"Country normalization failed: {e}", exc_info=True)
-        print(f"[ADMIN] Country normalization failed: {e}", flush=True)
         raise HTTPException(
             status_code=500,
             detail=f"Country normalization failed: {str(e)}",

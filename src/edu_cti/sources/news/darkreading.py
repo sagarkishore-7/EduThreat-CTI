@@ -20,17 +20,6 @@ from .common import (
     prepare_keywords,
 )
 
-# Selenium imports for Dark Reading
-try:
-    import undetected_chromedriver as uc
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    from selenium.common.exceptions import TimeoutException, NoSuchElementException
-    SELENIUM_AVAILABLE = True
-except ImportError:
-    SELENIUM_AVAILABLE = False
-
 SOURCE_NAME = config.SOURCE_DARKREADING
 BASE_URL = "https://www.darkreading.com"
 logger = logging.getLogger(__name__)
@@ -111,71 +100,6 @@ def _extract_articles_from_page(soup: BeautifulSoup) -> List[BeautifulSoup]:
     return articles
 
 
-def _fetch_page_with_selenium(url: str, wait_for_results: bool = True) -> Optional[BeautifulSoup]:
-    """
-    Use Selenium with bot evading mechanisms to fetch a page.
-    Handles ad popups by waiting for search results to appear.
-    """
-    if not SELENIUM_AVAILABLE:
-        logger.warning("Selenium not available for Dark Reading")
-        return None
-    
-    try:
-        options = uc.ChromeOptions()
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1920,1080")
-        
-        # Random user agent
-        user_agents = config.HTTP_USER_AGENTS
-        if user_agents:
-            options.add_argument(f"--user-agent={random.choice(user_agents)}")
-        
-        driver = uc.Chrome(options=options, version_main=None)
-        try:
-            logger.debug(f"Dark Reading: Fetching {url} with Selenium")
-            driver.get(url)
-            
-            # Random delay to mimic human behavior
-            time.sleep(random.uniform(2, 4))
-            
-            if wait_for_results:
-                # Wait for search results to appear (handles ad popups)
-                try:
-                    WebDriverWait(driver, 20).until(
-                        EC.presence_of_element_located((By.CSS_SELECTOR, "div.SearchResult-Content"))
-                    )
-                    # Additional wait for content to render
-                    time.sleep(random.uniform(1, 2))
-                except TimeoutException:
-                    logger.warning(f"Dark Reading: Timeout waiting for search results on {url}")
-                    # Still try to get the page source
-                    pass
-            
-            # Check if we have results
-            html = driver.page_source
-            soup = BeautifulSoup(html, "html.parser")
-            
-            if wait_for_results and not _has_search_results(soup):
-                logger.warning(f"Dark Reading: No search results found on {url} (may be ad popup)")
-                # Try waiting a bit more
-                time.sleep(random.uniform(3, 5))
-                html = driver.page_source
-                soup = BeautifulSoup(html, "html.parser")
-            
-            return soup
-            
-        finally:
-            driver.quit()
-            
-    except Exception as e:
-        logger.error(f"Dark Reading: Selenium fetch failed for {url}: {e}")
-        return None
-
-
 def _iter_pages(
     client: HttpClient,
     term: str,
@@ -183,21 +107,13 @@ def _iter_pages(
 ) -> Iterable[tuple[int, Optional[BeautifulSoup]]]:
     """
     Iterate through search result pages for a given term.
-    First tries get_soup (faster), falls back to Selenium if no articles found or blocked.
+    Uses HttpClient with Playwright-based wait_selector for JS-rendered content.
     """
-    # Fetch first page - try get_soup first (faster)
+    # Fetch first page
     first_url = _build_search_url(term, page=1)
-    first = None
-    
-    # Try get_soup first
-    logger.debug(f"Dark Reading: Trying get_soup for first page of term '{term}'")
-    first = client.get_soup(first_url, use_selenium_fallback=True)
-    
-    # If get_soup returned None or no results found, try Selenium
-    if first is None or not _has_search_results(first):
-        logger.info(f"Dark Reading: get_soup failed or no results found, trying Selenium for term '{term}'")
-    first = _fetch_page_with_selenium(first_url, wait_for_results=True)
-    
+    logger.debug(f"Dark Reading: Fetching first page for term '{term}'")
+    first = client.get_soup(first_url, wait_selector="div.SearchResult-Content")
+
     if first is None:
         logger.warning("Dark Reading failed to fetch initial page for term '%s'", term)
         return
@@ -219,19 +135,12 @@ def _iter_pages(
     
     logger.info(f"Dark Reading term '{term}': total pages={last_page}, fetching up to page {limit}")
     
-    # For subsequent pages, try get_soup first, fallback to Selenium
     for page in range(2, limit + 1):
         page_url = _build_search_url(term, page=page)
         logger.debug(f"Dark Reading term '{term}': fetching page {page}")
-        
-        # Try get_soup first
-        soup = client.get_soup(page_url, use_selenium_fallback=True)
-        
-        # If get_soup failed or no results, try Selenium
-        if soup is None or not _has_search_results(soup):
-            logger.info(f"Dark Reading: get_soup failed or no results on page {page}, trying Selenium")
-        soup = _fetch_page_with_selenium(page_url, wait_for_results=True)
-        
+
+        soup = client.get_soup(page_url, wait_selector="div.SearchResult-Content")
+
         if soup is None or not _has_search_results(soup):
             logger.warning(f"Dark Reading: Failed to fetch or no results on page {page} for term '{term}'")
             break

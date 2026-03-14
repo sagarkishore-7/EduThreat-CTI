@@ -26,7 +26,8 @@ from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase1.curated import collect_curated_incidents
 from src.edu_cti.pipeline.phase1.news import collect_news_incidents, NEWS_SOURCE_BUILDERS
 from src.edu_cti.pipeline.phase1.rss import collect_rss_incidents
-from src.edu_cti.core.sources import RSS_SOURCE_REGISTRY
+from src.edu_cti.pipeline.phase1.api_sources import collect_api_incidents
+from src.edu_cti.core.sources import RSS_SOURCE_REGISTRY, API_SOURCE_REGISTRY
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,7 @@ GROUP_COLLECTORS = {
     "curated": ("Curated sources", collect_curated_incidents),
     "news": ("News sources", collect_news_incidents),
     "rss": ("RSS feeds", collect_rss_incidents),
+    "api": ("API sources", collect_api_incidents),
 }
 
 
@@ -59,8 +61,8 @@ Examples:
     parser.add_argument(
         "--groups",
         nargs="+",
-        choices=list(GROUP_COLLECTORS.keys()),
-        default=list(GROUP_COLLECTORS.keys()),
+        choices=["curated", "news", "rss", "api"],
+        default=["curated", "news", "rss", "api"],
         help="Select which source groups to ingest. Defaults to all.",
     )
     parser.add_argument(
@@ -115,9 +117,18 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
     Returns number of newly inserted/updated incidents.
     """
     from src.edu_cti.core.deduplication import merge_incidents
-    
+    from src.edu_cti.core.countries import normalize_country, get_country_code
+
     new_count = 0
     for inc in incidents:
+        # Normalize country names at ingestion time
+        _country_code = None
+        if inc.country:
+            normalized = normalize_country(inc.country)
+            if normalized:
+                inc.country = normalized
+                _country_code = get_country_code(normalized)
+
         source = inc.source
         event_key = _event_key_for_incident(inc)
 
@@ -128,7 +139,7 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
         # BUT: Allow updates if existing incident has broken URLs and new incident has new URLs
         if source_event_exists(conn, source, event_key):
             # Check if we should allow update due to broken URLs
-            from src.edu_cti.core.db import find_duplicate_incident_by_urls, has_broken_urls
+            from src.edu_cti.core.db import has_broken_urls
             duplicate_result = find_duplicate_incident_by_urls(conn, inc)
             
             if duplicate_result:
@@ -196,6 +207,13 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
             # Step 4: New incident - insert
             incident_id = insert_incident(conn, inc)
             new_count += 1
+
+        # Step 4.5: Set country_code if we normalized it
+        if _country_code:
+            conn.execute(
+                "UPDATE incidents SET country_code = ? WHERE incident_id = ? AND (country_code IS NULL OR country_code = '')",
+                (_country_code, incident_id),
+            )
 
         # Step 5: Always add source attribution
         add_incident_source(
@@ -286,12 +304,16 @@ def _ingest_group(
 
 
 def main() -> None:
+    from src.edu_cti.core.logging_utils import configure_logging
+
     args = parse_args()
+    configure_logging("INFO", phase="phase1")
+
     selected_groups = list(dict.fromkeys(args.groups))
-    
+
     # Determine incremental mode
     incremental = not args.full_historical
-    
+
     if incremental:
         print("[*] Running in INCREMENTAL mode (only new incidents)")
     else:

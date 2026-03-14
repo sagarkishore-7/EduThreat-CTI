@@ -12,6 +12,13 @@ import os
 from pathlib import Path
 from typing import List
 
+# Load .env file if present (must be before any os.getenv calls)
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # python-dotenv not installed, rely on system env vars
+
 # ---- Networking / scraping ----
 
 REQUEST_TIMEOUT_SECONDS = 30
@@ -81,6 +88,11 @@ SOURCE_DATABREACHES = "databreaches"
 SOURCE_SECURITYWEEK = "securityweek"
 SOURCE_THERECORD = "therecord"
 SOURCE_DARKREADING = "darkreading"
+SOURCE_RANSOMLOOK = "ransomlook"
+SOURCE_CISA_KEV = "cisa_kev"
+SOURCE_OTX = "otx_alienvault"
+SOURCE_CISA_RSS = "cisa_alerts"
+SOURCE_INTL_RSS = "international_rss"
 
 # Environment variable configuration
 # Auto-detect Railway environment and use persistent storage
@@ -164,7 +176,7 @@ try:
         _logger.info(f"Database path: {DB_PATH.absolute()}")
         if _detect_railway():
             _logger.info("Railway environment detected - using persistent storage")
-except:
+except Exception:
     pass  # Logging not configured yet
 
 # ---- Phase 2: LLM Enrichment ----
@@ -178,3 +190,14 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud")  # Best for
 ENRICHMENT_BATCH_SIZE = int(os.getenv("ENRICHMENT_BATCH_SIZE", "10"))  # Process N incidents per batch
 ENRICHMENT_MAX_RETRIES = int(os.getenv("ENRICHMENT_MAX_RETRIES", "3"))  # Max retries per incident
 ENRICHMENT_RATE_LIMIT_DELAY = float(os.getenv("ENRICHMENT_RATE_LIMIT_DELAY", "2.0"))  # Seconds between API calls
+
+# ---- Phase 2.1: IOC Enrichment (External APIs) ----
+
+# AlienVault OTX (free, register at https://otx.alienvault.com)
+OTX_API_KEY = os.getenv("OTX_API_KEY", "")
+
+# Proxy configuration (cost-effective: free proxies + curl_cffi TLS fingerprinting)
+PROXY_URL = os.getenv("PROXY_URL")  # Optional paid proxy URL
+
+# Historical scraping start year
+HISTORICAL_START_YEAR = int(os.getenv("HISTORICAL_START_YEAR", "2019"))

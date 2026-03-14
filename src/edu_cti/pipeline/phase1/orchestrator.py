@@ -61,8 +61,8 @@ Examples:
     parser.add_argument(
         "--groups",
         nargs="+",
-        choices=["curated", "news", "rss"],
-        default=["curated", "news", "rss"],
+        choices=["curated", "news", "rss", "api"],
+        default=["curated", "news", "rss", "api"],
         help="Select which source groups to process. Defaults to all.",
     )
     parser.add_argument(
@@ -205,7 +205,15 @@ def main() -> None:
                     is_rss=True,
                     incremental=incremental,
                 )
-        
+            elif group == "api":
+                total_new += _ingest_group(
+                    conn,
+                    label,
+                    collector,
+                    sources=None,
+                    incremental=incremental,
+                )
+
         conn.close()
         print(f"[✓] Ingestion completed. New incidents: {total_new}")
     else:

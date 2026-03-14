@@ -22,17 +22,6 @@ from .common import (
     prepare_keywords,
 )
 
-# Selenium imports for SecurityWeek
-try:
-    import undetected_chromedriver as uc
-    from selenium.webdriver.common.by import By
-    from selenium.webdriver.support.ui import WebDriverWait
-    from selenium.webdriver.support import expected_conditions as EC
-    from selenium.common.exceptions import TimeoutException, NoSuchElementException
-    SELENIUM_AVAILABLE = True
-except ImportError:
-    SELENIUM_AVAILABLE = False
-
 SOURCE_NAME = config.SOURCE_SECURITYWEEK
 BASE_URL = "https://www.securityweek.com/"
 logger = logging.getLogger(__name__)
@@ -45,108 +34,10 @@ def _search_url(term: str, page: int) -> str:
     return f"{BASE_URL}?{urlencode(params)}"
 
 
-def _fetch_page_with_selenium(url: str, wait_for_articles: bool = True) -> Optional[BeautifulSoup]:
-    """
-    Use Selenium with bot evading mechanisms to fetch a SecurityWeek search page.
-    Waits for Algolia search results to load.
-    """
-    if not SELENIUM_AVAILABLE:
-        logger.warning("Selenium not available for SecurityWeek")
-        return None
-    
-    try:
-        options = uc.ChromeOptions()
-        options.add_argument("--headless=new")
-        options.add_argument("--no-sandbox")
-        options.add_argument("--disable-dev-shm-usage")
-        options.add_argument("--disable-blink-features=AutomationControlled")
-        options.add_argument("--disable-gpu")
-        options.add_argument("--window-size=1920,1080")
-        
-        # Random user agent
-        user_agents = config.HTTP_USER_AGENTS
-        if user_agents:
-            options.add_argument(f"--user-agent={random.choice(user_agents)}")
-        
-        driver = uc.Chrome(options=options, version_main=None)
-        try:
-            logger.debug(f"SecurityWeek: Fetching {url} with Selenium")
-            driver.get(url)
-            
-            # Random delay to mimic human behavior
-            time.sleep(random.uniform(2, 4))
-            
-            if wait_for_articles:
-                # Wait for Algolia search results to appear
-                try:
-                    # Try multiple selectors - wait for any of them
-                    wait = WebDriverWait(driver, 20)
-                    found = False
-                    for selector in [
-                        "div#algolia-hits",
-                        "li.ais-Hits-item",
-                        "ol.ais-Hits-list"
-                    ]:
-                        try:
-                            wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
-                            found = True
-                            break
-                        except TimeoutException:
-                            continue
-                    
-                    if not found:
-                        logger.warning(f"SecurityWeek: None of the expected selectors found on {url}")
-                    
-                    # Additional wait for content to render
-                    time.sleep(random.uniform(1, 2))
-                    
-                    # Verify articles actually exist
-                    articles = driver.find_elements(By.CSS_SELECTOR, "li.ais-Hits-item")
-                    if not articles:
-                        logger.warning(f"SecurityWeek: No articles found after waiting on {url}")
-                        # Wait a bit more and check again
-                        time.sleep(random.uniform(2, 3))
-                        articles = driver.find_elements(By.CSS_SELECTOR, "li.ais-Hits-item")
-                        if not articles:
-                            logger.warning(f"SecurityWeek: Still no articles found on {url}")
-                        else:
-                            logger.info(f"SecurityWeek: Found {len(articles)} articles after additional wait")
-                    else:
-                        logger.debug(f"SecurityWeek: Found {len(articles)} articles on {url}")
-                except TimeoutException:
-                    logger.warning(f"SecurityWeek: Timeout waiting for search results on {url}")
-                    # Still try to get the page source
-                    pass
-            
-            html = driver.page_source
-            soup = BeautifulSoup(html, "html.parser")
-            
-            # Verify articles exist in the parsed HTML
-            if wait_for_articles:
-                article_nodes = soup.select("li.ais-Hits-item")
-                if not article_nodes:
-                    logger.warning(f"SecurityWeek: No articles in parsed HTML from {url}")
-            
-            return soup
-            
-        finally:
-            driver.quit()
-            
-    except Exception as e:
-        logger.error(f"SecurityWeek: Selenium fetch failed for {url}: {e}")
-        return None
-
-
 def _discover_last_page(client: HttpClient, term: str) -> int:
-    # Try get_soup first, fallback to Selenium if needed
     first_url = _search_url(term, 1)
-    soup = client.get_soup(first_url, use_selenium_fallback=True)
-    
-    # If get_soup failed or no articles, try Selenium (Algolia is JS-rendered)
-    if soup is None or not _select_article_nodes(soup):
-        logger.info("SecurityWeek: get_soup failed or no articles, trying Selenium for pagination discovery")
-        soup = _fetch_page_with_selenium(first_url, wait_for_articles=True)
-    
+    soup = client.get_soup(first_url, wait_selector="div#algolia-hits")
+
     if not soup:
         return 1
     
@@ -212,83 +103,65 @@ def _iter_pages(
 ) -> Iterable[tuple[int, Optional[BeautifulSoup]]]:
     """
     Iterate through search result pages for a given term.
-    First tries get_soup (faster), falls back to Selenium if no articles found (Algolia JS).
+    Uses HttpClient with Playwright-based wait_selector for JS-rendered Algolia content.
     """
     # Discover total pages from first page
     last_page = _discover_last_page(client, term)
-    
+
     # Determine how many pages to fetch
     if max_pages is not None:
         limit = min(max_pages, last_page)
     else:
         limit = last_page
-    
+
     logger.info(
         "SecurityWeek crawling term '%s' up to %s pages (last=%s)",
         term,
         limit,
         last_page,
     )
-    
-    # Fetch first page - try get_soup first (faster)
+
+    # Fetch first page
     first_url = _search_url(term, 1)
-    logger.debug(f"SecurityWeek: Trying get_soup for first page of term '{term}'")
-    first_soup = client.get_soup(first_url, use_selenium_fallback=True)
-    
-    # If get_soup failed or no articles, try Selenium (Algolia is JS-rendered)
+    logger.debug(f"SecurityWeek: Fetching first page for term '{term}'")
+    first_soup = client.get_soup(first_url, wait_selector="div#algolia-hits")
+
     article_nodes = []
     if first_soup is not None:
         article_nodes = _select_article_nodes(first_soup)
-    
-    if first_soup is None or not article_nodes:
-        logger.info(f"SecurityWeek: get_soup failed or no articles, trying Selenium for first page")
-        first_soup = _fetch_page_with_selenium(first_url, wait_for_articles=True)
-        if first_soup is not None:
-            article_nodes = _select_article_nodes(first_soup)
-    
+
     if first_soup is None:
         logger.warning(f"SecurityWeek: Failed to fetch first page for term '{term}'")
         return
-    
-    # Verify articles exist
+
     if not article_nodes:
         logger.warning(f"SecurityWeek: No articles found on first page for term '{term}'")
         return
-    
+
     logger.info(f"SecurityWeek: Found {len(article_nodes)} articles on page 1 for term '{term}'")
     yield 1, first_soup
-    
-    # For subsequent pages, try get_soup first, fallback to Selenium
+
     for page in range(2, limit + 1):
         page_url = _search_url(term, page)
         logger.debug(f"SecurityWeek term '{term}': fetching page {page}")
-        
-        # Try get_soup first
-        soup = client.get_soup(page_url, use_selenium_fallback=True)
-        
-        # If get_soup failed or no articles, try Selenium
+
+        soup = client.get_soup(page_url, wait_selector="div#algolia-hits")
+
         article_nodes = []
         if soup is not None:
             article_nodes = _select_article_nodes(soup)
-        
-        if soup is None or not article_nodes:
-            logger.info(f"SecurityWeek: get_soup failed or no articles on page {page}, trying Selenium")
-            soup = _fetch_page_with_selenium(page_url, wait_for_articles=True)
-            if soup is not None:
-                article_nodes = _select_article_nodes(soup)
-        
+
         if soup is None:
             logger.warning(f"SecurityWeek: Failed to fetch page {page} for term '{term}'")
             break
-        
-        # Verify articles exist
+
         if not article_nodes:
             logger.warning(f"SecurityWeek: No articles found on page {page} for term '{term}'")
             break
-        
+
         logger.debug(f"SecurityWeek: Found {len(article_nodes)} articles on page {page} for term '{term}'")
         yield page, soup
-        
+
         # Random delay between pages to avoid detection
         if page < limit:
             time.sleep(random.uniform(2, 4))

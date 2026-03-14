@@ -9,7 +9,7 @@ incident with the highest source confidence and merge metadata.
 
 import logging
 from typing import Dict, List, Set, Tuple
-from urllib.parse import urlparse, urlunparse
+from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 from src.edu_cti.core.models import BaseIncident
 
@@ -57,12 +57,21 @@ def normalize_url(url: str) -> str:
     
     # Keep path and normalize (remove trailing slash)
     path = parsed.path.rstrip("/") if parsed.path else ""
-    
-    # Optionally remove query and fragment for stricter matching
-    # For now, we keep query params to avoid false positives
-    query = parsed.query
+
+    # Strip tracking/analytics query params that don't change article identity
+    TRACKING_PARAMS = {
+        "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
+        "ref", "source", "via", "fbclid", "gclid", "mc_cid", "mc_eid",
+        "_ga", "_gl", "ncid", "ocid", "sr_share", "social",
+    }
+    if parsed.query:
+        params = parse_qs(parsed.query, keep_blank_values=False)
+        filtered = {k: v for k, v in params.items() if k.lower() not in TRACKING_PARAMS}
+        query = urlencode(filtered, doseq=True) if filtered else ""
+    else:
+        query = ""
     fragment = ""  # Always remove fragments
-    
+
     # Reconstruct normalized URL
     normalized = urlunparse((scheme, netloc, path, "", query, fragment))
     

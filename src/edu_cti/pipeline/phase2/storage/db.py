@@ -166,7 +166,9 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             -- Metadata
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
-            
+            enriched_at TEXT,
+            skip_reason TEXT,
+
             FOREIGN KEY (incident_id) REFERENCES incidents(incident_id) ON DELETE CASCADE
         )
         """
@@ -193,11 +195,30 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
     )
     conn.execute(
         """
-        CREATE INDEX IF NOT EXISTS idx_enrichments_date 
+        CREATE INDEX IF NOT EXISTS idx_enrichments_date
         ON incident_enrichments_flat(created_at)
         """
     )
-    
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_enrichments_education
+        ON incident_enrichments_flat(is_education_related)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_enrichments_threat_actor
+        ON incident_enrichments_flat(threat_actor_name)
+        """
+    )
+
+    # Add columns to existing tables if they don't exist (migration)
+    for col, col_type in [("enriched_at", "TEXT"), ("skip_reason", "TEXT")]:
+        try:
+            conn.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+
     conn.commit()
 
 
@@ -773,20 +794,22 @@ def mark_incident_skipped(
 ) -> None:
     """
     Mark an incident as skipped (e.g., not education-related).
-    
-    This prevents re-processing in future runs.
-    
+
+    This prevents re-processing in future runs. Also inserts a minimal
+    record into incident_enrichments_flat so the incident is trackable
+    in queries and CSV exports (with is_education_related=0).
+
     Args:
         conn: Database connection
         incident_id: Incident ID to mark
         reason: Reason for skipping
     """
     now = datetime.utcnow().isoformat()
-    
+
     conn.execute(
         """
         UPDATE incidents
-        SET 
+        SET
             llm_enriched = 1,
             llm_enriched_at = ?,
             notes = COALESCE(notes || ' | ', '') || 'LLM_ENRICHMENT_SKIPPED: ' || ?,
@@ -795,7 +818,32 @@ def mark_incident_skipped(
         """,
         (now, reason, now, incident_id)
     )
-    
+
+    # Insert minimal enrichment record so this incident appears in queries
+    # that JOIN on incident_enrichments_flat (prevents silent data loss)
+    try:
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO incident_enrichments_flat (
+                incident_id, is_education_related, enriched_at, skip_reason
+            ) VALUES (?, 0, ?, ?)
+            """,
+            (incident_id, now, reason)
+        )
+    except Exception as e:
+        # Table might not have skip_reason column yet; try without it
+        try:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO incident_enrichments_flat (
+                    incident_id, is_education_related, enriched_at
+                ) VALUES (?, 0, ?)
+                """,
+                (incident_id, now)
+            )
+        except Exception:
+            logger.debug(f"Could not insert skip record for {incident_id}: {e}")
+
     conn.commit()
     logger.info(f"Marked incident {incident_id} as skipped: {reason}")
 

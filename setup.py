@@ -12,7 +12,7 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 setup(
     name="eduthreat-cti",
-    version="1.0.0",
+    version="2.0.0",
     author="EduThreat-CTI Contributors",
     description="Real-time cyber threat intelligence pipeline for the global education sector",
     long_description=long_description,
@@ -33,7 +33,7 @@ setup(
         "Topic :: Security",
         "Topic :: Education",
     ],
-    python_requires=">=3.8",
+    python_requires=">=3.11",
     install_requires=requirements,
     entry_points={
         "console_scripts": [

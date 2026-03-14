@@ -170,20 +170,21 @@ def get_incidents_paginated(
     cur = conn.execute(query, params)
     rows = cur.fetchall()
     
-    # Get sources for each incident
-    incidents = []
-    for row in rows:
-        incident = dict(row)
-        
-        # Get sources
+    # Batch-fetch sources for all incidents (avoid N+1 query)
+    incidents = [dict(row) for row in rows]
+    if incidents:
+        ids = [inc["incident_id"] for inc in incidents]
+        placeholders = ",".join("?" * len(ids))
         source_cur = conn.execute(
-            "SELECT source FROM incident_sources WHERE incident_id = ?",
-            (incident["incident_id"],)
+            f"SELECT incident_id, source FROM incident_sources WHERE incident_id IN ({placeholders})",
+            ids,
         )
-        incident["sources"] = [s["source"] for s in source_cur.fetchall()]
-        
-        incidents.append(incident)
-    
+        sources_map: Dict[str, list] = {}
+        for s_row in source_cur.fetchall():
+            sources_map.setdefault(s_row["incident_id"], []).append(s_row["source"])
+        for inc in incidents:
+            inc["sources"] = sources_map.get(inc["incident_id"], [])
+
     return incidents, total
 
 
@@ -224,19 +225,19 @@ def get_incident_by_id(
         if enrichment.get("timeline_json"):
             try:
                 incident["timeline"] = json.loads(enrichment["timeline_json"])
-            except:
+            except Exception:
                 incident["timeline"] = None
         
         if enrichment.get("mitre_techniques_json"):
             try:
                 incident["mitre_attack_techniques"] = json.loads(enrichment["mitre_techniques_json"])
-            except:
+            except Exception:
                 incident["mitre_attack_techniques"] = None
         
         if enrichment.get("systems_affected_codes"):
             try:
                 incident["systems_affected"] = json.loads(enrichment["systems_affected_codes"])
-            except:
+            except Exception:
                 incident["systems_affected"] = None
         
         # Use enrichment institution_name as primary (LLM-extracted name)
@@ -263,7 +264,7 @@ def get_incident_by_id(
                 incident["attack_dynamics"] = full_enrichment.get("attack_dynamics")
             if "education_relevance" in full_enrichment:
                 incident["education_relevance"] = full_enrichment.get("education_relevance")
-        except:
+        except Exception:
             pass
     
     # Get sources

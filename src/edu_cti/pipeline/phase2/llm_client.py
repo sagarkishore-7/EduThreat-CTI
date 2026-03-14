@@ -8,7 +8,7 @@ import os
 import json
 import logging
 import time
-from typing import Optional, Dict, Any, Iterator
+from typing import Optional, Dict, Any, Iterator, List, Union
 from pydantic import BaseModel
 
 
@@ -95,11 +95,11 @@ class OllamaLLMClient:
     
     def chat(
         self,
-        messages: list[Dict[str, str]],
+        messages: List[Dict[str, str]],
         format: Optional[Dict[str, Any]] = None,
         stream: bool = False,
         temperature: float = 0.1,  # Low temperature for deterministic structured output
-    ) -> Iterator[Dict[str, Any]] | Dict[str, Any]:
+    ) -> Any:
         """
         Send chat request to Ollama.
         

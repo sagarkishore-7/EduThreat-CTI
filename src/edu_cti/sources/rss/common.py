@@ -74,11 +74,16 @@ def parse_rss_date(date_str: str) -> Optional[datetime]:
     
     # Try common formats
     formats = [
-        "%a, %d %b %Y %H:%M:%S %z",  # RFC 822 with timezone
+        "%a, %d %b %Y %H:%M:%S %z",  # RFC 822 with timezone (4-digit year)
         "%a, %d %b %Y %H:%M:%S %Z",  # RFC 822 with GMT/UTC
+        "%a, %d %b %y %H:%M:%S %z",  # RFC 822 with 2-digit year
+        "%a, %d %b %y %H:%M:%S %Z",  # RFC 822 with 2-digit year + GMT
+        "%Y-%m-%dT%H:%M:%S.%fZ",     # ISO 8601 with milliseconds
         "%Y-%m-%dT%H:%M:%SZ",         # ISO 8601 UTC
+        "%Y-%m-%dT%H:%M:%S.%f%z",    # ISO 8601 with ms + timezone
         "%Y-%m-%dT%H:%M:%S%z",        # ISO 8601 with timezone
         "%Y-%m-%d %H:%M:%S",          # Simple format
+        "%Y-%m-%d",                    # Date only
     ]
     
     for fmt in formats:

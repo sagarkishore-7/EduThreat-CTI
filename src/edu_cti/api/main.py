@@ -5,6 +5,7 @@ FastAPI application providing REST endpoints for the CTI dashboard.
 """
 
 import logging
+import os
 from contextlib import asynccontextmanager
 from typing import Optional
 from datetime import datetime
@@ -72,7 +73,6 @@ async def lifespan(app: FastAPI):
         from src.edu_cti.pipeline.phase2.storage.db import init_incident_enrichments_table
         
         logger.info(f"Initializing database at: {DB_PATH}")
-        logger.info(f"Initializing database at: {DB_PATH}")
         
         # Ensure data directory exists
         DB_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -88,39 +88,76 @@ async def lifespan(app: FastAPI):
         conn.close()
         
         logger.info("Database initialized successfully")
-        logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}", exc_info=True)
-        logger.error(f"Database initialization failed: {str(e)[:200]}")
         # Don't fail startup - let it try again on first request
     
     yield
     logger.info("Shutting down EduThreat-CTI API...")
 
 
+OPENAPI_TAGS = [
+    {
+        "name": "Health",
+        "description": "Service health and readiness checks.",
+    },
+    {
+        "name": "Dashboard",
+        "description": "Aggregated statistics, charts, and recent activity for the CTI dashboard.",
+    },
+    {
+        "name": "Incidents",
+        "description": "CRUD and search operations on cyber incidents affecting education institutions.",
+    },
+    {
+        "name": "Analytics",
+        "description": "Breakdown and time-series analytics by country, attack type, ransomware family, and threat actor.",
+    },
+    {
+        "name": "Filters",
+        "description": "Available filter option values for building dynamic UI dropdowns.",
+    },
+    {
+        "name": "Admin",
+        "description": "Administrative endpoints for pipeline management, enrichment triggers, and database stats.",
+    },
+]
+
+
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application."""
     app = FastAPI(
         title="EduThreat-CTI API",
-        description="""
-        REST API for the EduThreat-CTI cyber threat intelligence platform.
-        
-        Provides access to education sector cyber incident data including:
-        - Incident details with LLM-enriched CTI data
-        - Timeline and MITRE ATT&CK mappings
-        - Attack dynamics and impact metrics
-        - Dashboard statistics and analytics
-        """,
-        version="1.0.0",
+        description=(
+            "## Education Sector Cyber Threat Intelligence\n\n"
+            "Real-time threat intelligence platform tracking cyber incidents affecting "
+            "universities, schools, and research institutions worldwide since 2019.\n\n"
+            "### Features\n"
+            "- **800+ incidents** across 50+ countries\n"
+            "- LLM-enriched CTI extraction (MITRE ATT&CK, timelines, impact metrics)\n"
+            "- Multi-source ingestion (curated, news, RSS, API)\n"
+            "- Cross-source deduplication and fuzzy institution matching\n\n"
+            "### Data Sources\n"
+            "KonBriefing, Ransomware.live, DataBreaches.net, CISA KEV, "
+            "BleepingComputer, Krebs on Security, The Record, and more."
+        ),
+        version="2.0.0",
         lifespan=lifespan,
+        openapi_tags=OPENAPI_TAGS,
+        docs_url="/docs",
+        redoc_url="/redoc",
     )
     
     # CORS middleware for frontend access
+    allowed_origins = os.getenv(
+        "CORS_ALLOWED_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    ).split(",")
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Configure appropriately for production
+        allow_origins=allowed_origins,
         allow_credentials=True,
-        allow_methods=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
     
@@ -152,15 +189,15 @@ app.include_router(admin_router, prefix="/api")
 # Health Check
 # ============================================================
 
-@app.get("/health")
+@app.get("/health", tags=["Health"])
 async def health_check():
-    """Health check endpoint."""
+    """Basic liveness probe."""
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 
-@app.get("/api/health")
+@app.get("/api/health", tags=["Health"])
 async def api_health_check():
-    """API health check with database connectivity test."""
+    """Health check with database connectivity test and incident count."""
     try:
         conn = get_api_connection()
         cur = conn.execute("SELECT COUNT(*) as count FROM incidents")
@@ -182,9 +219,9 @@ async def api_health_check():
         }
 
 
-@app.get("/metrics")
+@app.get("/metrics", tags=["Health"])
 async def prometheus_metrics():
-    """Prometheus metrics endpoint."""
+    """Prometheus-compatible metrics endpoint."""
     from src.edu_cti.core.metrics import get_metrics
     
     metrics = get_metrics()
@@ -198,7 +235,7 @@ async def prometheus_metrics():
 # Dashboard Endpoints
 # ============================================================
 
-@app.get("/api/dashboard", response_model=DashboardResponse)
+@app.get("/api/dashboard", response_model=DashboardResponse, tags=["Dashboard"])
 async def get_dashboard():
     """
     Get complete dashboard data including stats, charts, and recent incidents.
@@ -247,7 +284,7 @@ async def get_dashboard():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/stats", response_model=DashboardStats)
+@app.get("/api/stats", response_model=DashboardStats, tags=["Dashboard"])
 async def get_stats():
     """Get overall dashboard statistics."""
     try:
@@ -264,7 +301,7 @@ async def get_stats():
 # Incidents Endpoints
 # ============================================================
 
-@app.get("/api/incidents", response_model=IncidentListResponse)
+@app.get("/api/incidents", response_model=IncidentListResponse, tags=["Incidents"])
 async def list_incidents(
     page: int = Query(1, ge=1, description="Page number"),
     per_page: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -354,7 +391,7 @@ async def list_incidents(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/incidents/{incident_id}/report")
+@app.get("/api/incidents/{incident_id}/report", tags=["Incidents"])
 async def get_incident_report(incident_id: str):
     """
     Generate and download a CTI report for an incident.
@@ -390,7 +427,7 @@ async def get_incident_report(incident_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/incidents/{incident_id}", response_model=IncidentDetail)
+@app.get("/api/incidents/{incident_id}", response_model=IncidentDetail, tags=["Incidents"])
 async def get_incident(incident_id: str):
     """
     Get full incident details including all enrichment data.
@@ -530,7 +567,7 @@ async def get_incident(incident_id: str):
 # Analytics Endpoints
 # ============================================================
 
-@app.get("/api/analytics/countries")
+@app.get("/api/analytics/countries", tags=["Analytics"])
 async def get_country_analytics(limit: int = Query(20, ge=1, le=100)):
     """Get incident counts by country."""
     try:
@@ -544,7 +581,7 @@ async def get_country_analytics(limit: int = Query(20, ge=1, le=100)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/analytics/attack-types")
+@app.get("/api/analytics/attack-types", tags=["Analytics"])
 async def get_attack_type_analytics(limit: int = Query(15, ge=1, le=50)):
     """Get incident counts by attack type."""
     try:
@@ -558,7 +595,7 @@ async def get_attack_type_analytics(limit: int = Query(15, ge=1, le=50)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/analytics/ransomware")
+@app.get("/api/analytics/ransomware", tags=["Analytics"])
 async def get_ransomware_analytics(limit: int = Query(15, ge=1, le=50)):
     """Get incident counts by ransomware family."""
     try:
@@ -572,7 +609,7 @@ async def get_ransomware_analytics(limit: int = Query(15, ge=1, le=50)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/analytics/timeline")
+@app.get("/api/analytics/timeline", tags=["Analytics"])
 async def get_timeline_analytics(months: int = Query(24, ge=1, le=120)):
     """Get incident counts over time."""
     try:
@@ -586,7 +623,7 @@ async def get_timeline_analytics(months: int = Query(24, ge=1, le=120)):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/analytics/threat-actors", response_model=ThreatActorsResponse)
+@app.get("/api/analytics/threat-actors", response_model=ThreatActorsResponse, tags=["Analytics"])
 async def get_threat_actor_analytics(limit: int = Query(20, ge=1, le=100)):
     """Get threat actor activity summary."""
     try:
@@ -609,7 +646,7 @@ async def get_threat_actor_analytics(limit: int = Query(20, ge=1, le=100)):
 # Filter Options Endpoint
 # ============================================================
 
-@app.get("/api/filters", response_model=FilterOptions)
+@app.get("/api/filters", response_model=FilterOptions, tags=["Filters"])
 async def get_filters():
     """Get available filter options for the incidents list."""
     try:
