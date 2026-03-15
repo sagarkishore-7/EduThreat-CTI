@@ -47,7 +47,7 @@ COPY pyproject.toml setup.py ./
 RUN pip install --no-cache-dir -e .
 
 # Copy scripts for migration and utilities
-COPY scripts/ ./scripts/ 2>/dev/null || true
+COPY scripts/ ./scripts/
 
 # Create directories for logs (data dir will be mounted as Railway volume)
 RUN mkdir -p logs
