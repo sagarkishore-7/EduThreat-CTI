@@ -272,7 +272,8 @@ class PipelineManager:
         limit = params.get("limit")
         rate_limit_delay = params.get("rate_limit_delay", 2.0)
         export_csv = params.get("export_csv", False)
-        workers = params.get("workers", 1)
+        from src.edu_cti.core.config import ENRICHMENT_WORKERS
+        workers = params.get("workers", ENRICHMENT_WORKERS)
 
         run.progress = {"step": "Starting enrichment", "detail": "", "percent": 0}
 

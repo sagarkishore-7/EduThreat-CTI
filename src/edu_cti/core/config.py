@@ -190,6 +190,7 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud")  # Best for
 ENRICHMENT_BATCH_SIZE = int(os.getenv("ENRICHMENT_BATCH_SIZE", "10"))  # Process N incidents per batch
 ENRICHMENT_MAX_RETRIES = int(os.getenv("ENRICHMENT_MAX_RETRIES", "3"))  # Max retries per incident
 ENRICHMENT_RATE_LIMIT_DELAY = float(os.getenv("ENRICHMENT_RATE_LIMIT_DELAY", "2.0"))  # Seconds between API calls
+ENRICHMENT_WORKERS = int(os.getenv("ENRICHMENT_WORKERS", "1"))  # Parallel LLM workers (1-8)
 
 # ---- Phase 2.1: IOC Enrichment (External APIs) ----
 
