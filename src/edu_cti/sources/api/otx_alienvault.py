@@ -116,9 +116,10 @@ def build_otx_incidents(
     """
     if not OTX_API_KEY:
         logger.warning(
-            "OTX_API_KEY not set. OTX source will have limited rate limits. "
+            "OTX_API_KEY not set — skipping OTX source (API key now required). "
             "Get a free key at https://otx.alienvault.com"
         )
+        return []
 
     logger.info("Searching OTX for education-sector threat intelligence...")
 
