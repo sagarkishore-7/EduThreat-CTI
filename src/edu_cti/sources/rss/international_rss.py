@@ -59,33 +59,8 @@ INTERNATIONAL_FEEDS = [
         ["universidade", "faculdade", "escola", "educação", "estudante",
          "university", "school", "ransomware"],
     ),
-    # Japanese - JPCERT/CC alerts feed
-    (
-        "jpcert",
-        "https://www.jpcert.or.jp/rss/jpcert-alert.xml",
-        "ja",
-        "Japan",
-        ["大学", "学校", "教育", "サイバー", "ランサムウェア",
-         "university", "school", "education", "ransomware"],
-    ),
-    # South Korean - KrCERT/CC security notices
-    (
-        "krcert",
-        "https://knvd.krcert.or.kr/rss.do",
-        "ko",
-        "South Korea",
-        ["대학교", "대학", "학교", "교육", "사이버",
-         "university", "school", "education", "ransomware"],
-    ),
-    # Australian - AusCERT security bulletins
-    (
-        "auscert",
-        "https://www.auscert.org.au/rss/bulletins/",
-        "en",
-        "Australia",
-        ["university", "school", "education", "TAFE", "college",
-         "ransomware", "data breach", "cyber attack"],
-    ),
+    # NOTE: JPCERT, KrCERT, and AusCERT have discontinued their RSS feeds.
+    # They are omitted to avoid repeated 404 errors in logs.
     # UK NCSC
     (
         "ncsc_uk",

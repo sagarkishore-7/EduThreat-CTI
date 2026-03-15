@@ -5,6 +5,58 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.0.0] - 2026-03-15
+
+### Production Deployment & Dashboard Integration
+
+Major release bringing production-ready deployment on Railway + Vercel, admin dashboard with full pipeline control, and comprehensive bug fixes for reliable operation.
+
+#### Added
+- **Railway Deployment**: Dockerfile with Python 3.12, Playwright browsers, persistent volume support, health checks
+  - `railway.json` with Dockerfile builder, restart policy, health check at `/api/health`
+  - `.railwayignore` to exclude data, logs, tests, docs from builds
+  - Environment-based configuration (`EDU_CTI_DATA_DIR`, `EDU_CTI_DB_PATH`)
+- **Vercel Deployment**: Next.js frontend auto-deploy with `vercel.json`, security headers, `.vercelignore`
+  - Conditional standalone output (`DOCKER_BUILD=1` only)
+  - Build-time `NEXT_PUBLIC_API_URL` for API connectivity
+- **Admin Incident Management**: Full CRUD for incidents via dashboard
+  - `GET /admin/incidents/unenriched` — paginated, searchable unenriched incidents
+  - `GET /admin/incidents/enriched` — paginated with enrichment columns (attack_category, ransomware_family, etc.)
+  - `POST /admin/incidents/delete` — delete by IDs with cascade to all related tables
+  - `POST /admin/incidents/clear-all` — wipe entire DB with VACUUM for fresh start
+- **Pipeline Manager**: Background execution engine with real-time log streaming
+  - Phases: ingest, enrich, historical, daily, rss, weekly, ingest_source
+  - SSE log streaming at `/admin/pipeline/logs/stream`
+  - Run history, cancel support, progress tracking
+- **Database Migration**: Auto-migration endpoint for Railway volume setup
+- **Playwright Bot Evasion**: Replaced Selenium/Chrome with Playwright + stealth patches
+  - curl_cffi TLS fingerprint impersonation (Tier 1)
+  - Playwright headless with stealth (Tier 2)
+  - Plain requests with retry (Tier 3)
+- **International RSS Feeds**: heise_security (DE), cert_fr (FR), the_hindu_tech (IN), cert_br (BR), ncsc_uk (UK)
+- **CISA RSS Feed**: US cybersecurity advisories filtered for education relevance
+- **OTX AlienVault**: Threat intelligence pulse search (API key required)
+
+#### Changed
+- **HTTP Client Architecture**: Multi-tier fallback chain (curl_cffi → Playwright → requests) replaces Selenium
+- **Playwright Thread Isolation**: All Playwright operations run in dedicated `ThreadPoolExecutor` thread to avoid asyncio event loop conflicts with FastAPI
+- **OTX Source**: Now requires API key (was optional); skips entirely when key not set
+- **International RSS**: Removed discontinued feeds (JPCERT, KrCERT, AusCERT — all return 404)
+- **Timeouts**: OTX API timeout increased from 30s to 60s; international RSS from 30s to 45s
+- **Package Config**: `pyproject.toml` readme inlined (no file reference) for Docker compatibility
+
+#### Fixed
+- **Playwright asyncio Conflict**: "Sync API inside asyncio loop" error when pipeline runs under FastAPI — solved via ThreadPoolExecutor isolation
+- **CISA RSS TypeError**: `parse_rss_date()` returns datetime object, not string — fixed date comparison to use datetime directly instead of calling `fromisoformat()`
+- **Docker Build Failures**:
+  - Removed shell redirect syntax from Dockerfile COPY (`2>/dev/null || true`)
+  - Fixed `setup.py` crash on missing README.md (excluded by `.railwayignore`)
+  - Fixed editable install (`pip install -e .` → `pip install .`)
+  - Fixed `setup.py`/`pyproject.toml` package discovery conflict (`src/src` path)
+- **International RSS 404s**: Removed dead feeds, added explicit 404 handling with descriptive warnings
+
+---
+
 ## [1.6.0] - 2026-01-08
 
 ### LLM Enrichment Reliability & Production Improvements

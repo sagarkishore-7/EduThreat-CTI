@@ -15,6 +15,7 @@ All modes are headless-only (no display required on backend).
 
 from __future__ import annotations
 
+import concurrent.futures
 import logging
 import os
 import random
@@ -179,25 +180,40 @@ class HttpClient:
 
     def close(self) -> None:
         """Clean up browser resources."""
-        if self._browser_context:
+        # Shut down Playwright in its dedicated thread
+        def _close_pw():
+            if self._browser_context:
+                try:
+                    self._browser_context.close()
+                except Exception:
+                    pass
+                self._browser_context = None
+            if self._browser:
+                try:
+                    self._browser.close()
+                except Exception:
+                    pass
+                self._browser = None
+            if hasattr(self, '_stealth_cm') and self._stealth_cm:
+                try:
+                    self._stealth_cm.__exit__(None, None, None)
+                except Exception:
+                    pass
+                self._stealth_cm = None
+            self._pw = None
+
+        if hasattr(self, '_pw_executor') and self._pw_executor:
             try:
-                self._browser_context.close()
+                self._pw_executor.submit(_close_pw).result(timeout=10)
+            except Exception:
+                _close_pw()  # Fallback: close directly
+            try:
+                self._pw_executor.shutdown(wait=False)
             except Exception:
                 pass
-            self._browser_context = None
-        if self._browser:
-            try:
-                self._browser.close()
-            except Exception:
-                pass
-            self._browser = None
-        if hasattr(self, '_stealth_cm') and self._stealth_cm:
-            try:
-                self._stealth_cm.__exit__(None, None, None)
-            except Exception:
-                pass
-            self._stealth_cm = None
-        self._pw = None
+            self._pw_executor = None
+        else:
+            _close_pw()
 
     def __del__(self):
         self.close()
@@ -318,24 +334,16 @@ class HttpClient:
     # ── Tier 2: Playwright (headless browser with stealth) ───────────
 
     def _ensure_browser(self) -> BrowserContext:
-        """Lazy-initialize Playwright browser with stealth configuration."""
+        """Lazy-initialize Playwright browser with stealth configuration.
+
+        IMPORTANT: Must only be called from the dedicated Playwright thread
+        (via _playwright_get → _run_in_pw_thread) to avoid asyncio conflicts.
+        """
         if self._browser_context is not None:
             return self._browser_context
 
         if not PLAYWRIGHT_AVAILABLE:
             raise RuntimeError("Playwright not available")
-
-        # When running in a background thread spawned from an asyncio app (e.g. FastAPI),
-        # Playwright sync API may detect the parent's event loop and refuse to run.
-        # Fix: set a fresh event loop for this thread so sync_playwright() works.
-        import asyncio
-        try:
-            loop = asyncio.get_event_loop()
-            if loop.is_running():
-                asyncio.set_event_loop(asyncio.new_event_loop())
-        except RuntimeError:
-            # No event loop in this thread — that's fine
-            asyncio.set_event_loop(asyncio.new_event_loop())
 
         profile = self._profile
 
@@ -380,6 +388,25 @@ class HttpClient:
 
         return self._browser_context
 
+    def _run_in_pw_thread(self, fn, *args, **kwargs):
+        """
+        Run a function in a dedicated thread that has no asyncio event loop.
+
+        Playwright sync API checks asyncio.get_running_loop() on every call.
+        When the pipeline runs in a thread spawned from FastAPI (asyncio app),
+        Playwright detects the parent's loop and refuses to work. Running ALL
+        Playwright operations in a fresh ThreadPoolExecutor thread avoids this
+        because the new thread has zero asyncio state.
+        """
+        if not hasattr(self, '_pw_executor') or self._pw_executor is None:
+            # Single-threaded executor: all Playwright calls go to the same thread,
+            # keeping browser state (context, cookies) consistent.
+            self._pw_executor = concurrent.futures.ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="playwright"
+            )
+        future = self._pw_executor.submit(fn, *args, **kwargs)
+        return future.result(timeout=self.timeout + 60)
+
     def _playwright_get(
         self,
         url: str,
@@ -391,20 +418,42 @@ class HttpClient:
         """
         Fetch URL using Playwright headless browser with stealth.
 
-        Features:
-        - playwright-stealth patches (hides webdriver, plugins, etc.)
-        - Automatic cookie consent dismissal
-        - Human-like scrolling and delays
-        - Waits for specific selectors (for JS-rendered search results)
+        All Playwright operations run in an isolated thread to avoid
+        asyncio event loop conflicts when running under FastAPI.
         """
         if not PLAYWRIGHT_AVAILABLE:
             return None
 
         try:
+            return self._run_in_pw_thread(
+                self._playwright_get_impl,
+                url,
+                allow_404=allow_404,
+                wait_selector=wait_selector,
+                wait_timeout=wait_timeout,
+            )
+        except concurrent.futures.TimeoutError:
+            logger.warning(f"Playwright timed out for {url}")
+            return None
+        except Exception as e:
+            logger.warning(f"Playwright failed for {url}: {e}")
+            return None
+
+    def _playwright_get_impl(
+        self,
+        url: str,
+        *,
+        allow_404: bool = False,
+        wait_selector: str | None = None,
+        wait_timeout: int = 20000,
+    ) -> HttpResponse | None:
+        """
+        Internal Playwright fetch — runs inside the dedicated Playwright thread.
+        """
+        page = None
+        try:
             ctx = self._ensure_browser()
             page = ctx.new_page()
-
-            # Stealth patches auto-applied via Stealth().use_sync() wrapper
 
             # Navigate
             response = page.goto(url, timeout=self.timeout * 1000, wait_until="domcontentloaded")
@@ -423,7 +472,7 @@ class HttpClient:
             try:
                 page.wait_for_load_state("networkidle", timeout=10000)
             except Exception:
-                pass  # Page may have ongoing network activity (ads, tracking, etc.)
+                pass
 
             # Handle Cloudflare challenge (wait for it to resolve)
             if status == 403 or self._is_cloudflare_challenge(page):
@@ -466,7 +515,8 @@ class HttpClient:
         except Exception as e:
             logger.warning(f"Playwright failed for {url}: {e}")
             try:
-                page.close()
+                if page:
+                    page.close()
             except Exception:
                 pass
             return None
