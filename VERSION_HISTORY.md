@@ -10,6 +10,7 @@ Complete version history and release notes for EduThreat-CTI.
 - One-click "Start Cron Job" in admin panel — continuous RSS (1h), API (6h), daily pipeline (24h) with auto-enrichment
 - Re-Enrich by Date — reset old enrichments to re-process with updated extraction schema
 - Pipeline cancel now actually works for Phase 2 enrichment (threading.Event propagation)
+- Live progress tracking for all pipeline phases — enrichment, ingestion, and composite phases show real-time percent, step, and detail in admin dashboard
 - Dashboard stat cards now filter to correct incidents when clicked
 - ENRICHMENT_WORKERS env var respected by admin panel enrichment runs
 

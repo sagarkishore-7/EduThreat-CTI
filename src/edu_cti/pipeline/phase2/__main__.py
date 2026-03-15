@@ -186,7 +186,7 @@ def fetch_articles_phase(
             # Update module-level progress for pipeline manager
             _progress["step"] = "Fetching articles"
             _progress["detail"] = f"{idx}/{total_incidents}"
-            _progress["percent"] = int(progress_pct * 0.4)  # Fetching is 0-40%
+            _progress["percent"] = 0  # Stay at 0% during fetch; enrichment drives the percent
             if idx % 10 == 0 or idx == total_incidents:  # Log every 10th or last
                 logger.info(f"Fetching [{idx}/{total_incidents}] ({progress_pct:.1f}%)")
             
@@ -391,7 +391,7 @@ def enrich_articles_phase(
                 # Update module-level progress for pipeline manager
                 _progress["step"] = "LLM Enrichment"
                 _progress["detail"] = f"{stats['processed']}/{total_expected} ({stats.get('enriched', 0)} enriched)"
-                _progress["percent"] = 40 + int(progress_pct * 0.6)  # Enrichment is 40-100%
+                _progress["percent"] = int(progress_pct)  # Linear 0-100% based on enrichment completion
                 if stats["processed"] % 10 == 0 or progress_pct % 10 < 1:  # Every 10 or every 10%
                     logger.info(f"Enriching [{stats['processed']}/{total_expected}] ({progress_pct:.1f}%)")
             else:

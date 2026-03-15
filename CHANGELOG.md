@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`revert_enrichment_before_date()`**: New DB function to bulk-reset enrichment for incidents enriched before a given date.
 
 #### Fixed
+- **Live Progress Tracking (All Phases)**: All pipeline phases now report live progress to the admin dashboard. Enrichment runs in a sub-thread with 2s polling of module-level `_progress` dict. Ingest updates after each source group completes. Composite phases (historical, daily) scale progress correctly — ingest 0-50%, enrichment 50-100% — instead of both overwriting 0-100%.
 - **Pipeline Cancel (Phase 2)**: Stop button now actually stops enrichment. Previously `_cancel_requested` was set but Phase 2 had zero cancel checkpoints. Added `threading.Event` propagation from pipeline manager to phase2 fetch and enrich loops.
 - **Dashboard Stat Filtering**: Clicking stat cards now correctly filters incidents (attack_category uses LIKE matching, data_breached uses dedicated boolean filter, URL params initialize filter state).
 

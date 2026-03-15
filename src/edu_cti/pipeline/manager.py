@@ -393,24 +393,24 @@ class PipelineManager:
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
 
-        # Phase 1: Full historical ingest (0-40% of overall progress)
+        # Phase 1: Full historical ingest (0-50% of overall progress)
         ingest_result = self._run_ingest(run, {
             "full_historical": True,
             "groups": ["curated", "news", "rss", "api"],
             "rss_max_age_days": 365,
-        }, progress_range=(0, 40), step_prefix="Phase 1: ")
+        }, progress_range=(0, 50), step_prefix="Phase 1: ")
 
         if run._cancel_requested:
             return {"ingest": ingest_result, "enrich": None, "cancelled": True}
 
-        # Phase 2: Enrich (40-100% of overall progress)
+        # Phase 2: Enrich (50-100% of overall progress)
         enrich_result = None
         if not skip_enrich:
             enrich_result = self._run_enrich(run, {
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
                 "export_csv": True,
-            }, progress_range=(40, 100), step_prefix="Phase 2: ")
+            }, progress_range=(50, 100), step_prefix="Phase 2: ")
 
         run.progress = {"step": "Complete", "detail": "", "percent": 100}
         return {"ingest": ingest_result, "enrich": enrich_result}
@@ -420,24 +420,24 @@ class PipelineManager:
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
 
-        # Phase 1: Incremental ingest (0-40% of overall progress)
+        # Phase 1: Incremental ingest (0-50% of overall progress)
         ingest_result = self._run_ingest(run, {
             "full_historical": False,
             "groups": ["curated", "news", "rss", "api"],
             "rss_max_age_days": 7,
-        }, progress_range=(0, 40), step_prefix="Phase 1: ")
+        }, progress_range=(0, 50), step_prefix="Phase 1: ")
 
         if run._cancel_requested:
             return {"ingest": ingest_result, "enrich": None, "cancelled": True}
 
-        # Phase 2: Enrich unenriched (40-100% of overall progress)
+        # Phase 2: Enrich unenriched (50-100% of overall progress)
         enrich_result = None
         if not skip_enrich:
             enrich_result = self._run_enrich(run, {
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
                 "export_csv": True,
-            }, progress_range=(40, 100), step_prefix="Phase 2: ")
+            }, progress_range=(50, 100), step_prefix="Phase 2: ")
 
         run.progress = {"step": "Complete", "detail": "", "percent": 100}
         return {"ingest": ingest_result, "enrich": enrich_result}
