@@ -47,6 +47,7 @@ def get_incidents_paginated(
     institution_type: Optional[str] = None,
     year: Optional[int] = None,
     enriched_only: bool = False,
+    data_breached: bool = False,
     education_related_only: bool = True,  # Default to only education-related
     search: Optional[str] = None,
     sort_by: str = "incident_date",
@@ -77,8 +78,9 @@ def get_incidents_paginated(
         params.extend([country, country, country_normalized, country_normalized])
     
     if attack_category:
-        conditions.append("ef.attack_category = ?")
-        params.append(attack_category)
+        # Support broad category filtering (e.g. "ransomware" matches "ransomware_encryption", etc.)
+        conditions.append("ef.attack_category LIKE ?")
+        params.append(f"%{attack_category}%")
     
     if ransomware_family:
         conditions.append("ef.ransomware_family = ?")
@@ -96,6 +98,9 @@ def get_incidents_paginated(
         conditions.append("strftime('%Y', i.incident_date) = ?")
         params.append(str(year))
     
+    if data_breached:
+        conditions.append("ef.data_breached = 1")
+
     if enriched_only:
         conditions.append("i.llm_enriched = 1")
     
