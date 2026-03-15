@@ -38,6 +38,9 @@ from src.edu_cti.core.logging_utils import configure_logging
 from src.edu_cti.core.db import get_connection, init_db
 from pathlib import Path
 
+# Module-level cancel event — set by pipeline manager to request graceful stop
+_cancel_event = threading.Event()
+
 
 def dict_to_incident(incident_dict: Dict, conn) -> BaseIncident:
     """Convert incident dict to BaseIncident."""
@@ -170,6 +173,11 @@ def fetch_articles_phase(
         # Process incidents one by one and push to queue as soon as articles are fetched
         total_incidents = len(incidents_to_process)
         for idx, incident in enumerate(incidents_to_process, 1):
+            # Check for cancellation
+            if _cancel_event.is_set():
+                logger.info(f"Cancel requested — stopping article fetching at [{idx}/{total_incidents}]")
+                break
+
             incident_id = incident["incident_id"]
             progress_pct = (idx / total_incidents) * 100
             if idx % 10 == 0 or idx == total_incidents:  # Log every 10th or last
@@ -281,6 +289,7 @@ def enrich_articles_phase(
     skip_if_not_education: bool = False,
     rate_limit_delay: float = 1.0,
     total_expected: int = 0,
+    cancel_event: Optional[threading.Event] = None,
 ) -> Dict[str, int]:
     """
     Phase 2: Sequential LLM enrichment (queue-based consumer).
@@ -323,6 +332,11 @@ def enrich_articles_phase(
     # CONSUMER LOOP: Process incidents from queue as they arrive
     items_processed = 0
     while True:
+        # Check for cancellation before processing next incident
+        if cancel_event and cancel_event.is_set():
+            logger.info(f"Cancel requested — stopping enrichment (processed {items_processed} items)")
+            break
+
         try:
             # Get incident from queue (blocks until available or timeout)
             # Use timeout to periodically check if fetching is complete
@@ -330,6 +344,9 @@ def enrich_articles_phase(
                 incident_dict = incident_queue.get(timeout=5.0)
             except queue.Empty:
                 # Check if fetching is complete
+                if cancel_event and cancel_event.is_set():
+                    logger.info(f"Cancel requested during queue wait — stopping enrichment")
+                    break
                 if fetch_complete_event.is_set():
                     # Double-check: wait longer and check multiple times
                     logger.info(f"Fetching complete and queue is empty - waiting 30s for any remaining items...")
@@ -688,6 +705,7 @@ def main() -> None:
                 skip_if_not_education=args.skip_non_education,
                 rate_limit_delay=args.rate_limit_delay,
                 total_expected=total_to_process,
+                cancel_event=_cancel_event,
             )
             logger.info(f"Consumer worker-{worker_id} completed: {worker_stats}")
 

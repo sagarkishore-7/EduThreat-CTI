@@ -992,6 +992,83 @@ def revert_all_enriched_incidents(
         return 0
 
 
+def revert_enrichment_before_date(
+    conn: sqlite3.Connection,
+    before_date: str,
+) -> int:
+    """
+    Revert enrichment for all incidents enriched before a given date.
+
+    Useful when the extraction schema has changed and old enrichments
+    need to be re-processed with the updated LLM prompts.
+
+    Args:
+        conn: Database connection
+        before_date: ISO date string (e.g. '2026-03-15'). All incidents
+                     with llm_enriched_at < this date will be reverted.
+
+    Returns:
+        Number of incidents reverted
+    """
+    try:
+        # Find affected incidents
+        cur = conn.execute(
+            "SELECT incident_id FROM incidents WHERE llm_enriched = 1 AND llm_enriched_at < ?",
+            (before_date,),
+        )
+        incident_ids = [row["incident_id"] for row in cur.fetchall()]
+
+        if not incident_ids:
+            logger.info(f"No enriched incidents found before {before_date}")
+            return 0
+
+        placeholders = ",".join("?" * len(incident_ids))
+        now = datetime.utcnow().isoformat()
+
+        # Reset enrichment fields on incidents table
+        conn.execute(
+            f"""
+            UPDATE incidents
+            SET
+                llm_enriched = 0,
+                llm_enriched_at = NULL,
+                llm_summary = NULL,
+                llm_timeline = NULL,
+                llm_mitre_attack = NULL,
+                llm_attack_dynamics = NULL,
+                primary_url = NULL,
+                last_updated_at = ?
+            WHERE incident_id IN ({placeholders})
+            """,
+            [now] + incident_ids,
+        )
+
+        # Remove from enrichment tables
+        conn.execute(
+            f"DELETE FROM incident_enrichments WHERE incident_id IN ({placeholders})",
+            incident_ids,
+        )
+        conn.execute(
+            f"DELETE FROM incident_enrichments_flat WHERE incident_id IN ({placeholders})",
+            incident_ids,
+        )
+
+        # Delete articles so they can be re-fetched with current fetcher
+        conn.execute(
+            f"DELETE FROM articles WHERE incident_id IN ({placeholders})",
+            incident_ids,
+        )
+
+        conn.commit()
+        logger.info(f"Reverted enrichment for {len(incident_ids)} incidents enriched before {before_date}")
+        return len(incident_ids)
+
+    except Exception as e:
+        logger.error(f"Error reverting enrichment before {before_date}: {e}")
+        conn.rollback()
+        return 0
+
+
 def get_enrichment_stats(conn: sqlite3.Connection) -> Dict[str, int]:
     """
     Get statistics about enrichment progress.

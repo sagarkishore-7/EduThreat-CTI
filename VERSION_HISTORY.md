@@ -2,6 +2,26 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.3.0 (2026-03-15)
+
+**Focus**: Real-Time Intelligence Pipeline, Re-Enrichment & Pipeline Cancel Fix
+
+### Key Features
+- One-click "Start Cron Job" in admin panel — continuous RSS (1h), API (6h), daily pipeline (24h) with auto-enrichment
+- Re-Enrich by Date — reset old enrichments to re-process with updated extraction schema
+- Pipeline cancel now actually works for Phase 2 enrichment (threading.Event propagation)
+- Dashboard stat cards now filter to correct incidents when clicked
+- ENRICHMENT_WORKERS env var respected by admin panel enrichment runs
+
+### Breaking Changes
+None
+
+### Migration Notes
+- `schedule` library required (already in requirements.txt)
+- New admin endpoints: `POST /admin/scheduler/start`, `POST /admin/scheduler/stop`, `GET /admin/scheduler/status`, `POST /admin/re-enrich`
+
+---
+
 ## Version 2.2.0 (2026-03-15)
 
 **Focus**: Dashboard Redesign, Parallel Enrichment & Stats Overhaul

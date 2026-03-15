@@ -565,22 +565,108 @@ async def export_table_csv(
         conn.close()
 
 
+class SchedulerStartRequest(BaseModel):
+    rss_interval_hours: int = 1
+    api_interval_hours: int = 6
+    daily_interval_hours: int = 24
+    catch_up: bool = True
+
+
 @router.get("/scheduler/status")
 async def get_scheduler_status(_: bool = Depends(authenticate)):
-    """Get scheduler status if running."""
+    """Get real-time intelligence pipeline scheduler status."""
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    manager = get_pipeline_manager()
+    return manager.get_scheduler_status()
+
+
+@router.post("/scheduler/start")
+async def start_scheduler(
+    request: SchedulerStartRequest = SchedulerStartRequest(),
+    _: bool = Depends(authenticate),
+):
+    """
+    Start the real-time intelligence pipeline scheduler.
+
+    Runs recurring jobs:
+    - RSS feeds: every rss_interval_hours (default 1h)
+    - API sources: every api_interval_hours (default 6h)
+    - Daily pipeline (all sources + enrich): every daily_interval_hours (default 24h)
+
+    On first start, runs an immediate catch-up cycle to fetch recent incidents.
+    """
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    manager = get_pipeline_manager()
+    result = manager.start_scheduler(
+        rss_interval_hours=request.rss_interval_hours,
+        api_interval_hours=request.api_interval_hours,
+        daily_interval_hours=request.daily_interval_hours,
+        catch_up=request.catch_up,
+    )
+
+    if result["status"] == "already_running":
+        raise HTTPException(
+            status_code=409,
+            detail=f"Scheduler already running since {result['started_at']}",
+        )
+
+    logger.info(f"Scheduler started via admin API: {result}")
+    return result
+
+
+@router.post("/scheduler/stop")
+async def stop_scheduler(_: bool = Depends(authenticate)):
+    """Stop the real-time intelligence pipeline scheduler."""
+    from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+    manager = get_pipeline_manager()
+    result = manager.stop_scheduler()
+
+    if result["status"] == "not_running":
+        raise HTTPException(status_code=400, detail="Scheduler is not running")
+
+    logger.info("Scheduler stopped via admin API")
+    return result
+
+
+class ReEnrichRequest(BaseModel):
+    before_date: str  # ISO date string, e.g. "2026-03-15"
+
+
+@router.post("/re-enrich")
+async def re_enrich_incidents(
+    request: ReEnrichRequest,
+    _: bool = Depends(authenticate),
+):
+    """
+    Reset enrichment for all incidents enriched before a given date.
+
+    This reverts their LLM enrichment data so they will be picked up
+    by the next enrichment run with the updated extraction schema.
+
+    Args:
+        before_date: ISO date string (e.g. "2026-03-15"). All incidents
+                     enriched before this date will be reset.
+    """
+    from src.edu_cti.pipeline.phase2.storage.db import revert_enrichment_before_date
+
+    conn = get_api_connection()
     try:
-        from src.edu_cti.scheduler import IngestionScheduler
-        # This would need to access the running scheduler instance
-        # For now, return a placeholder
+        count = revert_enrichment_before_date(conn, request.before_date)
+        cache_invalidate()
+        logger.info(f"Re-enrich: reverted {count} incidents enriched before {request.before_date}")
         return {
-            "status": "available",
-            "message": "Scheduler module available. Use CLI to start: python -m src.edu_cti.scheduler",
+            "success": True,
+            "reverted_count": count,
+            "before_date": request.before_date,
+            "message": f"Reverted {count} incidents. Run enrichment to re-process them.",
         }
-    except ImportError:
-        return {
-            "status": "unavailable",
-            "message": "Scheduler module not available",
-        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Re-enrichment failed: {str(e)}")
+    finally:
+        conn.close()
 
 
 @router.post("/upload-database")
@@ -590,7 +676,7 @@ async def upload_database(
 ):
     """
     Upload a database file to replace the current database.
-    
+
     This allows you to upload your local database file to persistent storage.
     The uploaded file will replace the existing database.
     

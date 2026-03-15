@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.3.0] - 2026-03-15
+
+### Real-Time Intelligence Pipeline, Re-Enrichment & Pipeline Cancel Fix
+
+#### Added
+- **Real-Time Intelligence Pipeline (Cron Scheduler)**: One-click "Start Cron Job" button in admin panel activates continuous automated collection — RSS every 1h, API sources every 6h, full daily pipeline every 24h with auto-enrichment. Includes catch-up cycle on first start.
+- **Re-Enrich by Date**: Admin panel section to reset enrichment for incidents processed before a specific date, allowing re-enrichment with updated extraction schemas. Uses `POST /admin/re-enrich` endpoint.
+- **Scheduler API Endpoints**: `POST /admin/scheduler/start`, `POST /admin/scheduler/stop`, `GET /admin/scheduler/status` — real-time scheduler control with status reporting (jobs, next run times, last runs, total new incidents).
+- **`revert_enrichment_before_date()`**: New DB function to bulk-reset enrichment for incidents enriched before a given date.
+
+#### Fixed
+- **Pipeline Cancel (Phase 2)**: Stop button now actually stops enrichment. Previously `_cancel_requested` was set but Phase 2 had zero cancel checkpoints. Added `threading.Event` propagation from pipeline manager to phase2 fetch and enrich loops.
+- **Dashboard Stat Filtering**: Clicking stat cards now correctly filters incidents (attack_category uses LIKE matching, data_breached uses dedicated boolean filter, URL params initialize filter state).
+
+#### Changed
+- **Pipeline Manager**: Integrated scheduler directly into `PipelineManager` singleton — shares execution engine, log capture, and cancel support with manual pipeline runs.
+- **`ENRICHMENT_WORKERS` env var**: Admin panel enrichment now reads worker count from environment variable instead of hardcoded default of 1.
+
+---
+
 ## [2.2.0] - 2026-03-15
 
 ### Dashboard Redesign, Parallel Enrichment & Stats Overhaul

@@ -3,6 +3,8 @@ Pipeline Manager - Background execution engine for admin dashboard control.
 
 Runs pipeline phases (ingest, enrich, historical, daily) in background threads
 with real-time log capture, progress tracking, and run history.
+
+Also manages a built-in scheduler for continuous real-time intelligence collection.
 """
 
 import logging
@@ -10,9 +12,11 @@ import threading
 import time
 import uuid
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
+
+import schedule
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +110,19 @@ class PipelineManager:
         self._thread: Optional[threading.Thread] = None
         self._run_lock = threading.Lock()
 
+        # Scheduler state
+        self._scheduler_running = False
+        self._scheduler_thread: Optional[threading.Thread] = None
+        self._scheduler_stop_event = threading.Event()
+        self._scheduler_schedule = schedule.Scheduler()
+        self._scheduler_started_at: Optional[str] = None
+        self._scheduler_last_runs: Dict[str, Optional[str]] = {
+            "rss": None,
+            "api": None,
+            "daily": None,
+        }
+        self._scheduler_total_new: int = 0
+
     @property
     def current_run(self) -> Optional[PipelineRun]:
         return self._current_run
@@ -130,7 +147,13 @@ class PipelineManager:
     def request_cancel(self) -> bool:
         if self._current_run and self._current_run.status == RunStatus.RUNNING:
             self._current_run._cancel_requested = True
-            logger.info(f"Cancel requested for run {self._current_run.run_id}")
+            # Signal Phase 2 enrichment cancel event (if running)
+            try:
+                from src.edu_cti.pipeline.phase2.__main__ import _cancel_event
+                _cancel_event.set()
+                logger.info(f"Cancel requested for run {self._current_run.run_id} (phase2 cancel event set)")
+            except ImportError:
+                logger.info(f"Cancel requested for run {self._current_run.run_id}")
             return True
         return False
 
@@ -277,6 +300,10 @@ class PipelineManager:
 
         run.progress = {"step": "Starting enrichment", "detail": "", "percent": 0}
 
+        # Clear any previous cancel signal so this run starts fresh
+        from src.edu_cti.pipeline.phase2.__main__ import _cancel_event
+        _cancel_event.clear()
+
         # Build argv for phase2's argparse
         phase2_argv = []
         if limit:
@@ -396,6 +423,190 @@ class PipelineManager:
             "groups": ["curated", "news"],
             "max_pages": params.get("max_pages"),
         })
+
+
+    # ------------------------------------------------------------------
+    # Scheduler — continuous real-time intelligence pipeline
+    # ------------------------------------------------------------------
+
+    @property
+    def scheduler_running(self) -> bool:
+        return self._scheduler_running
+
+    def start_scheduler(
+        self,
+        rss_interval_hours: int = 1,
+        api_interval_hours: int = 6,
+        daily_interval_hours: int = 24,
+        catch_up: bool = True,
+    ) -> Dict[str, Any]:
+        """
+        Start the real-time intelligence pipeline scheduler.
+
+        Runs recurring jobs:
+        - RSS feeds: every rss_interval_hours (default 1h)
+        - API sources: every api_interval_hours (default 6h)
+        - Daily pipeline (all sources + enrich): every daily_interval_hours (default 24h)
+
+        On first start, runs an immediate catch-up cycle.
+        """
+        if self._scheduler_running:
+            return {"status": "already_running", "started_at": self._scheduler_started_at}
+
+        self._scheduler_running = True
+        self._scheduler_stop_event.clear()
+        self._scheduler_started_at = datetime.utcnow().isoformat()
+        self._scheduler_total_new = 0
+
+        # Reset last run timestamps
+        for key in self._scheduler_last_runs:
+            self._scheduler_last_runs[key] = None
+
+        # Clear any previous jobs and register new ones
+        self._scheduler_schedule.clear()
+
+        self._scheduler_schedule.every(rss_interval_hours).hours.do(
+            self._scheduler_run_job, "rss", {"max_age_days": 7}
+        )
+        self._scheduler_schedule.every(api_interval_hours).hours.do(
+            self._scheduler_run_job, "ingest_source", {"group": "api"}
+        )
+        self._scheduler_schedule.every(daily_interval_hours).hours.do(
+            self._scheduler_run_job, "daily", {}
+        )
+
+        logger.info(
+            f"[SCHEDULER] Started — RSS every {rss_interval_hours}h, "
+            f"API every {api_interval_hours}h, Daily every {daily_interval_hours}h"
+        )
+
+        # Start the scheduler loop thread
+        self._scheduler_thread = threading.Thread(
+            target=self._scheduler_loop,
+            daemon=True,
+            name="scheduler-loop",
+        )
+        self._scheduler_thread.start()
+
+        # Run initial catch-up in yet another thread so start_scheduler returns immediately
+        if catch_up:
+            threading.Thread(
+                target=self._scheduler_catchup,
+                daemon=True,
+                name="scheduler-catchup",
+            ).start()
+
+        return {
+            "status": "started",
+            "started_at": self._scheduler_started_at,
+            "rss_interval_hours": rss_interval_hours,
+            "api_interval_hours": api_interval_hours,
+            "daily_interval_hours": daily_interval_hours,
+        }
+
+    def stop_scheduler(self) -> Dict[str, Any]:
+        """Stop the scheduler. Does NOT cancel the currently running pipeline phase."""
+        if not self._scheduler_running:
+            return {"status": "not_running"}
+
+        self._scheduler_running = False
+        self._scheduler_stop_event.set()
+        self._scheduler_schedule.clear()
+
+        if self._scheduler_thread and self._scheduler_thread.is_alive():
+            self._scheduler_thread.join(timeout=10)
+
+        logger.info("[SCHEDULER] Stopped")
+        return {"status": "stopped"}
+
+    def get_scheduler_status(self) -> Dict[str, Any]:
+        """Return scheduler status for the admin API."""
+        jobs = []
+        for job in self._scheduler_schedule.get_jobs():
+            jobs.append({
+                "interval": str(job.interval),
+                "unit": job.unit,
+                "next_run": job.next_run.isoformat() if job.next_run else None,
+            })
+
+        return {
+            "running": self._scheduler_running,
+            "started_at": self._scheduler_started_at,
+            "last_runs": dict(self._scheduler_last_runs),
+            "total_new_incidents": self._scheduler_total_new,
+            "jobs": jobs,
+        }
+
+    # --- internal helpers ---
+
+    def _scheduler_loop(self):
+        """Background loop that ticks the schedule library."""
+        logger.info("[SCHEDULER] Loop started")
+        while self._scheduler_running and not self._scheduler_stop_event.is_set():
+            self._scheduler_schedule.run_pending()
+            # Sleep in small increments so we can react to stop quickly
+            self._scheduler_stop_event.wait(timeout=30)
+        logger.info("[SCHEDULER] Loop exited")
+
+    def _scheduler_catchup(self):
+        """Run an initial catch-up: daily pipeline to ingest recent incidents."""
+        logger.info("[SCHEDULER] Running initial catch-up cycle...")
+        self._scheduler_run_job("daily", {})
+
+    def _scheduler_run_job(self, phase: str, params: Dict[str, Any]):
+        """
+        Execute a scheduled job. Waits if another pipeline is already running.
+        """
+        if not self._scheduler_running:
+            return
+
+        # Determine the job key for tracking
+        if phase == "ingest_source" and params.get("group") == "api":
+            job_key = "api"
+        elif phase in self._scheduler_last_runs:
+            job_key = phase
+        else:
+            job_key = phase
+
+        logger.info(f"[SCHEDULER] Job triggered: {phase} (params={params})")
+
+        # Wait for any running pipeline to finish (up to 30 min)
+        wait_start = time.time()
+        max_wait = 1800  # 30 minutes
+        while self.is_running:
+            if not self._scheduler_running:
+                logger.info(f"[SCHEDULER] Scheduler stopped while waiting for {phase}")
+                return
+            if time.time() - wait_start > max_wait:
+                logger.warning(f"[SCHEDULER] Timed out waiting for pipeline to finish, skipping {phase}")
+                return
+            time.sleep(10)
+
+        # Start the phase
+        try:
+            run = self.start_phase(phase, params)
+            logger.info(f"[SCHEDULER] Started {phase} (run_id={run.run_id})")
+
+            # Wait for it to complete
+            while self.is_running:
+                if not self._scheduler_running:
+                    break
+                time.sleep(5)
+
+            # Record results
+            self._scheduler_last_runs[job_key] = datetime.utcnow().isoformat()
+            if run.result and isinstance(run.result, dict):
+                new_incidents = run.result.get("new_incidents", 0)
+                if isinstance(run.result.get("ingest"), dict):
+                    new_incidents = run.result["ingest"].get("new_incidents", 0)
+                self._scheduler_total_new += new_incidents
+
+            logger.info(f"[SCHEDULER] Completed {phase} — status={run.status.value}")
+
+        except RuntimeError as e:
+            logger.warning(f"[SCHEDULER] Could not start {phase}: {e}")
+        except Exception as e:
+            logger.error(f"[SCHEDULER] Error running {phase}: {e}", exc_info=True)
 
 
 def get_pipeline_manager() -> PipelineManager:
