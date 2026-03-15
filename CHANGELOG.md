@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.1.0] - 2026-03-15
+
+### New Intelligence Sources & Performance Optimization
+
+#### Added
+- **Abuse.ch ThreatFox**: IOC sharing platform — fetches education-relevant indicators of compromise (domains, IPs, URLs, hashes) from malware families targeting education sector. Supports both recent and full historical export (ZIP).
+- **Abuse.ch URLhaus**: Malicious URL tracker — filters for URLs targeting `.edu` domains and education institutions, or using malware families known to target education.
+- **In-Memory TTL Cache**: Dashboard and analytics endpoints cached for 5 minutes, reducing database load on repeated queries. Auto-invalidated on pipeline runs and admin deletions.
+- **SQLite Composite Indexes**: Optimized JOIN + filter patterns for enrichment queries (`idx_enrichments_edu_incident`, `idx_enrichments_edu_country`, `idx_enrichments_edu_attack`)
+
+#### Changed
+- **SQLite Read PRAGMAs**: `cache_size=-8000` (8MB), `mmap_size=268435456` (256MB), `query_only=ON` for API read connections
+- **HTTP Client**: Pre-request sleep reduced from (0.3-1.0s) to (0.1-0.5s) for faster scraping
+- **Pipeline Manager**: Playwright browser cleanup in `_execute_run()` finally block to prevent resource leaks
+- **API Source Registry**: Now includes 5 API sources (ransomlook, cisa_kev, otx_alienvault, threatfox, urlhaus)
+
+---
+
 ## [2.0.0] - 2026-03-15
 
 ### Production Deployment & Dashboard Integration

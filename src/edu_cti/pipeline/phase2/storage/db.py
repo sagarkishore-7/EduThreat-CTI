@@ -211,6 +211,25 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         ON incident_enrichments_flat(threat_actor_name)
         """
     )
+    # Composite indexes for common dashboard query patterns
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_enrichments_edu_incident
+        ON incident_enrichments_flat(is_education_related, incident_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_enrichments_edu_country
+        ON incident_enrichments_flat(is_education_related, country)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_enrichments_edu_attack
+        ON incident_enrichments_flat(is_education_related, attack_category)
+        """
+    )
 
     # Add columns to existing tables if they don't exist (migration)
     for col, col_type in [("enriched_at", "TEXT"), ("skip_reason", "TEXT")]:

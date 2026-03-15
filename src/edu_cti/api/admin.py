@@ -24,6 +24,7 @@ from pydantic import BaseModel
 
 from src.edu_cti.core.config import DB_PATH, DATA_DIR
 from src.edu_cti.api.database import get_api_connection
+from src.edu_cti.api.cache import cache_invalidate
 
 # Use DATA_DIR from config (auto-detects Railway)
 PERSISTENT_DATA_DIR = DATA_DIR
@@ -947,6 +948,7 @@ async def start_pipeline(
 
     try:
         run = manager.start_phase(request.phase, request.params or {})
+        cache_invalidate()  # Clear cached dashboard/analytics data
         logger.info(f"Pipeline started: phase={request.phase}, run_id={run.run_id}")
         return PipelineRunResponse(
             run_id=run.run_id,
@@ -1538,6 +1540,7 @@ async def delete_incidents(
         conn.commit()
 
         logger.info(f"Deleted {deleted_counts['incidents']} incidents: {ids[:5]}{'...' if len(ids) > 5 else ''}")
+        cache_invalidate()  # Clear cached dashboard/analytics data
 
         return {
             "success": True,
@@ -1587,6 +1590,7 @@ async def clear_all_incidents(
         conn.execute("VACUUM")
 
         total = sum(deleted_counts.values())
+        cache_invalidate()  # Clear cached dashboard/analytics data
         logger.warning(f"CLEARED ALL DATA: {deleted_counts}")
 
         return {

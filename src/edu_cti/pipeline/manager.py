@@ -185,6 +185,13 @@ class PipelineManager:
             run.duration_seconds = round(time.time() - start_time, 2)
             root_logger.removeHandler(log_handler)
             self._history.append(run)
+            # Close the default HTTP client to free Playwright/Chromium memory
+            try:
+                from src.edu_cti.core.http import _default_client
+                if _default_client is not None:
+                    _default_client.close()
+            except Exception:
+                pass
 
     def _dispatch_phase(self, run: PipelineRun) -> Dict[str, Any]:
         """Route to the correct pipeline phase handler."""

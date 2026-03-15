@@ -53,6 +53,7 @@ from .database import (
     get_threat_actors,
     get_filter_options,
 )
+from .cache import cache_get, cache_set
 
 logger = logging.getLogger(__name__)
 
@@ -141,7 +142,7 @@ def create_app() -> FastAPI:
             "KonBriefing, Ransomware.live, DataBreaches.net, CISA KEV, "
             "BleepingComputer, Krebs on Security, The Record, and more."
         ),
-        version="2.0.0",
+        version="2.1.0",
         lifespan=lifespan,
         openapi_tags=OPENAPI_TAGS,
         docs_url="/docs",
@@ -242,35 +243,40 @@ async def get_dashboard():
     
     Returns aggregated statistics, incident distributions, and recent activity.
     """
+    cache_key = "dashboard"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
     try:
         conn = get_api_connection()
-        
+
         stats_data = get_dashboard_stats(conn)
         stats = DashboardStats(**stats_data)
-        
+
         incidents_by_country = [
             CountByCategory(**c) for c in get_incidents_by_country(conn, limit=15)
         ]
-        
+
         incidents_by_attack_type = [
             CountByCategory(**c) for c in get_incidents_by_attack_type(conn, limit=12)
         ]
-        
+
         incidents_by_ransomware = [
             CountByCategory(**c) for c in get_incidents_by_ransomware_family(conn, limit=12)
         ]
-        
+
         incidents_over_time = [
             TimeSeriesPoint(**t) for t in get_incidents_over_time(conn, months=24)
         ]
-        
+
         recent_incidents = [
             RecentIncident(**i) for i in get_recent_incidents(conn, limit=10)
         ]
-        
+
         conn.close()
-        
-        return DashboardResponse(
+
+        result = DashboardResponse(
             stats=stats,
             incidents_by_country=incidents_by_country,
             incidents_by_attack_type=incidents_by_attack_type,
@@ -278,7 +284,9 @@ async def get_dashboard():
             incidents_over_time=incidents_over_time,
             recent_incidents=recent_incidents,
         )
-        
+        cache_set(cache_key, result)
+        return result
+
     except Exception as e:
         logger.error(f"Error getting dashboard data: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -287,11 +295,18 @@ async def get_dashboard():
 @app.get("/api/stats", response_model=DashboardStats, tags=["Dashboard"])
 async def get_stats():
     """Get overall dashboard statistics."""
+    cache_key = "stats"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
     try:
         conn = get_api_connection()
         stats_data = get_dashboard_stats(conn)
         conn.close()
-        return DashboardStats(**stats_data)
+        result = DashboardStats(**stats_data)
+        cache_set(cache_key, result)
+        return result
     except Exception as e:
         logger.error(f"Error getting stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -570,12 +585,19 @@ async def get_incident(incident_id: str):
 @app.get("/api/analytics/countries", tags=["Analytics"])
 async def get_country_analytics(limit: int = Query(20, ge=1, le=100)):
     """Get incident counts by country."""
+    cache_key = f"analytics:countries:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
     try:
         conn = get_api_connection()
         data = get_incidents_by_country(conn, limit=limit)
         total = sum(d["count"] for d in data)
         conn.close()
-        return {"data": data, "total": total}
+        result = {"data": data, "total": total}
+        cache_set(cache_key, result)
+        return result
     except Exception as e:
         logger.error(f"Error getting country analytics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -584,12 +606,19 @@ async def get_country_analytics(limit: int = Query(20, ge=1, le=100)):
 @app.get("/api/analytics/attack-types", tags=["Analytics"])
 async def get_attack_type_analytics(limit: int = Query(15, ge=1, le=50)):
     """Get incident counts by attack type."""
+    cache_key = f"analytics:attack-types:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
     try:
         conn = get_api_connection()
         data = get_incidents_by_attack_type(conn, limit=limit)
         total = sum(d["count"] for d in data)
         conn.close()
-        return {"data": data, "total": total}
+        result = {"data": data, "total": total}
+        cache_set(cache_key, result)
+        return result
     except Exception as e:
         logger.error(f"Error getting attack type analytics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -598,12 +627,19 @@ async def get_attack_type_analytics(limit: int = Query(15, ge=1, le=50)):
 @app.get("/api/analytics/ransomware", tags=["Analytics"])
 async def get_ransomware_analytics(limit: int = Query(15, ge=1, le=50)):
     """Get incident counts by ransomware family."""
+    cache_key = f"analytics:ransomware:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
     try:
         conn = get_api_connection()
         data = get_incidents_by_ransomware_family(conn, limit=limit)
         total = sum(d["count"] for d in data)
         conn.close()
-        return {"data": data, "total": total}
+        result = {"data": data, "total": total}
+        cache_set(cache_key, result)
+        return result
     except Exception as e:
         logger.error(f"Error getting ransomware analytics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -612,12 +648,19 @@ async def get_ransomware_analytics(limit: int = Query(15, ge=1, le=50)):
 @app.get("/api/analytics/timeline", tags=["Analytics"])
 async def get_timeline_analytics(months: int = Query(24, ge=1, le=120)):
     """Get incident counts over time."""
+    cache_key = f"analytics:timeline:{months}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
     try:
         conn = get_api_connection()
         data = get_incidents_over_time(conn, months=months)
         total = sum(d["count"] for d in data)
         conn.close()
-        return {"data": data, "total": total}
+        result = {"data": data, "total": total}
+        cache_set(cache_key, result)
+        return result
     except Exception as e:
         logger.error(f"Error getting timeline analytics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -626,17 +669,24 @@ async def get_timeline_analytics(months: int = Query(24, ge=1, le=120)):
 @app.get("/api/analytics/threat-actors", response_model=ThreatActorsResponse, tags=["Analytics"])
 async def get_threat_actor_analytics(limit: int = Query(20, ge=1, le=100)):
     """Get threat actor activity summary."""
+    cache_key = f"analytics:threat-actors:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
     try:
         conn = get_api_connection()
         actors_data = get_threat_actors(conn, limit=limit)
         conn.close()
-        
+
         actors = [ThreatActorSummary(**a) for a in actors_data]
-        
-        return ThreatActorsResponse(
+
+        result = ThreatActorsResponse(
             threat_actors=actors,
             total=len(actors),
         )
+        cache_set(cache_key, result)
+        return result
     except Exception as e:
         logger.error(f"Error getting threat actor analytics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -649,11 +699,18 @@ async def get_threat_actor_analytics(limit: int = Query(20, ge=1, le=100)):
 @app.get("/api/filters", response_model=FilterOptions, tags=["Filters"])
 async def get_filters():
     """Get available filter options for the incidents list."""
+    cache_key = "filters"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+
     try:
         conn = get_api_connection()
         options = get_filter_options(conn)
         conn.close()
-        return FilterOptions(**options)
+        result = FilterOptions(**options)
+        cache_set(cache_key, result)
+        return result
     except Exception as e:
         logger.error(f"Error getting filter options: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

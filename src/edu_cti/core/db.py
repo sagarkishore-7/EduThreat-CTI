@@ -41,6 +41,15 @@ def get_connection(
     if read_only:
         db_uri = f"file:{db_path}?mode=ro"
         conn = sqlite3.connect(db_uri, uri=True, timeout=5.0, check_same_thread=False)
+        conn.row_factory = sqlite3.Row
+        # Optimize read-only connections
+        try:
+            conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
+            conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
+            conn.execute("PRAGMA query_only=ON")
+        except sqlite3.Error:
+            pass
+        return conn
     else:
         # Write connections: longer timeout for write operations
         conn = sqlite3.connect(str(db_path), timeout=timeout, check_same_thread=False)
@@ -56,7 +65,7 @@ def get_connection(
             conn.execute("PRAGMA synchronous=NORMAL")  # Balance between safety and speed
             conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout for busy database
             # Increase cache size for better performance
-            conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+            conn.execute("PRAGMA cache_size=-16000")  # 16MB cache
             # Enable foreign keys
             conn.execute("PRAGMA foreign_keys=ON")
         except sqlite3.Error as e:
@@ -108,7 +117,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
         conn.execute("PRAGMA busy_timeout=30000")
-        conn.execute("PRAGMA cache_size=-64000")  # 64MB cache
+        conn.execute("PRAGMA cache_size=-16000")  # 16MB cache
         conn.execute("PRAGMA foreign_keys=ON")
     except sqlite3.Error:
         # If WAL mode fails, continue with default (e.g., read-only filesystem)

@@ -280,7 +280,7 @@ class HttpClient:
 
         for attempt in range(3):
             try:
-                self._sleep(0.3, 1.0)
+                self._sleep(0.1, 0.5)
                 resp = cffi_requests.get(
                     url,
                     headers=headers,
