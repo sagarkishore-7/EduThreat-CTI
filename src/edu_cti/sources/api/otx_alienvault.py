@@ -59,7 +59,7 @@ def search_pulses(
             f"{OTX_BASE_URL}/search/pulses",
             params={"q": query, "limit": limit, "page": page},
             headers=_get_headers(),
-            timeout=30,
+            timeout=60,
         )
         resp.raise_for_status()
         data = resp.json()
@@ -83,7 +83,7 @@ def get_pulse_indicators(pulse_id: str) -> List[Dict]:
         resp = requests.get(
             f"{OTX_BASE_URL}/pulses/{pulse_id}/indicators",
             headers=_get_headers(),
-            timeout=30,
+            timeout=60,
         )
         resp.raise_for_status()
         data = resp.json()
