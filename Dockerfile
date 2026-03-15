@@ -1,15 +1,15 @@
 # EduThreat-CTI API Dockerfile
-FROM python:3.11-slim
+# Optimized for Railway deployment
+FROM python:3.12-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies including Chrome/Chromium for Selenium
+# Install system dependencies for Playwright and general operation
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     curl \
     wget \
-    gnupg \
     ca-certificates \
     fonts-liberation \
     libasound2 \
@@ -30,43 +30,41 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxkbcommon0 \
     libxrandr2 \
     xdg-utils \
-    xvfb \
     && rm -rf /var/lib/apt/lists/*
-
-# Install Google Chrome (stable version) - using modern method without deprecated apt-key
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /usr/share/keyrings/google-chrome-keyring.gpg \
-    && echo "deb [arch=amd64 signed-by=/usr/share/keyrings/google-chrome-keyring.gpg] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends google-chrome-stable \
-    && rm -rf /var/lib/apt/lists/* \
-    && google-chrome --version
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Install Playwright browsers (chromium only to save space)
+RUN playwright install chromium --with-deps
+
 # Copy the source code
 COPY src/ ./src/
+COPY pyproject.toml setup.py ./
+
+# Install the package itself (so imports work as `src.edu_cti.*`)
+RUN pip install --no-cache-dir -e .
 
 # Copy scripts for migration and utilities
-COPY scripts/ ./scripts/
+COPY scripts/ ./scripts/ 2>/dev/null || true
 
 # Create directories for logs (data dir will be mounted as Railway volume)
 RUN mkdir -p logs
 
 # Set environment variables
 # Railway persistent storage is mounted at /app/data
-# DB will be created/used from persistent volume
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV EDU_CTI_DATA_DIR=/app/data
 ENV EDU_CTI_DB_PATH=eduthreat.db
 
-# Expose port
+# Expose port (Railway sets PORT automatically)
 EXPOSE 8000
 
-# Use shell form so PORT env gets read by Python
-# Start Xvfb in background for non-headless Selenium support, then run the app
-CMD Xvfb :99 -screen 0 1920x1080x24 -ac +extension GLX +render -noreset & \
-    export DISPLAY=:99 && \
-    python -m src.edu_cti.api --host 0.0.0.0
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
+    CMD curl -f http://localhost:${PORT:-8000}/api/health || exit 1
+
+# Start the API server - Railway injects PORT env var
+CMD python -m src.edu_cti.api --host 0.0.0.0
