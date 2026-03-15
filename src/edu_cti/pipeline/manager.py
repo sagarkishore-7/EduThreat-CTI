@@ -272,6 +272,7 @@ class PipelineManager:
         limit = params.get("limit")
         rate_limit_delay = params.get("rate_limit_delay", 2.0)
         export_csv = params.get("export_csv", False)
+        workers = params.get("workers", 1)
 
         run.progress = {"step": "Starting enrichment", "detail": "", "percent": 0}
 
@@ -281,6 +282,8 @@ class PipelineManager:
             phase2_argv.extend(["--limit", str(limit)])
         if rate_limit_delay:
             phase2_argv.extend(["--rate-limit-delay", str(rate_limit_delay)])
+        if workers and workers > 1:
+            phase2_argv.extend(["--workers", str(workers)])
         if export_csv:
             phase2_argv.append("--export-csv")
         phase2_argv.extend(["--log-level", "INFO"])

@@ -532,6 +532,9 @@ Examples:
 
   # Process with custom batch size and rate limit
   python -m src.edu_cti.pipeline.phase2 --batch-size 5 --rate-limit-delay 3.0
+
+  # Use 3 parallel consumer threads for faster enrichment
+  python -m src.edu_cti.pipeline.phase2 --workers 3 --rate-limit-delay 0.5
         """,
     )
     parser.add_argument(
@@ -575,6 +578,13 @@ Examples:
         type=str,
         default=None,
         help="Path to log file (default: logs/pipeline.log)",
+    )
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of parallel enrichment consumer threads (default: 1). "
+             "Higher values speed up enrichment but use more API quota.",
     )
     parser.add_argument(
         "--export-csv",
@@ -644,42 +654,63 @@ def main() -> None:
     incident_queue = queue.Queue()
     fetch_complete_event = threading.Event()
     fetch_stats = {"processed": 0, "articles_fetched": 0, "errors": 0}
-    enrich_stats = {"processed": 0, "enriched": 0, "skipped": 0, "errors": 0}
-    
+
     # Total incidents to process (for progress tracking)
     total_to_process = len(unenriched)
-    
-    # Start consumer thread (enrichment) - it will wait for items in queue
-    def consumer_thread():
+    num_workers = max(1, min(args.workers, 8))  # Cap at 8 workers
+
+    # Aggregated stats across all consumer threads (thread-safe)
+    stats_lock = threading.Lock()
+    combined_enrich_stats = {"processed": 0, "enriched": 0, "skipped": 0, "errors": 0}
+
+    def consumer_thread(worker_id: int):
         """Consumer thread that processes incidents from queue."""
-        nonlocal enrich_stats
-        # Create a new connection for this thread (SQLite connections are not thread-safe)
+        # Each worker gets its own DB connection and LLM client
         thread_conn = get_connection()
         try:
-            logger.info("Consumer thread started - waiting for incidents in queue")
-            enrich_stats = enrich_articles_phase(
+            if num_workers > 1:
+                # Each worker needs its own LLM client for thread safety
+                worker_llm = OllamaLLMClient(
+                    api_key=OLLAMA_API_KEY,
+                    host=OLLAMA_HOST,
+                    model=OLLAMA_MODEL,
+                )
+                worker_enricher = IncidentEnricher(llm_client=worker_llm)
+            else:
+                worker_enricher = enricher
+
+            logger.info(f"Consumer worker-{worker_id} started")
+            worker_stats = enrich_articles_phase(
                 conn=thread_conn,
-                enricher=enricher,
+                enricher=worker_enricher,
                 incident_queue=incident_queue,
                 fetch_complete_event=fetch_complete_event,
                 skip_if_not_education=args.skip_non_education,
                 rate_limit_delay=args.rate_limit_delay,
                 total_expected=total_to_process,
             )
-            logger.info(f"Consumer thread completed: {enrich_stats}")
+            logger.info(f"Consumer worker-{worker_id} completed: {worker_stats}")
+
+            # Merge stats thread-safely
+            with stats_lock:
+                for key in combined_enrich_stats:
+                    combined_enrich_stats[key] += worker_stats.get(key, 0)
         except Exception as e:
-            logger.error(f"Error in consumer thread: {e}", exc_info=True)
-            enrich_stats = {"processed": 0, "enriched": 0, "skipped": 0, "errors": 1}
+            logger.error(f"Error in consumer worker-{worker_id}: {e}", exc_info=True)
+            with stats_lock:
+                combined_enrich_stats["errors"] += 1
         finally:
             thread_conn.close()
-    
-    # Start consumer thread
-    consumer = threading.Thread(target=consumer_thread, daemon=False)
-    consumer.start()
-    logger.info("Started enrichment consumer thread (waiting for incidents in queue)")
-    
+
+    # Start consumer threads
+    consumers = []
+    for i in range(num_workers):
+        t = threading.Thread(target=consumer_thread, args=(i,), daemon=False, name=f"enricher-{i}")
+        t.start()
+        consumers.append(t)
+    logger.info(f"Started {num_workers} enrichment consumer thread(s)")
+
     # Run producer (fetching) in main thread
-    # This will push incidents to queue as articles are fetched
     try:
         fetch_stats = fetch_articles_phase(
             conn,
@@ -693,23 +724,21 @@ def main() -> None:
         logger.error(f"Error in producer (fetching): {e}", exc_info=True)
         fetch_stats["errors"] += 1
     finally:
-        # Signal that fetching is complete
         fetch_complete_event.set()
-        logger.info("Fetching complete - signaled consumer thread")
-    
-    # Wait for consumer thread to finish processing remaining items
-    logger.info("Waiting for enrichment consumer to finish processing queue...")
-    # Calculate timeout based on remaining items (estimate 2 seconds per incident)
-    estimated_timeout = max(300, total_to_process * 2)  # At least 5 min, or 2s per incident
-    logger.info(f"Consumer timeout set to {estimated_timeout}s (estimated {total_to_process} incidents)")
-    consumer.join(timeout=estimated_timeout)
-    
-    if consumer.is_alive():
-        logger.warning("Consumer thread did not finish within timeout - may still be processing")
-    else:
-        logger.info("Consumer thread finished")
-    
-    # Final stats - combine both phases
+        logger.info("Fetching complete - signaled consumer threads")
+
+    # Wait for all consumer threads
+    estimated_timeout = max(300, total_to_process * 2)
+    logger.info(f"Waiting for {num_workers} consumer(s) to finish (timeout: {estimated_timeout}s)...")
+    for t in consumers:
+        t.join(timeout=estimated_timeout)
+        if t.is_alive():
+            logger.warning(f"Consumer {t.name} did not finish within timeout")
+
+    logger.info("All consumer threads finished")
+
+    # Final stats
+    enrich_stats = combined_enrich_stats
     processed = fetch_stats["processed"]
     enriched = enrich_stats.get("enriched", 0)
     skipped = enrich_stats.get("skipped", 0)

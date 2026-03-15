@@ -288,65 +288,72 @@ def get_incident_by_id(
 def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
     """Get overall dashboard statistics - only education-related incidents."""
     stats = {}
-    
-    # Total incidents = only education-related (confirmed by LLM)
+
+    # Total incidents in database (all ingested)
+    cur = conn.execute("SELECT COUNT(*) as count FROM incidents")
+    stats["total_incidents"] = cur.fetchone()["count"]
+
+    # Education-confirmed incidents (enriched + confirmed by LLM)
     cur = conn.execute("""
         SELECT COUNT(*) as count FROM incidents i
         JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE ef.is_education_related = 1
     """)
-    stats["total_incidents"] = cur.fetchone()["count"]
-    
-    # Enriched incidents (same as total for education-related)
-    stats["enriched_incidents"] = stats["total_incidents"]
-    
+    stats["education_incidents"] = cur.fetchone()["count"]
+
+    # Enriched incidents (processed by LLM)
+    cur = conn.execute("SELECT COUNT(*) as count FROM incidents WHERE llm_enriched = 1")
+    stats["enriched_incidents"] = cur.fetchone()["count"]
+
     # Pending analysis (not yet processed by LLM)
     cur = conn.execute("SELECT COUNT(*) as count FROM incidents WHERE llm_enriched = 0")
-    stats["pending_analysis"] = cur.fetchone()["count"]
-    
-    # Unenriched (processed but not education-related)
-    cur = conn.execute("SELECT COUNT(*) as count FROM incidents WHERE llm_enriched = 1")
-    total_processed = cur.fetchone()["count"]
-    stats["unenriched_incidents"] = total_processed - stats["total_incidents"]
-    
+    stats["unenriched_incidents"] = cur.fetchone()["count"]
+
     # Ransomware incidents
-    # Ransomware incidents - count by attack_category since ransomware_family often NULL
     cur = conn.execute(
         """
-        SELECT COUNT(*) as count FROM incident_enrichments_flat 
-        WHERE is_education_related = 1 
+        SELECT COUNT(*) as count FROM incident_enrichments_flat
+        WHERE is_education_related = 1
           AND attack_category LIKE '%ransomware%'
         """
     )
     stats["incidents_with_ransomware"] = cur.fetchone()["count"]
-    
+
     # Data breach incidents
     cur = conn.execute(
-        "SELECT COUNT(*) as count FROM incident_enrichments_flat WHERE data_breached = 1"
+        """
+        SELECT COUNT(*) as count FROM incident_enrichments_flat
+        WHERE is_education_related = 1 AND data_breached = 1
+        """
     )
     stats["incidents_with_data_breach"] = cur.fetchone()["count"]
-    
-    # Countries affected
+
+    # Countries affected (education-related only)
     cur = conn.execute(
-        "SELECT COUNT(DISTINCT country) as count FROM incidents WHERE country IS NOT NULL"
+        """
+        SELECT COUNT(DISTINCT ef.country) as count
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1 AND ef.country IS NOT NULL AND ef.country != ''
+        """
     )
     stats["countries_affected"] = cur.fetchone()["count"]
-    
+
     # Unique threat actors
     cur = conn.execute(
         """
-        SELECT COUNT(DISTINCT threat_actor_name) as count 
-        FROM incident_enrichments_flat 
-        WHERE threat_actor_name IS NOT NULL AND threat_actor_name != ''
+        SELECT COUNT(DISTINCT threat_actor_name) as count
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
         """
     )
     stats["unique_threat_actors"] = cur.fetchone()["count"]
-    
-    # Unique ransomware families (use threat_actor_name as fallback)
+
+    # Unique ransomware families
     cur = conn.execute(
         """
-        SELECT COUNT(DISTINCT COALESCE(ransomware_family, threat_actor_name)) as count 
-        FROM incident_enrichments_flat 
+        SELECT COUNT(DISTINCT COALESCE(ransomware_family, threat_actor_name)) as count
+        FROM incident_enrichments_flat
         WHERE is_education_related = 1
           AND attack_category LIKE '%ransomware%'
           AND (
@@ -356,9 +363,50 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
         """
     )
     stats["unique_ransomware_families"] = cur.fetchone()["count"]
-    
+
+    # Data sources count
+    cur = conn.execute(
+        "SELECT COUNT(DISTINCT source) as count FROM incident_sources"
+    )
+    stats["data_sources"] = cur.fetchone()["count"]
+
+    # Average recovery time (days) for education incidents
+    cur = conn.execute(
+        """
+        SELECT AVG(recovery_timeframe_days) as avg_days
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND recovery_timeframe_days IS NOT NULL
+          AND recovery_timeframe_days > 0
+        """
+    )
+    row = cur.fetchone()
+    stats["avg_recovery_days"] = round(row["avg_days"], 1) if row["avg_days"] else None
+
+    # Total financial impact (sum of estimated costs)
+    cur = conn.execute(
+        """
+        SELECT SUM(recovery_costs_max) as total
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND recovery_costs_max IS NOT NULL AND recovery_costs_max > 0
+        """
+    )
+    row = cur.fetchone()
+    stats["total_financial_impact"] = row["total"] if row["total"] else 0
+
+    # MITRE techniques count
+    cur = conn.execute(
+        """
+        SELECT COUNT(*) as count FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND mitre_techniques_count IS NOT NULL AND mitre_techniques_count > 0
+        """
+    )
+    stats["incidents_with_mitre"] = cur.fetchone()["count"]
+
     stats["last_updated"] = datetime.utcnow().isoformat()
-    
+
     return stats
 
 

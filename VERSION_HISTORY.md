@@ -2,6 +2,65 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.2.0 (2026-03-15)
+
+**Focus**: Dashboard Redesign, Parallel Enrichment & Stats Overhaul
+
+### Key Features
+- Parallel LLM enrichment with `--workers N` flag (up to 8 threads)
+- Analyst-focused dashboard stats (education_incidents, avg_recovery_days, financial_impact, MITRE coverage)
+- Fixed duplicate metrics bug (enriched_incidents === total_incidents)
+- Separated total/education/enriched/unenriched incident counts
+- Fixed column name mismatch (recovery_costs → recovery_costs_max)
+
+### Breaking Changes
+- `DashboardStats` model has new required fields — frontend must be updated to match
+
+### Migration Notes
+- Dashboard API now returns `education_incidents` instead of relying on `enriched_incidents`
+- Use `--workers 4` for 4x faster enrichment on multi-core machines
+
+---
+
+## Version 2.1.0 (2026-03-15)
+
+**Focus**: New Intelligence Sources & Performance Optimization
+
+### Key Features
+- Abuse.ch ThreatFox integration (education-relevant IOCs)
+- Abuse.ch URLhaus integration (malicious .edu URLs)
+- In-memory TTL cache for API endpoints
+- SQLite composite indexes for faster queries
+- Optimized read PRAGMAs and reduced HTTP sleep times
+
+### Breaking Changes
+None
+
+### Migration Notes
+- No API keys needed for ThreatFox or URLhaus (free public exports)
+- Run `python -m src.edu_cti.pipeline.phase1 --groups api --sources threatfox urlhaus` to ingest
+
+---
+
+## Version 2.0.0 (2026-03-15)
+
+**Focus**: Production Deployment & Dashboard Integration
+
+### Key Features
+- Railway + Vercel deployment
+- Admin incident management (CRUD)
+- Pipeline manager with SSE log streaming
+- Playwright bot evasion (replaces Selenium)
+- OTX AlienVault, CISA RSS, international RSS feeds
+
+### Breaking Changes
+- OTX AlienVault now requires API key
+
+### Migration Notes
+- Set `OTX_API_KEY` environment variable for OTX source
+
+---
+
 ## Version 1.6.0 (2026-01-08)
 
 **Focus**: LLM Enrichment Reliability & Production Improvements

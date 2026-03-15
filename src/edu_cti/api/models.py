@@ -264,13 +264,18 @@ class TimeSeriesPoint(BaseModel):
 class DashboardStats(BaseModel):
     """Overall dashboard statistics."""
     total_incidents: int
-    enriched_incidents: int
-    unenriched_incidents: int
-    incidents_with_ransomware: int
-    incidents_with_data_breach: int
-    countries_affected: int
-    unique_threat_actors: int
-    unique_ransomware_families: int
+    education_incidents: int = 0
+    enriched_incidents: int = 0
+    unenriched_incidents: int = 0
+    incidents_with_ransomware: int = 0
+    incidents_with_data_breach: int = 0
+    countries_affected: int = 0
+    unique_threat_actors: int = 0
+    unique_ransomware_families: int = 0
+    data_sources: int = 0
+    avg_recovery_days: Optional[float] = None
+    total_financial_impact: float = 0
+    incidents_with_mitre: int = 0
     last_updated: str
 
 

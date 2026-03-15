@@ -5,6 +5,25 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.2.0] - 2026-03-15
+
+### Dashboard Redesign, Parallel Enrichment & Stats Overhaul
+
+#### Added
+- **Parallel LLM Enrichment**: `--workers N` flag (max 8) for multi-threaded enrichment processing. Each worker gets its own LLM client and DB connection for thread safety.
+- **Analyst-Focused Dashboard Stats**: New API metrics — `education_incidents`, `data_sources`, `avg_recovery_days`, `total_financial_impact`, `incidents_with_mitre` for research-oriented dashboard
+- **DashboardStats Model Expansion**: Added `education_incidents`, `unenriched_incidents`, `data_sources`, `avg_recovery_days`, `total_financial_impact`, `incidents_with_mitre` fields
+
+#### Changed
+- **Dashboard Stats Fix**: `enriched_incidents` no longer hardcoded equal to `total_incidents` — now properly separated into `total_incidents` (all ingested), `education_incidents` (LLM-confirmed education), `enriched_incidents` (processed by LLM)
+- **Pipeline Manager**: Accepts `workers` parameter and passes `--workers N` to phase2 enrichment
+
+#### Fixed
+- **Duplicate Dashboard Metrics**: Fixed `enriched_incidents` showing same value as `total_incidents` (was hardcoded on line 301 of database.py)
+- **Column Name Mismatch**: Fixed `recovery_costs` → `recovery_costs_max` in stats queries (actual column name in DB)
+
+---
+
 ## [2.1.0] - 2026-03-15
 
 ### New Intelligence Sources & Performance Optimization
