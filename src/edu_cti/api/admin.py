@@ -1342,3 +1342,261 @@ async def normalize_countries_endpoint(
     finally:
         if conn:
             conn.close()
+
+
+# ============================================================
+# Incident Management Endpoints
+# ============================================================
+
+class IncidentBrief(BaseModel):
+    incident_id: str
+    university_name: Optional[str] = None
+    country: Optional[str] = None
+    incident_date: Optional[str] = None
+    attack_type_hint: Optional[str] = None
+    title: Optional[str] = None
+    sources: Optional[str] = None
+    ingested_at: Optional[str] = None
+    llm_enriched: bool = False
+
+
+@router.get("/incidents/unenriched")
+async def list_unenriched_incidents(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    search: Optional[str] = Query(None),
+    _: bool = Depends(authenticate),
+):
+    """List unenriched incidents with pagination."""
+    conn = get_api_connection()
+    try:
+        where = "WHERE i.llm_enriched = 0 OR i.llm_enriched IS NULL"
+        params: list = []
+        if search:
+            where += " AND (i.university_name LIKE ? OR i.title LIKE ? OR i.country LIKE ?)"
+            params.extend([f"%{search}%"] * 3)
+
+        count_q = f"SELECT COUNT(*) FROM incidents i {where}"
+        cur = conn.execute(count_q, params)
+        total = cur.fetchone()[0]
+
+        query = f"""
+            SELECT i.incident_id, i.university_name, i.country, i.incident_date,
+                   i.attack_type_hint, i.title, i.ingested_at, i.llm_enriched,
+                   GROUP_CONCAT(DISTINCT isrc.source) as sources
+            FROM incidents i
+            LEFT JOIN incident_sources isrc ON i.incident_id = isrc.incident_id
+            {where}
+            GROUP BY i.incident_id
+            ORDER BY i.ingested_at DESC
+            LIMIT ? OFFSET ?
+        """
+        params.extend([per_page, (page - 1) * per_page])
+        cur = conn.execute(query, params)
+        rows = cur.fetchall()
+
+        incidents = [
+            {
+                "incident_id": r["incident_id"],
+                "university_name": r["university_name"],
+                "country": r["country"],
+                "incident_date": r["incident_date"],
+                "attack_type_hint": r["attack_type_hint"],
+                "title": r["title"],
+                "sources": r["sources"],
+                "ingested_at": r["ingested_at"],
+                "llm_enriched": bool(r["llm_enriched"]),
+            }
+            for r in rows
+        ]
+
+        return {
+            "incidents": incidents,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": (total + per_page - 1) // per_page,
+        }
+    finally:
+        conn.close()
+
+
+@router.get("/incidents/enriched")
+async def list_enriched_incidents(
+    page: int = Query(1, ge=1),
+    per_page: int = Query(50, ge=1, le=200),
+    search: Optional[str] = Query(None),
+    _: bool = Depends(authenticate),
+):
+    """List enriched incidents with pagination."""
+    conn = get_api_connection()
+    try:
+        where = "WHERE i.llm_enriched = 1"
+        params: list = []
+        if search:
+            where += " AND (i.university_name LIKE ? OR i.title LIKE ? OR i.country LIKE ?)"
+            params.extend([f"%{search}%"] * 3)
+
+        count_q = f"SELECT COUNT(*) FROM incidents i {where}"
+        cur = conn.execute(count_q, params)
+        total = cur.fetchone()[0]
+
+        query = f"""
+            SELECT i.incident_id, i.university_name, i.country, i.incident_date,
+                   i.attack_type_hint, i.title, i.ingested_at, i.llm_enriched,
+                   ef.attack_category, ef.ransomware_family, ef.threat_actor_name,
+                   ef.is_education_related,
+                   GROUP_CONCAT(DISTINCT isrc.source) as sources
+            FROM incidents i
+            LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+            LEFT JOIN incident_sources isrc ON i.incident_id = isrc.incident_id
+            {where}
+            GROUP BY i.incident_id
+            ORDER BY i.ingested_at DESC
+            LIMIT ? OFFSET ?
+        """
+        params.extend([per_page, (page - 1) * per_page])
+        cur = conn.execute(query, params)
+        rows = cur.fetchall()
+
+        incidents = [
+            {
+                "incident_id": r["incident_id"],
+                "university_name": r["university_name"],
+                "country": r["country"],
+                "incident_date": r["incident_date"],
+                "attack_type_hint": r["attack_type_hint"],
+                "title": r["title"],
+                "sources": r["sources"],
+                "ingested_at": r["ingested_at"],
+                "llm_enriched": True,
+                "attack_category": r["attack_category"],
+                "ransomware_family": r["ransomware_family"],
+                "threat_actor_name": r["threat_actor_name"],
+                "is_education_related": bool(r["is_education_related"]) if r["is_education_related"] is not None else None,
+            }
+            for r in rows
+        ]
+
+        return {
+            "incidents": incidents,
+            "total": total,
+            "page": page,
+            "per_page": per_page,
+            "total_pages": (total + per_page - 1) // per_page,
+        }
+    finally:
+        conn.close()
+
+
+class DeleteIncidentsRequest(BaseModel):
+    incident_ids: List[str]
+
+
+@router.post("/incidents/delete")
+async def delete_incidents(
+    request: DeleteIncidentsRequest,
+    _: bool = Depends(authenticate),
+):
+    """
+    Delete specific incidents by ID.
+
+    Removes the incident and all related data (sources, enrichments, articles).
+    """
+    if not request.incident_ids:
+        raise HTTPException(status_code=400, detail="No incident IDs provided")
+
+    conn = get_api_connection(read_only=False)
+    try:
+        placeholders = ",".join(["?"] * len(request.incident_ids))
+        ids = request.incident_ids
+
+        # Delete from all related tables
+        tables = [
+            "incident_enrichments_flat",
+            "incident_enrichments",
+            "incident_sources",
+            "source_events",
+            "articles",
+        ]
+        deleted_counts = {}
+        for table in tables:
+            try:
+                cur = conn.execute(
+                    f"DELETE FROM {table} WHERE incident_id IN ({placeholders})", ids
+                )
+                deleted_counts[table] = cur.rowcount
+            except Exception:
+                deleted_counts[table] = 0
+
+        # Delete incidents themselves
+        cur = conn.execute(
+            f"DELETE FROM incidents WHERE incident_id IN ({placeholders})", ids
+        )
+        deleted_counts["incidents"] = cur.rowcount
+
+        conn.commit()
+
+        logger.info(f"Deleted {deleted_counts['incidents']} incidents: {ids[:5]}{'...' if len(ids) > 5 else ''}")
+
+        return {
+            "success": True,
+            "deleted": deleted_counts["incidents"],
+            "details": deleted_counts,
+            "message": f"Deleted {deleted_counts['incidents']} incident(s) and related data",
+        }
+    except Exception as e:
+        logger.error(f"Delete incidents failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+    finally:
+        conn.close()
+
+
+@router.post("/incidents/clear-all")
+async def clear_all_incidents(
+    _: bool = Depends(authenticate),
+):
+    """
+    Delete ALL incidents and related data. Resets the database to empty state.
+
+    WARNING: This is irreversible. Make a backup first!
+    """
+    conn = get_api_connection(read_only=False)
+    try:
+        tables = [
+            "incident_enrichments_flat",
+            "incident_enrichments",
+            "incident_sources",
+            "source_events",
+            "articles",
+            "incidents",
+        ]
+        deleted_counts = {}
+        for table in tables:
+            try:
+                cur = conn.execute(f"SELECT COUNT(*) FROM {table}")
+                count = cur.fetchone()[0]
+                conn.execute(f"DELETE FROM {table}")
+                deleted_counts[table] = count
+            except Exception:
+                deleted_counts[table] = 0
+
+        conn.commit()
+
+        # Vacuum to reclaim space
+        conn.execute("VACUUM")
+
+        total = sum(deleted_counts.values())
+        logger.warning(f"CLEARED ALL DATA: {deleted_counts}")
+
+        return {
+            "success": True,
+            "total_deleted": total,
+            "details": deleted_counts,
+            "message": f"Cleared all data from database. {deleted_counts.get('incidents', 0)} incidents removed.",
+        }
+    except Exception as e:
+        logger.error(f"Clear all failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Clear all failed: {str(e)}")
+    finally:
+        conn.close()
