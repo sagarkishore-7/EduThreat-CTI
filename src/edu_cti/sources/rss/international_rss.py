@@ -59,28 +59,28 @@ INTERNATIONAL_FEEDS = [
         ["universidade", "faculdade", "escola", "educação", "estudante",
          "university", "school", "ransomware"],
     ),
-    # Japanese
+    # Japanese - JPCERT/CC alerts feed
     (
         "jpcert",
-        "https://www.jpcert.or.jp/rss/jpcert-wr.rdf",
+        "https://www.jpcert.or.jp/rss/jpcert-alert.xml",
         "ja",
         "Japan",
         ["大学", "学校", "教育", "サイバー", "ランサムウェア",
          "university", "school", "education", "ransomware"],
     ),
-    # South Korean
+    # South Korean - KrCERT/CC security notices
     (
         "krcert",
-        "https://www.krcert.or.kr/rss/secNotice.do",
+        "https://knvd.krcert.or.kr/rss.do",
         "ko",
         "South Korea",
         ["대학교", "대학", "학교", "교육", "사이버",
          "university", "school", "education", "ransomware"],
     ),
-    # Australian
+    # Australian - AusCERT security bulletins
     (
         "auscert",
-        "https://auscert.org.au/rss/bulletins/",
+        "https://www.auscert.org.au/rss/bulletins/",
         "en",
         "Australia",
         ["university", "school", "education", "TAFE", "college",
@@ -137,10 +137,13 @@ def build_international_rss_incidents(
         logger.info(f"Fetching international RSS: {feed_name} ({country})...")
 
         try:
-            resp = requests.get(feed_url, timeout=30, headers={
+            resp = requests.get(feed_url, timeout=45, headers={
                 "User-Agent": "Mozilla/5.0 (compatible; EduThreat-CTI/2.0)",
                 "Accept": "application/xml, application/rss+xml, application/atom+xml, text/xml",
             })
+            if resp.status_code == 404:
+                logger.warning(f"{feed_name} RSS feed returned 404 — URL may have changed: {feed_url}")
+                continue
             resp.raise_for_status()
         except requests.RequestException as e:
             logger.warning(f"Failed to fetch {feed_name} RSS: {e}")

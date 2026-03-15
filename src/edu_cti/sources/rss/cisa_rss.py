@@ -106,15 +106,16 @@ def build_cisa_rss_incidents(
             pub_date = None
             date_precision = "unknown"
             if pub_date_str:
-                pub_date = parse_rss_date(pub_date_str)
-                if pub_date:
+                pub_date_dt = parse_rss_date(pub_date_str)
+                if pub_date_dt:
                     date_precision = "day"
-                    # Check cutoff
+                    pub_date = pub_date_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                    # Check cutoff (compare naive datetimes)
                     try:
-                        dt = datetime.fromisoformat(pub_date.replace("Z", "+00:00").split("+")[0])
-                        if dt < cutoff:
+                        dt_naive = pub_date_dt.replace(tzinfo=None)
+                        if dt_naive < cutoff:
                             continue
-                    except (ValueError, IndexError):
+                    except (ValueError, TypeError):
                         pass
 
             source_event_id = link

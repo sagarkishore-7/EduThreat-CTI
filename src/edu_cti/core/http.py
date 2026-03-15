@@ -325,6 +325,18 @@ class HttpClient:
         if not PLAYWRIGHT_AVAILABLE:
             raise RuntimeError("Playwright not available")
 
+        # When running in a background thread spawned from an asyncio app (e.g. FastAPI),
+        # Playwright sync API may detect the parent's event loop and refuse to run.
+        # Fix: set a fresh event loop for this thread so sync_playwright() works.
+        import asyncio
+        try:
+            loop = asyncio.get_event_loop()
+            if loop.is_running():
+                asyncio.set_event_loop(asyncio.new_event_loop())
+        except RuntimeError:
+            # No event loop in this thread — that's fine
+            asyncio.set_event_loop(asyncio.new_event_loop())
+
         profile = self._profile
 
         # Use Stealth wrapper to auto-apply evasion scripts to all pages
