@@ -41,6 +41,9 @@ from pathlib import Path
 # Module-level cancel event — set by pipeline manager to request graceful stop
 _cancel_event = threading.Event()
 
+# Module-level progress dict — updated during execution, read by pipeline manager
+_progress = {"step": "", "detail": "", "percent": 0}
+
 
 def dict_to_incident(incident_dict: Dict, conn) -> BaseIncident:
     """Convert incident dict to BaseIncident."""
@@ -180,6 +183,10 @@ def fetch_articles_phase(
 
             incident_id = incident["incident_id"]
             progress_pct = (idx / total_incidents) * 100
+            # Update module-level progress for pipeline manager
+            _progress["step"] = "Fetching articles"
+            _progress["detail"] = f"{idx}/{total_incidents}"
+            _progress["percent"] = int(progress_pct * 0.4)  # Fetching is 0-40%
             if idx % 10 == 0 or idx == total_incidents:  # Log every 10th or last
                 logger.info(f"Fetching [{idx}/{total_incidents}] ({progress_pct:.1f}%)")
             
@@ -377,10 +384,14 @@ def enrich_articles_phase(
             
             incident_id = incident_dict["incident_id"]
             stats["processed"] += 1
-            
+
             # Calculate progress percentage - log every 10th or at milestones
             if total_expected > 0:
                 progress_pct = (stats["processed"] / total_expected) * 100
+                # Update module-level progress for pipeline manager
+                _progress["step"] = "LLM Enrichment"
+                _progress["detail"] = f"{stats['processed']}/{total_expected} ({stats.get('enriched', 0)} enriched)"
+                _progress["percent"] = 40 + int(progress_pct * 0.6)  # Enrichment is 40-100%
                 if stats["processed"] % 10 == 0 or progress_pct % 10 < 1:  # Every 10 or every 10%
                     logger.info(f"Enriching [{stats['processed']}/{total_expected}] ({progress_pct:.1f}%)")
             else:

@@ -242,11 +242,22 @@ class PipelineManager:
     # Phase implementations
     # ------------------------------------------------------------------
 
-    def _run_ingest(self, run: PipelineRun, params: Dict) -> Dict:
-        """Run Phase 1 ingestion (all groups)."""
+    @staticmethod
+    def _scale_percent(raw_percent: float, pmin: int, pmax: int) -> int:
+        """Map a 0-100 raw percent into the [pmin, pmax] range."""
+        return pmin + int((raw_percent / 100.0) * (pmax - pmin))
+
+    def _run_ingest(self, run: PipelineRun, params: Dict,
+                    progress_range: tuple = (0, 100), step_prefix: str = "") -> Dict:
+        """Run Phase 1 ingestion (all groups).
+
+        progress_range: (min_percent, max_percent) to map internal 0-100 into.
+        step_prefix: optional prefix for step text (e.g. "Phase 1: ").
+        """
         from src.edu_cti.core.db import get_connection, init_db
         from src.edu_cti.pipeline.phase1.__main__ import GROUP_COLLECTORS, _ingest_group
 
+        pmin, pmax = progress_range
         full_historical = params.get("full_historical", False)
         groups = params.get("groups", ["curated", "news", "rss", "api"])
         sources = params.get("sources")
@@ -262,10 +273,11 @@ class PipelineManager:
                 logger.info("Ingestion cancelled by user")
                 break
 
+            raw_pct = (i / len(groups)) * 100
             run.progress = {
-                "step": f"Ingesting {group}",
-                "detail": f"Group {i+1}/{len(groups)}",
-                "percent": int((i / len(groups)) * 100),
+                "step": f"{step_prefix}Ingesting {group}",
+                "detail": f"Group {i+1}/{len(groups)} — collecting from sources…",
+                "percent": self._scale_percent(raw_pct, pmin, pmax),
             }
 
             label, collector = GROUP_COLLECTORS[group]
@@ -280,29 +292,44 @@ class PipelineManager:
             try:
                 count = _ingest_group(conn, label, collector, **kwargs)
                 total_new += count
+                # Update detail after group finishes
+                run.progress = {
+                    "step": f"{step_prefix}Ingested {group}",
+                    "detail": f"{count} new incidents from {label}",
+                    "percent": self._scale_percent(((i + 1) / len(groups)) * 100, pmin, pmax),
+                }
                 logger.info(f"{label}: {count} new incidents")
             except Exception as e:
                 logger.error(f"Error ingesting {label}: {e}", exc_info=True)
 
         conn.close()
-        run.progress = {"step": "Complete", "detail": "", "percent": 100}
+        run.progress = {"step": f"{step_prefix}Ingestion complete", "detail": f"{total_new} total new incidents", "percent": pmax}
         return {"new_incidents": total_new, "groups": groups, "full_historical": full_historical}
 
-    def _run_enrich(self, run: PipelineRun, params: Dict) -> Dict:
-        """Run Phase 2 LLM enrichment."""
+    def _run_enrich(self, run: PipelineRun, params: Dict,
+                    progress_range: tuple = (0, 100), step_prefix: str = "") -> Dict:
+        """Run Phase 2 LLM enrichment.
+
+        progress_range: (min_percent, max_percent) to map internal 0-100 into.
+        step_prefix: optional prefix for step text (e.g. "Phase 2: ").
+        """
         import sys
 
+        pmin, pmax = progress_range
         limit = params.get("limit")
         rate_limit_delay = params.get("rate_limit_delay", 2.0)
         export_csv = params.get("export_csv", False)
         from src.edu_cti.core.config import ENRICHMENT_WORKERS
         workers = params.get("workers", ENRICHMENT_WORKERS)
 
-        run.progress = {"step": "Starting enrichment", "detail": "", "percent": 0}
+        run.progress = {"step": f"{step_prefix}Starting enrichment", "detail": "", "percent": pmin}
 
         # Clear any previous cancel signal so this run starts fresh
-        from src.edu_cti.pipeline.phase2.__main__ import _cancel_event
+        from src.edu_cti.pipeline.phase2.__main__ import _cancel_event, _progress
         _cancel_event.clear()
+        _progress["step"] = "Starting enrichment"
+        _progress["detail"] = ""
+        _progress["percent"] = 0
 
         # Build argv for phase2's argparse
         phase2_argv = []
@@ -316,13 +343,38 @@ class PipelineManager:
             phase2_argv.append("--export-csv")
         phase2_argv.extend(["--log-level", "INFO"])
 
+        # Run phase2 in a sub-thread so we can poll progress from this thread
+        phase2_error = [None]  # mutable container for thread result
+
+        def _run_phase2():
+            nonlocal original_argv
+            try:
+                from src.edu_cti.pipeline.phase2.__main__ import main as phase2_main
+                phase2_main()
+            except Exception as e:
+                phase2_error[0] = e
+            finally:
+                sys.argv = original_argv
+
         original_argv = sys.argv
         sys.argv = ["phase2"] + phase2_argv
-        try:
-            from src.edu_cti.pipeline.phase2.__main__ import main as phase2_main
-            phase2_main()
-        finally:
-            sys.argv = original_argv
+
+        phase2_thread = threading.Thread(target=_run_phase2, daemon=True, name="phase2-exec")
+        phase2_thread.start()
+
+        # Poll progress from _progress dict until phase2 finishes
+        while phase2_thread.is_alive():
+            raw_pct = _progress.get("percent", 0)
+            run.progress = {
+                "step": f"{step_prefix}{_progress.get('step', '')}",
+                "detail": _progress.get("detail", ""),
+                "percent": self._scale_percent(raw_pct, pmin, pmax),
+            }
+            phase2_thread.join(timeout=2.0)
+
+        # Re-raise any error from phase2
+        if phase2_error[0] is not None:
+            raise phase2_error[0]
 
         # Get enrichment stats
         from src.edu_cti.core.db import get_connection, init_db
@@ -333,7 +385,7 @@ class PipelineManager:
         stats = get_enrichment_stats(conn)
         conn.close()
 
-        run.progress = {"step": "Complete", "detail": "", "percent": 100}
+        run.progress = {"step": f"{step_prefix}Enrichment complete", "detail": "", "percent": pmax}
         return {"enrichment_stats": stats}
 
     def _run_historical(self, run: PipelineRun, params: Dict) -> Dict:
@@ -341,26 +393,24 @@ class PipelineManager:
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
 
-        # Phase 1: Full historical ingest
-        run.progress = {"step": "Phase 1: Historical ingestion", "detail": "Starting...", "percent": 0}
+        # Phase 1: Full historical ingest (0-40% of overall progress)
         ingest_result = self._run_ingest(run, {
             "full_historical": True,
             "groups": ["curated", "news", "rss", "api"],
             "rss_max_age_days": 365,
-        })
+        }, progress_range=(0, 40), step_prefix="Phase 1: ")
 
         if run._cancel_requested:
             return {"ingest": ingest_result, "enrich": None, "cancelled": True}
 
-        # Phase 2: Enrich
+        # Phase 2: Enrich (40-100% of overall progress)
         enrich_result = None
         if not skip_enrich:
-            run.progress = {"step": "Phase 2: LLM Enrichment", "detail": "Starting...", "percent": 50}
             enrich_result = self._run_enrich(run, {
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
                 "export_csv": True,
-            })
+            }, progress_range=(40, 100), step_prefix="Phase 2: ")
 
         run.progress = {"step": "Complete", "detail": "", "percent": 100}
         return {"ingest": ingest_result, "enrich": enrich_result}
@@ -370,26 +420,24 @@ class PipelineManager:
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
 
-        # Phase 1: Incremental ingest
-        run.progress = {"step": "Phase 1: Incremental ingestion", "detail": "", "percent": 0}
+        # Phase 1: Incremental ingest (0-40% of overall progress)
         ingest_result = self._run_ingest(run, {
             "full_historical": False,
             "groups": ["curated", "news", "rss", "api"],
             "rss_max_age_days": 7,
-        })
+        }, progress_range=(0, 40), step_prefix="Phase 1: ")
 
         if run._cancel_requested:
             return {"ingest": ingest_result, "enrich": None, "cancelled": True}
 
-        # Phase 2: Enrich unenriched
+        # Phase 2: Enrich unenriched (40-100% of overall progress)
         enrich_result = None
         if not skip_enrich:
-            run.progress = {"step": "Phase 2: Enrichment", "detail": "", "percent": 50}
             enrich_result = self._run_enrich(run, {
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
                 "export_csv": True,
-            })
+            }, progress_range=(40, 100), step_prefix="Phase 2: ")
 
         run.progress = {"step": "Complete", "detail": "", "percent": 100}
         return {"ingest": ingest_result, "enrich": enrich_result}
