@@ -44,7 +44,7 @@ COPY src/ ./src/
 COPY pyproject.toml setup.py ./
 
 # Install the package itself (so imports work as `src.edu_cti.*`)
-RUN pip install --no-cache-dir -e .
+RUN pip install --no-cache-dir .
 
 # Copy scripts for migration and utilities
 COPY scripts/ ./scripts/

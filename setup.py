@@ -3,8 +3,11 @@
 from setuptools import setup, find_packages
 
 # Read README for long description
-with open("README.md", "r", encoding="utf-8") as fh:
-    long_description = fh.read()
+try:
+    with open("README.md", "r", encoding="utf-8") as fh:
+        long_description = fh.read()
+except FileNotFoundError:
+    long_description = "EduThreat-CTI: Real-time cyber threat intelligence for education sector"
 
 # Read requirements
 with open("requirements.txt", "r", encoding="utf-8") as fh:
