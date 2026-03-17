@@ -528,6 +528,89 @@ class OperationalImpactItem(BaseModel):
 
 
 # ============================================================
+# Extended Cross-Dimensional Analytics Models
+# ============================================================
+
+class InstitutionRiskItem(BaseModel):
+    """Institution type × attack category cross-reference."""
+    institution_type: str
+    attack_category: str
+    count: int
+
+
+class RecoveryByAttackTypeItem(BaseModel):
+    """Recovery/downtime stats per attack category."""
+    attack_category: str
+    avg_recovery_days: Optional[float] = None
+    avg_downtime_days: Optional[float] = None
+    incident_count: int
+
+
+class AttackVectorByInstitutionResponse(BaseModel):
+    """Attack vectors per institution type."""
+    institution_types: List[str]
+    vectors: List[str]
+    data: List[Dict[str, Any]]
+
+
+class BreachSeverityPoint(BaseModel):
+    """Monthly breach severity data point."""
+    month: str
+    incident_count: int
+    avg_records: Optional[float] = None
+    breach_count: int = 0
+
+
+class RansomPaymentByYearItem(BaseModel):
+    """Ransom demanded vs paid per year."""
+    year: Optional[str] = None
+    total_incidents: int = 0
+    demanded_count: int = 0
+    paid_count: int = 0
+    total_demanded: Optional[float] = None
+    total_paid: Optional[float] = None
+    payment_rate: float = 0.0
+
+
+class RansomwareFamilyTrendResponse(BaseModel):
+    """Ransomware family trends over time."""
+    families: List[str]
+    data: List[Dict[str, Any]]
+
+
+class ActorInstitutionResponse(BaseModel):
+    """Actor × institution type targeting matrix."""
+    actors: List[str]
+    institution_types: List[str]
+    data: List[Dict[str, Any]]
+
+
+class ActorTTPResponse(BaseModel):
+    """Actor MITRE ATT&CK tactic profiles."""
+    actors: List[str]
+    tactics: List[str]
+    data: List[Dict[str, Any]]
+
+
+class DisclosureTimelinePoint(BaseModel):
+    """Single disclosure delay data point."""
+    incident_date: str
+    disclosure_delay_days: int
+    country: str
+    transparency_level: Optional[str] = None
+
+
+class BreachByInstitutionItem(BaseModel):
+    """Breach stats per institution type."""
+    institution_type: str
+    total_incidents: int
+    breach_count: int
+    breach_rate: float
+    avg_records: Optional[float] = None
+    total_records: Optional[int] = None
+
+
+# ============================================================
 # Filter/Search Models
 # ============================================================
 

@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.5.0] - 2026-03-17
+
+### Cross-Dimensional Intelligence Analytics
+
+#### Added
+- **10 new analytics endpoints** for cross-dimensional threat intelligence:
+  - `GET /api/analytics/institution-risk-matrix` — institution type × attack category bubble matrix
+  - `GET /api/analytics/recovery-by-attack-type` — avg recovery/downtime days per attack category
+  - `GET /api/analytics/attack-vector-by-institution` — attack vector distribution per institution type
+  - `GET /api/analytics/breach-severity-timeline` — monthly incident count + avg records breached over time
+  - `GET /api/analytics/ransom-payment-by-year` — yearly demanded vs paid amounts with payment rate
+  - `GET /api/analytics/ransomware-family-trend` — top ransomware families by month (stacked)
+  - `GET /api/analytics/actor-institution-targeting` — threat actors × institution types heatmap
+  - `GET /api/analytics/actor-ttp-profile` — threat actors × MITRE tactics (parsed from JSON)
+  - `GET /api/analytics/disclosure-timeline` — disclosure delay scatter over time by country
+  - `GET /api/analytics/breach-by-institution-type` — breach rate and avg records per institution type
+- **10 new Pydantic response models** for structured API responses
+- **10 new SQL query functions** with cross-dimensional GROUP BY analytics leveraging 90+ enriched columns
+- All endpoints cached with 300s TTL for production performance
+
+---
+
 ## [2.4.2] - 2026-03-17
 
 ### MITRE Heatmap Fix & Admin Raw Data Viewer

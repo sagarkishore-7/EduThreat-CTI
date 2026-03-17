@@ -2,6 +2,33 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.5.0 (2026-03-17)
+
+**Focus**: Cross-Dimensional Intelligence Analytics — 10 New Endpoints
+
+### Key Features
+- 10 new analytics endpoints that cross-reference rich dimensions (attack type × institution type, actor × MITRE tactic, ransomware family trends, breach severity over time, disclosure patterns)
+- Institution Risk Matrix: shows which institution types face which threats
+- Recovery by Attack Type: avg recovery/downtime days per attack category
+- Attack Vector by Institution: are K-12 more vulnerable to phishing while universities face ransomware?
+- Breach Severity Timeline: are breaches getting larger over time?
+- Ransom Payment by Year: are institutions paying less ransom over time?
+- Ransomware Family Trend: which families are rising/declining?
+- Actor Institution Targeting: do specific actors specialize in targeting certain institution types?
+- Actor TTP Profile: what MITRE tactics does each actor use?
+- Disclosure Timeline: is disclosure getting faster? Which countries are slowest?
+- Data Breach by Institution Type: which institution types lose the most data?
+
+### Technical Details
+- 10 new SQL query functions with cross-dimensional GROUP BY analytics
+- 10 new Pydantic response models
+- All endpoints cached with 300s TTL
+
+### Breaking Changes
+None
+
+---
+
 ## Version 2.4.2 (2026-03-17)
 
 **Focus**: MITRE Heatmap Fix & Admin Raw Data Viewer

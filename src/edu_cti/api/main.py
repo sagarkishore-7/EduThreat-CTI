@@ -7,7 +7,7 @@ FastAPI application providing REST endpoints for the CTI dashboard.
 import logging
 import os
 from contextlib import asynccontextmanager
-from typing import Optional
+from typing import List, Optional
 from datetime import datetime
 
 from fastapi import FastAPI, Query, HTTPException, Depends, Response, Request
@@ -60,6 +60,17 @@ from .models import (
     UserImpactTotals,
     FinancialImpactByYear,
     OperationalImpactItem,
+    # Extended cross-dimensional analytics models
+    InstitutionRiskItem,
+    RecoveryByAttackTypeItem,
+    AttackVectorByInstitutionResponse,
+    BreachSeverityPoint,
+    RansomPaymentByYearItem,
+    RansomwareFamilyTrendResponse,
+    ActorInstitutionResponse,
+    ActorTTPResponse,
+    DisclosureTimelinePoint,
+    BreachByInstitutionItem,
 )
 from .database import (
     get_api_connection,
@@ -98,6 +109,17 @@ from .database import (
     get_transparency_metrics as get_transparency_metrics_db,
     get_user_impact_totals,
     get_raw_incident_data,
+    # Extended cross-dimensional analytics
+    get_institution_risk_matrix,
+    get_recovery_by_attack_type,
+    get_attack_vector_by_institution,
+    get_breach_severity_timeline,
+    get_ransom_payment_by_year,
+    get_ransomware_family_trend,
+    get_actor_institution_targeting,
+    get_actor_ttp_profile,
+    get_disclosure_timeline,
+    get_breach_by_institution_type,
 )
 from .cache import cache_get, cache_set
 
@@ -1195,6 +1217,190 @@ async def get_filters():
         return result
     except Exception as e:
         logger.error(f"Error getting filter options: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# Extended Cross-Dimensional Analytics
+# ============================================================
+
+@app.get("/api/analytics/institution-risk-matrix", response_model=List[InstitutionRiskItem], tags=["Analytics"])
+async def api_institution_risk_matrix():
+    """Institution type × attack category cross-tabulation."""
+    cache_key = "analytics:institution-risk-matrix"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_institution_risk_matrix(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting institution risk matrix: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/recovery-by-attack-type", response_model=List[RecoveryByAttackTypeItem], tags=["Analytics"])
+async def api_recovery_by_attack_type():
+    """Recovery and downtime by attack category."""
+    cache_key = "analytics:recovery-by-attack-type"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_recovery_by_attack_type(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting recovery by attack type: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/attack-vector-by-institution", response_model=AttackVectorByInstitutionResponse, tags=["Analytics"])
+async def api_attack_vector_by_institution(limit: int = Query(8, ge=1, le=20)):
+    """Attack vector distribution per institution type."""
+    cache_key = f"analytics:attack-vector-by-institution:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_attack_vector_by_institution(conn, limit=limit)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting attack vector by institution: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/breach-severity-timeline", response_model=List[BreachSeverityPoint], tags=["Analytics"])
+async def api_breach_severity_timeline(months: int = Query(60, ge=12, le=120)):
+    """Monthly incident count + avg records breached over time."""
+    cache_key = f"analytics:breach-severity-timeline:{months}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_breach_severity_timeline(conn, months=months)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting breach severity timeline: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/ransom-payment-by-year", response_model=List[RansomPaymentByYearItem], tags=["Analytics"])
+async def api_ransom_payment_by_year():
+    """Ransom demanded vs paid by year."""
+    cache_key = "analytics:ransom-payment-by-year"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_ransom_payment_by_year(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting ransom payment by year: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/ransomware-family-trend", response_model=RansomwareFamilyTrendResponse, tags=["Analytics"])
+async def api_ransomware_family_trend(limit: int = Query(8, ge=1, le=20)):
+    """Top ransomware families over time."""
+    cache_key = f"analytics:ransomware-family-trend:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_ransomware_family_trend(conn, limit=limit)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting ransomware family trend: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/actor-institution-targeting", response_model=ActorInstitutionResponse, tags=["Analytics"])
+async def api_actor_institution_targeting(limit: int = Query(12, ge=1, le=20)):
+    """Actor × institution type targeting matrix."""
+    cache_key = f"analytics:actor-institution-targeting:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_actor_institution_targeting(conn, limit=limit)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting actor institution targeting: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/actor-ttp-profile", response_model=ActorTTPResponse, tags=["Analytics"])
+async def api_actor_ttp_profile(limit: int = Query(8, ge=1, le=20)):
+    """Actor MITRE ATT&CK tactic profiles."""
+    cache_key = f"analytics:actor-ttp-profile:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_actor_ttp_profile(conn, limit=limit)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting actor TTP profile: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/disclosure-timeline", response_model=List[DisclosureTimelinePoint], tags=["Analytics"])
+async def api_disclosure_timeline():
+    """Disclosure delay over time by country."""
+    cache_key = "analytics:disclosure-timeline"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_disclosure_timeline(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting disclosure timeline: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/breach-by-institution-type", response_model=List[BreachByInstitutionItem], tags=["Analytics"])
+async def api_breach_by_institution_type():
+    """Breach rate and records per institution type."""
+    cache_key = "analytics:breach-by-institution-type"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_breach_by_institution_type(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting breach by institution type: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
