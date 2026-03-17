@@ -766,32 +766,59 @@ def get_mitre_tactics(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     )
     tactic_counts: Dict[str, int] = {}
     tactic_techniques: Dict[str, list] = {}
+    rows_checked = 0
+    rows_with_data = 0
     for row in cur.fetchall():
+        rows_checked += 1
         try:
             techniques = None
             # Try flat table JSON first
             if row["mitre_techniques_json"]:
-                techniques = json.loads(row["mitre_techniques_json"])
+                raw_json = row["mitre_techniques_json"]
+                techniques = json.loads(raw_json)
             # Fall back to enrichment_data JSON if flat is empty
             if (not techniques or techniques == []) and row["enrichment_data"]:
                 enrichment = json.loads(row["enrichment_data"])
                 techniques = enrichment.get("mitre_attack_techniques", [])
             if not techniques:
                 continue
+            rows_with_data += 1
             for t in techniques:
-                raw_tactic = t.get("tactic") or "unknown"
-                tactic = _normalize_mitre_tactic(raw_tactic)
+                # Handle both dict and string entries
+                if isinstance(t, str):
+                    # String like "T1078: Valid Accounts" — parse it
+                    t_str = t.strip()
+                    tactic_name = "Unknown"
+                    tech_id = ""
+                    tech_name = ""
+                    if t_str.startswith("T") and ":" in t_str:
+                        parts = t_str.split(":", 1)
+                        tech_id = parts[0].strip()
+                        tech_name = parts[1].strip() if len(parts) > 1 else ""
+                    elif t_str.startswith("T"):
+                        tech_id = t_str
+                    tactic = _normalize_mitre_tactic(tactic_name)
+                elif isinstance(t, dict):
+                    raw_tactic = t.get("tactic") or "unknown"
+                    tactic = _normalize_mitre_tactic(raw_tactic)
+                    tech_id = t.get("technique_id", "")
+                    tech_name = t.get("technique_name", "")
+                else:
+                    continue
                 tactic_counts[tactic] = tactic_counts.get(tactic, 0) + 1
-                tech_id = t.get("technique_id", "")
-                tech_name = t.get("technique_name", "")
                 if tech_id and tactic not in tactic_techniques:
                     tactic_techniques[tactic] = []
                 if tech_id:
                     entry = f"{tech_id}: {tech_name}"
-                    if entry not in tactic_techniques[tactic]:
+                    if entry not in tactic_techniques.get(tactic, []):
+                        if tactic not in tactic_techniques:
+                            tactic_techniques[tactic] = []
                         tactic_techniques[tactic].append(entry)
-        except Exception:
+        except Exception as e:
+            logger.warning(f"Error parsing MITRE data: {e}")
             continue
+
+    logger.info(f"MITRE heatmap: checked {rows_checked} rows, {rows_with_data} had technique data, {sum(tactic_counts.values())} total technique entries")
 
     result = []
     for tactic, count in sorted(tactic_counts.items(), key=lambda x: -x[1]):
@@ -1411,6 +1438,93 @@ def get_user_impact_totals(conn: sqlite3.Connection) -> Dict[str, Any]:
         """
     )
     return dict(cur.fetchone())
+
+
+def get_raw_incident_data(
+    conn: sqlite3.Connection,
+    incident_id: Optional[str] = None,
+    has_mitre: Optional[bool] = None,
+    attack_category: Optional[str] = None,
+    country: Optional[str] = None,
+    has_enrichment: Optional[bool] = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> Dict[str, Any]:
+    """
+    Get raw incident data from both tables for debugging/inspection.
+    Returns data from incident_enrichments_flat + incident_enrichments (JSON blob).
+    """
+    conditions = ["ef.is_education_related = 1"]
+    params: list = []
+
+    if incident_id:
+        conditions.append("ef.incident_id LIKE ?")
+        params.append(f"%{incident_id}%")
+    if has_mitre is True:
+        conditions.append("(ef.mitre_techniques_count > 0 OR ef.mitre_techniques_json IS NOT NULL)")
+    elif has_mitre is False:
+        conditions.append("(ef.mitre_techniques_count = 0 OR ef.mitre_techniques_count IS NULL)")
+        conditions.append("ef.mitre_techniques_json IS NULL")
+    if attack_category:
+        conditions.append("ef.attack_category LIKE ?")
+        params.append(f"%{attack_category}%")
+    if country:
+        conditions.append("ef.country LIKE ?")
+        params.append(f"%{country}%")
+    if has_enrichment is True:
+        conditions.append("ie.enrichment_data IS NOT NULL")
+    elif has_enrichment is False:
+        conditions.append("ie.enrichment_data IS NULL")
+
+    where_clause = " AND ".join(conditions)
+
+    # Count total
+    count_sql = f"""
+        SELECT COUNT(*) as total
+        FROM incident_enrichments_flat ef
+        LEFT JOIN incident_enrichments ie ON ef.incident_id = ie.incident_id
+        WHERE {where_clause}
+    """
+    total = conn.execute(count_sql, params).fetchone()["total"]
+
+    # Fetch rows
+    data_sql = f"""
+        SELECT
+            ef.*,
+            ie.enrichment_data,
+            i.incident_date,
+            i.title
+        FROM incident_enrichments_flat ef
+        LEFT JOIN incident_enrichments ie ON ef.incident_id = ie.incident_id
+        LEFT JOIN incidents i ON ef.incident_id = i.incident_id
+        WHERE {where_clause}
+        ORDER BY ef.incident_id
+        LIMIT ? OFFSET ?
+    """
+    cur = conn.execute(data_sql, params + [limit, offset])
+    rows = []
+    for row in cur.fetchall():
+        r = dict(row)
+        # Parse enrichment_data JSON for display
+        if r.get("enrichment_data"):
+            try:
+                r["enrichment_data"] = json.loads(r["enrichment_data"])
+            except Exception:
+                pass  # leave as string
+        # Parse mitre_techniques_json for display
+        if r.get("mitre_techniques_json"):
+            try:
+                r["mitre_techniques_json"] = json.loads(r["mitre_techniques_json"])
+            except Exception:
+                pass
+        rows.append(r)
+
+    return {
+        "total": total,
+        "limit": limit,
+        "offset": offset,
+        "incidents": rows,
+    }
 
 
 def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:

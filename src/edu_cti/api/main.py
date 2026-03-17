@@ -97,6 +97,7 @@ from .database import (
     get_recovery_effectiveness,
     get_transparency_metrics as get_transparency_metrics_db,
     get_user_impact_totals,
+    get_raw_incident_data,
 )
 from .cache import cache_get, cache_set
 
@@ -1194,6 +1195,40 @@ async def get_filters():
         return result
     except Exception as e:
         logger.error(f"Error getting filter options: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# Debug / Raw Data Viewer Endpoint (Admin)
+# ============================================================
+
+@app.get("/api/admin/raw-incidents", tags=["Admin"])
+async def get_raw_incidents(
+    incident_id: Optional[str] = Query(None, description="Filter by incident ID (partial match)"),
+    has_mitre: Optional[bool] = Query(None, description="Filter by MITRE data presence"),
+    attack_category: Optional[str] = Query(None, description="Filter by attack category"),
+    country: Optional[str] = Query(None, description="Filter by country"),
+    has_enrichment: Optional[bool] = Query(None, description="Filter by enrichment JSON presence"),
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    """Get raw incident data from all tables for debugging/inspection."""
+    try:
+        conn = get_api_connection()
+        data = get_raw_incident_data(
+            conn,
+            incident_id=incident_id,
+            has_mitre=has_mitre,
+            attack_category=attack_category,
+            country=country,
+            has_enrichment=has_enrichment,
+            limit=limit,
+            offset=offset,
+        )
+        conn.close()
+        return data
+    except Exception as e:
+        logger.error(f"Error getting raw incidents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
