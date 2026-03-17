@@ -2,6 +2,23 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.4.2 (2026-03-17)
+
+**Focus**: MITRE Heatmap Fix & Admin Raw Data Viewer
+
+### Key Fixes
+- MITRE ATT&CK heatmap was showing all zeros because `tactic` field is null in stored technique JSON — added technique-ID-to-tactic lookup map (140+ techniques) to resolve tactics from IDs like T1566 → Initial Access
+- Collapsed "unknown" and "other" initial access method categories into "Unknown / Other" to eliminate ambiguity
+
+### Key Features
+- Raw Data Viewer in admin panel for inspecting DB columns and enrichment JSON (filters: incident ID, attack category, country, has MITRE, has enrichment)
+- New `/api/admin/raw-incidents` endpoint with filter params and pagination
+
+### Breaking Changes
+None
+
+---
+
 ## Version 2.4.1 (2026-03-17)
 
 **Focus**: Enrichment Pipeline Reliability Fix

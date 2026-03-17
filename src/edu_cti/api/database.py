@@ -703,6 +703,113 @@ def get_attack_vectors(
     ]
 
 
+# MITRE ATT&CK technique ID → tactic mapping (covers the most common techniques)
+# Source: https://attack.mitre.org/techniques/
+_TECHNIQUE_TO_TACTIC: Dict[str, str] = {
+    # Reconnaissance
+    "T1595": "Reconnaissance", "T1592": "Reconnaissance", "T1589": "Reconnaissance",
+    "T1590": "Reconnaissance", "T1591": "Reconnaissance", "T1598": "Reconnaissance",
+    "T1597": "Reconnaissance", "T1596": "Reconnaissance", "T1593": "Reconnaissance",
+    "T1594": "Reconnaissance",
+    # Resource Development
+    "T1583": "Resource Development", "T1584": "Resource Development", "T1587": "Resource Development",
+    "T1585": "Resource Development", "T1586": "Resource Development", "T1588": "Resource Development",
+    "T1608": "Resource Development",
+    # Initial Access
+    "T1189": "Initial Access", "T1190": "Initial Access", "T1133": "Initial Access",
+    "T1200": "Initial Access", "T1566": "Initial Access", "T1091": "Initial Access",
+    "T1195": "Initial Access", "T1199": "Initial Access", "T1078": "Initial Access",
+    "T1659": "Initial Access",
+    # Execution
+    "T1059": "Execution", "T1609": "Execution", "T1610": "Execution",
+    "T1203": "Execution", "T1559": "Execution", "T1106": "Execution",
+    "T1053": "Execution", "T1129": "Execution", "T1072": "Execution",
+    "T1569": "Execution", "T1204": "Execution", "T1047": "Execution",
+    "T1651": "Execution",
+    # Persistence
+    "T1098": "Persistence", "T1197": "Persistence", "T1547": "Persistence",
+    "T1037": "Persistence", "T1176": "Persistence", "T1554": "Persistence",
+    "T1136": "Persistence", "T1543": "Persistence", "T1546": "Persistence",
+    "T1133": "Persistence", "T1574": "Persistence", "T1525": "Persistence",
+    "T1556": "Persistence", "T1137": "Persistence", "T1542": "Persistence",
+    "T1053": "Persistence", "T1505": "Persistence", "T1205": "Persistence",
+    # Privilege Escalation
+    "T1548": "Privilege Escalation", "T1134": "Privilege Escalation",
+    "T1068": "Privilege Escalation", "T1484": "Privilege Escalation",
+    "T1611": "Privilege Escalation",
+    # Defense Evasion
+    "T1548": "Defense Evasion", "T1197": "Defense Evasion", "T1140": "Defense Evasion",
+    "T1006": "Defense Evasion", "T1480": "Defense Evasion", "T1211": "Defense Evasion",
+    "T1222": "Defense Evasion", "T1564": "Defense Evasion", "T1562": "Defense Evasion",
+    "T1070": "Defense Evasion", "T1202": "Defense Evasion", "T1036": "Defense Evasion",
+    "T1556": "Defense Evasion", "T1578": "Defense Evasion", "T1112": "Defense Evasion",
+    "T1601": "Defense Evasion", "T1599": "Defense Evasion", "T1027": "Defense Evasion",
+    "T1647": "Defense Evasion", "T1542": "Defense Evasion", "T1055": "Defense Evasion",
+    "T1620": "Defense Evasion", "T1207": "Defense Evasion", "T1014": "Defense Evasion",
+    "T1218": "Defense Evasion", "T1216": "Defense Evasion", "T1221": "Defense Evasion",
+    "T1205": "Defense Evasion", "T1127": "Defense Evasion", "T1535": "Defense Evasion",
+    "T1550": "Defense Evasion", "T1078": "Defense Evasion", "T1497": "Defense Evasion",
+    "T1600": "Defense Evasion", "T1220": "Defense Evasion",
+    # Credential Access
+    "T1557": "Credential Access", "T1110": "Credential Access", "T1555": "Credential Access",
+    "T1212": "Credential Access", "T1187": "Credential Access", "T1606": "Credential Access",
+    "T1056": "Credential Access", "T1556": "Credential Access", "T1111": "Credential Access",
+    "T1621": "Credential Access", "T1040": "Credential Access", "T1003": "Credential Access",
+    "T1528": "Credential Access", "T1558": "Credential Access", "T1539": "Credential Access",
+    "T1649": "Credential Access",
+    # Discovery
+    "T1087": "Discovery", "T1010": "Discovery", "T1217": "Discovery",
+    "T1580": "Discovery", "T1538": "Discovery", "T1526": "Discovery",
+    "T1619": "Discovery", "T1613": "Discovery", "T1622": "Discovery",
+    "T1482": "Discovery", "T1083": "Discovery", "T1615": "Discovery",
+    "T1046": "Discovery", "T1135": "Discovery", "T1040": "Discovery",
+    "T1201": "Discovery", "T1120": "Discovery", "T1069": "Discovery",
+    "T1057": "Discovery", "T1012": "Discovery", "T1018": "Discovery",
+    "T1518": "Discovery", "T1082": "Discovery", "T1614": "Discovery",
+    "T1016": "Discovery", "T1049": "Discovery", "T1033": "Discovery",
+    "T1007": "Discovery", "T1124": "Discovery", "T1497": "Discovery",
+    # Lateral Movement
+    "T1210": "Lateral Movement", "T1534": "Lateral Movement", "T1570": "Lateral Movement",
+    "T1563": "Lateral Movement", "T1021": "Lateral Movement", "T1091": "Lateral Movement",
+    "T1080": "Lateral Movement", "T1550": "Lateral Movement",
+    # Collection
+    "T1557": "Collection", "T1560": "Collection", "T1123": "Collection",
+    "T1119": "Collection", "T1185": "Collection", "T1115": "Collection",
+    "T1530": "Collection", "T1602": "Collection", "T1213": "Collection",
+    "T1005": "Collection", "T1039": "Collection", "T1025": "Collection",
+    "T1074": "Collection", "T1114": "Collection", "T1056": "Collection",
+    "T1113": "Collection", "T1125": "Collection",
+    # Command and Control
+    "T1071": "Command and Control", "T1092": "Command and Control",
+    "T1132": "Command and Control", "T1001": "Command and Control",
+    "T1568": "Command and Control", "T1573": "Command and Control",
+    "T1008": "Command and Control", "T1105": "Command and Control",
+    "T1104": "Command and Control", "T1095": "Command and Control",
+    "T1571": "Command and Control", "T1572": "Command and Control",
+    "T1090": "Command and Control", "T1219": "Command and Control",
+    "T1205": "Command and Control", "T1102": "Command and Control",
+    # Exfiltration
+    "T1020": "Exfiltration", "T1030": "Exfiltration", "T1048": "Exfiltration",
+    "T1041": "Exfiltration", "T1011": "Exfiltration", "T1052": "Exfiltration",
+    "T1567": "Exfiltration", "T1029": "Exfiltration", "T1537": "Exfiltration",
+    # Impact
+    "T1531": "Impact", "T1485": "Impact", "T1486": "Impact",
+    "T1565": "Impact", "T1491": "Impact", "T1561": "Impact",
+    "T1499": "Impact", "T1657": "Impact", "T1495": "Impact",
+    "T1490": "Impact", "T1498": "Impact", "T1496": "Impact",
+    "T1489": "Impact", "T1529": "Impact",
+}
+
+
+def _resolve_tactic_from_technique_id(tech_id: str) -> Optional[str]:
+    """Look up the MITRE tactic from a technique ID. Returns None if unknown."""
+    if not tech_id:
+        return None
+    # Strip sub-technique suffix (e.g., T1566.001 → T1566)
+    base_id = tech_id.split(".")[0].strip().upper()
+    return _TECHNIQUE_TO_TACTIC.get(base_id)
+
+
 def _normalize_mitre_tactic(raw: str) -> str:
     """Normalize a MITRE tactic value to the canonical display name.
 
@@ -788,7 +895,6 @@ def get_mitre_tactics(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
                 if isinstance(t, str):
                     # String like "T1078: Valid Accounts" — parse it
                     t_str = t.strip()
-                    tactic_name = "Unknown"
                     tech_id = ""
                     tech_name = ""
                     if t_str.startswith("T") and ":" in t_str:
@@ -797,12 +903,17 @@ def get_mitre_tactics(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
                         tech_name = parts[1].strip() if len(parts) > 1 else ""
                     elif t_str.startswith("T"):
                         tech_id = t_str
-                    tactic = _normalize_mitre_tactic(tactic_name)
+                    # Resolve tactic from technique ID
+                    tactic = _resolve_tactic_from_technique_id(tech_id) or "Unknown"
                 elif isinstance(t, dict):
-                    raw_tactic = t.get("tactic") or "unknown"
-                    tactic = _normalize_mitre_tactic(raw_tactic)
+                    raw_tactic = t.get("tactic")
                     tech_id = t.get("technique_id", "")
                     tech_name = t.get("technique_name", "")
+                    # If tactic is null/empty, resolve from technique ID
+                    if raw_tactic:
+                        tactic = _normalize_mitre_tactic(raw_tactic)
+                    else:
+                        tactic = _resolve_tactic_from_technique_id(tech_id) or "Unknown"
                 else:
                     continue
                 tactic_counts[tactic] = tactic_counts.get(tactic, 0) + 1
@@ -838,7 +949,13 @@ def get_initial_access_methods(
     cur = conn.execute(
         """
         SELECT
-            COALESCE(initial_access_vector, attack_vector, 'unknown') as category,
+            CASE
+                WHEN COALESCE(initial_access_vector, attack_vector) IN ('unknown', 'other', 'Unknown', 'Other')
+                    THEN 'Unknown / Other'
+                WHEN initial_access_vector IS NULL AND attack_vector IS NULL
+                    THEN 'Unknown / Other'
+                ELSE COALESCE(initial_access_vector, attack_vector)
+            END as category,
             COUNT(*) as count
         FROM incident_enrichments_flat
         WHERE is_education_related = 1

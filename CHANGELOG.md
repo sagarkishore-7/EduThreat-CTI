@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.2] - 2026-03-17
+
+### MITRE Heatmap Fix & Admin Raw Data Viewer
+
+#### Fixed
+- **MITRE ATT&CK heatmap showing all zeros**: Root cause was `tactic` field stored as `null` in technique JSON. Added a 140+ technique-ID-to-tactic lookup map (`_TECHNIQUE_TO_TACTIC`) that resolves tactics from technique IDs (e.g., T1566 → Initial Access, T1486 → Impact) when the tactic field is null
+- **Initial access "unknown" vs "other" ambiguity**: Collapsed both values into "Unknown / Other" since the LLM cannot reliably distinguish between unreported and uncategorized access methods
+
+#### Added
+- **Raw Data Viewer** in admin panel: collapsible section with filters (incident ID, attack category, country, has MITRE, has enrichment JSON) and expandable rows showing all flat columns, MITRE JSON, and full enrichment JSON with copy buttons
+- **`GET /api/admin/raw-incidents`** endpoint with filter params and pagination for raw DB inspection
+
+---
+
 ## [2.4.1] - 2026-03-17
 
 ### Enrichment Pipeline Reliability Fix
