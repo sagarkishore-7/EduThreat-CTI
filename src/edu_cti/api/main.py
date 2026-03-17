@@ -39,6 +39,27 @@ from .models import (
     RegulatoryImpact,
     RecoveryMetrics,
     TransparencyMetrics,
+    # Advanced analytics models
+    AttackTrendPoint,
+    AttackTrendsResponse,
+    MitreTacticItem,
+    RansomwareTimelineItem,
+    RansomwareFamilyDetail,
+    RansomEconomics,
+    RecoveryComparison,
+    RecoveryComparisonResponse,
+    RansomwareGeoItem,
+    ActorTimelinePoint,
+    ActorRansomwareMatrixResponse,
+    ActorTargetingItem,
+    DataImpactStats,
+    RegulatoryImpactStats,
+    RecoveryEffectiveness,
+    TransparencyLevel,
+    TransparencyStats,
+    UserImpactTotals,
+    FinancialImpactByYear,
+    OperationalImpactItem,
 )
 from .database import (
     get_api_connection,
@@ -52,6 +73,30 @@ from .database import (
     get_recent_incidents,
     get_threat_actors,
     get_filter_options,
+    # Advanced analytics
+    get_attack_trends,
+    get_attack_vectors,
+    get_mitre_tactics,
+    get_initial_access_methods,
+    get_system_impact_stats,
+    get_ransomware_timeline,
+    get_ransomware_families_detail,
+    get_ransom_economics,
+    get_ransomware_recovery_comparison,
+    get_ransomware_geo,
+    get_threat_actor_categories,
+    get_threat_actor_motivations,
+    get_threat_actor_timeline,
+    get_actor_ransomware_matrix,
+    get_actor_targeting,
+    get_institution_types,
+    get_operational_impact,
+    get_financial_impact_by_year,
+    get_data_impact_stats,
+    get_regulatory_impact_stats,
+    get_recovery_effectiveness,
+    get_transparency_metrics as get_transparency_metrics_db,
+    get_user_impact_totals,
 )
 from .cache import cache_get, cache_set
 
@@ -691,6 +736,440 @@ async def get_threat_actor_analytics(limit: int = Query(20, ge=1, le=100)):
         return result
     except Exception as e:
         logger.error(f"Error getting threat actor analytics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# Advanced Analytics Endpoints
+# ============================================================
+
+@app.get("/api/analytics/attack-trends", tags=["Analytics"])
+async def get_attack_trends_endpoint(months: int = Query(36, ge=1, le=120)):
+    """Get attack trends over time by category (stacked area chart)."""
+    cache_key = f"analytics:attack-trends:{months}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_attack_trends(conn, months=months)
+        conn.close()
+        result = {"data": data, "total": len(data)}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting attack trends: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/attack-vectors", tags=["Analytics"])
+async def get_attack_vectors_endpoint(limit: int = Query(10, ge=1, le=50)):
+    """Get attack vector distribution."""
+    cache_key = f"analytics:attack-vectors:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_attack_vectors(conn, limit=limit)
+        total = sum(d["count"] for d in data)
+        conn.close()
+        result = {"data": data, "total": total}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting attack vectors: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/mitre-tactics", tags=["Analytics"])
+async def get_mitre_tactics_endpoint():
+    """Get MITRE ATT&CK tactic distribution."""
+    cache_key = "analytics:mitre-tactics"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_mitre_tactics(conn)
+        conn.close()
+        result = {"data": data, "total": sum(d["count"] for d in data)}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting MITRE tactics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/initial-access", tags=["Analytics"])
+async def get_initial_access_endpoint(limit: int = Query(12, ge=1, le=50)):
+    """Get initial access method distribution."""
+    cache_key = f"analytics:initial-access:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_initial_access_methods(conn, limit=limit)
+        total = sum(d["count"] for d in data)
+        conn.close()
+        result = {"data": data, "total": total}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting initial access methods: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/system-impact", tags=["Analytics"])
+async def get_system_impact_endpoint():
+    """Get system impact statistics."""
+    cache_key = "analytics:system-impact"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_system_impact_stats(conn)
+        conn.close()
+        result = {"data": data, "total": sum(d["count"] for d in data)}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting system impact: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/ransomware-timeline", tags=["Analytics"])
+async def get_ransomware_timeline_endpoint(limit: int = Query(15, ge=1, le=50)):
+    """Get ransomware family activity periods."""
+    cache_key = f"analytics:ransomware-timeline:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_ransomware_timeline(conn, limit=limit)
+        conn.close()
+        result = {"data": data, "total": len(data)}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting ransomware timeline: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/ransomware-families-detail", tags=["Analytics"])
+async def get_ransomware_families_detail_endpoint(limit: int = Query(15, ge=1, le=50)):
+    """Get enhanced ransomware family stats."""
+    cache_key = f"analytics:ransomware-families-detail:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_ransomware_families_detail(conn, limit=limit)
+        conn.close()
+        result = {"data": data, "total": len(data)}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting ransomware families detail: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/ransom-economics", tags=["Analytics"])
+async def get_ransom_economics_endpoint():
+    """Get ransom demand/payment economics."""
+    cache_key = "analytics:ransom-economics"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_ransom_economics(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting ransom economics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/ransomware-recovery", tags=["Analytics"])
+async def get_ransomware_recovery_endpoint():
+    """Compare recovery metrics: ransomware vs non-ransomware."""
+    cache_key = "analytics:ransomware-recovery"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_ransomware_recovery_comparison(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting ransomware recovery: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/ransomware-geo", tags=["Analytics"])
+async def get_ransomware_geo_endpoint():
+    """Get per-family geographic targeting."""
+    cache_key = "analytics:ransomware-geo"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_ransomware_geo(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting ransomware geo: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/threat-actor-categories", tags=["Analytics"])
+async def get_threat_actor_categories_endpoint():
+    """Get threat actor category distribution."""
+    cache_key = "analytics:threat-actor-categories"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_threat_actor_categories(conn)
+        conn.close()
+        result = {"data": data, "total": sum(d["count"] for d in data)}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting threat actor categories: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/threat-actor-motivations", tags=["Analytics"])
+async def get_threat_actor_motivations_endpoint():
+    """Get threat actor motivation distribution."""
+    cache_key = "analytics:threat-actor-motivations"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_threat_actor_motivations(conn)
+        conn.close()
+        result = {"data": data, "total": sum(d["count"] for d in data)}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting threat actor motivations: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/threat-actor-timeline", tags=["Analytics"])
+async def get_threat_actor_timeline_endpoint(limit: int = Query(10, ge=1, le=50)):
+    """Get monthly activity per threat actor."""
+    cache_key = f"analytics:threat-actor-timeline:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_threat_actor_timeline(conn, limit=limit)
+        conn.close()
+        result = {"data": data, "total": len(data)}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting threat actor timeline: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/actor-ransomware-matrix", tags=["Analytics"])
+async def get_actor_ransomware_matrix_endpoint():
+    """Get actor-to-ransomware-family cross-tabulation."""
+    cache_key = "analytics:actor-ransomware-matrix"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_actor_ransomware_matrix(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting actor ransomware matrix: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/actor-targeting", tags=["Analytics"])
+async def get_actor_targeting_endpoint(limit: int = Query(10, ge=1, le=50)):
+    """Get per-actor country targeting."""
+    cache_key = f"analytics:actor-targeting:{limit}"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_actor_targeting(conn, limit=limit)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting actor targeting: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/institution-types", tags=["Analytics"])
+async def get_institution_types_endpoint():
+    """Get institution type distribution."""
+    cache_key = "analytics:institution-types"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_institution_types(conn)
+        total = sum(d["count"] for d in data)
+        conn.close()
+        result = {"data": data, "total": total}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting institution types: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/operational-impact", tags=["Analytics"])
+async def get_operational_impact_endpoint():
+    """Get operational impact metrics."""
+    cache_key = "analytics:operational-impact"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_operational_impact(conn)
+        conn.close()
+        result = {"data": data, "total": sum(d["count"] for d in data)}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting operational impact: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/financial-impact", tags=["Analytics"])
+async def get_financial_impact_endpoint():
+    """Get financial impact by year."""
+    cache_key = "analytics:financial-impact"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_financial_impact_by_year(conn)
+        conn.close()
+        result = {"data": data, "total": len(data)}
+        cache_set(cache_key, result)
+        return result
+    except Exception as e:
+        logger.error(f"Error getting financial impact: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/data-impact", tags=["Analytics"])
+async def get_data_impact_endpoint():
+    """Get data breach impact statistics."""
+    cache_key = "analytics:data-impact"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_data_impact_stats(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting data impact: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/regulatory-impact", tags=["Analytics"])
+async def get_regulatory_impact_endpoint():
+    """Get regulatory compliance statistics."""
+    cache_key = "analytics:regulatory-impact"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_regulatory_impact_stats(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting regulatory impact: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/recovery-metrics", tags=["Analytics"])
+async def get_recovery_metrics_endpoint():
+    """Get recovery effectiveness metrics."""
+    cache_key = "analytics:recovery-metrics"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_recovery_effectiveness(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting recovery metrics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/transparency-metrics", tags=["Analytics"])
+async def get_transparency_metrics_endpoint():
+    """Get transparency and disclosure metrics."""
+    cache_key = "analytics:transparency-metrics"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_transparency_metrics_db(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting transparency metrics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/user-impact", tags=["Analytics"])
+async def get_user_impact_endpoint():
+    """Get user category impact totals."""
+    cache_key = "analytics:user-impact"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_user_impact_totals(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting user impact: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

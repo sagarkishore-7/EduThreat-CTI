@@ -345,6 +345,192 @@ class DashboardResponse(BaseModel):
 # Filter/Search Models
 # ============================================================
 
+# ============================================================
+# Advanced Analytics Models
+# ============================================================
+
+class AttackTrendPoint(BaseModel):
+    """A point in the attack trend time series."""
+    month: str
+    attack_category: Optional[str] = None
+    count: int
+
+
+class AttackTrendsResponse(BaseModel):
+    """Attack trends over time by category."""
+    data: List[AttackTrendPoint]
+    total: int
+
+
+class MitreTacticItem(BaseModel):
+    """A MITRE ATT&CK tactic with count."""
+    tactic: str
+    count: int
+    techniques: List[str] = []
+
+
+class RansomwareTimelineItem(BaseModel):
+    """Ransomware family activity period."""
+    family: str
+    incident_count: int
+    first_seen: Optional[str] = None
+    last_seen: Optional[str] = None
+
+
+class RansomwareFamilyDetail(BaseModel):
+    """Enhanced ransomware family stats."""
+    family: str
+    incident_count: int
+    exfiltration_count: int = 0
+    exfiltration_rate: float = 0.0
+    avg_ransom: Optional[float] = None
+    countries: List[str] = []
+    first_seen: Optional[str] = None
+    last_seen: Optional[str] = None
+
+
+class RansomEconomics(BaseModel):
+    """Ransom economics aggregate."""
+    total_ransomware: int = 0
+    demanded_count: int = 0
+    paid_count: int = 0
+    payment_rate: float = 0.0
+    total_demanded: Optional[float] = None
+    avg_demanded: Optional[float] = None
+    max_demanded: Optional[float] = None
+    total_paid: Optional[float] = None
+    avg_paid: Optional[float] = None
+
+
+class RecoveryComparison(BaseModel):
+    """Recovery metrics for a category."""
+    avg_recovery_days: float = 0
+    avg_downtime_days: float = 0
+    backup_rate: float = 0
+    ir_firm_rate: float = 0
+    forensics_rate: float = 0
+    total: int = 0
+
+
+class RecoveryComparisonResponse(BaseModel):
+    """Ransomware vs other recovery comparison."""
+    ransomware: RecoveryComparison
+    other: RecoveryComparison
+
+
+class RansomwareGeoItem(BaseModel):
+    """Per-family geographic targeting."""
+    family: str
+    countries: List[CountByCategory] = []
+
+
+class ActorTimelinePoint(BaseModel):
+    """Monthly activity for a threat actor."""
+    actor: str
+    month: str
+    count: int
+
+
+class ActorRansomwareMatrixResponse(BaseModel):
+    """Actor-to-ransomware cross-tabulation."""
+    actors: List[str]
+    families: List[str]
+    matrix: List[Dict[str, Any]]
+
+
+class ActorTargetingItem(BaseModel):
+    """Per-actor country targeting."""
+    actor: str
+    countries: List[CountByCategory] = []
+
+
+class DataImpactStats(BaseModel):
+    """Data breach impact statistics."""
+    total: int = 0
+    breached_count: int = 0
+    exfiltrated_count: int = 0
+    breach_rate: float = 0.0
+    exfiltration_rate: float = 0.0
+    total_records: Optional[int] = None
+    avg_records: Optional[float] = None
+    max_records: Optional[int] = None
+    total_pii_leaked: Optional[int] = None
+
+
+class RegulatoryImpactStats(BaseModel):
+    """Regulatory impact statistics."""
+    total: int = 0
+    gdpr_count: int = 0
+    hipaa_count: int = 0
+    ferpa_count: int = 0
+    notification_required: int = 0
+    notifications_sent: int = 0
+    fines_imposed: int = 0
+    total_fines: Optional[float] = None
+    lawsuits_count: int = 0
+    class_action_count: int = 0
+
+
+class RecoveryEffectiveness(BaseModel):
+    """Recovery effectiveness metrics."""
+    total: int = 0
+    avg_recovery_days: Optional[float] = None
+    avg_downtime_days: Optional[float] = None
+    backup_count: int = 0
+    backup_rate: float = 0.0
+    ir_firm_count: int = 0
+    ir_firm_rate: float = 0.0
+    forensics_count: int = 0
+    forensics_rate: float = 0.0
+    mfa_post_count: int = 0
+    mfa_adoption_rate: float = 0.0
+
+
+class TransparencyLevel(BaseModel):
+    """A transparency level with count."""
+    level: str
+    count: int
+
+
+class TransparencyStats(BaseModel):
+    """Transparency and disclosure metrics."""
+    total: int = 0
+    disclosed_count: int = 0
+    disclosure_rate: float = 0.0
+    avg_delay_days: Optional[float] = None
+    levels: List[TransparencyLevel] = []
+
+
+class UserImpactTotals(BaseModel):
+    """User category impact totals."""
+    students: Optional[int] = None
+    staff: Optional[int] = None
+    faculty: Optional[int] = None
+    total_individuals: Optional[int] = None
+    incidents_with_data: int = 0
+
+
+class FinancialImpactByYear(BaseModel):
+    """Financial breakdown for a year."""
+    year: Optional[str] = None
+    ransom_cost: Optional[float] = None
+    recovery_cost: Optional[float] = None
+    legal_cost: Optional[float] = None
+    notification_cost: Optional[float] = None
+    incident_count: int = 0
+
+
+class OperationalImpactItem(BaseModel):
+    """Operational impact metric."""
+    category: str
+    count: int
+    percentage: float = 0.0
+
+
+# ============================================================
+# Filter/Search Models
+# ============================================================
+
 class FilterOptions(BaseModel):
     """Available filter options for the incidents list."""
     countries: List[str]

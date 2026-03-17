@@ -647,6 +647,711 @@ def get_threat_actors(
     return result
 
 
+# ============================================================
+# Advanced Analytics Queries
+# ============================================================
+
+def get_attack_trends(
+    conn: sqlite3.Connection,
+    months: int = 36,
+) -> List[Dict[str, Any]]:
+    """Get attack trends over time by category (stacked area chart)."""
+    cur = conn.execute(
+        """
+        SELECT
+            strftime('%Y-%m', i.incident_date) as month,
+            ef.attack_category,
+            COUNT(*) as count
+        FROM incidents i
+        JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        WHERE ef.is_education_related = 1
+          AND i.incident_date IS NOT NULL
+          AND i.incident_date >= date('now', '-' || ? || ' months')
+        GROUP BY month, ef.attack_category
+        ORDER BY month ASC
+        """,
+        (months,)
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+def get_attack_vectors(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """Get attack vector distribution."""
+    cur = conn.execute(
+        """
+        SELECT
+            COALESCE(attack_vector, 'unknown') as category,
+            COUNT(*) as count
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND attack_vector IS NOT NULL AND attack_vector != ''
+        GROUP BY category
+        ORDER BY count DESC
+        LIMIT ?
+        """,
+        (limit,)
+    )
+    rows = cur.fetchall()
+    total = sum(r["count"] for r in rows)
+    return [
+        {"category": r["category"], "count": r["count"],
+         "percentage": round(r["count"] / total * 100, 1) if total > 0 else 0}
+        for r in rows
+    ]
+
+
+def get_mitre_tactics(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Parse mitre_techniques_json and aggregate by tactic."""
+    cur = conn.execute(
+        """
+        SELECT mitre_techniques_json
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND mitre_techniques_json IS NOT NULL
+        """
+    )
+    tactic_counts: Dict[str, int] = {}
+    tactic_techniques: Dict[str, list] = {}
+    for row in cur.fetchall():
+        try:
+            techniques = json.loads(row["mitre_techniques_json"])
+            for t in techniques:
+                tactic = t.get("tactic", "unknown") or "unknown"
+                tactic_counts[tactic] = tactic_counts.get(tactic, 0) + 1
+                tech_id = t.get("technique_id", "")
+                tech_name = t.get("technique_name", "")
+                if tech_id and tactic not in tactic_techniques:
+                    tactic_techniques[tactic] = []
+                if tech_id:
+                    entry = f"{tech_id}: {tech_name}"
+                    if entry not in tactic_techniques[tactic]:
+                        tactic_techniques[tactic].append(entry)
+        except Exception:
+            continue
+
+    result = []
+    for tactic, count in sorted(tactic_counts.items(), key=lambda x: -x[1]):
+        result.append({
+            "tactic": tactic,
+            "count": count,
+            "techniques": tactic_techniques.get(tactic, [])
+        })
+    return result
+
+
+def get_initial_access_methods(
+    conn: sqlite3.Connection,
+    limit: int = 12,
+) -> List[Dict[str, Any]]:
+    """Get initial access vector distribution."""
+    cur = conn.execute(
+        """
+        SELECT
+            COALESCE(initial_access_vector, attack_vector, 'unknown') as category,
+            COUNT(*) as count
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND (initial_access_vector IS NOT NULL OR attack_vector IS NOT NULL)
+        GROUP BY category
+        ORDER BY count DESC
+        LIMIT ?
+        """,
+        (limit,)
+    )
+    rows = cur.fetchall()
+    total = sum(r["count"] for r in rows)
+    return [
+        {"category": r["category"], "count": r["count"],
+         "percentage": round(r["count"] / total * 100, 1) if total > 0 else 0}
+        for r in rows
+    ]
+
+
+def get_system_impact_stats(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Aggregate boolean system impact columns."""
+    systems = [
+        ("email_system_affected", "Email System"),
+        ("student_portal_affected", "Student Portal"),
+        ("research_systems_affected", "Research Systems"),
+        ("network_compromised", "Network"),
+        ("cloud_services_affected", "Cloud Services"),
+        ("hospital_systems_affected", "Hospital Systems"),
+        ("critical_systems_affected", "Critical Systems"),
+    ]
+    result = []
+    for col, label in systems:
+        cur = conn.execute(
+            f"""
+            SELECT COUNT(*) as count
+            FROM incident_enrichments_flat
+            WHERE is_education_related = 1 AND {col} = 1
+            """
+        )
+        count = cur.fetchone()["count"]
+        if count > 0:
+            result.append({"category": label, "count": count})
+    result.sort(key=lambda x: -x["count"])
+    return result
+
+
+def get_ransomware_timeline(
+    conn: sqlite3.Connection,
+    limit: int = 15,
+) -> List[Dict[str, Any]]:
+    """Get ransomware family activity periods (first/last seen + count)."""
+    cur = conn.execute(
+        """
+        SELECT
+            COALESCE(ef.ransomware_family, ef.threat_actor_name) as family,
+            COUNT(*) as incident_count,
+            MIN(i.incident_date) as first_seen,
+            MAX(i.incident_date) as last_seen
+        FROM incident_enrichments_flat ef
+        JOIN incidents i ON ef.incident_id = i.incident_id
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category LIKE '%ransomware%'
+          AND (
+            (ef.ransomware_family IS NOT NULL AND ef.ransomware_family != '')
+            OR (ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != '')
+          )
+        GROUP BY family
+        ORDER BY incident_count DESC
+        LIMIT ?
+        """,
+        (limit,)
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+def get_ransomware_families_detail(
+    conn: sqlite3.Connection,
+    limit: int = 15,
+) -> List[Dict[str, Any]]:
+    """Enhanced stats per ransomware family."""
+    cur = conn.execute(
+        """
+        SELECT
+            COALESCE(ef.ransomware_family, ef.threat_actor_name) as family,
+            COUNT(*) as incident_count,
+            SUM(CASE WHEN ef.data_exfiltrated = 1 THEN 1 ELSE 0 END) as exfiltration_count,
+            AVG(ef.ransom_amount) as avg_ransom,
+            GROUP_CONCAT(DISTINCT ef.country) as countries,
+            MIN(i.incident_date) as first_seen,
+            MAX(i.incident_date) as last_seen
+        FROM incident_enrichments_flat ef
+        JOIN incidents i ON ef.incident_id = i.incident_id
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category LIKE '%ransomware%'
+          AND (
+            (ef.ransomware_family IS NOT NULL AND ef.ransomware_family != '')
+            OR (ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != '')
+          )
+        GROUP BY family
+        ORDER BY incident_count DESC
+        LIMIT ?
+        """,
+        (limit,)
+    )
+    result = []
+    for row in cur.fetchall():
+        r = dict(row)
+        r["countries"] = [c for c in (r["countries"] or "").split(",") if c]
+        r["exfiltration_rate"] = round(r["exfiltration_count"] / r["incident_count"] * 100, 1) if r["incident_count"] > 0 else 0
+        result.append(r)
+    return result
+
+
+def get_ransom_economics(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Aggregate ransom demand/payment economics."""
+    cur = conn.execute(
+        """
+        SELECT
+            COUNT(*) as total_ransomware,
+            SUM(CASE WHEN was_ransom_demanded = 1 THEN 1 ELSE 0 END) as demanded_count,
+            SUM(CASE WHEN ransom_paid = 1 THEN 1 ELSE 0 END) as paid_count,
+            SUM(ransom_amount) as total_demanded,
+            AVG(CASE WHEN ransom_amount > 0 THEN ransom_amount END) as avg_demanded,
+            MAX(ransom_amount) as max_demanded,
+            SUM(ransom_paid_amount) as total_paid,
+            AVG(CASE WHEN ransom_paid_amount > 0 THEN ransom_paid_amount END) as avg_paid
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND attack_category LIKE '%ransomware%'
+        """
+    )
+    row = dict(cur.fetchone())
+    # Normalize None to 0 for count fields
+    for k in ["demanded_count", "paid_count", "total_ransomware"]:
+        if row[k] is None:
+            row[k] = 0
+    row["payment_rate"] = round(row["paid_count"] / row["demanded_count"] * 100, 1) if row["demanded_count"] > 0 else 0
+    return row
+
+
+def get_ransomware_recovery_comparison(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Compare recovery metrics: ransomware vs non-ransomware."""
+    result = {}
+    for label, condition in [("ransomware", "attack_category LIKE '%ransomware%'"), ("other", "attack_category NOT LIKE '%ransomware%'")]:
+        cur = conn.execute(
+            f"""
+            SELECT
+                AVG(recovery_timeframe_days) as avg_recovery_days,
+                AVG(downtime_days) as avg_downtime_days,
+                SUM(CASE WHEN from_backup = 1 THEN 1 ELSE 0 END) * 100.0 / MAX(COUNT(*), 1) as backup_rate,
+                SUM(CASE WHEN incident_response_firm IS NOT NULL AND incident_response_firm != '' THEN 1 ELSE 0 END) * 100.0 / MAX(COUNT(*), 1) as ir_firm_rate,
+                SUM(CASE WHEN forensics_firm IS NOT NULL AND forensics_firm != '' THEN 1 ELSE 0 END) * 100.0 / MAX(COUNT(*), 1) as forensics_rate,
+                COUNT(*) as total
+            FROM incident_enrichments_flat
+            WHERE is_education_related = 1 AND {condition}
+            """
+        )
+        row = cur.fetchone()
+        result[label] = {
+            "avg_recovery_days": round(row["avg_recovery_days"], 1) if row["avg_recovery_days"] else 0,
+            "avg_downtime_days": round(row["avg_downtime_days"], 1) if row["avg_downtime_days"] else 0,
+            "backup_rate": round(row["backup_rate"], 1) if row["backup_rate"] else 0,
+            "ir_firm_rate": round(row["ir_firm_rate"], 1) if row["ir_firm_rate"] else 0,
+            "forensics_rate": round(row["forensics_rate"], 1) if row["forensics_rate"] else 0,
+            "total": row["total"],
+        }
+    return result
+
+
+def get_ransomware_geo(
+    conn: sqlite3.Connection,
+    limit_families: int = 6,
+    limit_countries: int = 5,
+) -> List[Dict[str, Any]]:
+    """Per-family geographic targeting (small multiples)."""
+    # Get top families first
+    cur = conn.execute(
+        """
+        SELECT COALESCE(ransomware_family, threat_actor_name) as family
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND attack_category LIKE '%ransomware%'
+          AND (
+            (ransomware_family IS NOT NULL AND ransomware_family != '')
+            OR (threat_actor_name IS NOT NULL AND threat_actor_name != '')
+          )
+        GROUP BY family
+        ORDER BY COUNT(*) DESC
+        LIMIT ?
+        """,
+        (limit_families,)
+    )
+    families = [row["family"] for row in cur.fetchall()]
+
+    result = []
+    for family in families:
+        cur = conn.execute(
+            """
+            SELECT
+                COALESCE(country, 'Unknown') as country,
+                COUNT(*) as count
+            FROM incident_enrichments_flat
+            WHERE is_education_related = 1
+              AND (ransomware_family = ? OR threat_actor_name = ?)
+            GROUP BY country
+            ORDER BY count DESC
+            LIMIT ?
+            """,
+            (family, family, limit_countries)
+        )
+        countries = [dict(row) for row in cur.fetchall()]
+        result.append({"family": family, "countries": countries})
+    return result
+
+
+def get_threat_actor_categories(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Get threat actor category distribution from enrichment JSON."""
+    cur = conn.execute(
+        """
+        SELECT ie.enrichment_data
+        FROM incident_enrichments ie
+        JOIN incident_enrichments_flat ef ON ie.incident_id = ef.incident_id
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+        """
+    )
+    category_counts: Dict[str, int] = {}
+    for row in cur.fetchall():
+        try:
+            data = json.loads(row["enrichment_data"])
+            # Try common paths for actor category
+            cat = None
+            if "threat_actor" in data and isinstance(data["threat_actor"], dict):
+                cat = data["threat_actor"].get("category") or data["threat_actor"].get("actor_type")
+            if "attack_dynamics" in data and isinstance(data["attack_dynamics"], dict):
+                cat = cat or data["attack_dynamics"].get("threat_actor_category")
+            cat = cat or "unknown"
+            category_counts[cat] = category_counts.get(cat, 0) + 1
+        except Exception:
+            category_counts["unknown"] = category_counts.get("unknown", 0) + 1
+
+    total = sum(category_counts.values())
+    return [
+        {"category": cat, "count": count,
+         "percentage": round(count / total * 100, 1) if total > 0 else 0}
+        for cat, count in sorted(category_counts.items(), key=lambda x: -x[1])
+    ]
+
+
+def get_threat_actor_motivations(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Get threat actor motivation distribution from enrichment JSON."""
+    cur = conn.execute(
+        """
+        SELECT ie.enrichment_data
+        FROM incident_enrichments ie
+        JOIN incident_enrichments_flat ef ON ie.incident_id = ef.incident_id
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+        """
+    )
+    motivation_counts: Dict[str, int] = {}
+    for row in cur.fetchall():
+        try:
+            data = json.loads(row["enrichment_data"])
+            mot = None
+            if "threat_actor" in data and isinstance(data["threat_actor"], dict):
+                mot = data["threat_actor"].get("motivation")
+            if "attack_dynamics" in data and isinstance(data["attack_dynamics"], dict):
+                mot = mot or data["attack_dynamics"].get("threat_actor_motivation")
+            mot = mot or "unknown"
+            motivation_counts[mot] = motivation_counts.get(mot, 0) + 1
+        except Exception:
+            motivation_counts["unknown"] = motivation_counts.get("unknown", 0) + 1
+
+    total = sum(motivation_counts.values())
+    return [
+        {"category": cat, "count": count,
+         "percentage": round(count / total * 100, 1) if total > 0 else 0}
+        for cat, count in sorted(motivation_counts.items(), key=lambda x: -x[1])
+    ]
+
+
+def get_threat_actor_timeline(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """Monthly activity per threat actor (scatter chart)."""
+    cur = conn.execute(
+        """
+        SELECT
+            ef.threat_actor_name as actor,
+            strftime('%Y-%m', i.incident_date) as month,
+            COUNT(*) as count
+        FROM incident_enrichments_flat ef
+        JOIN incidents i ON ef.incident_id = i.incident_id
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND i.incident_date IS NOT NULL
+          AND ef.threat_actor_name IN (
+            SELECT threat_actor_name
+            FROM incident_enrichments_flat
+            WHERE is_education_related = 1 AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
+            GROUP BY threat_actor_name
+            ORDER BY COUNT(*) DESC
+            LIMIT ?
+          )
+        GROUP BY actor, month
+        ORDER BY month ASC
+        """,
+        (limit,)
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+def get_actor_ransomware_matrix(
+    conn: sqlite3.Connection,
+    limit_actors: int = 10,
+    limit_families: int = 8,
+) -> Dict[str, Any]:
+    """Actor-to-ransomware-family cross-tabulation."""
+    # Get top actors
+    cur = conn.execute(
+        """
+        SELECT threat_actor_name
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1 AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
+        GROUP BY threat_actor_name ORDER BY COUNT(*) DESC LIMIT ?
+        """,
+        (limit_actors,)
+    )
+    actors = [row["threat_actor_name"] for row in cur.fetchall()]
+
+    # Get top families
+    cur = conn.execute(
+        """
+        SELECT COALESCE(ransomware_family, 'unknown') as family
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1 AND attack_category LIKE '%ransomware%'
+          AND ransomware_family IS NOT NULL AND ransomware_family != ''
+        GROUP BY family ORDER BY COUNT(*) DESC LIMIT ?
+        """,
+        (limit_families,)
+    )
+    families = [row["family"] for row in cur.fetchall()]
+
+    if not actors or not families:
+        return {"actors": actors, "families": families, "matrix": []}
+
+    # Build matrix
+    actor_placeholders = ",".join("?" * len(actors))
+    family_placeholders = ",".join("?" * len(families))
+    cur = conn.execute(
+        f"""
+        SELECT
+            threat_actor_name as actor,
+            COALESCE(ransomware_family, 'unknown') as family,
+            COUNT(*) as count
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND threat_actor_name IN ({actor_placeholders})
+          AND COALESCE(ransomware_family, 'unknown') IN ({family_placeholders})
+        GROUP BY actor, family
+        """,
+        actors + families
+    )
+    matrix = [dict(row) for row in cur.fetchall()]
+    return {"actors": actors, "families": families, "matrix": matrix}
+
+
+def get_actor_targeting(
+    conn: sqlite3.Connection,
+    limit: int = 10,
+) -> List[Dict[str, Any]]:
+    """Per-actor country distribution (stacked horizontal bars)."""
+    cur = conn.execute(
+        """
+        SELECT
+            ef.threat_actor_name as actor,
+            COALESCE(ef.country, 'Unknown') as country,
+            COUNT(*) as count
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND ef.threat_actor_name IN (
+            SELECT threat_actor_name
+            FROM incident_enrichments_flat
+            WHERE is_education_related = 1 AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
+            GROUP BY threat_actor_name ORDER BY COUNT(*) DESC LIMIT ?
+          )
+        GROUP BY actor, country
+        ORDER BY actor, count DESC
+        """,
+        (limit,)
+    )
+    # Group by actor
+    actors_map: Dict[str, list] = {}
+    for row in cur.fetchall():
+        actor = row["actor"]
+        if actor not in actors_map:
+            actors_map[actor] = []
+        actors_map[actor].append({"country": row["country"], "count": row["count"]})
+    return [{"actor": actor, "countries": countries} for actor, countries in actors_map.items()]
+
+
+def get_institution_types(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Institution type distribution."""
+    cur = conn.execute(
+        """
+        SELECT
+            COALESCE(institution_type, 'unknown') as category,
+            COUNT(*) as count
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+        GROUP BY category
+        ORDER BY count DESC
+        """
+    )
+    rows = cur.fetchall()
+    total = sum(r["count"] for r in rows)
+    return [
+        {"category": r["category"], "count": r["count"],
+         "percentage": round(r["count"] / total * 100, 1) if total > 0 else 0}
+        for r in rows
+    ]
+
+
+def get_operational_impact(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Aggregate boolean operational impact columns."""
+    ops = [
+        ("teaching_disrupted", "Teaching Disrupted"),
+        ("research_disrupted", "Research Disrupted"),
+        ("admissions_disrupted", "Admissions Disrupted"),
+        ("enrollment_disrupted", "Enrollment Disrupted"),
+        ("payroll_disrupted", "Payroll Disrupted"),
+        ("classes_cancelled", "Classes Cancelled"),
+        ("exams_postponed", "Exams Postponed"),
+    ]
+    # Get total for percentage calc
+    cur = conn.execute("SELECT COUNT(*) as total FROM incident_enrichments_flat WHERE is_education_related = 1")
+    total = cur.fetchone()["total"]
+
+    result = []
+    for col, label in ops:
+        cur = conn.execute(
+            f"SELECT COUNT(*) as count FROM incident_enrichments_flat WHERE is_education_related = 1 AND {col} = 1"
+        )
+        count = cur.fetchone()["count"]
+        result.append({
+            "category": label,
+            "count": count,
+            "percentage": round(count / total * 100, 1) if total > 0 else 0,
+        })
+    return result
+
+
+def get_financial_impact_by_year(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Financial breakdown by year (stacked bar)."""
+    cur = conn.execute(
+        """
+        SELECT
+            strftime('%Y', i.incident_date) as year,
+            SUM(ef.ransom_amount) as ransom_cost,
+            SUM(ef.recovery_costs_max) as recovery_cost,
+            SUM(ef.legal_costs) as legal_cost,
+            SUM(ef.notification_costs) as notification_cost,
+            COUNT(*) as incident_count
+        FROM incident_enrichments_flat ef
+        JOIN incidents i ON ef.incident_id = i.incident_id
+        WHERE ef.is_education_related = 1
+          AND i.incident_date IS NOT NULL
+        GROUP BY year
+        ORDER BY year ASC
+        """
+    )
+    return [dict(row) for row in cur.fetchall()]
+
+
+def get_data_impact_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Breach metrics and record ranges."""
+    cur = conn.execute(
+        """
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN data_breached = 1 THEN 1 ELSE 0 END) as breached_count,
+            SUM(CASE WHEN data_exfiltrated = 1 THEN 1 ELSE 0 END) as exfiltrated_count,
+            SUM(records_affected_exact) as total_records,
+            AVG(CASE WHEN records_affected_exact > 0 THEN records_affected_exact END) as avg_records,
+            MAX(records_affected_exact) as max_records,
+            SUM(pii_records_leaked) as total_pii_leaked
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+        """
+    )
+    row = dict(cur.fetchone())
+    row["breach_rate"] = round(row["breached_count"] / row["total"] * 100, 1) if row["total"] > 0 else 0
+    row["exfiltration_rate"] = round(row["exfiltrated_count"] / row["total"] * 100, 1) if row["total"] > 0 else 0
+    return row
+
+
+def get_regulatory_impact_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Regulatory compliance aggregation."""
+    cur = conn.execute(
+        """
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN gdpr_breach = 1 THEN 1 ELSE 0 END) as gdpr_count,
+            SUM(CASE WHEN hipaa_breach = 1 THEN 1 ELSE 0 END) as hipaa_count,
+            SUM(CASE WHEN ferpa_breach = 1 THEN 1 ELSE 0 END) as ferpa_count,
+            SUM(CASE WHEN breach_notification_required = 1 THEN 1 ELSE 0 END) as notification_required,
+            SUM(CASE WHEN notifications_sent = 1 THEN 1 ELSE 0 END) as notifications_sent,
+            SUM(CASE WHEN fine_imposed = 1 THEN 1 ELSE 0 END) as fines_imposed,
+            SUM(fine_amount) as total_fines,
+            SUM(CASE WHEN lawsuits_filed = 1 THEN 1 ELSE 0 END) as lawsuits_count,
+            SUM(CASE WHEN class_action = 1 THEN 1 ELSE 0 END) as class_action_count
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+        """
+    )
+    return dict(cur.fetchone())
+
+
+def get_recovery_effectiveness(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Recovery effectiveness stats."""
+    cur = conn.execute(
+        """
+        SELECT
+            COUNT(*) as total,
+            AVG(recovery_timeframe_days) as avg_recovery_days,
+            AVG(downtime_days) as avg_downtime_days,
+            SUM(CASE WHEN from_backup = 1 THEN 1 ELSE 0 END) as backup_count,
+            SUM(CASE WHEN incident_response_firm IS NOT NULL AND incident_response_firm != '' THEN 1 ELSE 0 END) as ir_firm_count,
+            SUM(CASE WHEN forensics_firm IS NOT NULL AND forensics_firm != '' THEN 1 ELSE 0 END) as forensics_count,
+            SUM(CASE WHEN mfa_implemented = 1 THEN 1 ELSE 0 END) as mfa_post_count
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+        """
+    )
+    row = dict(cur.fetchone())
+    total = row["total"] or 1
+    row["backup_rate"] = round(row["backup_count"] / total * 100, 1)
+    row["ir_firm_rate"] = round(row["ir_firm_count"] / total * 100, 1)
+    row["forensics_rate"] = round(row["forensics_count"] / total * 100, 1)
+    row["mfa_adoption_rate"] = round(row["mfa_post_count"] / total * 100, 1)
+    return row
+
+
+def get_transparency_metrics(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Disclosure metrics."""
+    cur = conn.execute(
+        """
+        SELECT
+            COUNT(*) as total,
+            SUM(CASE WHEN public_disclosure = 1 THEN 1 ELSE 0 END) as disclosed_count,
+            AVG(CASE WHEN disclosure_delay_days > 0 THEN disclosure_delay_days END) as avg_delay_days,
+            transparency_level,
+            COUNT(*) as level_count
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+        GROUP BY transparency_level
+        """
+    )
+    rows = cur.fetchall()
+    total = sum(r["total"] for r in rows)
+    levels = []
+    total_disclosed = 0
+    avg_delay = None
+    for row in rows:
+        levels.append({
+            "level": row["transparency_level"] or "unknown",
+            "count": row["level_count"],
+        })
+        total_disclosed += row["disclosed_count"] or 0
+        if row["avg_delay_days"]:
+            avg_delay = row["avg_delay_days"]
+
+    return {
+        "total": total,
+        "disclosed_count": total_disclosed,
+        "disclosure_rate": round(total_disclosed / total * 100, 1) if total > 0 else 0,
+        "avg_delay_days": round(avg_delay, 1) if avg_delay else None,
+        "levels": levels,
+    }
+
+
+def get_user_impact_totals(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """User category impact totals."""
+    cur = conn.execute(
+        """
+        SELECT
+            SUM(students_affected) as students,
+            SUM(staff_affected) as staff,
+            SUM(faculty_affected) as faculty,
+            SUM(users_affected_exact) as total_individuals,
+            COUNT(CASE WHEN students_affected > 0 OR staff_affected > 0 OR faculty_affected > 0 THEN 1 END) as incidents_with_data
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+        """
+    )
+    return dict(cur.fetchone())
+
+
 def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
     """Get available filter options for the UI."""
     options = {}

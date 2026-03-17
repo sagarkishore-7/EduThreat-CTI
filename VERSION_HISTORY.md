@@ -2,6 +2,28 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.4.0 (2026-03-15)
+
+**Focus**: Advanced Analytics API — 20+ New Endpoints for CTI Dashboard
+
+### Key Features
+- 20 new SQL query functions in `database.py` powering deep CTI analytics
+- 15 new Pydantic response models for structured analytics data
+- 20 new cached FastAPI endpoints under `/api/analytics/`
+- Attack intelligence: trends over time, vector distribution, MITRE ATT&CK tactic heatmap, initial access methods, system impact
+- Ransomware intelligence: family activity timeline, detailed family stats with exfiltration rates, ransom economics (demand/payment/rates), recovery comparison (ransomware vs other), geographic targeting per family
+- Threat actor intelligence: category/motivation distribution (parsed from enrichment JSON), monthly activity timeline, actor-ransomware matrix cross-tabulation, geographic targeting per actor
+- Impact analytics: institution type distribution, operational impact radar (7 disruption metrics), financial impact by year (stacked costs), data breach metrics, regulatory compliance stats (GDPR/HIPAA/FERPA), recovery effectiveness, transparency/disclosure metrics, user impact totals
+
+### Breaking Changes
+None
+
+### Migration Notes
+- No database schema changes required — all queries use existing `incident_enrichments_flat` table
+- New endpoints all follow existing cache pattern (300s TTL)
+
+---
+
 ## Version 2.3.0 (2026-03-15)
 
 **Focus**: Real-Time Intelligence Pipeline, Re-Enrichment & Pipeline Cancel Fix

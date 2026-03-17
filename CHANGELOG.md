@@ -5,6 +5,23 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.0] - 2026-03-15
+
+### Advanced Analytics API — 20+ New Endpoints
+
+#### Added
+- **20 new analytics SQL query functions** in `database.py` for deep CTI analytics across attack vectors, MITRE ATT&CK, ransomware economics, threat actor profiling, operational/financial/regulatory impact, recovery metrics, and transparency metrics
+- **15 new Pydantic response models** in `models.py` for structured analytics responses
+- **20 new cached FastAPI endpoints** in `main.py` under `/api/analytics/` — all with 300s cache TTL
+- New endpoints include: `attack-trends`, `attack-vectors`, `mitre-tactics`, `initial-access`, `system-impact`, `ransomware-timeline`, `ransomware-families-detail`, `ransom-economics`, `ransomware-recovery`, `ransomware-geo`, `threat-actor-categories`, `threat-actor-motivations`, `threat-actor-timeline`, `actor-ransomware-matrix`, `actor-targeting`, `institution-types`, `operational-impact`, `financial-impact`, `data-impact`, `regulatory-impact`, `recovery-metrics`, `transparency-metrics`, `user-impact`
+
+#### Notes
+- All analytics queries use `incident_enrichments_flat WHERE is_education_related = 1` — only LLM-verified education incidents
+- MITRE tactics parsed from `mitre_techniques_json` column; threat actor categories extracted from enrichment JSON
+- Sparse data handled gracefully with empty arrays and zero defaults
+
+---
+
 ## [2.3.0] - 2026-03-15
 
 ### Real-Time Intelligence Pipeline, Re-Enrichment & Pipeline Cancel Fix
