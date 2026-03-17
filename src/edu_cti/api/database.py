@@ -5,10 +5,13 @@ Provides optimized queries for the REST API endpoints.
 """
 
 import json
+import logging
 import sqlite3
 from typing import List, Optional, Dict, Any, Tuple
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from src.edu_cti.core.config import DB_PATH
 from src.edu_cti.core.db import get_connection
