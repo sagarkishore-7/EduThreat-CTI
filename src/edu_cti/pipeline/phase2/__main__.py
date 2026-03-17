@@ -355,22 +355,32 @@ def enrich_articles_phase(
                     logger.info(f"Cancel requested during queue wait — stopping enrichment")
                     break
                 if fetch_complete_event.is_set():
-                    # Double-check: wait longer and check multiple times
-                    logger.info(f"Fetching complete and queue is empty - waiting 30s for any remaining items...")
-                    time.sleep(30.0)  # Increased from 10s to 30s
-                    # Check multiple times
+                    # Fetch is done — but queue may still have items being processed by other workers.
+                    # Use queue.unfinished_tasks (via join with timeout) to check if ALL work is done,
+                    # not just that the queue is momentarily empty.
+                    # Wait with exponential backoff: 5s, 10s, 20s, 30s, 30s (total ~95s max)
                     found_items = False
-                    for check_attempt in range(3):
+                    for check_attempt in range(5):
+                        wait_time = min(5 * (2 ** check_attempt), 30)
+                        logger.debug(f"Fetch complete, queue empty — waiting {wait_time}s (attempt {check_attempt + 1}/5)...")
                         try:
-                            incident_dict = incident_queue.get(timeout=2.0)
+                            incident_dict = incident_queue.get(timeout=wait_time)
                             found_items = True
                             logger.info(f"Found item after wait (attempt {check_attempt + 1}), continuing processing...")
                             break
                         except queue.Empty:
+                            # Check if queue has any unfinished tasks (other workers still processing)
+                            if incident_queue.unfinished_tasks > 0:
+                                logger.debug(f"Queue empty but {incident_queue.unfinished_tasks} unfinished tasks — other workers still active, waiting...")
+                                continue
+                            # Queue is truly empty and no unfinished work
                             continue
-                    
+
                     if not found_items:
-                        # Really empty now
+                        # Confirm: fetch done, queue empty, no unfinished tasks after extended wait
+                        if incident_queue.unfinished_tasks > 0:
+                            logger.debug(f"Still {incident_queue.unfinished_tasks} unfinished tasks — continuing to wait...")
+                            continue  # Go back to the main while loop and try queue.get again
                         logger.info(f"Queue confirmed empty after extended wait - stopping consumer (processed {items_processed} items)")
                         break
                 # Continue waiting
@@ -461,15 +471,20 @@ def enrich_articles_phase(
                     from src.edu_cti.pipeline.phase2.llm_client import RateLimitError
                     if isinstance(e, RateLimitError):
                         logger.warning(f"Rate limit error in process_incident for {incident_id}: {e}")
-                        # Instead of breaking, wait longer and retry
-                        wait_time = 60.0  # Wait 60 seconds before retrying
+                        wait_time = 60.0
                         logger.info(f"Waiting {wait_time}s before retrying due to rate limit...")
                         time.sleep(wait_time)
-                        # Retry this incident instead of breaking
                         stats["errors"] += 1
                         incident_queue.task_done()
-                        # Re-queue the incident for retry
                         incident_queue.put(incident_dict)
+                        continue
+                    elif isinstance(e, (TimeoutError, OSError)):
+                        # LLM request timed out or connection error — re-queue for retry
+                        logger.warning(f"Timeout/connection error for {incident_id}: {e} — will retry")
+                        stats["errors"] += 1
+                        incident_queue.task_done()
+                        incident_queue.put(incident_dict)
+                        time.sleep(5.0)  # Brief pause before retry
                         continue
                     else:
                         logger.error(f"Error in process_incident for {incident_id}: {e}", exc_info=True)

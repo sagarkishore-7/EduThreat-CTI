@@ -69,10 +69,22 @@ class OllamaLLMClient:
         self.host = host
         self.model = model
         
-        self.client = Client(
-            host=host,
-            headers={'Authorization': f'Bearer {self.api_key}'}
-        )
+        # Use httpx timeout to prevent indefinite hangs on LLM requests
+        # Each enrichment call can take 30-120s for large articles; 180s is a safe upper bound
+        try:
+            import httpx
+            timeout = httpx.Timeout(timeout=180.0, connect=30.0)
+        except ImportError:
+            timeout = None
+
+        client_kwargs = {
+            'host': host,
+            'headers': {'Authorization': f'Bearer {self.api_key}'},
+        }
+        if timeout is not None:
+            client_kwargs['timeout'] = timeout
+
+        self.client = Client(**client_kwargs)
     
     def _is_rate_limit_error(self, error: Exception) -> bool:
         """Check if error is a rate limit error."""
@@ -127,6 +139,12 @@ class OllamaLLMClient:
             )
             return response
         except Exception as e:
+            # Check for timeout errors (httpx.TimeoutException or similar)
+            error_str = str(e).lower()
+            error_type = type(e).__name__.lower()
+            if 'timeout' in error_str or 'timeout' in error_type or 'timed out' in error_str:
+                logger.warning(f"LLM request timed out after 180s: {e}")
+                raise TimeoutError(f"LLM request timed out: {e}") from e
             if self._is_rate_limit_error(e):
                 logger.warning(f"Rate limit detected in Ollama API: {e}")
                 raise RateLimitError(f"Ollama API rate limit: {e}") from e

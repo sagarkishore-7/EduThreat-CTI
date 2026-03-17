@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.4.1] - 2026-03-17
+
+### Enrichment Pipeline Reliability Fix
+
+#### Fixed
+- **LLM request timeout**: Added 180s HTTP timeout (30s connect) to Ollama client — previously requests could hang indefinitely, blocking worker threads forever and causing enrichment to appear "stopped"
+- **Premature consumer worker exit**: With multiple workers (e.g. 6), queue could temporarily empty between pushes, causing workers to exit after only 36s of waiting. Now uses exponential backoff (up to ~95s) and checks `queue.unfinished_tasks` to keep workers alive while other workers are still processing
+- **Timeout/connection error recovery**: LLM timeouts and connection errors now re-queue the incident for retry instead of counting as permanent failures
+
+---
+
 ## [2.4.0] - 2026-03-15
 
 ### Advanced Analytics API — 20+ New Endpoints

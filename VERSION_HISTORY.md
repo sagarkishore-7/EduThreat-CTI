@@ -2,6 +2,24 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.4.1 (2026-03-17)
+
+**Focus**: Enrichment Pipeline Reliability Fix
+
+### Key Fixes
+- Added 180s HTTP timeout (30s connect) to Ollama LLM client — prevents worker threads from hanging indefinitely on stalled requests
+- Fixed premature consumer worker exit with multiple workers — uses exponential backoff and `queue.unfinished_tasks` checks instead of exiting after 36s
+- LLM timeouts and connection errors now re-queue incidents for retry instead of permanent failure
+
+### Breaking Changes
+None
+
+### Migration Notes
+- No config changes needed — timeout is automatic
+- Existing `ENRICHMENT_WORKERS` setting continues to work, now more reliably with 2+ workers
+
+---
+
 ## Version 2.4.0 (2026-03-15)
 
 **Focus**: Advanced Analytics API — 20+ New Endpoints for CTI Dashboard
