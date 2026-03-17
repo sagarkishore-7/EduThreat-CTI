@@ -703,23 +703,84 @@ def get_attack_vectors(
     ]
 
 
+def _normalize_mitre_tactic(raw: str) -> str:
+    """Normalize a MITRE tactic value to the canonical display name.
+
+    Handles: snake_case ('initial_access'), tactic IDs ('TA0001'),
+    lowercase ('lateral movement'), or already-correct ('Initial Access').
+    """
+    if not raw:
+        return "Unknown"
+    # Canonical names keyed by lowercase
+    CANONICAL = {
+        "initial access": "Initial Access",
+        "execution": "Execution",
+        "persistence": "Persistence",
+        "privilege escalation": "Privilege Escalation",
+        "defense evasion": "Defense Evasion",
+        "credential access": "Credential Access",
+        "discovery": "Discovery",
+        "lateral movement": "Lateral Movement",
+        "collection": "Collection",
+        "command and control": "Command and Control",
+        "exfiltration": "Exfiltration",
+        "impact": "Impact",
+        "reconnaissance": "Reconnaissance",
+        "resource development": "Resource Development",
+    }
+    TACTIC_ID_MAP = {
+        "TA0001": "Initial Access", "TA0002": "Execution",
+        "TA0003": "Persistence", "TA0004": "Privilege Escalation",
+        "TA0005": "Defense Evasion", "TA0006": "Credential Access",
+        "TA0007": "Discovery", "TA0008": "Lateral Movement",
+        "TA0009": "Collection", "TA0010": "Command and Control",
+        "TA0011": "Exfiltration", "TA0040": "Impact",
+        "TA0043": "Reconnaissance", "TA0042": "Resource Development",
+    }
+    s = raw.strip()
+    # Direct tactic ID match
+    if s.upper() in TACTIC_ID_MAP:
+        return TACTIC_ID_MAP[s.upper()]
+    # Normalize: replace underscores, lowercase, strip
+    normalized = s.replace("_", " ").lower().strip()
+    if normalized in CANONICAL:
+        return CANONICAL[normalized]
+    # Partial match fallback
+    for key, name in CANONICAL.items():
+        if key in normalized or normalized in key:
+            return name
+    return raw.title()  # Best-effort title case
+
+
 def get_mitre_tactics(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Parse mitre_techniques_json and aggregate by tactic."""
+    # Try flat table first, then fall back to enrichment JSON
     cur = conn.execute(
         """
-        SELECT mitre_techniques_json
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND mitre_techniques_json IS NOT NULL
+        SELECT ef.mitre_techniques_json, ie.enrichment_data
+        FROM incident_enrichments_flat ef
+        LEFT JOIN incident_enrichments ie ON ef.incident_id = ie.incident_id
+        WHERE ef.is_education_related = 1
+          AND (ef.mitre_techniques_count > 0 OR ef.mitre_techniques_json IS NOT NULL)
         """
     )
     tactic_counts: Dict[str, int] = {}
     tactic_techniques: Dict[str, list] = {}
     for row in cur.fetchall():
         try:
-            techniques = json.loads(row["mitre_techniques_json"])
+            techniques = None
+            # Try flat table JSON first
+            if row["mitre_techniques_json"]:
+                techniques = json.loads(row["mitre_techniques_json"])
+            # Fall back to enrichment_data JSON if flat is empty
+            if (not techniques or techniques == []) and row["enrichment_data"]:
+                enrichment = json.loads(row["enrichment_data"])
+                techniques = enrichment.get("mitre_attack_techniques", [])
+            if not techniques:
+                continue
             for t in techniques:
-                tactic = t.get("tactic", "unknown") or "unknown"
+                raw_tactic = t.get("tactic") or "unknown"
+                tactic = _normalize_mitre_tactic(raw_tactic)
                 tactic_counts[tactic] = tactic_counts.get(tactic, 0) + 1
                 tech_id = t.get("technique_id", "")
                 tech_name = t.get("technique_name", "")
