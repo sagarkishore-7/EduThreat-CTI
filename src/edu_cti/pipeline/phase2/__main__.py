@@ -234,16 +234,19 @@ def fetch_articles_phase(
                     logger.info(f"Incident {incident_id} has {len(existing_articles)} articles in DB")
                     should_push_to_queue = True
                 else:
-                    logger.warning(f"No articles for {incident_id}")
+                    logger.warning(f"No articles for {incident_id} — will attempt metadata-only enrichment")
                     # Mark all URLs as broken if none were fetched and no existing articles
                     all_urls = incident.get("all_urls", [])
                     if all_urls:
                         from src.edu_cti.core.db import mark_urls_as_broken
                         mark_urls_as_broken(conn, incident_id, all_urls)
                         conn.commit()
+                    # Still push to queue for metadata-only enrichment
+                    # (title, attack_type_hint, dates may be enough for basic CTI extraction)
+                    should_push_to_queue = True
                     stats["errors"] += 1
-                
-                # Push incident to queue if we have articles (new or existing)
+
+                # Push incident to queue for enrichment (with or without articles)
                 if should_push_to_queue:
                     # Push incident to queue immediately after fetching articles
                     # This allows enrichment to start processing while we continue fetching
