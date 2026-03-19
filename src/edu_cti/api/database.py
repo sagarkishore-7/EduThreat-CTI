@@ -2075,6 +2075,324 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
         """
     )
     options["years"] = [int(row["year"]) for row in cur.fetchall() if row["year"]]
-    
+
     return options
+
+
+# ============================================================
+# Interactive / Nivo Visualization Endpoints
+# ============================================================
+
+
+def get_attack_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """3-column Sankey: Attack Vector → Attack Category → Impact Outcome."""
+    cur = conn.execute(
+        """
+        SELECT
+            COALESCE(
+                NULLIF(initial_access_vector, ''),
+                NULLIF(attack_vector, ''),
+                'Unknown'
+            ) as vector,
+            COALESCE(NULLIF(attack_category, ''), 'Unknown') as category,
+            CASE
+                WHEN data_exfiltrated = 1 AND ransom_demanded = 1 THEN 'Breach + Ransom'
+                WHEN data_exfiltrated = 1 THEN 'Data Breach'
+                WHEN ransom_demanded = 1 THEN 'Ransom Only'
+                ELSE 'Other Impact'
+            END as outcome,
+            COUNT(*) as count
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+        GROUP BY vector, category, outcome
+        HAVING count >= 1
+        ORDER BY count DESC
+        """
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+
+    nodes_set: set = set()
+    links = []
+
+    # Vector → Category links
+    vec_cat: Dict[tuple, int] = {}
+    cat_out: Dict[tuple, int] = {}
+    for r in rows:
+        v, c, o, cnt = r["vector"], r["category"], r["outcome"], r["count"]
+        vec_cat[(v, c)] = vec_cat.get((v, c), 0) + cnt
+        cat_out[(c, o)] = cat_out.get((c, o), 0) + cnt
+        nodes_set.update([v, c, o])
+
+    for (v, c), cnt in vec_cat.items():
+        if cnt >= 2:
+            links.append({"source": v, "target": c, "value": cnt})
+    for (c, o), cnt in cat_out.items():
+        if cnt >= 2:
+            links.append({"source": c, "target": o, "value": cnt})
+
+    # Collect only nodes that appear in links
+    used = set()
+    for lnk in links:
+        used.add(lnk["source"])
+        used.add(lnk["target"])
+
+    nodes = [{"id": n} for n in sorted(used)]
+    return {"nodes": nodes, "links": links}
+
+
+def get_mitre_sunburst(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Hierarchical MITRE: Tactic → Technique tree for sunburst."""
+    cur = conn.execute(
+        """
+        SELECT mitre_techniques_json
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND mitre_techniques_json IS NOT NULL
+          AND mitre_techniques_json != '[]'
+          AND mitre_techniques_json != ''
+        """
+    )
+
+    tactic_tech: Dict[str, Dict[str, int]] = {}
+
+    for row in cur.fetchall():
+        try:
+            techniques = json.loads(row["mitre_techniques_json"])
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(techniques, list):
+            continue
+
+        for tech in techniques:
+            if not isinstance(tech, dict):
+                continue
+            tech_id = tech.get("technique_id", "")
+            tech_name = tech.get("technique_name", tech_id)
+            raw_tactic = tech.get("tactic")
+
+            if raw_tactic:
+                tactic = raw_tactic.replace("-", " ").title()
+            else:
+                tactic = _resolve_tactic_from_technique_id(tech_id) or "Unknown"
+
+            label = f"{tech_id}: {tech_name}" if tech_id and tech_name else (tech_id or tech_name or "Unknown")
+
+            if tactic not in tactic_tech:
+                tactic_tech[tactic] = {}
+            tactic_tech[tactic][label] = tactic_tech[tactic].get(label, 0) + 1
+
+    children = []
+    for tactic, techs in sorted(tactic_tech.items(), key=lambda x: -sum(x[1].values())):
+        tech_children = [
+            {"id": t, "value": c}
+            for t, c in sorted(techs.items(), key=lambda x: -x[1])
+        ]
+        children.append({"id": tactic, "children": tech_children})
+
+    return {"id": "MITRE ATT&CK", "children": children}
+
+
+def get_actor_network(conn: sqlite3.Connection, min_incidents: int = 2) -> Dict[str, Any]:
+    """Network graph: actors linked by shared ransomware families."""
+    # Get actors with their ransomware families
+    cur = conn.execute(
+        """
+        SELECT threat_actor_name as actor, ransomware_family as family, COUNT(*) as cnt
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
+          AND ransomware_family IS NOT NULL AND ransomware_family != ''
+        GROUP BY actor, family
+        HAVING cnt >= 1
+        """
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+
+    # Build actor → families map
+    actor_families: Dict[str, set] = {}
+    actor_counts: Dict[str, int] = {}
+    for r in rows:
+        actor = r["actor"]
+        if actor not in actor_families:
+            actor_families[actor] = set()
+            actor_counts[actor] = 0
+        actor_families[actor].add(r["family"])
+        actor_counts[actor] += r["cnt"]
+
+    # Filter to actors with min_incidents
+    actors = [a for a, c in actor_counts.items() if c >= min_incidents]
+
+    # Build links: actors sharing a ransomware family
+    links = []
+    link_set: set = set()
+    for i, a1 in enumerate(actors):
+        for a2 in actors[i + 1:]:
+            shared = actor_families.get(a1, set()) & actor_families.get(a2, set())
+            if shared:
+                key = tuple(sorted([a1, a2]))
+                if key not in link_set:
+                    link_set.add(key)
+                    links.append({
+                        "source": a1,
+                        "target": a2,
+                        "distance": max(30, 120 - len(shared) * 30),
+                        "shared_families": sorted(shared),
+                    })
+
+    # Only include actors that appear in at least one link
+    linked_actors = set()
+    for lnk in links:
+        linked_actors.add(lnk["source"])
+        linked_actors.add(lnk["target"])
+
+    # Add isolated high-count actors as well
+    for a in actors:
+        if actor_counts[a] >= 5:
+            linked_actors.add(a)
+
+    nodes = [
+        {
+            "id": a,
+            "radius": min(28, max(8, actor_counts.get(a, 1) * 3)),
+            "count": actor_counts.get(a, 0),
+            "families": sorted(actor_families.get(a, set())),
+        }
+        for a in sorted(linked_actors)
+    ]
+
+    return {"nodes": nodes, "links": links}
+
+
+def get_ransom_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
+    """Sankey: Institution Type → Ransomware Family → Payment Outcome."""
+    cur = conn.execute(
+        """
+        SELECT
+            COALESCE(NULLIF(institution_type, ''), 'Unknown') as inst_type,
+            COALESCE(NULLIF(ransomware_family, ''), 'Unknown Family') as family,
+            CASE
+                WHEN ransom_paid = 1 THEN 'Paid'
+                WHEN ransom_demanded = 1 AND (ransom_paid = 0 OR ransom_paid IS NULL) THEN 'Refused'
+                ELSE 'Unknown Outcome'
+            END as outcome,
+            COUNT(*) as count,
+            COALESCE(SUM(ransom_amount_usd), 0) as total_amount
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND attack_category LIKE '%ransomware%'
+        GROUP BY inst_type, family, outcome
+        HAVING count >= 1
+        ORDER BY count DESC
+        """
+    )
+    rows = [dict(r) for r in cur.fetchall()]
+
+    nodes_set: set = set()
+    inst_fam: Dict[tuple, Dict] = {}
+    fam_out: Dict[tuple, Dict] = {}
+
+    for r in rows:
+        it, fam, out = r["inst_type"], r["family"], r["outcome"]
+        cnt, amt = r["count"], r["total_amount"]
+        nodes_set.update([it, fam, out])
+
+        k1 = (it, fam)
+        if k1 not in inst_fam:
+            inst_fam[k1] = {"count": 0, "amount": 0}
+        inst_fam[k1]["count"] += cnt
+        inst_fam[k1]["amount"] += amt
+
+        k2 = (fam, out)
+        if k2 not in fam_out:
+            fam_out[k2] = {"count": 0, "amount": 0}
+        fam_out[k2]["count"] += cnt
+        fam_out[k2]["amount"] += amt
+
+    links_by_count = []
+    links_by_amount = []
+
+    for (s, t), d in inst_fam.items():
+        if d["count"] >= 1:
+            links_by_count.append({"source": s, "target": t, "value": d["count"]})
+            links_by_amount.append({"source": s, "target": t, "value": max(d["amount"], 1)})
+    for (s, t), d in fam_out.items():
+        if d["count"] >= 1:
+            links_by_count.append({"source": s, "target": t, "value": d["count"]})
+            links_by_amount.append({"source": s, "target": t, "value": max(d["amount"], 1)})
+
+    used = set()
+    for lnk in links_by_count:
+        used.add(lnk["source"])
+        used.add(lnk["target"])
+
+    nodes = [{"id": n} for n in sorted(used)]
+    return {
+        "nodes": nodes,
+        "links_by_count": links_by_count,
+        "links_by_amount": links_by_amount,
+    }
+
+
+def get_country_attack_matrix(
+    conn: sqlite3.Connection,
+    limit_countries: int = 8,
+    limit_categories: int = 6,
+) -> Dict[str, Any]:
+    """Country × Attack Category matrix for chord diagram."""
+    # Top countries
+    cur = conn.execute(
+        """
+        SELECT country, COUNT(*) as cnt
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1 AND country IS NOT NULL AND country != ''
+        GROUP BY country ORDER BY cnt DESC LIMIT ?
+        """,
+        (limit_countries,)
+    )
+    countries = [row["country"] for row in cur.fetchall()]
+
+    # Top attack categories
+    cur = conn.execute(
+        """
+        SELECT attack_category, COUNT(*) as cnt
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1 AND attack_category IS NOT NULL AND attack_category != ''
+        GROUP BY attack_category ORDER BY cnt DESC LIMIT ?
+        """,
+        (limit_categories,)
+    )
+    categories = [row["attack_category"] for row in cur.fetchall()]
+
+    if not countries or not categories:
+        return {"keys": [], "matrix": []}
+
+    # All keys: countries + categories
+    keys = countries + categories
+    n = len(keys)
+    matrix = [[0] * n for _ in range(n)]
+
+    country_ph = ",".join("?" * len(countries))
+    category_ph = ",".join("?" * len(categories))
+
+    cur = conn.execute(
+        f"""
+        SELECT country, attack_category, COUNT(*) as cnt
+        FROM incident_enrichments_flat
+        WHERE is_education_related = 1
+          AND country IN ({country_ph})
+          AND attack_category IN ({category_ph})
+        GROUP BY country, attack_category
+        """,
+        countries + categories
+    )
+
+    country_idx = {c: i for i, c in enumerate(keys)}
+    for row in cur.fetchall():
+        ci = country_idx.get(row["country"])
+        ai = country_idx.get(row["attack_category"])
+        if ci is not None and ai is not None:
+            matrix[ci][ai] = row["cnt"]
+            matrix[ai][ci] = row["cnt"]
+
+    return {"keys": keys, "matrix": matrix}
 

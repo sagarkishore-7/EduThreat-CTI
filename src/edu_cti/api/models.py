@@ -611,6 +611,63 @@ class BreachByInstitutionItem(BaseModel):
 
 
 # ============================================================
+# Interactive Nivo Visualization Models
+# ============================================================
+
+
+class SankeyNode(BaseModel):
+    id: str
+
+class SankeyLink(BaseModel):
+    source: str
+    target: str
+    value: int
+
+class AttackFlowResponse(BaseModel):
+    """Sankey flow: Attack Vector → Category → Impact Outcome."""
+    nodes: List[SankeyNode]
+    links: List[SankeyLink]
+
+class MitreSunburstChild(BaseModel):
+    id: str
+    value: Optional[int] = None
+    children: Optional[List["MitreSunburstChild"]] = None
+
+class MitreSunburstResponse(BaseModel):
+    """Hierarchical MITRE tree for sunburst chart."""
+    id: str
+    children: List[MitreSunburstChild]
+
+class NetworkNode(BaseModel):
+    id: str
+    radius: int
+    count: int
+    families: List[str]
+
+class NetworkLink(BaseModel):
+    source: str
+    target: str
+    distance: int
+    shared_families: List[str]
+
+class ActorNetworkResponse(BaseModel):
+    """Force-directed network graph data."""
+    nodes: List[NetworkNode]
+    links: List[NetworkLink]
+
+class RansomFlowResponse(BaseModel):
+    """Sankey flow: Institution → Family → Payment Outcome."""
+    nodes: List[SankeyNode]
+    links_by_count: List[SankeyLink]
+    links_by_amount: List[SankeyLink]
+
+class CountryAttackMatrixResponse(BaseModel):
+    """Country × Attack Category chord diagram data."""
+    keys: List[str]
+    matrix: List[List[int]]
+
+
+# ============================================================
 # Filter/Search Models
 # ============================================================
 

@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.6.0] - 2026-03-19
+
+### Interactive Nivo Visualization Endpoints
+
+#### Added
+- **5 new interactive analytics endpoints** for advanced Nivo visualizations:
+  - `GET /api/analytics/attack-flow` — 3-column Sankey data: attack vector → category → impact outcome
+  - `GET /api/analytics/mitre-sunburst` — hierarchical MITRE ATT&CK tree: tactic → technique for sunburst drill-down
+  - `GET /api/analytics/actor-network` — force-directed network graph: actors linked by shared ransomware families
+  - `GET /api/analytics/ransom-flow` — Sankey flow: institution type → ransomware family → payment outcome (count + amount)
+  - `GET /api/analytics/country-attack-matrix` — chord diagram data: top countries × top attack categories
+- **5 new Pydantic response models** (AttackFlowResponse, MitreSunburstResponse, ActorNetworkResponse, RansomFlowResponse, CountryAttackMatrixResponse)
+- **5 new SQL query functions** for relationship-based and hierarchical data
+
+---
+
 ## [2.5.0] - 2026-03-17
 
 ### Cross-Dimensional Intelligence Analytics

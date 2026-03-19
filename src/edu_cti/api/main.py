@@ -71,6 +71,12 @@ from .models import (
     ActorTTPResponse,
     DisclosureTimelinePoint,
     BreachByInstitutionItem,
+    # Interactive Nivo visualization models
+    AttackFlowResponse,
+    MitreSunburstResponse,
+    ActorNetworkResponse,
+    RansomFlowResponse,
+    CountryAttackMatrixResponse,
 )
 from .database import (
     get_api_connection,
@@ -120,6 +126,12 @@ from .database import (
     get_actor_ttp_profile,
     get_disclosure_timeline,
     get_breach_by_institution_type,
+    # Interactive Nivo visualizations
+    get_attack_flow,
+    get_mitre_sunburst,
+    get_actor_network,
+    get_ransom_flow,
+    get_country_attack_matrix,
 )
 from .cache import cache_get, cache_set
 
@@ -1401,6 +1413,100 @@ async def api_breach_by_institution_type():
         return data
     except Exception as e:
         logger.error(f"Error getting breach by institution type: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# Interactive Nivo Visualization Endpoints
+# ============================================================
+
+@app.get("/api/analytics/attack-flow", response_model=AttackFlowResponse, tags=["Analytics"])
+async def api_attack_flow():
+    """Sankey: Attack Vector → Category → Impact Outcome."""
+    cache_key = "analytics:attack-flow"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_attack_flow(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting attack flow: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/mitre-sunburst", response_model=MitreSunburstResponse, tags=["Analytics"])
+async def api_mitre_sunburst():
+    """Hierarchical MITRE ATT&CK sunburst: Tactic → Technique."""
+    cache_key = "analytics:mitre-sunburst"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_mitre_sunburst(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting MITRE sunburst: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/actor-network", response_model=ActorNetworkResponse, tags=["Analytics"])
+async def api_actor_network():
+    """Force-directed network: actors linked by shared ransomware families."""
+    cache_key = "analytics:actor-network"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_actor_network(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting actor network: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/ransom-flow", response_model=RansomFlowResponse, tags=["Analytics"])
+async def api_ransom_flow():
+    """Sankey: Institution Type → Ransomware Family → Payment Outcome."""
+    cache_key = "analytics:ransom-flow"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_ransom_flow(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting ransom flow: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/analytics/country-attack-matrix", response_model=CountryAttackMatrixResponse, tags=["Analytics"])
+async def api_country_attack_matrix():
+    """Country × Attack Category chord diagram data."""
+    cache_key = "analytics:country-attack-matrix"
+    cached = cache_get(cache_key, ttl_seconds=300)
+    if cached is not None:
+        return cached
+    try:
+        conn = get_api_connection()
+        data = get_country_attack_matrix(conn)
+        conn.close()
+        cache_set(cache_key, data)
+        return data
+    except Exception as e:
+        logger.error(f"Error getting country attack matrix: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

@@ -2,6 +2,20 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.6.0 (2026-03-19)
+
+**Focus**: Interactive Nivo Visualization Endpoints — Sankey, Sunburst, Network, Chord
+
+### Key Features
+- 5 new endpoints for advanced interactive visualizations (Sankey flows, sunburst drill-down, force-directed network, chord diagrams)
+- Attack Flow Sankey: traces how attack vectors flow through categories to impact outcomes
+- MITRE Sunburst: hierarchical tactic → technique tree built from enrichment JSON
+- Actor Network: force-directed graph of actors connected by shared ransomware families
+- Ransom Flow: institution → family → payment outcome with toggle between count and dollar amount
+- Country-Attack Chord: geographic attack specialization patterns
+
+---
+
 ## Version 2.5.0 (2026-03-17)
 
 **Focus**: Cross-Dimensional Intelligence Analytics — 10 New Endpoints
