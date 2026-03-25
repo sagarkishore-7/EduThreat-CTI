@@ -13,6 +13,8 @@ from src.edu_cti.core.utils import (
 )
 
 DEFAULT_NEWS_KEYWORDS: List[str] = config.NEWS_KEYWORDS
+DEFAULT_SEARCH_QUERIES: List[str] = config.NEWS_SEARCH_QUERIES
+CYBER_KEYWORDS: List[str] = [k.lower() for k in config.CYBER_KEYWORDS]
 DEFAULT_MAX_PAGES = config.NEWS_MAX_PAGES
 
 
@@ -22,13 +24,33 @@ def prepare_keywords(
     return [k.lower() for k in (keywords or DEFAULT_NEWS_KEYWORDS)]
 
 
+def prepare_search_queries(
+    search_terms: Optional[Sequence[str]] = None,
+) -> List[str]:
+    """Return search queries. Prefer targeted cyber+edu queries over bare keywords."""
+    if search_terms:
+        return list(search_terms)
+    return list(DEFAULT_SEARCH_QUERIES)
+
+
+def _has_cyber_keyword(text: str) -> bool:
+    """Check if text contains at least one cybersecurity-related keyword."""
+    return any(k in text for k in CYBER_KEYWORDS)
+
+
 def matches_keywords(text: str, keywords: Iterable[str]) -> bool:
+    """Match text that contains BOTH an education keyword AND a cyber keyword.
+
+    This prevents collecting irrelevant articles (sports, admissions, general
+    university news) that happen to mention an educational institution.
+    """
     if not text:
         return False
     lowered = text.lower()
-    if is_edu_keyword_in_text(lowered):
-        return True
-    return any(k in lowered for k in keywords)
+    has_edu = is_edu_keyword_in_text(lowered) or any(k in lowered for k in keywords)
+    if not has_edu:
+        return False
+    return _has_cyber_keyword(lowered)
 
 
 def extract_date(raw: Optional[str]) -> Tuple[Optional[str], str]:

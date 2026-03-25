@@ -34,7 +34,41 @@ HTTP_USER_AGENTS: List[str] = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
 ]
 
-# Keyword filtering for news/search scrapers
+# ---- Search query terms (education + cyber combined for precision) ----
+# These are sent as search queries to news sites. Combining education terms
+# with cybersecurity terms ensures we only get relevant results, not random
+# articles that happen to mention "university".
+NEWS_SEARCH_QUERIES: List[str] = [
+    # Broad cyber + education combos (highest recall)
+    "university cyberattack",
+    "university ransomware",
+    "university data breach",
+    "college cyberattack",
+    "college data breach",
+    "school district ransomware",
+    "school district cyberattack",
+    "school data breach",
+    "education sector cyberattack",
+    "education ransomware attack",
+    # Specific attack types targeting education
+    "university hacked",
+    "college hacked",
+    "school hacked",
+    "student data leaked",
+    "student records breach",
+    "campus network attack",
+    "university phishing attack",
+    # K-12 specific
+    "k-12 cyberattack",
+    "k-12 ransomware",
+    "school board data breach",
+    # International variations
+    "university cyber incident",
+    "education institution attack",
+    "academic institution breach",
+]
+
+# Legacy keyword list — used for post-fetch filtering (matches_keywords)
 NEWS_KEYWORDS: List[str] = [
     "university",
     "universities",
@@ -43,6 +77,30 @@ NEWS_KEYWORDS: List[str] = [
     "campus",
     "education",
     "academy",
+]
+
+# Cybersecurity relevance keywords — article MUST contain at least one of these
+# to pass the relevance filter (prevents collecting sports/admissions/general news)
+CYBER_KEYWORDS: List[str] = [
+    "cyberattack", "cyber attack", "cyber-attack",
+    "ransomware", "malware", "phishing",
+    "data breach", "data leak", "data exposure",
+    "hack", "hacked", "hacking", "hacker",
+    "breach", "breached",
+    "threat actor", "threat group",
+    "vulnerability", "exploit",
+    "ddos", "denial of service",
+    "encryption", "encrypted files",
+    "ransom", "extortion",
+    "infosteal", "credential", "credentials stolen",
+    "unauthorized access", "intrusion",
+    "incident response", "security incident",
+    "compromised", "compromise",
+    "dark web", "darknet",
+    "exfiltrat",  # catches exfiltrate, exfiltration, exfiltrated
+    "sensitive data", "personal data",
+    "cybersecurity", "cyber security",
+    "cve-", "zero-day", "zero day",
 ]
 
 # Education keywords for RSS feed filtering

@@ -16,6 +16,7 @@ from .common import (
     fetch_html,
     matches_keywords,
     prepare_keywords,
+    prepare_search_queries,
 )
 
 logger = logging.getLogger(__name__)
@@ -120,7 +121,7 @@ def build_krebsonsecurity_incidents(
     seen_urls: set[str] = set()
 
     # Search for each keyword separately and combine results
-    search_keywords = prepared_keywords if prepared_keywords else ["university"]
+    search_keywords = prepare_search_queries()
     
     for keyword in search_keywords:
         logger.info(f"KrebsOnSecurity searching for keyword: '{keyword}'")

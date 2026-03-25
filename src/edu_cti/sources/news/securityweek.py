@@ -20,6 +20,7 @@ from .common import (
     fetch_html,
     matches_keywords,
     prepare_keywords,
+    prepare_search_queries,
 )
 
 SOURCE_NAME = config.SOURCE_SECURITYWEEK
@@ -185,7 +186,7 @@ def build_securityweek_incidents(
     """
     http_client = client or default_client()
     prepared_keywords = prepare_keywords(keywords)
-    terms = list(search_terms or ["college", "university", "school"])
+    terms = list(search_terms or prepare_search_queries())
     seen_urls: set[str] = set()
     incidents: List[BaseIncident] = []
     ingested_at = now_utc_iso()

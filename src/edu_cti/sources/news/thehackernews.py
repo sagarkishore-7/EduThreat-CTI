@@ -19,6 +19,7 @@ from .common import (
     extract_date,
     matches_keywords,
     prepare_keywords,
+    prepare_search_queries,
 )
 
 BASE_URL = "https://thehackernews.com"
@@ -257,7 +258,7 @@ def build_thehackernews_incidents(
     """
     http_client = client or default_client()
     prepared_keywords = prepare_keywords(keywords)
-    terms = list(search_terms or ["school", "university", "college"])
+    terms = list(search_terms or prepare_search_queries())
     incidents: List[BaseIncident] = []
     seen_urls: set[str] = set()
     ingested_at = now_utc_iso()

@@ -16,6 +16,7 @@ from .common import (
     fetch_html,
     matches_keywords,
     prepare_keywords,
+    prepare_search_queries,
 )
 
 SOURCE_NAME = config.SOURCE_THERECORD
@@ -187,10 +188,7 @@ def build_therecord_incidents(
     http_client = client or default_client()
     prepared_keywords = prepare_keywords(keywords)
     # Use keywords from config as search terms if not provided
-    if search_terms is None:
-        terms = list(config.NEWS_KEYWORDS)
-    else:
-        terms = list(search_terms)
+    terms = list(search_terms or prepare_search_queries())
     incidents: List[BaseIncident] = []
     seen_urls: set[str] = set()
     ingested_at = now_utc_iso()

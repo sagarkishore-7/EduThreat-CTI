@@ -774,13 +774,20 @@ def main() -> None:
         fetch_complete_event.set()
         logger.info("Fetching complete - signaled consumer threads")
 
-    # Wait for all consumer threads
-    estimated_timeout = max(300, total_to_process * 2)
-    logger.info(f"Waiting for {num_workers} consumer(s) to finish (timeout: {estimated_timeout}s)...")
+    # Wait for all consumer threads — no timeout.
+    # Each LLM call can take up to 180s, so even a modest batch (e.g. 500 incidents)
+    # needs 500 * 180s = 25 hours. The old timeout of total*2 (e.g. 3300s = 55min)
+    # was killing the consumer mid-enrichment. Use None to wait indefinitely; the
+    # cancel_event mechanism provides graceful shutdown when needed.
+    logger.info(f"Waiting for {num_workers} consumer(s) to finish (no timeout — cancel via admin panel)...")
     for t in consumers:
-        t.join(timeout=estimated_timeout)
-        if t.is_alive():
-            logger.warning(f"Consumer {t.name} did not finish within timeout")
+        # Poll every 60s so we can log progress and check for cancel
+        while t.is_alive():
+            t.join(timeout=60)
+            if t.is_alive():
+                with stats_lock:
+                    done = combined_enrich_stats["enriched"] + combined_enrich_stats["skipped"] + combined_enrich_stats["errors"]
+                logger.info(f"Still waiting for {t.name}... ({done}/{total_to_process} done so far)")
 
     logger.info("All consumer threads finished")
 
