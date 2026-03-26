@@ -1,0 +1,82 @@
+{
+  "english": [
+    "university", "college", "school", "campus", "education",
+    "school district", "school board", "academy", "faculty",
+    "student data", "student records", "alumni",
+    "k-12", "high school", "elementary school", "middle school",
+    "higher education", "research institute", "research university",
+    "department of education", "ministry of education", "public schools"
+  ],
+  "spanish": [
+    "universidad", "colegio", "escuela", "instituto", "educación",
+    "facultad", "campus", "estudiante", "alumno",
+    "distrito escolar", "junta escolar", "academia",
+    "educación superior", "ministerio de educación"
+  ],
+  "french": [
+    "université", "école", "collège", "lycée", "éducation",
+    "faculté", "campus", "étudiant", "académie",
+    "enseignement supérieur", "ministère de l'éducation",
+    "rectorat", "grande école"
+  ],
+  "german": [
+    "universität", "hochschule", "schule", "bildung", "fakultät",
+    "campus", "studenten", "akademie", "gymnasium",
+    "fachhochschule", "bildungsministerium", "schulbezirk"
+  ],
+  "portuguese": [
+    "universidade", "faculdade", "escola", "educação", "colégio",
+    "campus", "estudante", "academia", "instituto",
+    "ensino superior", "ministério da educação"
+  ],
+  "italian": [
+    "università", "scuola", "istituto", "educazione", "facoltà",
+    "campus", "studente", "accademia", "liceo",
+    "istruzione superiore", "ministero dell'istruzione"
+  ],
+  "dutch": [
+    "universiteit", "school", "hogeschool", "onderwijs", "campus",
+    "student", "academie", "faculteit",
+    "hoger onderwijs", "ministerie van onderwijs"
+  ],
+  "polish": [
+    "uniwersytet", "szkoła", "uczelnia", "edukacja", "kampus",
+    "student", "akademia", "wydział", "politechnika",
+    "szkolnictwo wyższe", "ministerstwo edukacji"
+  ],
+  "japanese": [
+    "大学", "学校", "教育", "キャンパス", "学生",
+    "高等学校", "中学校", "小学校", "学部",
+    "文部科学省", "研究所", "学園"
+  ],
+  "korean": [
+    "대학교", "학교", "교육", "캠퍼스", "학생",
+    "고등학교", "중학교", "초등학교", "학부",
+    "교육부", "연구소"
+  ],
+  "chinese": [
+    "大学", "学校", "教育", "校园", "学生",
+    "高中", "中学", "小学", "学院",
+    "教育部", "研究所", "高等教育"
+  ],
+  "arabic": [
+    "جامعة", "مدرسة", "تعليم", "كلية", "طالب",
+    "حرم جامعي", "أكاديمية", "معهد",
+    "وزارة التعليم", "التعليم العالي"
+  ],
+  "turkish": [
+    "üniversite", "okul", "eğitim", "kampüs", "öğrenci",
+    "fakülte", "akademi", "lise", "enstitü",
+    "eğitim bakanlığı", "yükseköğretim"
+  ],
+  "hindi": [
+    "विश्वविद्यालय", "स्कूल", "शिक्षा", "कॉलेज", "छात्र",
+    "विद्यालय", "संस्थान", "अकादमी",
+    "शिक्षा मंत्रालय", "उच्च शिक्षा"
+  ],
+  "russian": [
+    "университет", "школа", "образование", "колледж", "студент",
+    "кампус", "академия", "факультет", "институт",
+    "министерство образования", "высшее образование"
+  ]
+}

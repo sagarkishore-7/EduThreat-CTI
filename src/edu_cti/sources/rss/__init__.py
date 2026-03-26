@@ -7,13 +7,16 @@ RSS feeds are filtered by category (e.g., "Education Sector") or keywords.
 Supported RSS Sources:
 - DataBreaches.net: Filtered by "Education Sector" category
 - BleepingComputer: Filtered by "Security" category + education keywords
+- Google News RSS: Multilingual worldwide coverage with date-range support
 """
 
 from src.edu_cti.sources.rss.databreaches_rss import build_databreaches_rss_incidents
 from src.edu_cti.sources.rss.bleepingcomputer_rss import build_bleepingcomputer_rss_incidents
+from src.edu_cti.sources.rss.googlenews_rss import build_googlenews_rss_incidents
 
 __all__ = [
     "build_databreaches_rss_incidents",
     "build_bleepingcomputer_rss_incidents",
+    "build_googlenews_rss_incidents",
 ]
 

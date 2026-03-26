@@ -21,64 +21,167 @@ from src.edu_cti.sources.rss.common import parse_rss_date
 logger = logging.getLogger(__name__)
 
 # International cybersecurity RSS feeds with education filtering
-# Format: (name, url, language, country, education_keywords_in_language)
+# Format: (name, url, language, country, edu_keywords, cyber_keywords)
+# Both edu AND cyber keywords must match for an article to be included.
 INTERNATIONAL_FEEDS = [
+    # ---- Europe ----
     # German
     (
         "heise_security",
         "https://www.heise.de/security/rss/news-atom.xml",
         "de",
         "Germany",
-        ["universität", "hochschule", "schule", "bildung", "studenten",
-         "university", "school", "education", "ransomware", "cyberangriff"],
+        ["universität", "hochschule", "schule", "bildung", "studenten", "university", "school"],
+        ["cyberangriff", "ransomware", "hackerangriff", "datenleck", "sicherheitslücke",
+         "cyberattack", "data breach", "hacked", "malware", "phishing"],
     ),
-    # French
+    # French CERT
     (
         "cert_fr",
         "https://www.cert.ssi.gouv.fr/feed/",
         "fr",
         "France",
-        ["université", "école", "éducation", "académique", "étudiant",
-         "university", "school", "education", "ransomware"],
+        ["université", "école", "éducation", "académique", "étudiant", "university", "school"],
+        ["cyberattaque", "ransomware", "piratage", "fuite de données", "vulnérabilité",
+         "cyberattack", "data breach", "hacked", "malware"],
     ),
-    # Indian (English)
+    # Spain — INCIBE (Spanish CERT)
     (
-        "the_hindu_tech",
-        "https://www.thehindu.com/sci-tech/technology/feeder/default.rss",
-        "en",
-        "India",
-        ["university", "college", "school", "education", "IIT", "IISC",
-         "cyber attack", "data breach", "ransomware", "hacked"],
+        "incibe_es",
+        "https://www.incibe.es/incibe/sala-de-prensa/rss",
+        "es",
+        "Spain",
+        ["universidad", "escuela", "colegio", "educación", "instituto", "university", "school"],
+        ["ciberataque", "ransomware", "hackeo", "brecha de datos", "vulnerabilidad",
+         "cyberattack", "data breach", "malware"],
     ),
-    # Brazilian
+    # Italy — CSIRT Italia
     (
-        "cert_br",
-        "https://www.cert.br/rss/certbr-rss.xml",
-        "pt",
-        "Brazil",
-        ["universidade", "faculdade", "escola", "educação", "estudante",
-         "university", "school", "ransomware"],
+        "csirt_italia",
+        "https://www.csirt.gov.it/feed/rss",
+        "it",
+        "Italy",
+        ["università", "scuola", "istituto", "educazione", "university", "school"],
+        ["attacco informatico", "ransomware", "violazione dati", "vulnerabilità",
+         "cyberattack", "data breach", "malware"],
     ),
-    # NOTE: JPCERT, KrCERT, and AusCERT have discontinued their RSS feeds.
-    # They are omitted to avoid repeated 404 errors in logs.
-    # UK NCSC
+    # Netherlands — NCSC-NL
+    (
+        "ncsc_nl",
+        "https://advisories.ncsc.nl/rss/advisories",
+        "nl",
+        "Netherlands",
+        ["universiteit", "school", "hogeschool", "onderwijs", "university"],
+        ["cyberaanval", "ransomware", "datalek", "kwetsbaarheid",
+         "cyberattack", "data breach", "malware"],
+    ),
+    # UK — NCSC
     (
         "ncsc_uk",
         "https://www.ncsc.gov.uk/api/1/services/v1/all-rss-feed.xml",
         "en",
         "United Kingdom",
-        ["university", "school", "education", "college", "academy",
-         "ransomware", "cyber attack", "data breach"],
+        ["university", "school", "education", "college", "academy"],
+        ["ransomware", "cyber attack", "data breach", "hacked", "malware", "phishing"],
+    ),
+    # Finland — NCSC-FI
+    (
+        "ncsc_fi",
+        "https://www.kyberturvallisuuskeskus.fi/en/rss.xml",
+        "en",
+        "Finland",
+        ["university", "school", "education", "campus"],
+        ["ransomware", "cyber attack", "data breach", "vulnerability", "malware"],
+    ),
+    # Sweden — CERT-SE
+    (
+        "cert_se",
+        "https://www.cert.se/feed.rss",
+        "sv",
+        "Sweden",
+        ["universitet", "skola", "utbildning", "högskola", "university", "school"],
+        ["cyberattack", "ransomware", "dataintrång", "sårbarhet",
+         "cyber attack", "data breach", "malware"],
+    ),
+    # Poland — CERT Polska
+    (
+        "cert_pl",
+        "https://cert.pl/en/rss.xml",
+        "en",
+        "Poland",
+        ["university", "school", "education", "uniwersytet", "szkoła"],
+        ["ransomware", "cyber attack", "data breach", "malware", "phishing"],
+    ),
+    # ---- Asia-Pacific ----
+    # India — The Hindu Tech
+    (
+        "the_hindu_tech",
+        "https://www.thehindu.com/sci-tech/technology/feeder/default.rss",
+        "en",
+        "India",
+        ["university", "college", "school", "education", "IIT", "IISC"],
+        ["cyber attack", "data breach", "ransomware", "hacked", "malware", "phishing"],
+    ),
+    # Australia — ACSC
+    (
+        "acsc_au",
+        "https://www.cyber.gov.au/about-us/view-all-content/rss.xml",
+        "en",
+        "Australia",
+        ["university", "school", "education", "TAFE", "campus"],
+        ["ransomware", "cyber attack", "data breach", "malware", "vulnerability"],
+    ),
+    # Singapore — SingCERT
+    (
+        "singcert_sg",
+        "https://www.csa.gov.sg/api/rss/alerts-and-advisories",
+        "en",
+        "Singapore",
+        ["university", "school", "education", "NUS", "NTU", "polytechnic"],
+        ["ransomware", "cyber attack", "data breach", "vulnerability", "malware"],
+    ),
+    # ---- Americas ----
+    # Brazil — CERT.br
+    (
+        "cert_br",
+        "https://www.cert.br/rss/certbr-rss.xml",
+        "pt",
+        "Brazil",
+        ["universidade", "faculdade", "escola", "educação", "estudante", "university"],
+        ["ataque cibernético", "ransomware", "invasão", "vazamento de dados",
+         "cyberattack", "data breach", "malware"],
+    ),
+    # Canada — Cyber Centre
+    (
+        "cccs_ca",
+        "https://www.cyber.gc.ca/api/cccs/rss",
+        "en",
+        "Canada",
+        ["university", "school", "college", "education", "campus"],
+        ["ransomware", "cyber attack", "data breach", "malware", "vulnerability"],
+    ),
+    # ---- Middle East ----
+    # Saudi Arabia — Saudi CERT (English)
+    (
+        "cert_sa",
+        "https://cert.gov.sa/en/rss/",
+        "en",
+        "Saudi Arabia",
+        ["university", "school", "education", "campus"],
+        ["ransomware", "cyber attack", "data breach", "vulnerability", "malware"],
     ),
 ]
 
 
-def _matches_keywords(text: str, keywords: List[str]) -> bool:
-    """Check if text matches any keywords (case-insensitive)."""
+def _matches_edu_and_cyber(text: str, edu_keywords: List[str], cyber_keywords: List[str]) -> bool:
+    """Check if text matches BOTH an education keyword AND a cyber keyword."""
     if not text:
         return False
     lowered = text.lower()
-    return any(kw.lower() in lowered for kw in keywords)
+    has_edu = any(kw.lower() in lowered for kw in edu_keywords)
+    if not has_edu:
+        return False
+    return any(kw.lower() in lowered for kw in cyber_keywords)
 
 
 def build_international_rss_incidents(
@@ -108,7 +211,15 @@ def build_international_rss_incidents(
     cutoff = datetime.utcnow() - timedelta(days=max_age_days)
     all_incidents: List[BaseIncident] = []
 
-    for feed_name, feed_url, lang, country, keywords in feed_list:
+    for feed_entry in feed_list:
+        # Support both old 5-tuple and new 6-tuple format
+        if len(feed_entry) == 6:
+            feed_name, feed_url, lang, country, edu_kw, cyber_kw = feed_entry
+        else:
+            feed_name, feed_url, lang, country, edu_kw = feed_entry
+            # Fallback: use generic cyber keywords
+            cyber_kw = ["ransomware", "cyberattack", "cyber attack", "data breach",
+                        "hacked", "malware", "phishing", "vulnerability"]
         logger.info(f"Fetching international RSS: {feed_name} ({country})...")
 
         try:
@@ -166,9 +277,9 @@ def build_international_rss_incidents(
             if not title or not link:
                 continue
 
-            # Filter by keywords
+            # Filter by BOTH education AND cyber keywords
             combined = f"{title} {description}"
-            if not _matches_keywords(combined, keywords):
+            if not _matches_edu_and_cyber(combined, edu_kw, cyber_kw):
                 continue
 
             # Parse date
