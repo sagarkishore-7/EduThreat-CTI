@@ -669,6 +669,34 @@ async def re_enrich_incidents(
         conn.close()
 
 
+@router.post("/reset-phantom-enrichments")
+async def reset_phantom_enrichments_endpoint(
+    _: bool = Depends(authenticate),
+):
+    """
+    Reset incidents marked as enriched but with no actual LLM data.
+
+    These "phantom enriched" incidents were caused by fetch failures being
+    incorrectly marked as enriched. Resetting them allows the pipeline to
+    retry with improved fetching (e.g. Zyte API fallback).
+    """
+    from src.edu_cti.pipeline.phase2.storage.db import reset_phantom_enrichments
+
+    conn = get_api_connection()
+    try:
+        count = reset_phantom_enrichments(conn)
+        cache_invalidate()
+        return {
+            "success": True,
+            "reset_count": count,
+            "message": f"Reset {count} phantom enriched incidents. Run enrichment to re-process them.",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Reset failed: {str(e)}")
+    finally:
+        conn.close()
+
+
 @router.post("/upload-database")
 async def upload_database(
     file: UploadFile = File(...),

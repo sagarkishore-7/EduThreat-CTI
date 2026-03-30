@@ -1069,6 +1069,78 @@ def revert_enrichment_before_date(
         return 0
 
 
+def reset_phantom_enrichments(conn: sqlite3.Connection) -> int:
+    """
+    Reset incidents that are marked llm_enriched=1 but have no actual LLM data.
+
+    These are "phantom enriched" incidents — typically caused by fetch failures
+    that were incorrectly marked as enriched in older pipeline versions.
+
+    Returns:
+        Number of incidents reset
+    """
+    try:
+        # Find phantom enriched: llm_enriched=1 but no real LLM summary
+        cur = conn.execute(
+            """
+            SELECT incident_id FROM incidents
+            WHERE llm_enriched = 1
+              AND (llm_summary IS NULL OR length(llm_summary) < 10)
+            """
+        )
+        incident_ids = [row["incident_id"] for row in cur.fetchall()]
+
+        if not incident_ids:
+            logger.info("No phantom enriched incidents found")
+            return 0
+
+        placeholders = ",".join("?" * len(incident_ids))
+        now = datetime.utcnow().isoformat()
+
+        # Reset enrichment fields
+        conn.execute(
+            f"""
+            UPDATE incidents
+            SET
+                llm_enriched = 0,
+                llm_enriched_at = NULL,
+                llm_summary = NULL,
+                llm_timeline = NULL,
+                llm_mitre_attack = NULL,
+                llm_attack_dynamics = NULL,
+                notes = NULL,
+                last_updated_at = ?
+            WHERE incident_id IN ({placeholders})
+            """,
+            [now] + incident_ids,
+        )
+
+        # Clean up enrichment tables
+        conn.execute(
+            f"DELETE FROM incident_enrichments WHERE incident_id IN ({placeholders})",
+            incident_ids,
+        )
+        conn.execute(
+            f"DELETE FROM incident_enrichments_flat WHERE incident_id IN ({placeholders})",
+            incident_ids,
+        )
+
+        # Delete failed articles so they can be re-fetched (e.g. with Zyte)
+        conn.execute(
+            f"DELETE FROM articles WHERE incident_id IN ({placeholders})",
+            incident_ids,
+        )
+
+        conn.commit()
+        logger.info(f"Reset {len(incident_ids)} phantom enriched incidents")
+        return len(incident_ids)
+
+    except Exception as e:
+        logger.error(f"Error resetting phantom enrichments: {e}")
+        conn.rollback()
+        return 0
+
+
 def get_enrichment_stats(conn: sqlite3.Connection) -> Dict[str, int]:
     """
     Get statistics about enrichment progress.

@@ -258,5 +258,9 @@ OTX_API_KEY = os.getenv("OTX_API_KEY", "")
 # Proxy configuration (cost-effective: free proxies + curl_cffi TLS fingerprinting)
 PROXY_URL = os.getenv("PROXY_URL")  # Optional paid proxy URL
 
+# Zyte API configuration (paid fallback for when local scraping fails)
+ZYTE_API_KEY = os.getenv("ZYTE_API_KEY", "")
+ZYTE_API_URL = "https://api.zyte.com/v1/extract"
+
 # Historical scraping start year
 HISTORICAL_START_YEAR = int(os.getenv("HISTORICAL_START_YEAR", "2019"))

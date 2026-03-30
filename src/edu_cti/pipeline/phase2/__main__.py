@@ -533,11 +533,13 @@ def enrich_articles_phase(
                             stats["errors"] += 1
                             logger.warning(f"Unknown enrichment result for {incident_id}")
                     else:
-                        # No enrichment result and no error info - mark as skipped
-                        mark_incident_skipped(conn, incident_id, "Enrichment returned no result")
-                        conn.commit()  # Commit skip marker immediately
-                        stats["skipped"] += 1
-                        logger.warning(f"Skipped {incident_id} - no enrichment result")
+                        # No enrichment result and no error info — do NOT mark as
+                        # enriched.  This typically means the article could not be
+                        # fetched or content was too short.  Leaving llm_enriched=0
+                        # allows the incident to be retried on the next run (e.g.
+                        # after Zyte API is configured or the site becomes reachable).
+                        stats["errors"] += 1
+                        logger.warning(f"No enrichment result for {incident_id} — will retry on next run")
                 
                 # Rate limiting between LLM calls
                 if rate_limit_delay > 0:

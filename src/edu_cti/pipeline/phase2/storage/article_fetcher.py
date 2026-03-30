@@ -6,6 +6,8 @@ Uses newspaper3k for primary article extraction, with curl_cffi/Playwright fallb
 Includes advanced bot detection bypass via TLS fingerprinting and headless browser.
 """
 
+import base64
+import json
 import logging
 import time
 import random
@@ -15,6 +17,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse, quote
 
 from src.edu_cti.core.http import HttpClient, build_http_client
+from src.edu_cti.core.config import ZYTE_API_KEY, ZYTE_API_URL
 from bs4 import BeautifulSoup
 
 # Optional newspaper3k support for article extraction
@@ -128,6 +131,130 @@ class ArticleFetcher:
         
         return None
 
+    def _fetch_with_zyte(self, url: str) -> Optional[ArticleContent]:
+        """
+        Fetch article using Zyte API (paid service, used as fallback).
+
+        Tries Zyte's automatic article extraction first (cheapest, ~$0.001/req).
+        Falls back to browserHtml for JS-heavy pages if article extraction fails.
+
+        Args:
+            url: URL to fetch
+
+        Returns:
+            ArticleContent if successful, None otherwise
+        """
+        if not ZYTE_API_KEY:
+            logger.debug("Zyte API key not configured, skipping Zyte fallback")
+            return None
+
+        auth = base64.b64encode(f"{ZYTE_API_KEY}:".encode()).decode()
+        headers = {
+            "Authorization": f"Basic {auth}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+
+        # --- Tier 1: Automatic article extraction (cheapest) ---
+        try:
+            payload = {
+                "url": url,
+                "article": True,
+                "articleOptions": {"extractFrom": "httpResponseBody"},
+            }
+            logger.info(f"Zyte article extraction: {url}")
+            resp = requests.post(
+                ZYTE_API_URL, headers=headers, json=payload, timeout=60
+            )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                article = data.get("article", {})
+                text = article.get("articleBody", "")
+                title = article.get("headline", "")
+                author_list = article.get("authors", [])
+                author = ", ".join(
+                    a.get("name", "") for a in author_list if a.get("name")
+                ) or None
+                pub_date = article.get("datePublished")
+                if pub_date:
+                    pub_date = pub_date[:10]  # YYYY-MM-DD
+
+                if text and len(text.strip()) >= 100:
+                    logger.info(
+                        f"Zyte article extraction succeeded for {url} "
+                        f"({len(text)} chars)"
+                    )
+                    return ArticleContent(
+                        url=url,
+                        title=title,
+                        content=self._clean_content(text),
+                        author=author,
+                        publish_date=pub_date,
+                        fetch_successful=True,
+                        content_length=len(text),
+                    )
+                else:
+                    logger.debug(
+                        f"Zyte article extraction returned insufficient content "
+                        f"for {url}: {len(text.strip()) if text else 0} chars"
+                    )
+            elif resp.status_code == 422:
+                logger.debug(f"Zyte: URL not supported for article extraction: {url}")
+            else:
+                logger.warning(
+                    f"Zyte article extraction failed for {url}: "
+                    f"HTTP {resp.status_code}"
+                )
+        except requests.RequestException as e:
+            logger.warning(f"Zyte article extraction error for {url}: {e}")
+
+        # --- Tier 2: browserHtml fallback (JS rendering, slightly more expensive) ---
+        try:
+            payload = {
+                "url": url,
+                "browserHtml": True,
+            }
+            logger.info(f"Zyte browserHtml fallback: {url}")
+            resp = requests.post(
+                ZYTE_API_URL, headers=headers, json=payload, timeout=90
+            )
+
+            if resp.status_code == 200:
+                data = resp.json()
+                html = data.get("browserHtml", "")
+                if html:
+                    soup = BeautifulSoup(html, "html.parser")
+                    title = self._extract_title(soup)
+                    content = self._extract_content(soup)
+                    author = self._extract_author(soup)
+                    publish_date = self._extract_publish_date(soup)
+                    content = self._clean_content(content)
+
+                    if content and len(content.strip()) >= 100:
+                        logger.info(
+                            f"Zyte browserHtml succeeded for {url} "
+                            f"({len(content)} chars)"
+                        )
+                        return ArticleContent(
+                            url=url,
+                            title=title,
+                            content=content,
+                            author=author,
+                            publish_date=publish_date,
+                            fetch_successful=True,
+                            content_length=len(content),
+                        )
+            else:
+                logger.warning(
+                    f"Zyte browserHtml failed for {url}: HTTP {resp.status_code}"
+                )
+        except requests.RequestException as e:
+            logger.warning(f"Zyte browserHtml error for {url}: {e}")
+
+        logger.debug(f"Zyte: all methods failed for {url}")
+        return None
+
     def _fetch_from_archive(self, original_url: str) -> Optional[ArticleContent]:
         """
         Attempt to fetch article from archive.org.
@@ -203,98 +330,54 @@ class ArticleFetcher:
     def fetch_article(self, url: str, max_retries: int = 3) -> ArticleContent:
         """
         Fetch and extract article content from a URL.
-        
-        Strategy:
-        1. For Cloudflare-protected domains:
-           a. Try newspaper3k first
-           b. Fall back to archive.org if newspaper3k fails
-        2. For other domains:
-           a. Try newspaper3k first
-           b. Fall back to HttpClient (curl_cffi/Playwright) if newspaper3k fails
-        
+
+        Fallback chain (free local methods first, paid last):
+        1. newspaper3k  — fast, free, article-specific extraction
+        2. curl_cffi     — TLS fingerprint impersonation (Cloudflare bypass)
+        3. Playwright    — full headless browser (JS rendering)
+        4. Zyte API      — paid cloud scraper (anti-bot + JS rendering)
+        5. archive.org   — Wayback Machine fallback for historical articles
+
         Args:
             url: URL to fetch
             max_retries: Maximum number of retry attempts
-            
+
         Returns:
             ArticleContent object with extracted content
         """
-        is_cloudflare = self._is_cloudflare_protected(url)
-        
-        # For Cloudflare-protected domains, try newspaper3k then archive.org
-        # (curl_cffi handles Cloudflare via TLS fingerprint impersonation)
-        if is_cloudflare:
-            logger.debug(f"Cloudflare-protected domain, using newspaper3k + archive fallback: {url}")
-            
-            # Try newspaper3k first
-            if NEWSPAPER_AVAILABLE:
-                article_content = self._fetch_with_newspaper(url)
-                if article_content and article_content.fetch_successful:
-                    return article_content
-            
-            # Try archive.org as fallback
-            logger.info(f"Trying archive.org fallback for Cloudflare-protected site: {url}")
-            archive_content = self._fetch_from_archive(url)
-            if archive_content and archive_content.fetch_successful:
-                return archive_content
-            
-            # All methods failed for Cloudflare site
-            logger.warning(f"Cannot fetch Cloudflare-protected URL (no archive available): {url}")
-            return ArticleContent(
-                url=url,
-                title="",
-                content="",
-                fetch_successful=False,
-                error_message="Cloudflare-protected site, no archive available",
-                content_length=0
-            )
-        
-        # Try newspaper3k first (best for article extraction)
+        # --- Tier 1: newspaper3k (free, fast) ---
         if NEWSPAPER_AVAILABLE:
             article_content = self._fetch_with_newspaper(url)
             if article_content and article_content.fetch_successful:
                 logger.debug(f"Fetched {url} via newspaper3k ({article_content.content_length} chars)")
                 return article_content
-            error_msg = article_content.error_message if article_content else "Unknown error"
-            content_len = article_content.content_length if article_content else 0
-            logger.warning(
-                f"newspaper3k failed for {url}: {error_msg[:100]} "
-                f"(content_length: {content_len})"
-            )
-        else:
-            logger.warning("newspaper3k not available, skipping...")
 
-        # Fall back to HttpClient (curl_cffi + Playwright for bot detection bypass)
+        # --- Tier 2: HttpClient — curl_cffi + Playwright (free, local) ---
         article_content = self._fetch_with_browser(url)
         if article_content and article_content.fetch_successful:
             logger.debug(f"Fetched {url} via HttpClient ({article_content.content_length} chars)")
             return article_content
-        if article_content:
-            error_msg = article_content.error_message or "Unknown error"
-            logger.warning(f"HttpClient failed for {url}: {error_msg[:100]}")
-        
-        # Final fallback: Try archive.org (works for many historical articles)
-        logger.info(f"Trying archive.org fallback for {url}...")
+
+        # --- Tier 3: Zyte API (paid, only when local methods fail) ---
+        zyte_content = self._fetch_with_zyte(url)
+        if zyte_content and zyte_content.fetch_successful:
+            logger.debug(f"Fetched {url} via Zyte API ({zyte_content.content_length} chars)")
+            return zyte_content
+
+        # --- Tier 4: archive.org (free, historical fallback) ---
         archive_content = self._fetch_from_archive(url)
         if archive_content and archive_content.fetch_successful:
             logger.debug(f"Fetched {url} from archive.org ({archive_content.content_length} chars)")
             return archive_content
-        else:
-            logger.debug(f"archive.org fallback failed for {url}")
-        
+
         # All methods failed
-        logger.error(
-            f"All fetch methods failed for {url} "
-            f"(newspaper3k: {'available' if NEWSPAPER_AVAILABLE else 'unavailable'}, "
-            f"archive.org: {'tried' if archive_content is None else 'no snapshot'})"
-        )
-        logger.warning(f"All methods failed for {url}")
+        logger.warning(f"All fetch methods failed for {url}")
         return ArticleContent(
             url=url,
             title="",
             content="",
             fetch_successful=False,
-            error_message="All fetch methods failed (newspaper3k, curl_cffi/Playwright, archive.org)",
+            error_message="All fetch methods failed (newspaper3k, curl_cffi/Playwright, Zyte, archive.org)",
             content_length=0
         )
 
