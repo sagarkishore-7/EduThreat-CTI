@@ -697,6 +697,35 @@ async def reset_phantom_enrichments_endpoint(
         conn.close()
 
 
+@router.post("/purge-non-education")
+async def purge_non_education_endpoint(
+    _: bool = Depends(authenticate),
+):
+    """
+    Delete all incidents classified as not education-related by the LLM.
+
+    These are incidents that were scraped from broad news searches and the LLM
+    determined they are not about cyberattacks on educational institutions.
+    Removes them from all tables (incidents, enrichments, articles, sources).
+    """
+    from src.edu_cti.pipeline.phase2.storage.db import purge_non_education_incidents
+
+    conn = get_api_connection()
+    try:
+        result = purge_non_education_incidents(conn)
+        cache_invalidate()
+        total = result["total_purged"]
+        return {
+            "success": True,
+            **result,
+            "message": f"Purged {total} non-education incidents ({result['non_education_purged']} non-edu, {result['orphan_purged']} orphans).",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Purge failed: {str(e)}")
+    finally:
+        conn.close()
+
+
 @router.post("/upload-database")
 async def upload_database(
     file: UploadFile = File(...),

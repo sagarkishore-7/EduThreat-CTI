@@ -1141,6 +1141,90 @@ def reset_phantom_enrichments(conn: sqlite3.Connection) -> int:
         return 0
 
 
+def purge_non_education_incidents(conn: sqlite3.Connection) -> Dict[str, int]:
+    """
+    Delete all incidents that the LLM classified as not education-related.
+
+    These are incidents where is_education_related=0 in enrichments_flat,
+    meaning the LLM processed them and determined they are not about
+    cyberattacks on educational institutions.
+
+    Also deletes orphan incidents that are enriched but have no record
+    in enrichments_flat at all (should not happen, but defensive).
+
+    Returns:
+        Dict with counts: non_education_purged, orphan_purged, total_purged
+    """
+    try:
+        # 1. Find non-education incidents in enrichments_flat
+        cur = conn.execute(
+            """
+            SELECT ef.incident_id FROM incident_enrichments_flat ef
+            WHERE ef.is_education_related = 0
+            """
+        )
+        non_edu_ids = [row["incident_id"] for row in cur.fetchall()]
+
+        # 2. Find orphan enriched incidents (in incidents table but not in enrichments_flat)
+        cur = conn.execute(
+            """
+            SELECT i.incident_id FROM incidents i
+            WHERE i.llm_enriched = 1
+              AND NOT EXISTS (
+                  SELECT 1 FROM incident_enrichments_flat ef
+                  WHERE ef.incident_id = i.incident_id
+              )
+            """
+        )
+        orphan_ids = [row["incident_id"] for row in cur.fetchall()]
+
+        all_ids = list(set(non_edu_ids + orphan_ids))
+
+        if not all_ids:
+            logger.info("No non-education incidents to purge")
+            return {"non_education_purged": 0, "orphan_purged": 0, "total_purged": 0}
+
+        placeholders = ",".join("?" * len(all_ids))
+
+        # Delete from all related tables
+        for table in [
+            "incident_enrichments_flat",
+            "incident_enrichments",
+            "articles",
+            "incident_sources",
+        ]:
+            try:
+                conn.execute(
+                    f"DELETE FROM {table} WHERE incident_id IN ({placeholders})",
+                    all_ids,
+                )
+            except Exception:
+                pass  # Table might not exist or have different schema
+
+        # Delete from incidents table
+        conn.execute(
+            f"DELETE FROM incidents WHERE incident_id IN ({placeholders})",
+            all_ids,
+        )
+
+        conn.commit()
+        result = {
+            "non_education_purged": len(non_edu_ids),
+            "orphan_purged": len(orphan_ids),
+            "total_purged": len(all_ids),
+        }
+        logger.info(
+            f"Purged {result['total_purged']} non-education incidents "
+            f"({result['non_education_purged']} non-edu, {result['orphan_purged']} orphans)"
+        )
+        return result
+
+    except Exception as e:
+        logger.error(f"Error purging non-education incidents: {e}")
+        conn.rollback()
+        return {"non_education_purged": 0, "orphan_purged": 0, "total_purged": 0}
+
+
 def get_enrichment_stats(conn: sqlite3.Connection) -> Dict[str, int]:
     """
     Get statistics about enrichment progress.
