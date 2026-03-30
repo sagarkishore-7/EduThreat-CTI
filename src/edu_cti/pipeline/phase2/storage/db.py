@@ -1157,10 +1157,13 @@ def purge_non_education_incidents(conn: sqlite3.Connection) -> Dict[str, int]:
     """
     try:
         # 1. Find non-education incidents in enrichments_flat
+        #    Include NULL values — these are records where the LLM didn't
+        #    return education relevance data (treated as non-education)
         cur = conn.execute(
             """
             SELECT ef.incident_id FROM incident_enrichments_flat ef
             WHERE ef.is_education_related = 0
+               OR ef.is_education_related IS NULL
             """
         )
         non_edu_ids = [row["incident_id"] for row in cur.fetchall()]
