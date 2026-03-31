@@ -652,7 +652,7 @@ async def re_enrich_incidents(
     """
     from src.edu_cti.pipeline.phase2.storage.db import revert_enrichment_before_date
 
-    conn = get_api_connection()
+    conn = get_api_connection(read_only=False)
     try:
         count = revert_enrichment_before_date(conn, request.before_date)
         cache_invalidate()
@@ -682,7 +682,7 @@ async def reset_phantom_enrichments_endpoint(
     """
     from src.edu_cti.pipeline.phase2.storage.db import reset_phantom_enrichments
 
-    conn = get_api_connection()
+    conn = get_api_connection(read_only=False)
     try:
         count = reset_phantom_enrichments(conn)
         cache_invalidate()
@@ -770,7 +770,7 @@ async def purge_non_education_endpoint(
     """
     from src.edu_cti.pipeline.phase2.storage.db import purge_non_education_incidents
 
-    conn = get_api_connection()
+    conn = get_api_connection(read_only=False)
     try:
         result = purge_non_education_incidents(conn)
         cache_invalidate()
