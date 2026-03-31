@@ -199,8 +199,8 @@ async def get_export_stats(_: bool = Depends(authenticate)):
         cur = conn.execute("SELECT COUNT(*) FROM incident_enrichments_flat WHERE is_education_related = 1")
         education = cur.fetchone()[0]
         
-        # Total sources
-        cur = conn.execute("SELECT COUNT(*) FROM incident_sources")
+        # Total distinct sources
+        cur = conn.execute("SELECT COUNT(DISTINCT source) FROM incident_sources")
         sources = cur.fetchone()[0]
         
         # DB size
