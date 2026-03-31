@@ -697,6 +697,66 @@ async def reset_phantom_enrichments_endpoint(
         conn.close()
 
 
+@router.get("/purge-non-education/preview")
+async def purge_non_education_preview(
+    _: bool = Depends(authenticate),
+):
+    """Diagnostic: show exact DB counts before purging."""
+    conn = get_api_connection()
+    try:
+        counts = {}
+        counts["incidents_total"] = conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
+        counts["incidents_enriched"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 1").fetchone()[0]
+        counts["incidents_unenriched"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 0").fetchone()[0]
+        counts["incidents_with_llm_summary"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_summary IS NOT NULL AND length(llm_summary) > 10").fetchone()[0]
+        counts["incidents_without_llm_summary"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 1 AND (llm_summary IS NULL OR length(llm_summary) <= 10)").fetchone()[0]
+
+        counts["enrichments_flat_total"] = conn.execute("SELECT COUNT(*) FROM incident_enrichments_flat").fetchone()[0]
+        counts["enrichments_flat_edu_1"] = conn.execute("SELECT COUNT(*) FROM incident_enrichments_flat WHERE is_education_related = 1").fetchone()[0]
+        counts["enrichments_flat_edu_0"] = conn.execute("SELECT COUNT(*) FROM incident_enrichments_flat WHERE is_education_related = 0").fetchone()[0]
+        counts["enrichments_flat_edu_null"] = conn.execute("SELECT COUNT(*) FROM incident_enrichments_flat WHERE is_education_related IS NULL").fetchone()[0]
+
+        counts["orphan_enriched"] = conn.execute("""
+            SELECT COUNT(*) FROM incidents i
+            WHERE i.llm_enriched = 1
+              AND NOT EXISTS (SELECT 1 FROM incident_enrichments_flat ef WHERE ef.incident_id = i.incident_id)
+        """).fetchone()[0]
+
+        counts["articles_total"] = conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0]
+        counts["articles_successful"] = conn.execute("SELECT COUNT(*) FROM articles WHERE fetch_successful = 1").fetchone()[0]
+        counts["articles_failed"] = conn.execute("SELECT COUNT(*) FROM articles WHERE fetch_successful = 0").fetchone()[0]
+
+        # Sample 5 orphan IDs if any
+        orphan_sample = conn.execute("""
+            SELECT i.incident_id, i.title, i.llm_enriched,
+                   CASE WHEN i.llm_summary IS NOT NULL THEN length(i.llm_summary) ELSE 0 END as summary_len
+            FROM incidents i
+            WHERE i.llm_enriched = 1
+              AND NOT EXISTS (SELECT 1 FROM incident_enrichments_flat ef WHERE ef.incident_id = i.incident_id)
+            LIMIT 5
+        """).fetchall()
+        counts["orphan_samples"] = [
+            {"id": r[0], "title": r[1][:60] if r[1] else None, "summary_len": r[3]}
+            for r in orphan_sample
+        ]
+
+        # Sample 5 non-edu enrichments_flat
+        non_edu_sample = conn.execute("""
+            SELECT ef.incident_id, ef.is_education_related, ef.enriched_summary
+            FROM incident_enrichments_flat ef
+            WHERE ef.is_education_related = 0 OR ef.is_education_related IS NULL
+            LIMIT 5
+        """).fetchall()
+        counts["non_edu_samples"] = [
+            {"id": r[0], "is_edu": r[1], "summary_len": len(r[2]) if r[2] else 0}
+            for r in non_edu_sample
+        ]
+
+        return counts
+    finally:
+        conn.close()
+
+
 @router.post("/purge-non-education")
 async def purge_non_education_endpoint(
     _: bool = Depends(authenticate),
