@@ -867,6 +867,43 @@ def mark_incident_skipped(
     logger.info(f"Marked incident {incident_id} as skipped: {reason}")
 
 
+def delete_incident(conn: sqlite3.Connection, incident_id: str) -> bool:
+    """
+    Permanently delete an incident and all related records from the database.
+
+    Used during pipeline processing to auto-remove incidents that are
+    unfetchable (dead URLs) or classified as non-education by the LLM.
+
+    Args:
+        conn: Database connection (must be writable)
+        incident_id: Incident ID to delete
+
+    Returns:
+        True if deleted, False on error
+    """
+    try:
+        for table in [
+            "incident_enrichments_flat",
+            "incident_enrichments",
+            "articles",
+            "incident_sources",
+        ]:
+            try:
+                conn.execute(
+                    f"DELETE FROM {table} WHERE incident_id = ?", (incident_id,)
+                )
+            except Exception:
+                pass  # Table might not exist
+
+        conn.execute("DELETE FROM incidents WHERE incident_id = ?", (incident_id,))
+        conn.commit()
+        return True
+    except Exception as e:
+        logger.error(f"Failed to delete incident {incident_id}: {e}")
+        conn.rollback()
+        return False
+
+
 def revert_enrichment_for_incident(
     conn: sqlite3.Connection,
     incident_id: str,

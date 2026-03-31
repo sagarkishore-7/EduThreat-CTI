@@ -234,17 +234,16 @@ def fetch_articles_phase(
                     logger.info(f"Incident {incident_id} has {len(existing_articles)} articles in DB")
                     should_push_to_queue = True
                 else:
-                    logger.warning(f"No articles for {incident_id} — will attempt metadata-only enrichment")
-                    # Mark all URLs as broken if none were fetched and no existing articles
-                    all_urls = incident.get("all_urls", [])
-                    if all_urls:
-                        from src.edu_cti.core.db import mark_urls_as_broken
-                        mark_urls_as_broken(conn, incident_id, all_urls)
-                        conn.commit()
-                    # Still push to queue for metadata-only enrichment
-                    # (title, attack_type_hint, dates may be enough for basic CTI extraction)
-                    should_push_to_queue = True
-                    stats["errors"] += 1
+                    # All fetch methods failed (including Zyte) and no existing articles.
+                    # These are dead URLs — delete the incident to keep the DB clean.
+                    from src.edu_cti.pipeline.phase2.storage.db import delete_incident
+                    if delete_incident(conn, incident_id):
+                        stats["errors"] += 1
+                        logger.info(f"Deleted unfetchable incident {incident_id} — all URLs dead")
+                    else:
+                        stats["errors"] += 1
+                        logger.warning(f"Failed to delete unfetchable incident {incident_id}")
+                    should_push_to_queue = False
 
                 # Push incident to queue for enrichment (with or without articles)
                 if should_push_to_queue:
@@ -517,12 +516,15 @@ def enrich_articles_phase(
                     # Check what kind of failure we have
                     if raw_json_data and isinstance(raw_json_data, dict):
                         if raw_json_data.get("_not_education_related"):
-                            # Explicitly not education-related - mark as skipped
+                            # Not education-related — delete from DB entirely
+                            from src.edu_cti.pipeline.phase2.storage.db import delete_incident
                             reason = raw_json_data.get("_reason", "Not education-related")
-                            mark_incident_skipped(conn, incident_id, f"Not education-related: {reason}")
-                            conn.commit()  # Commit skip marker immediately
-                            stats["skipped"] += 1
-                            logger.debug(f"Skipped {incident_id} - not education-related")
+                            if delete_incident(conn, incident_id):
+                                stats["skipped"] += 1
+                                logger.info(f"Deleted non-education incident {incident_id}: {reason[:80]}")
+                            else:
+                                stats["errors"] += 1
+                                logger.warning(f"Failed to delete non-education incident {incident_id}")
                         elif raw_json_data.get("_enrichment_failed"):
                             # Enrichment failed (JSON parsing, etc.) - DON'T mark as skipped, will retry
                             reason = raw_json_data.get("_reason", "Enrichment failed")
