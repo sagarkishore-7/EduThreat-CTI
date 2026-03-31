@@ -178,7 +178,21 @@ class IngestionScheduler:
             )
             total_new += news_new
             logger.info(f"News sources: {news_new} new incidents")
-            
+
+            # Run API sources
+            logger.info("[SCHEDULER] Running API sources...")
+            logger.info("Running API sources")
+            label, collector = GROUP_COLLECTORS["api"]
+            api_new = _ingest_group(
+                conn,
+                label,
+                collector,
+                sources=None,
+                incremental=True,
+            )
+            total_new += api_new
+            logger.info(f"API sources: {api_new} new incidents")
+
             # Get count after
             cur = conn.execute("SELECT COUNT(*) FROM incidents")
             count_after = cur.fetchone()[0]
@@ -384,7 +398,7 @@ def run_once_historical():
         total_new = 0
         
         # Run all groups in full historical mode
-        for group in ["curated", "news", "rss"]:
+        for group in ["curated", "news", "rss", "api"]:
             label, collector = GROUP_COLLECTORS[group]
             is_rss = (group == "rss")
             
