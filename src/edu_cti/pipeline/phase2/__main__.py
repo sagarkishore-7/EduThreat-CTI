@@ -234,16 +234,25 @@ def fetch_articles_phase(
                     logger.info(f"Incident {incident_id} has {len(existing_articles)} articles in DB")
                     should_push_to_queue = True
                 else:
-                    # All fetch methods failed (including Zyte) and no existing articles.
-                    # These are dead URLs — delete the incident to keep the DB clean.
-                    from src.edu_cti.pipeline.phase2.storage.db import delete_incident
-                    if delete_incident(conn, incident_id):
+                    # All fetch methods failed and no existing articles.
+                    # Check if incident has structured metadata (e.g. Comparitech
+                    # provides ransomware strain, ransom amount in notes) — if so,
+                    # keep it for metadata-only enrichment.
+                    has_metadata = bool(incident.get("notes") or incident.get("attack_type_hint"))
+                    if has_metadata:
+                        logger.info(f"No articles for {incident_id} but has metadata — keeping for metadata-only enrichment")
+                        should_push_to_queue = True
                         stats["errors"] += 1
-                        logger.info(f"Deleted unfetchable incident {incident_id} — all URLs dead")
                     else:
-                        stats["errors"] += 1
-                        logger.warning(f"Failed to delete unfetchable incident {incident_id}")
-                    should_push_to_queue = False
+                        # Dead URLs with no metadata — delete to keep DB clean
+                        from src.edu_cti.pipeline.phase2.storage.db import delete_incident
+                        if delete_incident(conn, incident_id):
+                            stats["errors"] += 1
+                            logger.info(f"Deleted unfetchable incident {incident_id} — all URLs dead")
+                        else:
+                            stats["errors"] += 1
+                            logger.warning(f"Failed to delete unfetchable incident {incident_id}")
+                        should_push_to_queue = False
 
                 # Push incident to queue for enrichment (with or without articles)
                 if should_push_to_queue:

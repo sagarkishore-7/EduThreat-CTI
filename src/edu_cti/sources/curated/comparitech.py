@@ -1,0 +1,303 @@
+"""
+Comparitech Ransomware Attack Map — Education sector curated source.
+
+Data source: Comparitech maintains a comprehensive ransomware tracker
+covering US organizations across all industries. The underlying data is
+served as a Datawrapper CSV.
+
+We filter for Industry="Education" and ingest each row as a BaseIncident
+with structured ransomware metadata (strain, ransom amount, records
+affected).  For article discovery we construct Google News RSS search
+URLs so Phase 2 can fetch and enrich with full article text.
+
+Reference: https://www.comparitech.com/ransomware-attack-map/
+"""
+
+import csv
+import io
+import logging
+import time
+import urllib.parse
+import xml.etree.ElementTree as ET
+from typing import Callable, List, Optional
+
+from src.edu_cti.core.http import HttpClient, build_http_client
+from src.edu_cti.core.models import BaseIncident, make_incident_id
+from src.edu_cti.core.utils import now_utc_iso, parse_date_with_precision
+
+logger = logging.getLogger(__name__)
+
+SOURCE_NAME = "comparitech"
+
+# Datawrapper chart backing the Comparitech ransomware map table
+DATASET_URL = "https://datawrapper.dwcdn.net/PljNz/723/dataset.csv"
+
+# US state → abbreviation for compact display / dedup
+US_STATES = {
+    "Alabama": "AL", "Alaska": "AK", "Arizona": "AZ", "Arkansas": "AR",
+    "California": "CA", "Colorado": "CO", "Connecticut": "CT", "Delaware": "DE",
+    "Florida": "FL", "Georgia": "GA", "Hawaii": "HI", "Idaho": "ID",
+    "Illinois": "IL", "Indiana": "IN", "Iowa": "IA", "Kansas": "KS",
+    "Kentucky": "KY", "Louisiana": "LA", "Maine": "ME", "Maryland": "MD",
+    "Massachusetts": "MA", "Michigan": "MI", "Minnesota": "MN",
+    "Mississippi": "MS", "Missouri": "MO", "Montana": "MT", "Nebraska": "NE",
+    "Nevada": "NV", "New Hampshire": "NH", "New Jersey": "NJ",
+    "New Mexico": "NM", "New York": "NY", "North Carolina": "NC",
+    "North Dakota": "ND", "Ohio": "OH", "Oklahoma": "OK", "Oregon": "OR",
+    "Pennsylvania": "PA", "Rhode Island": "RI", "South Carolina": "SC",
+    "South Dakota": "SD", "Tennessee": "TN", "Texas": "TX", "Utah": "UT",
+    "Vermont": "VT", "Virginia": "VA", "Washington": "WA",
+    "West Virginia": "WV", "Wisconsin": "WI", "Wyoming": "WY",
+    "District of Columbia": "DC",
+}
+
+MONTH_MAP = {
+    "january": "01", "february": "02", "march": "03", "april": "04",
+    "may": "05", "june": "06", "july": "07", "august": "08",
+    "september": "09", "october": "10", "november": "11", "december": "12",
+}
+
+
+def _parse_month_year(raw: str) -> tuple:
+    """Parse 'March 2020' → ('2020-03', 'month') or '2020' → ('2020', 'year')."""
+    raw = raw.strip()
+    parts = raw.split()
+    if len(parts) == 2:
+        month_name, year = parts
+        mm = MONTH_MAP.get(month_name.lower())
+        if mm and year.isdigit():
+            return f"{year}-{mm}", "month"
+    # Fallback: year only
+    if raw.isdigit() and len(raw) == 4:
+        return raw, "year"
+    return None, "unknown"
+
+
+def _guess_institution_type(name: str) -> Optional[str]:
+    """Rough institution type guess from name."""
+    lower = name.lower()
+    if any(k in lower for k in ("university", "college", "community college")):
+        return "University"
+    if any(k in lower for k in (
+        "school district", "school", "isd", "independent school",
+        "public schools", "unified school", "k-12", "k-8",
+        "high school", "middle school", "elementary",
+        "academy", "charter",
+    )):
+        return "School"
+    if any(k in lower for k in ("institute", "research", "laboratory")):
+        return "Research Institute"
+    return "Unknown"
+
+
+def _resolve_article_urls(
+    name: str, year: str, client: HttpClient, max_articles: int = 3,
+) -> List[str]:
+    """
+    Search Google News RSS for articles about this incident.
+
+    Returns Google News article URLs — these are redirect URLs that
+    resolve to the actual article when fetched with a real browser
+    (Playwright/Zyte in the article fetch chain handle this).
+
+    Tries two query formulations. Returns up to max_articles unique URLs.
+    """
+    article_urls: List[str] = []
+    seen = set()
+
+    for query_template in [
+        '"{name}" ransomware {year}',
+        '"{name}" cyberattack {year}',
+    ]:
+        if len(article_urls) >= max_articles:
+            break
+
+        q = query_template.format(name=name, year=year)
+        encoded = urllib.parse.quote(q)
+        rss_url = (
+            f"https://news.google.com/rss/search?"
+            f"q={encoded}&hl=en&gl=US&ceid=US:en"
+        )
+
+        try:
+            resp = client.get(rss_url, to_soup=False)
+            if resp is None or resp.status_code != 200:
+                continue
+            root = ET.fromstring(resp.text)
+            for item in root.iter("item"):
+                link_el = item.find("link")
+                if link_el is not None and link_el.text:
+                    url = link_el.text.strip()
+                    if url not in seen:
+                        seen.add(url)
+                        article_urls.append(url)
+                        if len(article_urls) >= max_articles:
+                            break
+        except Exception as e:
+            logger.debug(f"RSS fetch failed for '{q}': {e}")
+
+        time.sleep(1)  # Polite delay between Google requests
+
+    return article_urls
+
+
+def _parse_ransom_amount(raw: str) -> Optional[str]:
+    """Parse ransom amount string, return cleaned value or None."""
+    raw = raw.strip()
+    if not raw or raw.lower() in ("unknown", "n/a", ""):
+        return None
+    # Remove commas, dollar signs
+    cleaned = raw.replace(",", "").replace("$", "").strip()
+    return cleaned if cleaned else None
+
+
+def build_comparitech_incidents(
+    client: Optional[HttpClient] = None,
+    save_callback: Optional[Callable[[List[BaseIncident]], None]] = None,
+) -> List[BaseIncident]:
+    """
+    Fetch Comparitech ransomware map CSV and extract education incidents.
+
+    For each education incident, constructs Google News search URLs as
+    all_urls so Phase 2 can fetch articles and do LLM enrichment.
+
+    Args:
+        client: Optional HTTP client
+        save_callback: Optional callback to save incidents incrementally
+
+    Returns:
+        List of BaseIncident objects for education sector ransomware attacks
+    """
+    http_client = client or build_http_client()
+    logger.info(f"Fetching Comparitech dataset from {DATASET_URL}")
+
+    try:
+        resp = http_client.get(DATASET_URL, to_soup=False)
+        if resp is None or resp.status_code != 200:
+            logger.error(f"Failed to fetch Comparitech CSV (status={getattr(resp, 'status_code', None)})")
+            return []
+        csv_text = resp.text
+    except Exception as e:
+        logger.error(f"Error fetching Comparitech CSV: {e}")
+        return []
+
+    reader = csv.DictReader(io.StringIO(csv_text))
+    incidents: List[BaseIncident] = []
+    seen_keys = set()
+    now = now_utc_iso()
+
+    # First pass: collect all education rows (fast, no network)
+    edu_rows = []
+    for row in reader:
+        industry = (row.get("Industry") or "").strip()
+        if industry != "Education":
+            continue
+        name = (row.get("Company Affected") or "").strip()
+        if not name:
+            continue
+        edu_rows.append(row)
+
+    logger.info(f"Comparitech: {len(edu_rows)} education rows found, resolving article URLs...")
+
+    for idx, row in enumerate(edu_rows, 1):
+        name = (row.get("Company Affected") or "").strip()
+        if not name:
+            continue
+
+        month_year_raw = (row.get("Month, Year") or "").strip()
+        year_raw = (row.get("Year") or "").strip()
+        city = (row.get("City/County") or "").strip()
+        state = (row.get("State") or "").strip()
+        records_affected = (row.get("# Records Affected") or "").strip()
+        ransom_paid = (row.get("Ransom Paid") or "").strip()
+        ransom_amount_raw = (row.get("Ransom Amount") or "").strip()
+        ransomware_strain = (row.get("Ransomware Strain") or "").strip()
+
+        # Parse date
+        incident_date, date_precision = _parse_month_year(month_year_raw)
+        if not incident_date and year_raw:
+            incident_date = year_raw
+            date_precision = "year"
+
+        # Dedup key: name + date + city
+        dedup_key = f"{name.lower()}|{incident_date or ''}|{city.lower()}"
+        if dedup_key in seen_keys:
+            continue
+        seen_keys.add(dedup_key)
+
+        # Build unique ID
+        incident_id = make_incident_id(SOURCE_NAME, dedup_key)
+
+        # Build notes with structured ransomware metadata
+        notes_parts = []
+        if ransomware_strain and ransomware_strain.lower() != "unknown":
+            notes_parts.append(f"Ransomware: {ransomware_strain}")
+        if ransom_paid and ransom_paid.lower() not in ("unknown", ""):
+            notes_parts.append(f"Ransom paid: {ransom_paid}")
+        ransom_amount = _parse_ransom_amount(ransom_amount_raw)
+        if ransom_amount:
+            notes_parts.append(f"Ransom amount: ${ransom_amount}")
+        if records_affected and records_affected.lower() not in ("unknown", "0", ""):
+            notes_parts.append(f"Records affected: {records_affected}")
+        notes = " | ".join(notes_parts) if notes_parts else None
+
+        # Title
+        year_str = year_raw or (incident_date[:4] if incident_date else "")
+        title = f"Ransomware attack on {name}"
+        if year_str:
+            title += f" ({year_str})"
+
+        # Resolve actual article URLs from Google News RSS
+        article_urls = _resolve_article_urls(name, year_str, http_client) if year_str else []
+
+        # Region (US state)
+        region = state if state else None
+
+        incident = BaseIncident(
+            incident_id=incident_id,
+            source=SOURCE_NAME,
+            source_event_id=dedup_key,
+            university_name=name,
+            victim_raw_name=name,
+            institution_type=_guess_institution_type(name),
+            country="US",
+            region=region,
+            city=city or None,
+            incident_date=incident_date,
+            date_precision=date_precision,
+            source_published_date=None,
+            ingested_at=now,
+            title=title,
+            subtitle=None,
+            primary_url=None,
+            all_urls=article_urls,
+            leak_site_url=None,
+            source_detail_url="https://www.comparitech.com/ransomware-attack-map/",
+            screenshot_url=None,
+            attack_type_hint="ransomware",
+            status="confirmed",
+            source_confidence="high",
+            notes=notes,
+        )
+        incidents.append(incident)
+
+        # Progress logging
+        if idx % 50 == 0 or idx == len(edu_rows):
+            with_urls = sum(1 for i in incidents if i.all_urls)
+            logger.info(
+                f"Comparitech: [{idx}/{len(edu_rows)}] "
+                f"{len(incidents)} incidents, {with_urls} with article URLs"
+            )
+
+        # Batch save every 100 incidents
+        if save_callback and len(incidents) >= 100 and len(incidents) % 100 == 0:
+            save_callback(incidents[-100:])
+
+    logger.info(f"Comparitech: found {len(incidents)} education ransomware incidents")
+
+    # Final save of any remaining incidents
+    if save_callback and incidents:
+        # Save all (the pipeline deduplicates, so re-saving is safe)
+        save_callback(incidents)
+
+    return incidents

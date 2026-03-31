@@ -19,6 +19,7 @@ from src.edu_cti.sources.curated import (
     build_konbriefing_base_incidents,
     build_ransomwarelive_incidents,
     build_databreach_incidents,
+    build_comparitech_incidents,
 )
 
 # Import news source builders (keyword-based search sources)
@@ -53,6 +54,7 @@ CURATED_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "konbriefing": build_konbriefing_base_incidents,
     "ransomwarelive": build_ransomwarelive_incidents,
     "databreach": build_databreach_incidents,
+    "comparitech": build_comparitech_incidents,
 }
 
 # News sources registry (keyword-based search sources)
