@@ -30,6 +30,41 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+
+def _resolve_google_news_url(url: str) -> str:
+    """Resolve Google News redirect URLs to actual article URLs.
+
+    Google News RSS <link> elements are opaque redirects like
+    ``https://news.google.com/rss/articles/CBMi...`` that return 400 when
+    fetched directly.  Following the redirect (302) gives the real article URL.
+    """
+    if "news.google.com" not in url:
+        return url
+    try:
+        resp = requests.head(
+            url, allow_redirects=True, timeout=15,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        resolved = resp.url
+        # Only use resolved URL if it's no longer a Google News domain
+        if resolved and "news.google.com" not in resolved:
+            logger.debug(f"Resolved Google News URL → {resolved[:120]}")
+            return resolved
+        # Sometimes HEAD doesn't redirect; try GET
+        resp = requests.get(
+            url, allow_redirects=True, timeout=15,
+            headers={"User-Agent": "Mozilla/5.0"}, stream=True,
+        )
+        resolved = resp.url
+        resp.close()
+        if resolved and "news.google.com" not in resolved:
+            logger.debug(f"Resolved Google News URL (GET) → {resolved[:120]}")
+            return resolved
+    except Exception as e:
+        logger.debug(f"Failed to resolve Google News URL: {e}")
+    return url
+
+
 # Domains with Cloudflare protection (curl_cffi handles these via TLS impersonation)
 CLOUDFLARE_PROTECTED_DOMAINS = [
     "darkreading.com",
@@ -345,6 +380,9 @@ class ArticleFetcher:
         Returns:
             ArticleContent object with extracted content
         """
+        # Resolve Google News redirect URLs before fetching
+        url = _resolve_google_news_url(url)
+
         from urllib.parse import urlparse
         domain = urlparse(url).netloc
         logger.info(f"FETCH CHAIN START: {domain} — {url[:100]}")
