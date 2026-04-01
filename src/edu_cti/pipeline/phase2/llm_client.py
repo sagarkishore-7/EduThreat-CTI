@@ -70,10 +70,10 @@ class OllamaLLMClient:
         self.model = model
         
         # Use httpx timeout to prevent indefinite hangs on LLM requests
-        # Each enrichment call can take 30-120s for large articles; 180s is a safe upper bound
+        # DeepSeek 671B can take 2-4 min for large articles with complex schema extraction
         try:
             import httpx
-            timeout = httpx.Timeout(timeout=180.0, connect=30.0)
+            timeout = httpx.Timeout(timeout=300.0, connect=30.0)
         except ImportError:
             timeout = None
 
@@ -143,7 +143,7 @@ class OllamaLLMClient:
             error_str = str(e).lower()
             error_type = type(e).__name__.lower()
             if 'timeout' in error_str or 'timeout' in error_type or 'timed out' in error_str:
-                logger.warning(f"LLM request timed out after 180s: {e}")
+                logger.warning(f"LLM request timed out after 300s: {e}")
                 raise TimeoutError(f"LLM request timed out: {e}") from e
             if self._is_rate_limit_error(e):
                 logger.warning(f"Rate limit detected in Ollama API: {e}")
