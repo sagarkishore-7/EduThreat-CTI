@@ -170,7 +170,7 @@ class ArticleFetcher:
             ArticleContent if successful, None otherwise
         """
         if not ZYTE_API_KEY:
-            logger.debug("Zyte API key not configured, skipping Zyte fallback")
+            logger.warning("Zyte API key not configured, skipping Zyte fallback")
             return None
 
         auth = base64.b64encode(f"{ZYTE_API_KEY}:".encode()).decode()
@@ -205,7 +205,19 @@ class ArticleFetcher:
                 if pub_date:
                     pub_date = pub_date[:10]  # YYYY-MM-DD
 
-                if text and len(text.strip()) >= 100:
+                # Detect soft-404 pages (site returns 200 but content is a "not found" page)
+                _404_signals = ["page can't be found", "page can\u2019t be found",
+                                "page cannot be found", "not found", "404",
+                                "no longer available", "nothing was found"]
+                title_lower = (title or "").lower()
+                text_lower = (text or "").lower()[:300]
+                is_soft_404 = any(s in title_lower or s in text_lower for s in _404_signals)
+                if is_soft_404:
+                    logger.info(f"Zyte detected soft-404 for {url}: title='{title[:60]}'")
+                    return None  # Skip browserHtml fallback — page genuinely doesn't exist
+
+                min_length = 50 if "databreaches.net" in url.lower() else 100
+                if text and len(text.strip()) >= min_length:
                     logger.info(
                         f"Zyte article extraction succeeded for {url} "
                         f"({len(text)} chars)"
@@ -220,9 +232,9 @@ class ArticleFetcher:
                         content_length=len(text),
                     )
                 else:
-                    logger.debug(
+                    logger.warning(
                         f"Zyte article extraction returned insufficient content "
-                        f"for {url}: {len(text.strip()) if text else 0} chars"
+                        f"for {url}: {len(text.strip()) if text else 0} chars (min={min_length})"
                     )
             elif resp.status_code == 422:
                 logger.debug(f"Zyte: URL not supported for article extraction: {url}")
@@ -256,7 +268,8 @@ class ArticleFetcher:
                     publish_date = self._extract_publish_date(soup)
                     content = self._clean_content(content)
 
-                    if content and len(content.strip()) >= 100:
+                    min_length = 50 if "databreaches.net" in url.lower() else 100
+                    if content and len(content.strip()) >= min_length:
                         logger.info(
                             f"Zyte browserHtml succeeded for {url} "
                             f"({len(content)} chars)"
