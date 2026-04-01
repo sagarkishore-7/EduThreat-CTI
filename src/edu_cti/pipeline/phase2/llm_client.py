@@ -135,6 +135,7 @@ class OllamaLLMClient:
                 stream=stream,
                 options={
                     'temperature': temperature,
+                    'num_predict': 8192,  # Extraction schema needs ~4-6K tokens output
                 }
             )
             return response
