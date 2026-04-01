@@ -34,32 +34,22 @@ logger = logging.getLogger(__name__)
 def _resolve_google_news_url(url: str) -> str:
     """Resolve Google News redirect URLs to actual article URLs.
 
-    Google News RSS <link> elements are opaque redirects like
+    Google News RSS <link> elements are opaque encoded redirects like
     ``https://news.google.com/rss/articles/CBMi...`` that return 400 when
-    fetched directly.  Following the redirect (302) gives the real article URL.
+    fetched directly.  Uses googlenewsdecoder to extract the real article URL.
+    Falls back to the original URL if decoding fails.
     """
     if "news.google.com" not in url:
         return url
     try:
-        resp = requests.head(
-            url, allow_redirects=True, timeout=15,
-            headers={"User-Agent": "Mozilla/5.0"},
-        )
-        resolved = resp.url
-        # Only use resolved URL if it's no longer a Google News domain
-        if resolved and "news.google.com" not in resolved:
+        from googlenewsdecoder import new_decoderv1
+        result = new_decoderv1(url)
+        if result and result.get("status") and result.get("decoded_url"):
+            resolved = result["decoded_url"]
             logger.debug(f"Resolved Google News URL → {resolved[:120]}")
             return resolved
-        # Sometimes HEAD doesn't redirect; try GET
-        resp = requests.get(
-            url, allow_redirects=True, timeout=15,
-            headers={"User-Agent": "Mozilla/5.0"}, stream=True,
-        )
-        resolved = resp.url
-        resp.close()
-        if resolved and "news.google.com" not in resolved:
-            logger.debug(f"Resolved Google News URL (GET) → {resolved[:120]}")
-            return resolved
+    except ImportError:
+        logger.warning("googlenewsdecoder not installed — cannot resolve Google News URLs")
     except Exception as e:
         logger.debug(f"Failed to resolve Google News URL: {e}")
     return url

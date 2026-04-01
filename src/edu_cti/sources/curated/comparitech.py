@@ -90,17 +90,30 @@ def _guess_institution_type(name: str) -> Optional[str]:
     return "Unknown"
 
 
+def _resolve_google_news_link(url: str) -> Optional[str]:
+    """Decode a Google News redirect URL to the actual article URL."""
+    if "news.google.com" not in url:
+        return url
+    try:
+        from googlenewsdecoder import new_decoderv1
+        result = new_decoderv1(url)
+        if result and result.get("status") and result.get("decoded_url"):
+            return result["decoded_url"]
+    except ImportError:
+        logger.debug("googlenewsdecoder not installed — returning raw Google News URL")
+    except Exception as e:
+        logger.debug(f"Failed to decode Google News URL: {e}")
+    return None
+
+
 def _resolve_article_urls(
     name: str, year: str, client: HttpClient, max_articles: int = 3,
 ) -> List[str]:
     """
     Search Google News RSS for articles about this incident.
 
-    Returns Google News article URLs — these are redirect URLs that
-    resolve to the actual article when fetched with a real browser
-    (Playwright/Zyte in the article fetch chain handle this).
-
-    Tries two query formulations. Returns up to max_articles unique URLs.
+    Decodes Google News redirect URLs to actual article URLs using
+    googlenewsdecoder. Returns up to max_articles unique resolved URLs.
     """
     article_urls: List[str] = []
     seen = set()
@@ -127,10 +140,14 @@ def _resolve_article_urls(
             for item in root.iter("item"):
                 link_el = item.find("link")
                 if link_el is not None and link_el.text:
-                    url = link_el.text.strip()
-                    if url not in seen:
-                        seen.add(url)
-                        article_urls.append(url)
+                    raw_url = link_el.text.strip()
+                    # Resolve Google News redirect to actual article URL
+                    resolved = _resolve_google_news_link(raw_url)
+                    if not resolved:
+                        continue
+                    if resolved not in seen:
+                        seen.add(resolved)
+                        article_urls.append(resolved)
                         if len(article_urls) >= max_articles:
                             break
         except Exception as e:
