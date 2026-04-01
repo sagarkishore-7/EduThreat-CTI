@@ -334,7 +334,18 @@ class IncidentEnricher:
             json_data = self._parse_json_response(raw_response)
             if json_data is None:
                 return None, None
-            
+
+            # Handle salvaged truncated JSON (only has education relevance flag)
+            if json_data.get("_salvaged_from_truncated"):
+                if not json_data.get("is_edu_cyber_incident"):
+                    # Not education-related — signal to caller for deletion
+                    return None, {
+                        "_not_education_related": True,
+                        "_reason": json_data.get("education_relevance_reasoning", "Truncated JSON"),
+                    }
+                # Education-related but truncated — treat as failed for retry
+                return None, None
+
             # Map to CTIEnrichmentResult
             result = json_to_cti_enrichment(json_data, primary_url, incident)
             return result, json_data
@@ -389,6 +400,35 @@ class IncidentEnricher:
                     except json.JSONDecodeError:
                         pass
                 
+                # Fix 5: Truncated JSON — try to salvage is_edu_cyber_incident
+                # The LLM often returns valid JSON that gets truncated at the
+                # token limit. If we can extract the education relevance flag,
+                # we can still decide whether to keep or delete the incident.
+                edu_match = re.search(
+                    r'"is_edu_cyber_incident"\s*:\s*(true|false)',
+                    raw_response, re.IGNORECASE,
+                )
+                if edu_match:
+                    is_edu = edu_match.group(1).lower() == "true"
+                    reason_match = re.search(
+                        r'"education_relevance_reasoning"\s*:\s*"([^"]*)"',
+                        raw_response,
+                    )
+                    reason = reason_match.group(1) if reason_match else "Extracted from truncated JSON"
+                    if not is_edu:
+                        logger.info(
+                            f"Salvaged is_edu_cyber_incident=false from truncated JSON: {reason[:80]}"
+                        )
+                        return {
+                            "is_edu_cyber_incident": False,
+                            "education_relevance_reasoning": reason,
+                            "_salvaged_from_truncated": True,
+                        }
+                    else:
+                        logger.warning(
+                            f"JSON truncated but is_edu_cyber_incident=true — cannot salvage full enrichment"
+                        )
+
                 logger.error(f"JSON parse error: {e}")
                 logger.error(f"Response (first 500 chars): {repr(raw_response[:500])}")
                 return None

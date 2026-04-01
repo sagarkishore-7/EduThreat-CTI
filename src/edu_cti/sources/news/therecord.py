@@ -11,6 +11,7 @@ from src.edu_cti.core.http import HttpClient
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.utils import now_utc_iso
 from .common import (
+    is_cancelled,
     default_client,
     extract_date,
     fetch_html,
@@ -119,6 +120,11 @@ def _iter_pages(
     page_number = 1
 
     while True:
+        # Check for cancellation
+        if is_cancelled():
+            logger.info("The Record term '%s' cancelled at page %s", term, page_number)
+            break
+
         # Check if we've reached the max_pages limit
         if max_pages is not None and page_number > max_pages:
             logger.info(
@@ -194,6 +200,9 @@ def build_therecord_incidents(
     ingested_at = now_utc_iso()
 
     for term in terms:
+        if is_cancelled():
+            logger.info("The Record scraping cancelled before term '%s'", term)
+            break
         # If max_pages is None, fetch all pages (None means no limit)
         page_limit = max_pages if max_pages is not None else None
         for page_number, soup in _iter_pages(http_client, term, page_limit):

@@ -345,33 +345,40 @@ class ArticleFetcher:
         Returns:
             ArticleContent object with extracted content
         """
+        from urllib.parse import urlparse
+        domain = urlparse(url).netloc
+        logger.info(f"FETCH CHAIN START: {domain} — {url[:100]}")
+
         # --- Tier 1: newspaper3k (free, fast) ---
         if NEWSPAPER_AVAILABLE:
             article_content = self._fetch_with_newspaper(url)
             if article_content and article_content.fetch_successful:
-                logger.debug(f"Fetched {url} via newspaper3k ({article_content.content_length} chars)")
+                logger.info(f"FETCH OK tier=newspaper3k domain={domain} chars={article_content.content_length}")
                 return article_content
+            logger.info(f"FETCH FAIL tier=newspaper3k domain={domain}")
 
         # --- Tier 2: HttpClient — curl_cffi + Playwright (free, local) ---
         article_content = self._fetch_with_browser(url)
         if article_content and article_content.fetch_successful:
-            logger.debug(f"Fetched {url} via HttpClient ({article_content.content_length} chars)")
+            logger.info(f"FETCH OK tier=HttpClient domain={domain} chars={article_content.content_length}")
             return article_content
+        logger.info(f"FETCH FAIL tier=HttpClient domain={domain}")
 
         # --- Tier 3: Zyte API (paid, only when local methods fail) ---
         zyte_content = self._fetch_with_zyte(url)
         if zyte_content and zyte_content.fetch_successful:
-            logger.debug(f"Fetched {url} via Zyte API ({zyte_content.content_length} chars)")
+            logger.info(f"FETCH OK tier=Zyte domain={domain} chars={zyte_content.content_length}")
             return zyte_content
+        logger.info(f"FETCH FAIL tier=Zyte domain={domain} (key={'set' if ZYTE_API_KEY else 'MISSING'})")
 
         # --- Tier 4: archive.org (free, historical fallback) ---
         archive_content = self._fetch_from_archive(url)
         if archive_content and archive_content.fetch_successful:
-            logger.debug(f"Fetched {url} from archive.org ({archive_content.content_length} chars)")
+            logger.info(f"FETCH OK tier=archive.org domain={domain} chars={archive_content.content_length}")
             return archive_content
 
         # All methods failed
-        logger.warning(f"All fetch methods failed for {url}")
+        logger.warning(f"FETCH FAILED ALL TIERS: domain={domain} url={url[:100]}")
         return ArticleContent(
             url=url,
             title="",

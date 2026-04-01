@@ -16,6 +16,7 @@ from .common import (
     default_client,
     extract_date,
     fetch_html,
+    is_cancelled,
     matches_keywords,
     prepare_keywords,
     prepare_search_queries,
@@ -137,6 +138,9 @@ def _iter_pages(
     logger.info(f"Dark Reading term '{term}': total pages={last_page}, fetching up to page {limit}")
     
     for page in range(2, limit + 1):
+        if is_cancelled():
+            logger.info("Source term '%s' cancelled at page %s", term, page)
+            break
         page_url = _build_search_url(term, page=page)
         logger.debug(f"Dark Reading term '{term}': fetching page {page}")
 
@@ -178,6 +182,9 @@ def build_darkreading_incidents(
     ingested_at = now_utc_iso()
 
     for term in terms:
+        if is_cancelled():
+            logger.info("Source scraping cancelled before term '%s'", term)
+            break
         logger.info(f"Dark Reading: Starting search for term '{term}'")
         # If max_pages is None, fetch all pages (None means no limit)
         page_limit = max_pages if max_pages is not None else None

@@ -14,6 +14,7 @@ from .common import (
     default_client,
     extract_date,
     fetch_html,
+    is_cancelled,
     matches_keywords,
     prepare_keywords,
     prepare_search_queries,
@@ -65,6 +66,9 @@ def _iter_pages(
     pages_fetched = 0
     
     while True:
+        if is_cancelled():
+            logger.info("Source term '%s' cancelled at page %s", keyword, page_num)
+            break
         # Check max_pages limit BEFORE fetching
         # If we've already fetched max_pages pages, stop
         if max_pages is not None and page_num > max_pages:
@@ -124,6 +128,9 @@ def build_krebsonsecurity_incidents(
     search_keywords = prepare_search_queries()
     
     for keyword in search_keywords:
+        if is_cancelled():
+            logger.info("Source scraping cancelled before term '%s'", keyword)
+            break
         logger.info(f"KrebsOnSecurity searching for keyword: '{keyword}'")
         
         for page_num, soup in _iter_pages(http_client, keyword, max_pages):

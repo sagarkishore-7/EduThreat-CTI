@@ -1,0 +1,142 @@
+\documentclass[sigconf,anonymous]{acmart}
+
+%% Remove ACM copyright/DOI for submission
+\setcopyright{none}
+\settopmatter{printacmref=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\pagestyle{plain}
+
+\usepackage{booktabs}
+\usepackage{subcaption}
+\usepackage{xspace}
+\usepackage{enumitem}
+
+%% Convenience macros — update these as data collection continues
+\newcommand{\sys}{EduThreat-CTI\xspace}
+\newcommand{\rawcollected}{1{,}360\xspace}       % Total ingested incidents (after noise removal)
+\newcommand{\numincidents}{845\xspace}            % Verified education cyber incidents (is_education_related=1)
+\newcommand{\numenriched}{891\xspace}             % Incidents processed through LLM enrichment
+\newcommand{\numpending}{469\xspace}              % Awaiting enrichment
+\newcommand{\numcountries}{47\xspace}
+\newcommand{\numsources}{15\xspace}
+\newcommand{\numransomware}{200\xspace}
+\newcommand{\numdatabreach}{425\xspace}
+\newcommand{\numactors}{134\xspace}
+\newcommand{\numfamilies}{49\xspace}
+\newcommand{\avgrecovery}{27.6\xspace}
+\newcommand{\totaldemanded}{\$346M\xspace}
+\newcommand{\paymentrate}{22.2\%\xspace}
+
+\begin{document}
+
+\title{EduThreat-CTI: An Automated Cyber Threat Intelligence Pipeline\\for the Education Sector}
+
+\author{Anonymous Author(s)}
+\affiliation{%
+  \institution{Anonymous Institution}
+}
+
+\begin{abstract}
+Academic institutions are increasingly targeted by cyber adversaries, yet the education sector lacks dedicated, large-scale cyber threat intelligence (CTI) infrastructure comparable to that available for healthcare or finance. We present \sys, the first open-source, automated CTI pipeline purpose-built for the education sector. \sys continuously ingests reports from \numsources diverse OSINT sources---including curated databases, ransomware trackers, security news outlets, and RSS feeds---processes \rawcollected candidate incidents through cross-source deduplication and LLM-based relevance verification, and applies schema-constrained enrichment to produce structured records with 192+ CTI fields per incident, including MITRE ATT\&CK mappings, attack timelines, and multidimensional impact metrics.
+
+We deploy \sys over a 9-year collection window (2017--2026) and present what is, to our knowledge, the largest measurement study of cyber incidents targeting educational institutions. Our pipeline identifies and verifies \numincidents education-sector cyber incidents across \numcountries countries. Key findings include: (1)~ransomware (encryption and double extortion combined) accounts for 24.0\% of categorized incidents, with Vice Society, Clop, and Medusa among the most active families; (2)~the United States absorbs 68.9\% of reported incidents, revealing extreme geographic concentration; (3)~a transparency crisis persists, with 29.5\% of incidents lacking any identified initial access vector; and (4)~ransom economics across \numransomware ransomware incidents show \totaldemanded in total demands against a \paymentrate payment rate. We release \sys, the enriched dataset, and a production analytics dashboard as open resources for the research community.
+\end{abstract}
+
+\begin{CCSCLASS}
+\ccsdesc[500]{Security and privacy~Intrusion/anomaly detection and malware mitigation}
+\ccsdesc[300]{Security and privacy~Security services}
+\ccsdesc[300]{Information systems~Data mining}
+\end{CCSCLASS}
+
+\keywords{cyber threat intelligence, education sector, ransomware, OSINT, LLM enrichment, measurement study, MITRE ATT\&CK}
+
+\maketitle
+
+%% ============================================================
+%% SECTION 1: INTRODUCTION
+%% ============================================================
+\section{Introduction}\label{sec:intro}
+
+Academic institutions occupy a uniquely precarious position in the global cybersecurity landscape. Universities and research institutes house vast repositories of sensitive data---student records, intellectual property, federally funded research, and healthcare information---while operating inherently open networks designed to foster collaboration~\cite{garrison2011longitudinal}. This openness, combined with decentralized IT governance, constrained budgets, and a heterogeneous user population spanning students, faculty, and administrative staff, creates attack surfaces that adversaries readily exploit.
+
+The scale of the problem is substantial. Industry reports document a 70\% year-over-year increase in ransomware attacks against higher education in 2023 alone~\cite{malwarebytes2024education}, with the Sophos State of Ransomware in Education survey finding that 66\% of higher-education organizations were hit by ransomware in the preceding year and that the median ransom payment reached \$4.4 million~\cite{sophos2024education}. Yet despite this escalating threat, the education sector remains conspicuously underserved by the cyber threat intelligence (CTI) community. Existing CTI platforms---MISP~\cite{wagner2016misp}, OpenCTI~\cite{opencti}, and commercial feeds---are sector-agnostic, requiring analysts to manually filter for education-relevant incidents. No dedicated, continuously updated, open-source CTI resource exists for academia.
+
+This gap has three consequences. \textit{First}, institutions lack sector-specific situational awareness: without a consolidated view of which threat actors target universities, through which vectors, and with what operational impact, individual institutions cannot benchmark their defenses. \textit{Second}, researchers studying the education threat landscape are forced to assemble ad-hoc datasets from heterogeneous sources, limiting reproducibility and cross-study comparability. \textit{Third}, the transparency deficit---where institutions suppress disclosure for reputational reasons~\cite{sophos2024education}---is compounded by the absence of infrastructure that could aggregate and anonymize incident data at scale.
+
+We address these gaps with \sys, the first open-source, automated CTI pipeline purpose-built for the education sector. \sys implements a three-phase architecture: (1)~\textit{Ingestion}, which continuously collects candidate incidents from \numsources diverse OSINT sources---curated databases, ransomware trackers, security news, and RSS feeds---using source-specific scrapers, incremental state tracking, and cross-source URL-based deduplication; (2)~\textit{Enrichment}, which retrieves full-text articles through a multi-fallback pipeline (newspaper3k $\rightarrow$ Selenium $\rightarrow$ archive.org), performs LLM-based education-relevance verification to filter noise from keyword-matched scraping, and applies schema-constrained extraction to produce 192+ structured CTI fields per verified incident; and (3)~\textit{Analytics}, which serves the enriched corpus through a REST API with 40+ analytical endpoints and an interactive dashboard.
+
+Using \sys, we conduct what is, to our knowledge, the largest empirical study of cyber incidents targeting educational institutions. Over a 9-year window (2017--2026), our pipeline ingests \rawcollected candidate incidents from \numsources sources, from which LLM-assisted verification confirms \numincidents education-sector cyber incidents across \numcountries countries---each enriched with comprehensive CTI metadata spanning 192+ fields. Compared to the largest prior education-focused dataset (898 incidents, 334 fully enriched, 11 countries)~\cite{kishore2025eduhijack}, \sys replaces manual curation with fully automated, continuously running processing, more than doubles the enrichment depth from 90 to 192+ fields per incident, and extends geographic coverage from 11 to \numcountries countries. As new incidents are reported, \sys automatically ingests, verifies, and enriches them without human intervention.
+
+\smallskip
+\noindent\textbf{Contributions.} This paper makes four contributions:
+
+\begin{enumerate}[leftmargin=*,nosep]
+\item \textbf{System.} We design and implement \sys, a production-grade, open-source CTI pipeline that automates the full cycle from OSINT collection through LLM-assisted enrichment to analytical serving, tailored specifically for the education sector (\S\ref{sec:system}).
+
+\item \textbf{Dataset.} We construct and release the largest education-sector cyber incident corpus to date: \numincidents verified incidents spanning \numcountries countries and 9 years, each enriched to 192+ structured CTI fields including MITRE ATT\&CK mappings, attack timelines, and impact metrics---identified from \rawcollected candidates through automated relevance verification (\S\ref{sec:dataset}).
+
+\item \textbf{Measurement.} We present a comprehensive empirical characterization of the education threat landscape, revealing ransomware dominance, extreme geographic concentration, systemic supply-chain exposure, and a pervasive transparency crisis (\S\ref{sec:measurement}).
+
+\item \textbf{Open resource.} We release the pipeline code, enriched dataset, REST API, and interactive dashboard as open resources to support future research and institutional decision-making.
+\end{enumerate}
+
+
+%% ============================================================
+%% SECTION 2: BACKGROUND AND RELATED WORK
+%% ============================================================
+\section{Background \& Related Work}\label{sec:related}
+
+We situate our work at the intersection of three research threads: (1)~cybersecurity in the education sector, (2)~cyber threat intelligence platforms and pipelines, and (3)~LLM-assisted information extraction for security.
+
+%% --- 2.1 ---
+\subsection{Cybersecurity in the Education Sector}\label{sec:related:edu}
+
+The education sector has been recognized as a high-risk target for over a decade. Garrison and Ncube~\cite{garrison2011longitudinal} documented 290 university breaches exposing 10.8 million records between 2005 and 2009, identifying stolen devices and hacking as primary causes. More recently, industry measurement efforts have quantified the acceleration: Malwarebytes reported a 70\% year-over-year increase in higher-education ransomware (68 attacks in 2022 vs.\ 116 in 2023)~\cite{malwarebytes2024education}, while Sophos found that 66\% of surveyed higher-education organizations experienced a ransomware incident in the prior year, with median ransom payments of \$4.4M and recovery costs averaging \$4.02M~\cite{sophos2024education}. Comparitech estimated that ransomware attacks on U.S.\ schools and colleges have cost \$9.45 billion cumulatively~\cite{comparitech2024schools}.
+
+However, these reports are either narrow in scope (single-country, single-attack-type) or rely on survey self-reports rather than systematic OSINT collection. Academic research on education-sector cybersecurity remains sparse. Lallie et al.~\cite{lallie2025ukuniversities} provide a chronological assessment of cyber attacks on UK universities from 2012--2024, while Jawaid~\cite{jawaid2022eduthreats} survey cyber threats to educational institutes as an emerging concern. Both works are qualitative reviews lacking large-scale empirical corpora. Kishore~\cite{kishore2025eduhijack} constructed the EduHijack dataset of 898 verified incidents using two sources and manual enrichment, but the corpus was limited to 11 countries with 334 fully enriched records. Our work extends this foundation through automated multi-source ingestion from \numsources sources, LLM-driven relevance verification and enrichment producing 192+ fields per incident, and expanded global coverage across \numcountries countries---yielding \numincidents verified incidents from \rawcollected candidates.
+
+%% --- 2.2 ---
+\subsection{Cyber Threat Intelligence Platforms}\label{sec:related:cti}
+
+The CTI ecosystem spans both open-source and commercial platforms. MISP (Malware Information Sharing Platform)~\cite{wagner2016misp} enables collaborative sharing and correlation of indicators of compromise (IoCs) through a structured event model. OpenCTI~\cite{opencti} provides a graph-based knowledge management platform aligned with STIX/TAXII standards. On the commercial side, platforms such as Recorded Future, Mandiant, and CrowdStrike aggregate threat feeds from diverse sources.
+
+A parallel research thread has explored automated CTI pipelines. Sun et al.~\cite{sun2023ctisurvey} provide a comprehensive survey of CTI mining techniques for proactive defense, while Furumoto et al.~\cite{furumoto2025ctisurvey} present a measurement-based analysis of over 200 CTI studies spanning 2001--2025. On the pipeline side, Tundis et al.~\cite{tundis2022feature} developed a feature-driven method for automated assessment of OSINT CTI source quality, proposing scoring functions to quantify relevance.
+
+These platforms and pipelines are \textit{sector-agnostic}: they neither target the education sector specifically nor provide the domain-specific schema, enrichment, or analytics that education-sector CTI requires. \sys fills this gap by combining multi-source OSINT ingestion with an education-tailored enrichment schema spanning 192+ fields, including institution type, operational impact on teaching and research, and education-specific regulatory exposure (FERPA, GDPR).
+
+%% --- 2.3 ---
+\subsection{LLM-Assisted CTI Extraction}\label{sec:related:llm}
+
+Recent work has explored large language models for automated CTI extraction. Rani et al.~\cite{rani2024ttpxhunter} developed TTPXHunter, which uses SecureBERT to extract TTPs from threat reports in STIX format. Wang et al.~\cite{wang2024knowcti} proposed KnowCTI, incorporating cybersecurity domain knowledge to enhance entity and relation extraction from CTI text. Fieblinger et al.~\cite{fieblinger2024kgllmcti} combined knowledge graphs with LLMs for actionable CTI extraction, evaluating prompt engineering and fine-tuning approaches. More broadly, Jaffal et al.~\cite{jaffal2025llmcybersec} surveyed 223 studies on LLM applications in cybersecurity published between 2021 and 2025.
+
+A critical limitation identified by Mezzi et al.~\cite{mezzi2025unreliable} is that LLMs show strong performance on short inputs but degrade on realistic full-length reports (averaging 3{,}009 words), raising concerns about reliability for CTI extraction at scale. Nguyen et al.~\cite{nguyen2025mitreextract} further demonstrated challenges in automated MITRE ATT\&CK technique identification from CTI reports.
+
+Our approach addresses these challenges through schema-constrained extraction: rather than open-ended generation, we provide the LLM with a detailed JSON schema (192+ fields with controlled enumerations) and validate outputs against Pydantic models, achieving structured extraction at scale while mitigating hallucination through type enforcement and enumeration constraints. We evaluate extraction quality through manual validation of sampled records (\S\ref{sec:dataset}).
+
+
+%% ============================================================
+%% Placeholder sections (to be written)
+%% ============================================================
+\section{System Design}\label{sec:system}
+% To be written next
+
+\section{Dataset \& Methodology}\label{sec:dataset}
+% To be written
+
+\section{Measurement Study}\label{sec:measurement}
+% To be written
+
+\section{Discussion}\label{sec:discussion}
+% To be written
+
+\section{Conclusion}\label{sec:conclusion}
+% To be written
+
+
+%% ============================================================
+%% REFERENCES
+%% ============================================================
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}

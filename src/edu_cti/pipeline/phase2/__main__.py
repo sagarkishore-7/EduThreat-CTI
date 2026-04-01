@@ -42,6 +42,7 @@ from pathlib import Path
 _cancel_event = threading.Event()
 
 # Module-level progress dict — updated during execution, read by pipeline manager
+# Uses two sub-phases: "Fetching articles" (0-30%) and "LLM Enrichment" (30-100%)
 _progress = {"step": "", "detail": "", "percent": 0}
 
 
@@ -184,9 +185,10 @@ def fetch_articles_phase(
             incident_id = incident["incident_id"]
             progress_pct = (idx / total_incidents) * 100
             # Update module-level progress for pipeline manager
+            # Fetch phase maps to 0-30% of overall enrichment progress
             _progress["step"] = "Fetching articles"
-            _progress["detail"] = f"{idx}/{total_incidents}"
-            _progress["percent"] = 0  # Stay at 0% during fetch; enrichment drives the percent
+            _progress["detail"] = f"{idx}/{total_incidents} ({stats['articles_fetched']} fetched)"
+            _progress["percent"] = int(progress_pct * 0.30)  # 0-30% range
             if idx % 10 == 0 or idx == total_incidents:  # Log every 10th or last
                 logger.info(f"Fetching [{idx}/{total_incidents}] ({progress_pct:.1f}%)")
             
@@ -407,14 +409,17 @@ def enrich_articles_phase(
             stats["processed"] += 1
 
             # Calculate progress percentage - log every 10th or at milestones
+            # Enrichment phase maps to 30-100% of overall progress
             if total_expected > 0:
-                progress_pct = (stats["processed"] / total_expected) * 100
+                raw_pct = (stats["processed"] / total_expected) * 100
+                # Map 0-100% enrichment progress into 30-100% overall range
+                scaled_pct = 30 + int(raw_pct * 0.70)
                 # Update module-level progress for pipeline manager
                 _progress["step"] = "LLM Enrichment"
-                _progress["detail"] = f"{stats['processed']}/{total_expected} ({stats.get('enriched', 0)} enriched)"
-                _progress["percent"] = int(progress_pct)  # Linear 0-100% based on enrichment completion
-                if stats["processed"] % 10 == 0 or progress_pct % 10 < 1:  # Every 10 or every 10%
-                    logger.info(f"Enriching [{stats['processed']}/{total_expected}] ({progress_pct:.1f}%)")
+                _progress["detail"] = f"{stats['processed']}/{total_expected} ({stats.get('enriched', 0)} enriched, {stats.get('skipped', 0)} skipped)"
+                _progress["percent"] = min(scaled_pct, 100)
+                if stats["processed"] % 10 == 0 or raw_pct % 10 < 1:  # Every 10 or every 10%
+                    logger.info(f"Enriching [{stats['processed']}/{total_expected}] ({raw_pct:.1f}%) — {stats.get('enriched', 0)} enriched, {stats.get('skipped', 0)} skipped, {stats.get('errors', 0)} errors")
             else:
                 if stats["processed"] % 10 == 0:
                     logger.info(f"Enriching [{stats['processed']}]")

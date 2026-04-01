@@ -297,6 +297,22 @@ def init_db(conn: sqlite3.Connection) -> None:
             PRIMARY KEY (source, check_time)
         );
 
+        -- Pipeline run tracking (persists across container restarts)
+        CREATE TABLE IF NOT EXISTS pipeline_runs (
+            run_id          TEXT PRIMARY KEY,
+            phase           TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'running',  -- running, completed, failed, cancelled, interrupted
+            params          TEXT,           -- JSON blob
+            started_at      TEXT,
+            finished_at     TEXT,
+            duration_seconds REAL,
+            result          TEXT,           -- JSON blob
+            error           TEXT,
+            progress_step   TEXT,
+            progress_detail TEXT,
+            progress_percent INTEGER DEFAULT 0
+        );
+
         -- Indexes for new tables
         CREATE INDEX IF NOT EXISTS idx_iocs_type ON iocs(ioc_type);
         CREATE INDEX IF NOT EXISTS idx_iocs_value ON iocs(ioc_value);
@@ -306,6 +322,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_incident_threat_actors_incident ON incident_threat_actors(incident_id);
         CREATE INDEX IF NOT EXISTS idx_source_health_source ON source_health(source);
         CREATE INDEX IF NOT EXISTS idx_translations_hash ON translations(content_hash);
+        CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
         """
     )
     

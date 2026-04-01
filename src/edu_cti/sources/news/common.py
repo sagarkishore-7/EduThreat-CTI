@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 from typing import Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin
 
@@ -16,6 +17,14 @@ DEFAULT_NEWS_KEYWORDS: List[str] = config.NEWS_KEYWORDS
 DEFAULT_SEARCH_QUERIES: List[str] = config.NEWS_SEARCH_QUERIES
 CYBER_KEYWORDS: List[str] = [k.lower() for k in config.CYBER_KEYWORDS]
 DEFAULT_MAX_PAGES = config.NEWS_MAX_PAGES
+
+# Module-level cancel event — set by PipelineManager to stop news scraping mid-page
+_cancel_event = threading.Event()
+
+
+def is_cancelled() -> bool:
+    """Check if scraping has been cancelled by the pipeline manager."""
+    return _cancel_event.is_set()
 
 
 def prepare_keywords(

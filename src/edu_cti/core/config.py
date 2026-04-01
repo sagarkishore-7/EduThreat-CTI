@@ -139,7 +139,7 @@ EDUCATION_KEYWORDS: List[str] = [
 
 # Default page-walk limits (None = fetch all pages, can be overridden per source/CLI)
 # Set to None by default to fetch all available pages
-NEWS_MAX_PAGES = None
+NEWS_MAX_PAGES = 50  # Safety cap: 50 pages × 20 articles = 1000 per term
 
 # Source identifiers
 SOURCE_DATABREACHES = "databreaches"

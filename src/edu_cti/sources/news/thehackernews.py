@@ -17,6 +17,7 @@ from .common import (
     DEFAULT_MAX_PAGES,
     default_client,
     extract_date,
+    is_cancelled,
     matches_keywords,
     prepare_keywords,
     prepare_search_queries,
@@ -212,6 +213,9 @@ def _iter_pages(
     logger.info(f"The Hacker News term '{term}': total pages={last_page}, fetching up to page {limit}")
 
     for page in range(2, limit + 1):
+        if is_cancelled():
+            logger.info("Source term '%s' cancelled at page %s", term, page)
+            break
         page_url = _build_search_url(term, page=page)
         logger.debug(f"The Hacker News term '{term}': fetching page {page}")
 
@@ -264,6 +268,9 @@ def build_thehackernews_incidents(
     ingested_at = now_utc_iso()
 
     for term in terms:
+        if is_cancelled():
+            logger.info("Source scraping cancelled before term '%s'", term)
+            break
         logger.info(f"The Hacker News: Starting search for term '{term}'")
         # If max_pages is None, fetch all pages (None means no limit)
         page_limit = max_pages  # None = fetch all pages

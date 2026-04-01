@@ -7,6 +7,7 @@ with real-time log capture, progress tracking, and run history.
 Also manages a built-in scheduler for continuous real-time intelligence collection.
 """
 
+import json
 import logging
 import threading
 import time
@@ -21,12 +22,76 @@ import schedule
 logger = logging.getLogger(__name__)
 
 
+def _persist_run(run: "PipelineRun") -> None:
+    """Persist pipeline run state to DB (fire-and-forget)."""
+    try:
+        from src.edu_cti.core.db import get_connection, init_db
+        conn = get_connection()
+        init_db(conn)
+        conn.execute(
+            """INSERT OR REPLACE INTO pipeline_runs
+               (run_id, phase, status, params, started_at, finished_at,
+                duration_seconds, result, error, progress_step, progress_detail, progress_percent)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                run.run_id,
+                run.phase,
+                run.status.value,
+                json.dumps(run.params) if run.params else None,
+                run.started_at,
+                run.finished_at,
+                run.duration_seconds,
+                json.dumps(run.result) if run.result else None,
+                run.error,
+                run.progress.get("step", ""),
+                run.progress.get("detail", ""),
+                run.progress.get("percent", 0),
+            ),
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logger.debug(f"Failed to persist run {run.run_id}: {e}")
+
+
+def _recover_interrupted_runs() -> List[Dict]:
+    """On startup, mark any 'running' pipeline_runs as 'interrupted' and return them."""
+    recovered = []
+    try:
+        from src.edu_cti.core.db import get_connection, init_db
+        conn = get_connection()
+        init_db(conn)
+        rows = conn.execute(
+            "SELECT run_id, phase, started_at FROM pipeline_runs WHERE status = 'running'"
+        ).fetchall()
+        now = datetime.utcnow().isoformat()
+        for row in rows:
+            conn.execute(
+                """UPDATE pipeline_runs SET status = 'interrupted',
+                   finished_at = ?, error = 'Container restarted while pipeline was running'
+                   WHERE run_id = ?""",
+                (now, row[0]),
+            )
+            recovered.append({"run_id": row[0], "phase": row[1], "started_at": row[2]})
+        if recovered:
+            conn.commit()
+            logger.warning(
+                f"Recovered {len(recovered)} interrupted pipeline run(s) from previous container: "
+                + ", ".join(r["run_id"] for r in recovered)
+            )
+        conn.close()
+    except Exception as e:
+        logger.debug(f"Pipeline run recovery check failed: {e}")
+    return recovered
+
+
 class RunStatus(str, Enum):
     PENDING = "pending"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    INTERRUPTED = "interrupted"  # Container restarted while running
 
 
 class PipelineRun:
@@ -110,6 +175,9 @@ class PipelineManager:
         self._thread: Optional[threading.Thread] = None
         self._run_lock = threading.Lock()
 
+        # Recover interrupted runs from previous container lifecycle
+        self._interrupted_runs = _recover_interrupted_runs()
+
         # Scheduler state
         self._scheduler_running = False
         self._scheduler_thread: Optional[threading.Thread] = None
@@ -132,9 +200,49 @@ class PipelineManager:
         return self._current_run is not None and self._current_run.status == RunStatus.RUNNING
 
     def get_history(self, limit: int = 20) -> List[Dict[str, Any]]:
+        # In-memory runs (current session)
         runs = list(self._history)
         runs.reverse()
-        return [r.to_dict() for r in runs[:limit]]
+        in_memory = [r.to_dict() for r in runs[:limit]]
+        in_memory_ids = {r["run_id"] for r in in_memory}
+
+        # DB-persisted runs (includes interrupted runs from previous containers)
+        try:
+            from src.edu_cti.core.db import get_connection, init_db
+            conn = get_connection(read_only=True)
+            init_db(conn)
+            rows = conn.execute(
+                "SELECT run_id, phase, status, params, started_at, finished_at, "
+                "duration_seconds, result, error, progress_step, progress_detail, progress_percent "
+                "FROM pipeline_runs ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            conn.close()
+            for row in rows:
+                if row[0] in in_memory_ids:
+                    continue
+                in_memory.append({
+                    "run_id": row[0],
+                    "phase": row[1],
+                    "status": row[2],
+                    "params": json.loads(row[3]) if row[3] else {},
+                    "started_at": row[4],
+                    "finished_at": row[5],
+                    "duration_seconds": row[6],
+                    "result": json.loads(row[7]) if row[7] else {},
+                    "error": row[8],
+                    "progress": {
+                        "step": row[9] or "",
+                        "detail": row[10] or "",
+                        "percent": row[11] or 0,
+                    },
+                })
+        except Exception as e:
+            logger.debug(f"Failed to load DB pipeline history: {e}")
+
+        # Sort by started_at descending
+        in_memory.sort(key=lambda r: r.get("started_at") or "", reverse=True)
+        return in_memory[:limit]
 
     def get_run(self, run_id: str) -> Optional[PipelineRun]:
         if self._current_run and self._current_run.run_id == run_id:
@@ -152,6 +260,13 @@ class PipelineManager:
                 from src.edu_cti.pipeline.phase2.__main__ import _cancel_event
                 _cancel_event.set()
                 logger.info(f"Cancel requested for run {self._current_run.run_id} (phase2 cancel event set)")
+            except ImportError:
+                pass
+            # Signal Phase 1 news scraping cancel event (if running)
+            try:
+                from src.edu_cti.sources.news.common import _cancel_event as news_cancel
+                news_cancel.set()
+                logger.info(f"Cancel requested for run {self._current_run.run_id} (news scraping cancel event set)")
             except ImportError:
                 logger.info(f"Cancel requested for run {self._current_run.run_id}")
             return True
@@ -187,6 +302,14 @@ class PipelineManager:
         """Execute a pipeline run in background thread."""
         run.status = RunStatus.RUNNING
         run.started_at = datetime.utcnow().isoformat()
+        _persist_run(run)  # Mark as running in DB
+
+        # Clear cancel events from previous runs
+        try:
+            from src.edu_cti.sources.news.common import _cancel_event as news_cancel
+            news_cancel.clear()
+        except ImportError:
+            pass
 
         # Attach log handler
         log_handler = RunLogHandler(run)
@@ -208,6 +331,7 @@ class PipelineManager:
             run.duration_seconds = round(time.time() - start_time, 2)
             root_logger.removeHandler(log_handler)
             self._history.append(run)
+            _persist_run(run)  # Persist final state
             # Close the default HTTP client to free Playwright/Chromium memory
             try:
                 from src.edu_cti.core.http import _default_client
@@ -389,58 +513,262 @@ class PipelineManager:
         return {"enrichment_stats": stats}
 
     def _run_historical(self, run: PipelineRun, params: Dict) -> Dict:
-        """Run full historical pipeline (ingest all + enrich)."""
+        """Run full historical pipeline (ingest + enrich in parallel).
+
+        Ingestion and enrichment run concurrently:
+        - Phase 1 (ingestion) saves incidents to DB incrementally
+        - Phase 2 (enrichment) picks up unenriched incidents as they appear
+        - Enrichment loops until ingestion is done AND no unenriched incidents remain
+        """
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
+        max_pages = params.get("max_pages", 50)  # Default 50 pages per search term (1000 articles)
 
-        # Phase 1: Full historical ingest (0-50% of overall progress)
-        ingest_result = self._run_ingest(run, {
+        ingest_params = {
             "full_historical": True,
             "groups": ["curated", "news", "rss", "api"],
             "rss_max_age_days": 365,
-        }, progress_range=(0, 50), step_prefix="Phase 1: ")
+            "max_pages": max_pages,
+        }
 
-        if run._cancel_requested:
-            return {"ingest": ingest_result, "enrich": None, "cancelled": True}
+        if skip_enrich:
+            # Sequential: just ingest
+            ingest_result = self._run_ingest(
+                run, ingest_params,
+                progress_range=(0, 100), step_prefix="Ingestion: ",
+            )
+            run.progress = {"step": "Complete", "detail": "", "percent": 100}
+            return {"ingest": ingest_result, "enrich": None}
 
-        # Phase 2: Enrich (50-100% of overall progress)
+        # --- Parallel: ingest + enrich simultaneously ---
+        ingest_result_box = [None]
+        ingest_error_box = [None]
+        ingest_done = threading.Event()
+
+        def _ingest_worker():
+            try:
+                ingest_result_box[0] = self._run_ingest(
+                    run, ingest_params,
+                    progress_range=(0, 30), step_prefix="Ingesting: ",
+                )
+            except Exception as e:
+                ingest_error_box[0] = e
+                logger.error(f"Ingestion failed: {e}", exc_info=True)
+            finally:
+                ingest_done.set()
+
+        ingest_thread = threading.Thread(
+            target=_ingest_worker, daemon=True, name="historical-ingest",
+        )
+        ingest_thread.start()
+        logger.info("Historical pipeline: ingestion started in background, enrichment will start in parallel")
+
+        # Wait briefly for first batch of incidents to land in DB
+        ingest_done.wait(timeout=30)
+
+        # Run enrichment in a loop: keep enriching as new incidents arrive from ingestion
         enrich_result = None
-        if not skip_enrich:
+        total_enriched = 0
+        enrich_rounds = 0
+
+        while True:
+            if run._cancel_requested:
+                break
+
+            # Check how many unenriched incidents are available
+            from src.edu_cti.core.db import get_connection, init_db
+            from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_stats
+
+            conn = get_connection()
+            init_db(conn)
+            stats = get_enrichment_stats(conn)
+            conn.close()
+            unenriched = stats.get("unenriched_incidents", 0)
+
+            if unenriched == 0:
+                if ingest_done.is_set():
+                    # Ingestion finished and nothing left to enrich — done
+                    logger.info(
+                        f"Historical pipeline: ingestion done, no unenriched incidents remain "
+                        f"(enriched {total_enriched} across {enrich_rounds} rounds)"
+                    )
+                    break
+                else:
+                    # Ingestion still running but no incidents yet — wait
+                    run.progress = {
+                        "step": "Waiting for incidents",
+                        "detail": "Ingestion in progress, waiting for new incidents...",
+                        "percent": self._scale_percent(0, 30, 100),
+                    }
+                    logger.info("Enrichment waiting for incidents from ingestion...")
+                    time.sleep(30)
+                    continue
+
+            # Run one enrichment cycle on whatever is available
+            enrich_rounds += 1
+            logger.info(
+                f"Historical pipeline: enrichment round {enrich_rounds} — "
+                f"{unenriched} unenriched incidents available"
+            )
             enrich_result = self._run_enrich(run, {
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
-                "export_csv": True,
-            }, progress_range=(50, 100), step_prefix="Phase 2: ")
+                "export_csv": False,  # Only export on final round
+            }, progress_range=(30, 100), step_prefix="Enriching: ")
 
-        run.progress = {"step": "Complete", "detail": "", "percent": 100}
-        return {"ingest": ingest_result, "enrich": enrich_result}
+            if enrich_result and isinstance(enrich_result, dict):
+                es = enrich_result.get("enrichment_stats", {})
+                total_enriched += es.get("enriched_incidents", 0)
+
+            # If ingestion is still running, loop to pick up new incidents
+            if not ingest_done.is_set():
+                logger.info("Ingestion still running — will check for new incidents...")
+                continue
+            # Ingestion done — do one final check for stragglers
+            else:
+                conn = get_connection()
+                init_db(conn)
+                final_stats = get_enrichment_stats(conn)
+                conn.close()
+                if final_stats.get("unenriched_incidents", 0) == 0:
+                    break
+                # Still some unenriched — loop again
+                logger.info(
+                    f"Ingestion done but {final_stats['unenriched_incidents']} "
+                    f"unenriched incidents remain — running another enrichment round"
+                )
+
+        # Wait for ingestion thread to finish (should already be done)
+        ingest_thread.join(timeout=10)
+
+        if ingest_error_box[0]:
+            logger.error(f"Ingestion had an error: {ingest_error_box[0]}")
+
+        # Final CSV export
+        if not run._cancel_requested:
+            try:
+                from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
+                export_enriched_dataset()
+                logger.info("Exported enriched dataset to CSV")
+            except Exception as e:
+                logger.warning(f"CSV export failed: {e}")
+
+        run.progress = {"step": "Complete", "detail": f"Enriched {total_enriched} incidents across {enrich_rounds} rounds", "percent": 100}
+        return {
+            "ingest": ingest_result_box[0],
+            "enrich": enrich_result,
+            "total_enriched": total_enriched,
+            "enrich_rounds": enrich_rounds,
+            "cancelled": run._cancel_requested,
+        }
 
     def _run_daily(self, run: PipelineRun, params: Dict) -> Dict:
-        """Run daily incremental pipeline (ingest new + enrich)."""
+        """Run daily incremental pipeline (ingest + enrich in parallel)."""
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
 
-        # Phase 1: Incremental ingest (0-50% of overall progress)
-        ingest_result = self._run_ingest(run, {
+        ingest_params = {
             "full_historical": False,
             "groups": ["curated", "news", "rss", "api"],
             "rss_max_age_days": 7,
-        }, progress_range=(0, 50), step_prefix="Phase 1: ")
+            "max_pages": params.get("max_pages", 20),
+        }
 
-        if run._cancel_requested:
-            return {"ingest": ingest_result, "enrich": None, "cancelled": True}
+        if skip_enrich:
+            ingest_result = self._run_ingest(
+                run, ingest_params,
+                progress_range=(0, 100), step_prefix="Ingestion: ",
+            )
+            run.progress = {"step": "Complete", "detail": "", "percent": 100}
+            return {"ingest": ingest_result, "enrich": None}
 
-        # Phase 2: Enrich unenriched (50-100% of overall progress)
+        # --- Parallel: ingest + enrich simultaneously ---
+        ingest_result_box = [None]
+        ingest_done = threading.Event()
+
+        def _ingest_worker():
+            try:
+                ingest_result_box[0] = self._run_ingest(
+                    run, ingest_params,
+                    progress_range=(0, 30), step_prefix="Ingesting: ",
+                )
+            except Exception as e:
+                logger.error(f"Daily ingestion failed: {e}", exc_info=True)
+            finally:
+                ingest_done.set()
+
+        ingest_thread = threading.Thread(
+            target=_ingest_worker, daemon=True, name="daily-ingest",
+        )
+        ingest_thread.start()
+
+        # Wait briefly for first incidents to land
+        ingest_done.wait(timeout=15)
+
+        # Run enrichment — loop until ingestion done + no unenriched remain
         enrich_result = None
-        if not skip_enrich:
+        total_enriched = 0
+        enrich_rounds = 0
+
+        while not run._cancel_requested:
+            from src.edu_cti.core.db import get_connection, init_db
+            from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_stats
+
+            conn = get_connection()
+            init_db(conn)
+            stats = get_enrichment_stats(conn)
+            conn.close()
+            unenriched = stats.get("unenriched_incidents", 0)
+
+            if unenriched == 0:
+                if ingest_done.is_set():
+                    break
+                run.progress = {
+                    "step": "Waiting for incidents",
+                    "detail": "Ingestion in progress...",
+                    "percent": self._scale_percent(0, 30, 100),
+                }
+                time.sleep(15)
+                continue
+
+            enrich_rounds += 1
+            logger.info(f"Daily pipeline: enrichment round {enrich_rounds} — {unenriched} unenriched")
             enrich_result = self._run_enrich(run, {
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
-                "export_csv": True,
-            }, progress_range=(50, 100), step_prefix="Phase 2: ")
+                "export_csv": False,
+            }, progress_range=(30, 100), step_prefix="Enriching: ")
 
-        run.progress = {"step": "Complete", "detail": "", "percent": 100}
-        return {"ingest": ingest_result, "enrich": enrich_result}
+            if enrich_result and isinstance(enrich_result, dict):
+                es = enrich_result.get("enrichment_stats", {})
+                total_enriched += es.get("enriched_incidents", 0)
+
+            if ingest_done.is_set():
+                # Final check for stragglers
+                conn = get_connection()
+                init_db(conn)
+                final = get_enrichment_stats(conn)
+                conn.close()
+                if final.get("unenriched_incidents", 0) == 0:
+                    break
+
+        ingest_thread.join(timeout=10)
+
+        # Final CSV export
+        if not run._cancel_requested:
+            try:
+                from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
+                export_enriched_dataset()
+            except Exception:
+                pass
+
+        run.progress = {"step": "Complete", "detail": f"Enriched {total_enriched} incidents", "percent": 100}
+        return {
+            "ingest": ingest_result_box[0],
+            "enrich": enrich_result,
+            "total_enriched": total_enriched,
+            "enrich_rounds": enrich_rounds,
+        }
 
     def _run_ingest_source(self, run: PipelineRun, params: Dict) -> Dict:
         """Run ingestion for a specific source group."""
@@ -469,7 +797,7 @@ class PipelineManager:
         return self._run_ingest(run, {
             "full_historical": False,
             "groups": ["curated", "news"],
-            "max_pages": params.get("max_pages"),
+            "max_pages": params.get("max_pages", 20),  # Default 20 pages for weekly
         })
 
 
@@ -485,6 +813,7 @@ class PipelineManager:
         self,
         rss_interval_hours: int = 1,
         api_interval_hours: int = 6,
+        enrich_interval_minutes: int = 30,
         daily_interval_hours: int = 24,
         catch_up: bool = True,
     ) -> Dict[str, Any]:
@@ -492,11 +821,13 @@ class PipelineManager:
         Start the real-time intelligence pipeline scheduler.
 
         Runs recurring jobs:
-        - RSS feeds: every rss_interval_hours (default 1h)
-        - API sources: every api_interval_hours (default 6h)
+        - RSS feeds: every rss_interval_hours (default 1h) — ingest only
+        - API sources: every api_interval_hours (default 6h) — ingest only
+        - Enrichment: every enrich_interval_minutes (default 30min) — enrich any unenriched
         - Daily pipeline (all sources + enrich): every daily_interval_hours (default 24h)
 
-        On first start, runs an immediate catch-up cycle.
+        Enrichment runs frequently so new incidents from RSS/API are enriched
+        within 30 minutes and appear on the dashboard in near real-time.
         """
         if self._scheduler_running:
             return {"status": "already_running", "started_at": self._scheduler_started_at}
@@ -509,6 +840,7 @@ class PipelineManager:
         # Reset last run timestamps
         for key in self._scheduler_last_runs:
             self._scheduler_last_runs[key] = None
+        self._scheduler_last_runs["enrich"] = None
 
         # Clear any previous jobs and register new ones
         self._scheduler_schedule.clear()
@@ -519,13 +851,17 @@ class PipelineManager:
         self._scheduler_schedule.every(api_interval_hours).hours.do(
             self._scheduler_run_job, "ingest_source", {"group": "api"}
         )
+        self._scheduler_schedule.every(enrich_interval_minutes).minutes.do(
+            self._scheduler_run_enrich_if_needed,
+        )
         self._scheduler_schedule.every(daily_interval_hours).hours.do(
             self._scheduler_run_job, "daily", {}
         )
 
         logger.info(
             f"[SCHEDULER] Started — RSS every {rss_interval_hours}h, "
-            f"API every {api_interval_hours}h, Daily every {daily_interval_hours}h"
+            f"API every {api_interval_hours}h, Enrich every {enrich_interval_minutes}min, "
+            f"Daily every {daily_interval_hours}h"
         )
 
         # Start the scheduler loop thread
@@ -600,6 +936,47 @@ class PipelineManager:
         """Run an initial catch-up: daily pipeline to ingest recent incidents."""
         logger.info("[SCHEDULER] Running initial catch-up cycle...")
         self._scheduler_run_job("daily", {})
+
+    def _scheduler_run_enrich_if_needed(self):
+        """
+        Check for unenriched incidents and run enrichment if any exist.
+
+        This runs frequently (every 30 min) to ensure new incidents from
+        RSS/API feeds are enriched quickly and appear on the dashboard.
+        Skips if another pipeline is already running or no work to do.
+        """
+        if not self._scheduler_running:
+            return
+        if self.is_running:
+            logger.debug("[SCHEDULER] Enrichment skipped — another pipeline is running")
+            return
+
+        # Check if there's work to do
+        try:
+            from src.edu_cti.core.db import get_connection, init_db
+            from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_stats
+
+            conn = get_connection()
+            init_db(conn)
+            stats = get_enrichment_stats(conn)
+            conn.close()
+
+            unenriched = stats.get("unenriched_incidents", 0)
+            if unenriched == 0:
+                logger.debug("[SCHEDULER] Enrichment skipped — no unenriched incidents")
+                return
+
+            logger.info(f"[SCHEDULER] {unenriched} unenriched incidents found — starting enrichment")
+        except Exception as e:
+            logger.warning(f"[SCHEDULER] Failed to check enrichment stats: {e}")
+            return
+
+        # Run enrichment
+        self._scheduler_run_job("enrich", {
+            "rate_limit_delay": 2.0,
+            "export_csv": True,
+        })
+        self._scheduler_last_runs["enrich"] = datetime.utcnow().isoformat()
 
     def _scheduler_run_job(self, phase: str, params: Dict[str, Any]):
         """
