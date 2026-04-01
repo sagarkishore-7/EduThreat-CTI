@@ -593,8 +593,14 @@ def json_to_cti_enrichment(
         extraction_notes_parts.append(json_data.get("extraction_notes"))
     extraction_notes = "\n".join(extraction_notes_parts) if extraction_notes_parts else None
     # Education relevance - directly from LLM analysis of article content
+    # Coerce is_edu_cyber_incident to bool — LLM sometimes returns "true"/"false" strings
+    raw_edu = json_data.get("is_edu_cyber_incident", False)
+    if isinstance(raw_edu, str):
+        is_edu = raw_edu.strip().lower() in ("true", "yes", "1")
+    else:
+        is_edu = bool(raw_edu)
     education_relevance = EducationRelevanceCheck(
-        is_education_related=json_data.get("is_edu_cyber_incident", False),
+        is_education_related=is_edu,
         reasoning=json_data.get("education_relevance_reasoning", "") or "No reasoning provided by LLM",
         institution_identified=json_data.get("institution_name")
     )
