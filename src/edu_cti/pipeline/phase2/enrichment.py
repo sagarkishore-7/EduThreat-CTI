@@ -307,7 +307,19 @@ class IncidentEnricher:
         
         combined_text = "\n".join(all_text)
         title = primary_article.title or ""
-        
+
+        # Truncate article text to fit within LLM context window.
+        # DeepSeek V3 has 64K context; prompt+schema uses ~10K tokens,
+        # output needs ~4K tokens → ~50K tokens left for article text.
+        # At ~4 chars/token, that's ~200K chars. Use 180K for safety margin.
+        MAX_ARTICLE_CHARS = 180_000
+        if len(combined_text) > MAX_ARTICLE_CHARS:
+            logger.warning(
+                f"Truncating article text from {len(combined_text):,} to {MAX_ARTICLE_CHARS:,} chars "
+                f"for incident {incident.incident_id}"
+            )
+            combined_text = combined_text[:MAX_ARTICLE_CHARS] + "\n\n[TRUNCATED — article too long]"
+
         # Use centralized prompt template
         system_prompt = (
             "You are a Cyber Threat Intelligence Analyst. "
