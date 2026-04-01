@@ -47,6 +47,19 @@ def main():
     print(f"Starting EduThreat-CTI API server on {args.host}:{port}")
     print(f"API documentation available at: http://localhost:{port}/docs")
     
+    # Suppress noisy access logs for frequent polling endpoints
+    import logging as _logging
+
+    class _QuietPollFilter(_logging.Filter):
+        """Filter out repetitive polling request logs."""
+        _quiet_paths = ("/api/admin/pipeline/status", "/api/admin/pipeline/logs", "/health")
+
+        def filter(self, record: _logging.LogRecord) -> bool:
+            msg = record.getMessage()
+            return not any(p in msg for p in self._quiet_paths)
+
+    _logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
+
     uvicorn.run(
         "src.edu_cti.api.main:app",
         host=args.host,
