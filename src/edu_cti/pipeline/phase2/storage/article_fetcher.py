@@ -94,6 +94,45 @@ BLOCKED_FETCH_DOMAINS = {
 }
 
 
+# Phrases that indicate the page is a CAPTCHA / bot-gate / login wall rather
+# than actual article content.  Checked against lowercased title + first 500
+# chars of content so we don't false-positive on articles *about* CAPTCHAs.
+_GATE_PAGE_SIGNALS = [
+    "verify you are human",
+    "verify that you are human",
+    "please verify you are human",
+    "checking your browser",
+    "checking if the site connection is secure",
+    "enable javascript and cookies",
+    "please enable cookies",
+    "ddos protection by cloudflare",
+    "just a moment",           # Cloudflare challenge title
+    "one more step",           # Cloudflare challenge
+    "access to this page has been denied",
+    "access denied",
+    "you have been blocked",
+    "this site is protected by recaptcha",
+    "complete the security check",
+    "bot verification",
+    "human verification",
+    "are you a robot",
+    "i am not a robot",
+    "prove you are not a robot",
+    "subscribe to continue",
+    "subscribe to read",
+    "sign in to read",
+    "log in to continue",
+    "create a free account to continue",
+    "register to read",
+]
+
+
+def _is_gate_page(title: str, content: str) -> bool:
+    """Return True if the page looks like a CAPTCHA, bot-gate, or paywall rather than an article."""
+    combined = ((title or "") + " " + (content or "")[:500]).lower()
+    return any(signal in combined for signal in _GATE_PAGE_SIGNALS)
+
+
 @dataclass
 class ArticleContent:
     """Container for fetched article content."""
@@ -226,6 +265,10 @@ class ArticleFetcher:
         is_soft_404 = any(s in title_lower or s in text_lower for s in _404_signals)
         if is_soft_404:
             logger.info(f"Oxylabs detected soft-404 for {url}: title='{(title or '')[:60]}'")
+            return None
+
+        if _is_gate_page(title, content):
+            logger.info(f"Oxylabs: gate/CAPTCHA page detected for {url} — falling through to archive.org")
             return None
 
         min_length = 50 if "databreaches.net" in url.lower() else 100
@@ -461,6 +504,15 @@ class ArticleFetcher:
                     content_length=len(content) if content else 0
                 )
             
+            if _is_gate_page(title, content):
+                logger.info(f"HttpClient: gate/CAPTCHA page detected for {url} — falling through to next tier")
+                return ArticleContent(
+                    url=url, title=title or "", content="",
+                    fetch_successful=False,
+                    error_message="Gate/CAPTCHA page detected",
+                    content_length=0
+                )
+
             logger.info(f"HttpClient: Successfully extracted content from {url}: {len(content)} chars")
             return ArticleContent(
                 url=url,
@@ -541,7 +593,11 @@ class ArticleFetcher:
                 author = ', '.join(article.authors) if len(article.authors) > 1 else article.authors[0]
             
             content = self._clean_content(article.text)
-            
+
+            if _is_gate_page(article.title, content):
+                logger.info(f"newspaper3k: gate/CAPTCHA page detected for {url} — falling through to next tier")
+                return None
+
             return ArticleContent(
                 url=url,
                 title=article.title or "",
