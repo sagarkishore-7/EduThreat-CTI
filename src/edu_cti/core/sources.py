@@ -36,6 +36,7 @@ from src.edu_cti.sources.rss import (
     build_databreaches_rss_incidents,
     build_bleepingcomputer_rss_incidents,
     build_googlenews_rss_incidents,
+    build_oxylabs_news_incidents,
 )
 
 # Import API-based source builders (free APIs, no scraping)
@@ -73,6 +74,7 @@ RSS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "cisa_rss": build_cisa_rss_incidents,
     "international_rss": build_international_rss_incidents,
     "googlenews_rss": build_googlenews_rss_incidents,
+    "oxylabs_news": build_oxylabs_news_incidents,
 }
 
 # API-based sources registry (free APIs, no web scraping needed)

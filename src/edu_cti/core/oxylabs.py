@@ -98,13 +98,21 @@ class OxylabsClient:
 
         return None
 
-    def search_news(self, query: str, max_results: int = 10) -> List[Dict]:
+    def search_news(
+        self,
+        query: str,
+        max_results: int = 10,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+    ) -> List[Dict]:
         """
         Search Google News via Oxylabs SERP API.
 
         Args:
             query: Search query string
             max_results: Maximum number of results to return
+            date_from: Start date for filtering (YYYY-MM-DD), e.g. "2022-01-01"
+            date_to: End date for filtering (YYYY-MM-DD), e.g. "2022-12-31"
 
         Returns:
             List of dicts with keys: url, title, description, source
@@ -113,10 +121,25 @@ class OxylabsClient:
             logger.warning("Oxylabs credentials not configured (OXYLABS_USERNAME/OXYLABS_PASSWORD)")
             return []
 
+        context = [{"key": "tbm", "value": "nws"}]
+
+        # Add date range filter via Google's tbs (custom date range) parameter
+        # Format: cdr:1,cd_min:MM/DD/YYYY,cd_max:MM/DD/YYYY
+        if date_from or date_to:
+            def _fmt(d: str) -> str:
+                # Convert YYYY-MM-DD → M/D/YYYY for Google tbs format
+                from datetime import datetime
+                dt = datetime.strptime(d, "%Y-%m-%d")
+                return f"{dt.month}/{dt.day}/{dt.year}"
+
+            cd_min = _fmt(date_from) if date_from else "1/1/2000"
+            cd_max = _fmt(date_to) if date_to else "12/31/2099"
+            context.append({"key": "tbs", "value": f"cdr:1,cd_min:{cd_min},cd_max:{cd_max}"})
+
         payload = {
             "source": "google_search",
             "query": query,
-            "context": [{"key": "tbm", "value": "nws"}],
+            "context": context,
             "parse": True,
             "limit": max_results,
         }
