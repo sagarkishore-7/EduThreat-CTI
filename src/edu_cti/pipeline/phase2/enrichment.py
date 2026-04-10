@@ -412,10 +412,13 @@ class IncidentEnricher:
                     except json.JSONDecodeError:
                         pass
                 
-                # Fix 5: Truncated JSON — try to salvage is_edu_cyber_incident
-                # The LLM often returns valid JSON that gets truncated at the
-                # token limit. If we can extract the education relevance flag,
-                # we can still decide whether to keep or delete the incident.
+                # Fix 5: Truncated JSON — attempt repair then salvage what we can.
+                # The LLM often returns valid JSON that gets cut off at the token
+                # limit. Strategy:
+                #   a) Try closing the unclosed JSON object with "}" and re-parse.
+                #      This recovers all fields the LLM managed to write before cutoff.
+                #   b) If repair fails, at minimum extract is_edu_cyber_incident so
+                #      we can delete non-education incidents without a full retry.
                 edu_match = re.search(
                     r'"is_edu_cyber_incident"\s*:\s*(true|false)',
                     raw_response, re.IGNORECASE,
@@ -427,6 +430,42 @@ class IncidentEnricher:
                         raw_response,
                     )
                     reason = reason_match.group(1) if reason_match else "Extracted from truncated JSON"
+
+                    # Attempt JSON repair: strip trailing partial field and close object
+                    repaired = None
+                    try:
+                        # Remove the last (likely incomplete) key-value pair by
+                        # finding the last complete comma-separated field boundary.
+                        # Strategy: strip everything after the last complete '"key": value' pair.
+                        truncated = raw_response.rstrip()
+                        # Remove trailing partial token (incomplete string/number/null)
+                        # by stripping back to the last comma or opening brace.
+                        last_comma = truncated.rfind(",")
+                        last_open = truncated.rfind("{")
+                        cut_pos = max(last_comma, last_open) if last_comma > last_open else last_comma
+                        if cut_pos > 0:
+                            candidate = truncated[:cut_pos].rstrip().rstrip(",") + "\n}"
+                            try:
+                                repaired = json.loads(candidate)
+                            except json.JSONDecodeError:
+                                pass
+                        # Also try simply appending "}"
+                        if repaired is None:
+                            try:
+                                repaired = json.loads(truncated + "}")
+                            except json.JSONDecodeError:
+                                pass
+                    except Exception:
+                        pass
+
+                    if repaired is not None:
+                        logger.info(
+                            f"Repaired truncated JSON (is_edu={is_edu}) — "
+                            f"{len(repaired)} fields recovered"
+                        )
+                        return repaired
+
+                    # Repair failed — salvage what we can
                     if not is_edu:
                         logger.info(
                             f"Salvaged is_edu_cyber_incident=false from truncated JSON: {reason[:80]}"

@@ -499,10 +499,15 @@ class ArticleFetcher:
             article.download()
             article.parse()
             
-            # Check if we got meaningful content - lower threshold for databreaches.net
-            min_length = 50 if "databreaches.net" in url.lower() else 100
+            # Minimum content threshold:
+            # - databreaches.net: 50 chars (brief blotter-style posts)
+            # - all others: 500 chars — anything shorter is a headline/snippet
+            #   from a JS-rendered page (e.g. BBC, Guardian) and won't give the
+            #   LLM enough to work with. Falling through to HttpClient/Oxylabs
+            #   gets the real article body via JS rendering.
+            min_length = 50 if "databreaches.net" in url.lower() else 500
             text_stripped = article.text.strip() if article.text else ""
-            
+
             if not article.text or len(text_stripped) < min_length:
                 logger.debug(
                     f"newspaper3k extracted content too short for {url}: "
