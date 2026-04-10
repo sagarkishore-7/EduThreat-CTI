@@ -454,19 +454,35 @@ OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud")  # Best for
 ENRICHMENT_BATCH_SIZE = int(os.getenv("ENRICHMENT_BATCH_SIZE", "10"))  # Process N incidents per batch
 ENRICHMENT_MAX_RETRIES = int(os.getenv("ENRICHMENT_MAX_RETRIES", "3"))  # Max retries per incident
 ENRICHMENT_RATE_LIMIT_DELAY = float(os.getenv("ENRICHMENT_RATE_LIMIT_DELAY", "2.0"))  # Seconds between API calls
-ENRICHMENT_WORKERS = int(os.getenv("ENRICHMENT_WORKERS", "1"))  # Parallel LLM workers (1-8)
+ENRICHMENT_WORKERS = int(os.getenv("ENRICHMENT_WORKERS", "3"))  # Parallel LLM workers (1-8)
+
+# Sources to skip in fetch + enrichment phases (IOC/malware feeds, not news articles)
+# Ingestion code is kept intact; re-enable by removing from this set.
+ENRICHMENT_SKIP_SOURCES: set = {
+    "threatfox",
+    "urlhaus",
+    "otx_alienvault",
+    "cisa_kev",
+}
+
+# Sources where every fetch tier fails (paywall, login-gate, etc.).
+# For these, skip all 4 fetch tiers entirely and go straight to SERP fallback.
+FETCH_IMPOSSIBLE_SOURCES: set = {
+    "securityweek",
+}
 
 # ---- Phase 2.1: IOC Enrichment (External APIs) ----
 
 # AlienVault OTX (free, register at https://otx.alienvault.com)
 OTX_API_KEY = os.getenv("OTX_API_KEY", "")
 
-# Proxy configuration (cost-effective: free proxies + curl_cffi TLS fingerprinting)
-PROXY_URL = os.getenv("PROXY_URL")  # Optional paid proxy URL
-
-# Oxylabs API configuration (replaces Zyte for web scraping and SERP discovery)
+# Oxylabs API configuration (web scraping and SERP discovery)
 OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
 OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")
 
-# Historical scraping start year
-HISTORICAL_START_YEAR = int(os.getenv("HISTORICAL_START_YEAR", "2019"))
+# Historical scraping start year (applies to date-paginated sources)
+HISTORICAL_START_YEAR = int(os.getenv("HISTORICAL_START_YEAR", "2000"))
+
+# Google News RSS has no meaningful coverage before ~2019.
+# Queries for years before this threshold will be skipped to avoid empty result sets.
+GOOGLE_NEWS_RSS_EFFECTIVE_START_YEAR = 2019

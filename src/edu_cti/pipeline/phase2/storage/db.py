@@ -416,7 +416,17 @@ def get_unenriched_incidents(
     query = """
         SELECT * FROM incidents
         WHERE llm_enriched = 0
-          AND (all_urls IS NOT NULL AND all_urls != '')
+          AND (
+            -- Has at least one URL, OR
+            (all_urls IS NOT NULL AND all_urls != '')
+            OR
+            -- URL-less but has a named institution (Comparitech ransomware, etc.)
+            -- Phase 2 SERP discovery will find articles for these at fetch time.
+            (
+              (university_name IS NOT NULL AND university_name != '')
+              OR (victim_raw_name IS NOT NULL AND victim_raw_name != '')
+            )
+          )
         ORDER BY ingested_at DESC
     """
     

@@ -38,6 +38,10 @@ from src.edu_cti.sources.rss import (
     build_googlenews_rss_incidents,
     build_oxylabs_news_incidents,
 )
+# NOTE: build_oxylabs_news_incidents is imported above but NOT registered in RSS_SOURCE_REGISTRY.
+# It is kept as a named export so the Phase 2 SERP fallback (discover_articles_via_serp) can
+# import OxylabsClient independently. Scheduled ingestion uses googlenews_rss (free, 100
+# results/query) instead — oxylabs_news overlaps ~80% of the same queries at extra cost.
 
 # Import API-based source builders (free APIs, no scraping)
 from src.edu_cti.sources.api.ransomwatch import build_ransomlook_incidents
@@ -66,13 +70,19 @@ NEWS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "darkreading": build_darkreading_incidents,
 }
 
-# RSS feed sources registry (real-time RSS feed sources)
+# RSS feed sources registry (free real-time RSS feed sources)
 RSS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "databreaches_rss": build_databreaches_rss_incidents,
     "bleepingcomputer": build_bleepingcomputer_rss_incidents,
     "cisa_rss": build_cisa_rss_incidents,
     "international_rss": build_international_rss_incidents,
     "googlenews_rss": build_googlenews_rss_incidents,
+}
+
+# Paid RSS/search sources (not run in scheduled ingestion — used on-demand only)
+# oxylabs_news: overlaps ~80% of googlenews_rss queries; costs ~$0.94/run vs free.
+# Use OxylabsClient.search_news() directly in Phase 2 SERP fallback instead.
+PAID_RSS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "oxylabs_news": build_oxylabs_news_incidents,
 }
 

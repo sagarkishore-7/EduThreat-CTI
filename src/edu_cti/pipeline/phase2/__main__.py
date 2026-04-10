@@ -33,6 +33,8 @@ from src.edu_cti.core.config import (
     OLLAMA_MODEL,
     ENRICHMENT_BATCH_SIZE,
     ENRICHMENT_RATE_LIMIT_DELAY,
+    ENRICHMENT_SKIP_SOURCES,
+    FETCH_IMPOSSIBLE_SOURCES,
 )
 from src.edu_cti.core.logging_utils import configure_logging
 from src.edu_cti.core.db import get_connection, init_db
@@ -45,16 +47,9 @@ _cancel_event = threading.Event()
 # Uses two sub-phases: "Fetching articles" (0-30%) and "LLM Enrichment" (30-100%)
 _progress = {"step": "", "detail": "", "percent": 0}
 
-# Sources to skip entirely in both fetch and enrichment phases.
-# These are IOC/malware feeds whose URLs point to abuse.ch, NVD, censys etc.
-# — not news articles, no education CTI value whatsoever.
-# Ingestion code is kept intact; re-enable by removing from this set.
-SKIP_ENRICHMENT_SOURCES = {
-    "threatfox",
-    "urlhaus",
-    "otx_alienvault",
-    "cisa_kev",
-}
+# SKIP_ENRICHMENT_SOURCES / FETCH_IMPOSSIBLE_SOURCES imported from config above.
+# Kept as module-level aliases for backward compatibility with any direct references.
+SKIP_ENRICHMENT_SOURCES = ENRICHMENT_SKIP_SOURCES
 
 
 def dict_to_incident(incident_dict: Dict, conn) -> BaseIncident:
@@ -133,8 +128,8 @@ def fetch_articles_phase(
     rate_limiter = DomainRateLimiter(
         min_delay_seconds=min_delay_seconds,
         max_delay_seconds=max_delay_seconds,
-        max_fetches_per_hour=10,  # Max 10 fetches per domain per hour
-        block_duration_seconds=3600,  # Block for 1 hour if rate limit exceeded
+        max_fetches_per_hour=100,  # 100 fetches per domain per hour (was 10 — too conservative)
+        block_duration_seconds=3600,
     )
     
     article_fetcher = ArticleFetcher()
@@ -199,6 +194,39 @@ def fetch_articles_phase(
             source_prefix = incident_id.split("_")[0]
             if source_prefix in SKIP_ENRICHMENT_SOURCES:
                 logger.debug(f"Skipping fetch for IOC source incident: {incident_id}")
+                stats["processed"] += 1
+                continue
+
+            # For paywall sources (e.g. securityweek), skip all 4 fetch tiers immediately.
+            # securityweek.com is now in BLOCKED_FETCH_DOMAINS so fetch_article() would
+            # return instantly with an error anyway — skip directly to SERP fallback.
+            if source_prefix in FETCH_IMPOSSIBLE_SOURCES:
+                from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
+                from src.edu_cti.pipeline.phase2.storage.article_storage import save_article, get_all_articles_for_incident
+                existing_articles = get_all_articles_for_incident(conn, incident_id)
+                if not existing_articles:
+                    serp_urls = discover_articles_via_serp(incident)
+                    fetched_any = False
+                    for serp_url in serp_urls:
+                        domain = fetching_strategy.rate_limiter.extract_domain(serp_url)
+                        if not domain or not fetching_strategy.rate_limiter.can_fetch_from_domain(domain):
+                            continue
+                        fetching_strategy.rate_limiter.wait_if_needed(domain)
+                        try:
+                            ac = fetching_strategy.article_fetcher.fetch_article(serp_url)
+                            fetching_strategy.rate_limiter.record_fetch(domain, success=ac.fetch_successful)
+                            if ac.fetch_successful:
+                                save_article(conn, incident_id=incident_id, url=serp_url, article=ac)
+                                conn.commit()
+                                fetched_any = True
+                                break
+                        except Exception as _e:
+                            logger.debug(f"SERP fetch error {serp_url}: {_e}")
+                    if fetched_any:
+                        incident_queue.put({**incident, "incident_id": incident_id})
+                        stats["articles_fetched"] += 1
+                else:
+                    incident_queue.put({**incident, "incident_id": incident_id})
                 stats["processed"] += 1
                 continue
 
@@ -369,51 +397,20 @@ def enrich_articles_phase(
             break
 
         try:
-            # Get incident from queue (blocks until available or timeout)
-            # Use timeout to periodically check if fetching is complete
+            # Block until an item is available (no timeout needed — sentinel handles exit)
             try:
-                incident_dict = incident_queue.get(timeout=5.0)
+                incident_dict = incident_queue.get(timeout=10.0)
             except queue.Empty:
-                # Check if fetching is complete
+                # Periodic wakeup — check cancel before blocking again
                 if cancel_event and cancel_event.is_set():
-                    logger.info(f"Cancel requested during queue wait — stopping enrichment")
+                    logger.info(f"Cancel requested — stopping enrichment (processed {items_processed} items)")
                     break
-                if fetch_complete_event.is_set():
-                    # Fetch is done — but queue may still have items being processed by other workers.
-                    # Use queue.unfinished_tasks (via join with timeout) to check if ALL work is done,
-                    # not just that the queue is momentarily empty.
-                    # Wait with exponential backoff: 5s, 10s, 20s, 30s, 30s (total ~95s max)
-                    found_items = False
-                    for check_attempt in range(5):
-                        wait_time = min(5 * (2 ** check_attempt), 30)
-                        logger.debug(f"Fetch complete, queue empty — waiting {wait_time}s (attempt {check_attempt + 1}/5)...")
-                        try:
-                            incident_dict = incident_queue.get(timeout=wait_time)
-                            found_items = True
-                            logger.info(f"Found item after wait (attempt {check_attempt + 1}), continuing processing...")
-                            break
-                        except queue.Empty:
-                            # Check if queue has any unfinished tasks (other workers still processing)
-                            if incident_queue.unfinished_tasks > 0:
-                                logger.debug(f"Queue empty but {incident_queue.unfinished_tasks} unfinished tasks — other workers still active, waiting...")
-                                continue
-                            # Queue is truly empty and no unfinished work
-                            continue
-
-                    if not found_items:
-                        # Confirm: fetch done, queue empty, no unfinished tasks after extended wait
-                        if incident_queue.unfinished_tasks > 0:
-                            logger.debug(f"Still {incident_queue.unfinished_tasks} unfinished tasks — continuing to wait...")
-                            continue  # Go back to the main while loop and try queue.get again
-                        logger.info(f"Queue confirmed empty after extended wait - stopping consumer (processed {items_processed} items)")
-                        break
-                # Continue waiting
-                logger.debug(f"Queue empty, waiting... (processed {items_processed} items so far)")
                 continue
-            
-            # Check for sentinel (end of queue)
+
+            # Check for sentinel (None) — producer pushes one per worker after fetching
             if incident_dict is SENTINEL:
-                logger.info("Received sentinel - stopping consumer")
+                logger.info(f"Received sentinel — stopping consumer (processed {items_processed} items)")
+                incident_queue.task_done()
                 break
             
             incident_id = incident_dict["incident_id"]
@@ -810,7 +807,11 @@ def main() -> None:
         fetch_stats["errors"] += 1
     finally:
         fetch_complete_event.set()
-        logger.info("Fetching complete - signaled consumer threads")
+        # Push one sentinel (None) per consumer so each worker exits its get() loop cleanly
+        # without backoff polling.
+        for _ in range(num_workers):
+            incident_queue.put(None)
+        logger.info(f"Fetching complete — pushed {num_workers} sentinel(s) to queue")
 
     # Wait for all consumer threads — no timeout.
     # Each LLM call can take up to 180s, so even a modest batch (e.g. 500 incidents)

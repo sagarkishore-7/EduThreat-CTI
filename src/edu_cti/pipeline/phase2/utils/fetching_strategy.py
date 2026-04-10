@@ -28,40 +28,52 @@ logger = logging.getLogger(__name__)
 
 def discover_articles_via_serp(incident: Dict) -> List[str]:
     """
-    Use Oxylabs Google News SERP to find article URLs for URL-less incidents.
+    Use Oxylabs Google News SERP to find article URLs for an incident.
 
-    Called when an incident has no all_urls (e.g. Comparitech ransomware incidents
-    which are saved with empty URLs so ingestion doesn't block on URL resolution).
+    Two modes:
+    1. Named institution (university_name is set): query = '"Name" attack_hint year'
+    2. Title-based fallback (university_name blank): query = title (quoted)
+       Used for paywalled sources (securityweek) where we have a headline but
+       no accessible article text — finds the same story on an open source.
 
     Args:
-        incident: Incident dict with university_name, attack_type_hint, incident_date
+        incident: Incident dict with university_name, attack_type_hint, incident_date, title
 
     Returns:
         List of discovered article URLs (may be empty if Oxylabs not configured or no results)
     """
-    name = incident.get("university_name") or incident.get("victim_raw_name") or ""
-    # Skip SERP if name is empty, a placeholder, or clearly not a real institution
     INVALID_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
-    if not name or name.strip().lower() in INVALID_NAMES:
+
+    name = (incident.get("university_name") or incident.get("victim_raw_name") or "").strip()
+    title = (incident.get("title") or "").strip()
+
+    if name and name.lower() not in INVALID_NAMES:
+        # Institution-based query
+        attack_hint = incident.get("attack_type_hint") or "cyberattack"
+        incident_date = incident.get("incident_date") or ""
+        year = incident_date[:4] if incident_date and len(incident_date) >= 4 else ""
+        query_parts = [f'"{name}"', attack_hint]
+        if year:
+            query_parts.append(year)
+        query = " ".join(query_parts)
+        log_label = f"institution '{name}'"
+    elif title:
+        # Title-based fallback — useful for paywalled sources like securityweek where
+        # university_name is blank because no article text was ever fetched.
+        # Searching for the headline finds the same story on open news sites.
+        query = f'"{title}"'
+        log_label = f"title '{title[:60]}'"
+    else:
         return []
-
-    attack_hint = incident.get("attack_type_hint") or "cyberattack"
-    incident_date = incident.get("incident_date") or ""
-    year = incident_date[:4] if incident_date and len(incident_date) >= 4 else ""
-
-    query_parts = [f'"{name}"', attack_hint]
-    if year:
-        query_parts.append(year)
-    query = " ".join(query_parts)
 
     client = OxylabsClient()
     results = client.search_news(query, max_results=5)
 
     urls = [r["url"] for r in results if r.get("url")]
     if urls:
-        logger.info(f"SERP discovery: found {len(urls)} articles for '{name}' via Oxylabs")
+        logger.info(f"SERP discovery: found {len(urls)} articles for {log_label}")
     else:
-        logger.info(f"SERP discovery: no results for '{name}'")
+        logger.info(f"SERP discovery: no results for {log_label}")
     return urls
 
 

@@ -6,7 +6,9 @@ Supports 15+ languages with targeted cyber+education queries.
 
 Two modes:
 - Incremental (daily cron): Fetches current feed (~last 30 days), no date params
-- Historical: Walks 6-month date windows from HISTORICAL_START_YEAR (2019) to present
+- Historical: Walks 6-month date windows from HISTORICAL_START_YEAR to present,
+  clamped to GOOGLE_NEWS_RSS_EFFECTIVE_START_YEAR (2019) since Google News has
+  no meaningful coverage before that date.
 
 URL pattern:
   https://news.google.com/rss/search?q={query}+after:{start}+before:{end}&hl={lang}&gl={country}&ceid={country}:{lang}
@@ -21,7 +23,11 @@ from urllib.parse import quote
 
 import requests
 
-from src.edu_cti.core.config import HISTORICAL_START_YEAR, GOOGLE_NEWS_RSS_QUERIES
+from src.edu_cti.core.config import (
+    HISTORICAL_START_YEAR,
+    GOOGLE_NEWS_RSS_EFFECTIVE_START_YEAR,
+    GOOGLE_NEWS_RSS_QUERIES,
+)
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.sources.rss.common import parse_rss_date
 
@@ -184,11 +190,19 @@ def build_googlenews_rss_incidents(
         date_windows = [(None, None)]
         logger.info(f"Google News RSS: Incremental mode (last ~{max_age_days} days)")
     else:
-        # Historical mode: walk 6-month windows from 2019
-        date_windows = _generate_date_windows(HISTORICAL_START_YEAR)
+        # Historical mode: walk 6-month windows from start year.
+        # Google News has no coverage before ~2019, so cap the effective start year
+        # to avoid hundreds of empty API calls for years 2000-2018.
+        effective_start = max(HISTORICAL_START_YEAR, GOOGLE_NEWS_RSS_EFFECTIVE_START_YEAR)
+        if HISTORICAL_START_YEAR < GOOGLE_NEWS_RSS_EFFECTIVE_START_YEAR:
+            logger.info(
+                f"Google News RSS: HISTORICAL_START_YEAR={HISTORICAL_START_YEAR} is before "
+                f"Google News coverage — clamping to {GOOGLE_NEWS_RSS_EFFECTIVE_START_YEAR}"
+            )
+        date_windows = _generate_date_windows(effective_start)
         logger.info(
             f"Google News RSS: Historical mode — {len(date_windows)} windows "
-            f"from {HISTORICAL_START_YEAR} to present"
+            f"from {effective_start} to present"
         )
 
     cutoff = datetime.utcnow() - timedelta(days=max_age_days) if incremental else None

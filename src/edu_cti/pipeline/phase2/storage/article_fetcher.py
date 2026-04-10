@@ -62,7 +62,7 @@ CLOUDFLARE_PROTECTED_DOMAINS = [
     "databreaches.net",
 ]
 
-# Domains that never contain usable article content for CTI extraction.
+# Domains that never yield usable article content for CTI extraction.
 # These are immediately rejected before any fetch attempt.
 BLOCKED_FETCH_DOMAINS = {
     # Social media — paywalled/login-gated, no article text
@@ -82,10 +82,12 @@ BLOCKED_FETCH_DOMAINS = {
     "virustotal.com",
     "any.run",
     "tria.ge",
-    # Malware/IOC analysis platforms
     "malwarebazaar.abuse.ch",
     "otx.alienvault.com",
     "nvd.nist.gov",
+    # Hard paywall — all 4 fetch tiers return login-gate HTML.
+    # SERP fallback (fetching_strategy.py) will find the same story on an open source.
+    "securityweek.com",
 }
 
 
@@ -323,7 +325,7 @@ class ArticleFetcher:
         1. newspaper3k  — fast, free, article-specific extraction
         2. curl_cffi     — TLS fingerprint impersonation (Cloudflare bypass)
         3. Playwright    — full headless browser (JS rendering)
-        4. Zyte API      — paid cloud scraper (anti-bot + JS rendering)
+        4. Oxylabs API   — paid cloud scraper (anti-bot + JS rendering)
         5. archive.org   — Wayback Machine fallback for historical articles
 
         Args:
