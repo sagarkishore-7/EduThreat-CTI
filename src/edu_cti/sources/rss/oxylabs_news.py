@@ -26,20 +26,101 @@ logger = logging.getLogger(__name__)
 
 SOURCE_NAME = "oxylabs_news"
 
-# Multilingual queries for international coverage — mirrors googlenews_rss queries
-# but as plain search terms (Oxylabs handles language/region via geo_location)
-OXYLABS_QUERIES = NEWS_SEARCH_QUERIES + [
-    # International additions not in the base config
+# English queries — base set from config + regional variants
+ENGLISH_QUERIES = NEWS_SEARCH_QUERIES + [
     "university cyber attack UK",
     "school ransomware Australia",
     "university data breach Canada",
-    "universidad ciberataque",
-    "université cyberattaque",
-    "universität cyberangriff",
-    "大学 サイバー攻撃",
     "university hacked India",
-    "escola ataque cibernético",
+    "college data breach South Africa",
+    "school cyberattack New Zealand",
 ]
+
+# Multilingual queries — covers the 14 major languages from googlenews_rss
+MULTILINGUAL_QUERIES = [
+    # Spanish (ES / MX / AR / CO)
+    "universidad ciberataque",
+    "universidad ransomware",
+    "escuela ataque cibernético",
+    "universidad hackeo",
+    "universidad brecha de datos",
+    "colegio ciberataque",
+    "datos estudiantes filtrados",
+    # French (FR / CA / BE)
+    "université cyberattaque",
+    "université ransomware",
+    "école piratage informatique",
+    "université fuite de données",
+    "lycée attaque informatique",
+    "données étudiants volées",
+    # German (DE / AT / CH)
+    "universität cyberangriff",
+    "hochschule ransomware",
+    "schule hackerangriff",
+    "universität datenleck",
+    "schule datenpanne",
+    "studenten daten gestohlen",
+    # Portuguese (BR / PT)
+    "universidade ataque cibernético",
+    "universidade ransomware",
+    "escola invasão hacker",
+    "faculdade vazamento dados",
+    "universidade dados estudantes",
+    # Italian (IT)
+    "università attacco informatico",
+    "università ransomware",
+    "scuola violazione dati",
+    "università hacker attacco",
+    # Dutch (NL / BE)
+    "universiteit cyberaanval",
+    "school ransomware aanval",
+    "universiteit datalek",
+    "hogeschool hackaanval",
+    # Japanese (JP)
+    "大学 サイバー攻撃",
+    "大学 ランサムウェア",
+    "学校 情報漏洩",
+    "大学 不正アクセス",
+    "教育機関 サイバー攻撃",
+    # Korean (KR)
+    "대학교 사이버공격",
+    "학교 랜섬웨어",
+    "대학 해킹",
+    "학생 정보 유출",
+    # Chinese (TW / CN)
+    "大學 網路攻擊",
+    "學校 勒索軟體",
+    "大學 資料外洩",
+    "教育機構 駭客攻擊",
+    # Arabic (SA / AE / EG)
+    "جامعة هجوم إلكتروني",
+    "مدرسة اختراق إلكتروني",
+    "جامعة برامج فدية",
+    "بيانات طلاب مسربة",
+    # Turkish (TR)
+    "üniversite siber saldırı",
+    "okul ransomware saldırısı",
+    "üniversite veri ihlali",
+    "okul bilgisayar saldırısı",
+    # Polish (PL)
+    "uniwersytet cyberatak",
+    "szkoła ransomware",
+    "uczelnia atak hakerski",
+    "dane studentów wyciek",
+    # Russian (RU)
+    "университет кибератака",
+    "школа хакерская атака",
+    "вуз ransomware атака",
+    "утечка данных студентов",
+    # Hindi (IN — romanised, works in Google Search)
+    "university cyber attack India",
+    "school ransomware attack India",
+    "college data breach India",
+    "vishwavidyalaya cyber hamla",
+]
+
+# Combined query list used by the source
+OXYLABS_QUERIES = ENGLISH_QUERIES + MULTILINGUAL_QUERIES
 
 # Delay between Oxylabs API calls (we're well under rate limit but polite)
 REQUEST_DELAY = 0.5
