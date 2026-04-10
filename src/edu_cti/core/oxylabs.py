@@ -133,25 +133,30 @@ class OxylabsClient:
             if resp.status_code == 200:
                 data = resp.json()
                 try:
-                    organic = (
+                    content_results = (
                         data.get("results", [{}])[0]
                         .get("content", {})
                         .get("results", {})
-                        .get("organic", [])
+                    )
+                    # News SERP returns results under "main"; web SERP uses "organic"
+                    articles = (
+                        content_results.get("main")
+                        or content_results.get("organic")
+                        or []
                     )
                 except (IndexError, AttributeError):
                     logger.warning(f"Oxylabs: unexpected SERP response structure for query {query!r}")
                     return []
 
                 results = []
-                for item in organic[:max_results]:
+                for item in articles[:max_results]:
                     url = item.get("url") or item.get("link", "")
                     if url:
                         results.append({
                             "url": url,
                             "title": item.get("title", ""),
                             "description": item.get("desc", "") or item.get("description", ""),
-                            "source": item.get("domain", ""),
+                            "source": item.get("source", "") or item.get("domain", ""),
                         })
 
                 logger.info(f"Oxylabs SERP: {len(results)} results for {query!r}")
