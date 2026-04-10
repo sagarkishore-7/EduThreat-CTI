@@ -88,6 +88,9 @@ BLOCKED_FETCH_DOMAINS = {
     # Hard paywall — all 4 fetch tiers return login-gate HTML.
     # SERP fallback (fetching_strategy.py) will find the same story on an open source.
     "securityweek.com",
+    # Paywall / aggregator roundup pages — these are listicles covering hundreds of
+    # incidents per page; they cause LLM output to exceed 8192 tokens mid-JSON.
+    "techtarget.com",
 }
 
 

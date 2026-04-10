@@ -14,7 +14,8 @@ from datetime import datetime, timedelta
 from urllib.parse import urlparse
 import sqlite3
 
-from src.edu_cti.core.db import get_connection
+from src.edu_cti.core.db import get_connection, get_broken_urls, mark_urls_as_broken
+from src.edu_cti.core.deduplication import normalize_url
 from src.edu_cti.core.config import EDUCATION_KEYWORDS, CYBER_KEYWORDS
 from src.edu_cti.core.oxylabs import OxylabsClient
 from src.edu_cti.pipeline.phase2.storage.article_fetcher import (
@@ -490,41 +491,50 @@ class SmartArticleFetchingStrategy:
             )
             
             incident_articles: List[ArticleContent] = []
-            
+
+            # Load previously-confirmed broken URLs so we don't retry them
+            known_broken: Set[str] = get_broken_urls(self.conn, incident_id)
+            newly_failed_urls: List[str] = []
+
             # Try to fetch from each URL, prioritizing different domains
             for url in all_urls:
+                # Skip URLs that already failed all 4 tiers in a previous run
+                if normalize_url(url) in known_broken:
+                    logger.debug(f"Skipping known-broken URL: {url}")
+                    continue
+
                 domain = self.rate_limiter.extract_domain(url)
-                
+
                 if not domain:
                     logger.debug(f"Skipping URL with invalid domain: {url}")
                     continue
-                
+
                 # Check if we can fetch from this domain
                 if not self.rate_limiter.can_fetch_from_domain(domain):
                     logger.debug(f"Domain {domain} is blocked or rate-limited, skipping {url}")
                     continue
-                
+
                 # Check if already fetched
                 if url in self.fetched_urls:
                     logger.debug(f"URL already fetched: {url}")
                     continue
-                
+
                 # Wait if needed to respect rate limits
                 self.rate_limiter.wait_if_needed(domain)
-                
+
                 # Fetch article
                 try:
                     logger.info(f"Fetching article from {domain}: {url}")
                     article_content = self.article_fetcher.fetch_article(url)
-                    
+
                     # Record fetch attempt
                     success = article_content.fetch_successful
                     self.rate_limiter.record_fetch(domain, success=success)
-                    
+
                     if success:
                         self.fetched_urls.add(url)
                         incident_articles.append(article_content)
-                        
+
                         # Save to database
                         try:
                             save_article(
@@ -551,14 +561,15 @@ class SmartArticleFetchingStrategy:
                             f"(content_length: {content_len}, title: {article_content.title[:50] if article_content.title else 'None'})"
                         )
                         logger.debug(f"Fetch failed {incident_id} {domain}: {error_msg[:100]}")
-                        
+                        newly_failed_urls.append(url)
+
                         # If multiple failures from same domain, consider blocking
                         if "403" in error_msg or "Forbidden" in error_msg:
                             logger.warning(f"403 error from {domain}, may be blocked")
-                    
+
                     # Small delay between URLs from same incident
                     time.sleep(random.uniform(0.5, 1.5))
-                    
+
                 except Exception as e:
                     logger.error(
                         f"Exception fetching {url}: {str(e)[:100]}",
@@ -566,7 +577,17 @@ class SmartArticleFetchingStrategy:
                     )
                     logger.error(f"Fetch exception {incident_id} {domain}: {str(e)[:200]}")
                     self.rate_limiter.record_fetch(domain, success=False)
-            
+                    newly_failed_urls.append(url)
+
+            # Persist newly-failed URLs so they are skipped on the next pipeline run
+            if newly_failed_urls:
+                try:
+                    mark_urls_as_broken(self.conn, incident_id, newly_failed_urls)
+                    self.conn.commit()
+                    logger.info(f"Marked {len(newly_failed_urls)} broken URL(s) for {incident_id}")
+                except Exception as be:
+                    logger.warning(f"Failed to persist broken URLs for {incident_id}: {be}")
+
             # If primary URLs all failed, fall back to SERP discovery
             # (catches paywalled sources like securityweek.com where all tiers fail)
             if not incident_articles and all_urls:
