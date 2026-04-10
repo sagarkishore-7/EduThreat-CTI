@@ -16,7 +16,11 @@ import sqlite3
 
 from src.edu_cti.core.db import get_connection
 from src.edu_cti.core.oxylabs import OxylabsClient
-from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleFetcher, ArticleContent
+from src.edu_cti.pipeline.phase2.storage.article_fetcher import (
+    ArticleFetcher,
+    ArticleContent,
+    BLOCKED_FETCH_DOMAINS,
+)
 from src.edu_cti.pipeline.phase2.storage.article_storage import (
     init_articles_table,
     save_article,
@@ -69,7 +73,19 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
     client = OxylabsClient()
     results = client.search_news(query, max_results=5)
 
-    urls = [r["url"] for r in results if r.get("url")]
+    all_urls = [r["url"] for r in results if r.get("url")]
+    # Filter out domains that are blocked (paywalls, social media, IOC databases)
+    # so callers never waste a fetch attempt on them.
+    urls = []
+    for url in all_urls:
+        try:
+            parsed_domain = urlparse(url).netloc.lower()
+            base = ".".join(parsed_domain.split(".")[-2:]) if parsed_domain.count(".") >= 1 else parsed_domain
+            if parsed_domain not in BLOCKED_FETCH_DOMAINS and base not in BLOCKED_FETCH_DOMAINS:
+                urls.append(url)
+        except Exception:
+            urls.append(url)
+
     if urls:
         logger.info(f"SERP discovery: found {len(urls)} articles for {log_label}")
     else:

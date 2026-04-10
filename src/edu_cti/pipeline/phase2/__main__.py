@@ -209,6 +209,8 @@ def fetch_articles_phase(
                     fetched_any = False
                     for serp_url in serp_urls:
                         domain = fetching_strategy.rate_limiter.extract_domain(serp_url)
+                        # SERP results already filtered via discover_articles_via_serp,
+                        # but double-check here to be safe.
                         if not domain or not fetching_strategy.rate_limiter.can_fetch_from_domain(domain):
                             continue
                         fetching_strategy.rate_limiter.wait_if_needed(domain)
