@@ -10,7 +10,7 @@ Supports environment variables for configuration:
 
 import os
 from pathlib import Path
-from typing import List
+from typing import List, Tuple
 
 # Load .env file if present (must be before any os.getenv calls)
 try:
@@ -34,38 +34,244 @@ HTTP_USER_AGENTS: List[str] = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:130.0) Gecko/20100101 Firefox/130.0",
 ]
 
-# ---- Search query terms (education + cyber combined for precision) ----
-# These are sent as search queries to news sites. Combining education terms
-# with cybersecurity terms ensures we only get relevant results, not random
-# articles that happen to mention "university".
-NEWS_SEARCH_QUERIES: List[str] = [
-    # Broad cyber + education combos (highest recall)
+# =============================================================================
+# SEARCH QUERIES — Education Cybersecurity Incident Discovery
+# =============================================================================
+# All keyword queries used by the pipeline sources are defined here so
+# researchers can review, extend, or translate them in one place.
+#
+# Used by:
+#   - Oxylabs News source  (src/edu_cti/sources/rss/oxylabs_news.py)
+#   - Google News RSS source (src/edu_cti/sources/rss/googlenews_rss.py)
+#   - News scrapers (SecurityWeek, DarkReading, etc.)
+# =============================================================================
+
+# ---- English queries ----
+# Broad education + cybersecurity combos sent to search engines and news scrapers.
+# Combining both terms in a single query keeps precision high — generic terms like
+# "university" or "ransomware" alone would drown results in irrelevant content.
+NEWS_SEARCH_QUERIES_EN: List[str] = [
+    # Higher education — attack types
     "university cyberattack",
     "university ransomware",
     "university data breach",
+    "university hacked",
+    "university phishing attack",
+    "university cyber incident",
+    "campus network attack",
+    # College
     "college cyberattack",
     "college data breach",
+    "college hacked",
+    # K-12 school districts
     "school district ransomware",
     "school district cyberattack",
     "school data breach",
-    "education sector cyberattack",
-    "education ransomware attack",
-    # Specific attack types targeting education
-    "university hacked",
-    "college hacked",
     "school hacked",
-    "student data leaked",
-    "student records breach",
-    "campus network attack",
-    "university phishing attack",
-    # K-12 specific
+    "school board data breach",
     "k-12 cyberattack",
     "k-12 ransomware",
-    "school board data breach",
-    # International variations
-    "university cyber incident",
+    # Student data
+    "student data leaked",
+    "student records breach",
+    # Broader education sector
+    "education sector cyberattack",
+    "education ransomware attack",
     "education institution attack",
     "academic institution breach",
+    # Regional English variants
+    "university cyber attack UK",
+    "school ransomware Australia",
+    "university data breach Canada",
+    "university hacked India",
+    "college data breach South Africa",
+    "school cyberattack New Zealand",
+]
+
+# ---- Multilingual queries ----
+# Same concepts as NEWS_SEARCH_QUERIES_EN translated into 13 additional languages.
+# Oxylabs Google News SERP handles multilingual queries natively — just pass the
+# query string in the target language and results come back in that language.
+NEWS_SEARCH_QUERIES_MULTILINGUAL: List[str] = [
+    # Spanish (Spain / Mexico / Argentina / Colombia)
+    "universidad ciberataque",
+    "universidad ransomware",
+    "escuela ataque cibernético",
+    "universidad hackeo",
+    "universidad brecha de datos",
+    "colegio ciberataque",
+    "datos estudiantes filtrados",
+
+    # French (France / Canada / Belgium)
+    "université cyberattaque",
+    "université ransomware",
+    "école piratage informatique",
+    "université fuite de données",
+    "lycée attaque informatique",
+    "données étudiants volées",
+
+    # German (Germany / Austria / Switzerland)
+    "universität cyberangriff",
+    "hochschule ransomware",
+    "schule hackerangriff",
+    "universität datenleck",
+    "schule datenpanne",
+    "studenten daten gestohlen",
+
+    # Portuguese (Brazil / Portugal)
+    "universidade ataque cibernético",
+    "universidade ransomware",
+    "escola invasão hacker",
+    "faculdade vazamento dados",
+    "universidade dados estudantes",
+
+    # Italian (Italy)
+    "università attacco informatico",
+    "università ransomware",
+    "scuola violazione dati",
+    "università hacker attacco",
+
+    # Dutch (Netherlands / Belgium)
+    "universiteit cyberaanval",
+    "school ransomware aanval",
+    "universiteit datalek",
+    "hogeschool hackaanval",
+
+    # Japanese (Japan)
+    "大学 サイバー攻撃",
+    "大学 ランサムウェア",
+    "学校 情報漏洩",
+    "大学 不正アクセス",
+    "教育機関 サイバー攻撃",
+
+    # Korean (South Korea)
+    "대학교 사이버공격",
+    "학교 랜섬웨어",
+    "대학 해킹",
+    "학생 정보 유출",
+
+    # Chinese (Taiwan / mainland)
+    "大學 網路攻擊",
+    "學校 勒索軟體",
+    "大學 資料外洩",
+    "教育機構 駭客攻擊",
+
+    # Arabic (Saudi Arabia / UAE / Egypt)
+    "جامعة هجوم إلكتروني",
+    "مدرسة اختراق إلكتروني",
+    "جامعة برامج فدية",
+    "بيانات طلاب مسربة",
+
+    # Turkish (Turkey)
+    "üniversite siber saldırı",
+    "okul ransomware saldırısı",
+    "üniversite veri ihlali",
+    "okul bilgisayar saldırısı",
+
+    # Polish (Poland)
+    "uniwersytet cyberatak",
+    "szkoła ransomware",
+    "uczelnia atak hakerski",
+    "dane studentów wyciek",
+
+    # Russian (Russia)
+    "университет кибератака",
+    "школа хакерская атака",
+    "вуз ransomware атака",
+    "утечка данных студентов",
+
+    # Hindi (India — romanised, works in Google Search)
+    "university cyber attack India",
+    "school ransomware attack India",
+    "college data breach India",
+    "vishwavidyalaya cyber hamla",
+]
+
+# Combined list used by Oxylabs News source (94 queries across 14 languages)
+NEWS_SEARCH_QUERIES_ALL: List[str] = NEWS_SEARCH_QUERIES_EN + NEWS_SEARCH_QUERIES_MULTILINGUAL
+
+# Legacy alias — kept so existing code that imports NEWS_SEARCH_QUERIES still works
+NEWS_SEARCH_QUERIES: List[str] = NEWS_SEARCH_QUERIES_EN
+
+# ---- Google News RSS queries ----
+# Each tuple: (query, language_code, country_code)
+# Used by the Google News RSS source which requires explicit lang/country params
+# in the RSS URL: ?hl={lang}&gl={country}&ceid={country}:{lang}
+GOOGLE_NEWS_RSS_QUERIES: List[Tuple[str, str, str]] = [
+    # English — US
+    ("university cyberattack", "en", "US"),
+    ("university ransomware", "en", "US"),
+    ("university data breach", "en", "US"),
+    ("college cyberattack", "en", "US"),
+    ("school district ransomware", "en", "US"),
+    ("school data breach", "en", "US"),
+    ("education sector cyberattack", "en", "US"),
+    ("student data breach", "en", "US"),
+    ("k-12 cyberattack", "en", "US"),
+    ("university hacked", "en", "US"),
+    # English — UK
+    ("university cyberattack", "en", "GB"),
+    ("school ransomware", "en", "GB"),
+    ("university data breach", "en", "GB"),
+    # English — Australia
+    ("university cyberattack", "en", "AU"),
+    ("school data breach", "en", "AU"),
+    # English — India
+    ("university cyberattack", "en", "IN"),
+    ("college hacked India", "en", "IN"),
+    ("IIT cyber attack", "en", "IN"),
+    # Spanish
+    ("universidad ciberataque", "es", "ES"),
+    ("universidad ransomware", "es", "ES"),
+    ("escuela ataque cibernético", "es", "ES"),
+    ("universidad hackeo", "es", "MX"),
+    ("universidad brecha datos", "es", "AR"),
+    # French
+    ("université cyberattaque", "fr", "FR"),
+    ("université ransomware", "fr", "FR"),
+    ("école piratage informatique", "fr", "FR"),
+    ("université fuite données", "fr", "CA"),
+    # German
+    ("universität cyberangriff", "de", "DE"),
+    ("hochschule ransomware", "de", "DE"),
+    ("schule hackerangriff", "de", "DE"),
+    ("universität datenleck", "de", "DE"),
+    # Portuguese
+    ("universidade ataque cibernético", "pt", "BR"),
+    ("universidade ransomware", "pt", "BR"),
+    ("escola invasão hacker", "pt", "BR"),
+    # Italian
+    ("università attacco informatico", "it", "IT"),
+    ("università ransomware", "it", "IT"),
+    ("scuola violazione dati", "it", "IT"),
+    # Dutch
+    ("universiteit cyberaanval", "nl", "NL"),
+    ("school ransomware", "nl", "NL"),
+    # Japanese
+    ("大学 サイバー攻撃", "ja", "JP"),
+    ("大学 ランサムウェア", "ja", "JP"),
+    ("学校 情報漏洩", "ja", "JP"),
+    # Korean
+    ("대학교 사이버공격", "ko", "KR"),
+    ("학교 랜섬웨어", "ko", "KR"),
+    ("대학 해킹", "ko", "KR"),
+    # Chinese
+    ("大学 网络攻击", "zh", "TW"),
+    ("学校 勒索软件", "zh", "TW"),
+    # Arabic
+    ("جامعة هجوم إلكتروني", "ar", "SA"),
+    ("مدرسة اختراق", "ar", "AE"),
+    # Turkish
+    ("üniversite siber saldırı", "tr", "TR"),
+    ("okul ransomware", "tr", "TR"),
+    # Polish
+    ("uniwersytet cyberatak", "pl", "PL"),
+    ("szkoła ransomware", "pl", "PL"),
+    # Russian
+    ("университет кибератака", "ru", "RU"),
+    ("школа хакерская атака", "ru", "RU"),
+    # Hindi
+    ("university cyber attack India", "hi", "IN"),
 ]
 
 # Legacy keyword list — used for post-fetch filtering (matches_keywords)

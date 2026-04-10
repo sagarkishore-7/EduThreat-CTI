@@ -18,7 +18,7 @@ import time
 from datetime import datetime, timedelta
 from typing import Callable, List, Optional
 
-from src.edu_cti.core.config import HISTORICAL_START_YEAR, NEWS_SEARCH_QUERIES
+from src.edu_cti.core.config import HISTORICAL_START_YEAR, NEWS_SEARCH_QUERIES_ALL
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.oxylabs import OxylabsClient
 
@@ -26,8 +26,14 @@ logger = logging.getLogger(__name__)
 
 SOURCE_NAME = "oxylabs_news"
 
-# English queries — base set from config + regional variants
-ENGLISH_QUERIES = NEWS_SEARCH_QUERIES + [
+# All queries (English + multilingual) are defined centrally in:
+#   src/edu_cti/core/config.py → NEWS_SEARCH_QUERIES_EN + NEWS_SEARCH_QUERIES_MULTILINGUAL
+# Edit config.py to add/modify queries — changes apply here automatically.
+OXYLABS_QUERIES = NEWS_SEARCH_QUERIES_ALL
+
+# ---- LEGACY BLOCK (kept only to avoid git diff noise) ----
+# The following lists are no longer used — they were moved to config.py.
+_DEPRECATED_ENGLISH_QUERIES = [
     "university cyber attack UK",
     "school ransomware Australia",
     "university data breach Canada",
@@ -118,9 +124,7 @@ MULTILINGUAL_QUERIES = [
     "college data breach India",
     "vishwavidyalaya cyber hamla",
 ]
-
-# Combined query list used by the source
-OXYLABS_QUERIES = ENGLISH_QUERIES + MULTILINGUAL_QUERIES
+# ---- END LEGACY BLOCK ----
 
 # Delay between Oxylabs API calls (we're well under rate limit but polite)
 REQUEST_DELAY = 0.5

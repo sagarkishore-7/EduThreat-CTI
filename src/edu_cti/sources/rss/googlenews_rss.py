@@ -21,91 +21,17 @@ from urllib.parse import quote
 
 import requests
 
-from src.edu_cti.core.config import HISTORICAL_START_YEAR
+from src.edu_cti.core.config import HISTORICAL_START_YEAR, GOOGLE_NEWS_RSS_QUERIES
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.sources.rss.common import parse_rss_date
 
 logger = logging.getLogger(__name__)
 
-# Targeted search queries per language/region.
-# Each tuple: (query, language_code, country_code)
-# Queries combine education + cybersecurity terms for precision.
-GOOGLE_NEWS_QUERIES = [
-    # English — multiple regions
-    ("university cyberattack", "en", "US"),
-    ("university ransomware", "en", "US"),
-    ("university data breach", "en", "US"),
-    ("college cyberattack", "en", "US"),
-    ("school district ransomware", "en", "US"),
-    ("school data breach", "en", "US"),
-    ("education sector cyberattack", "en", "US"),
-    ("student data breach", "en", "US"),
-    ("k-12 cyberattack", "en", "US"),
-    ("university hacked", "en", "US"),
-    # UK
-    ("university cyberattack", "en", "GB"),
-    ("school ransomware", "en", "GB"),
-    ("university data breach", "en", "GB"),
-    # Australia
-    ("university cyberattack", "en", "AU"),
-    ("school data breach", "en", "AU"),
-    # India
-    ("university cyberattack", "en", "IN"),
-    ("college hacked India", "en", "IN"),
-    ("IIT cyber attack", "en", "IN"),
-    # Spanish
-    ("universidad ciberataque", "es", "ES"),
-    ("universidad ransomware", "es", "ES"),
-    ("escuela ataque cibernético", "es", "ES"),
-    ("universidad hackeo", "es", "MX"),
-    ("universidad brecha datos", "es", "AR"),
-    # French
-    ("université cyberattaque", "fr", "FR"),
-    ("université ransomware", "fr", "FR"),
-    ("école piratage informatique", "fr", "FR"),
-    ("université fuite données", "fr", "CA"),
-    # German
-    ("universität cyberangriff", "de", "DE"),
-    ("hochschule ransomware", "de", "DE"),
-    ("schule hackerangriff", "de", "DE"),
-    ("universität datenleck", "de", "DE"),
-    # Portuguese
-    ("universidade ataque cibernético", "pt", "BR"),
-    ("universidade ransomware", "pt", "BR"),
-    ("escola invasão hacker", "pt", "BR"),
-    # Italian
-    ("università attacco informatico", "it", "IT"),
-    ("università ransomware", "it", "IT"),
-    ("scuola violazione dati", "it", "IT"),
-    # Dutch
-    ("universiteit cyberaanval", "nl", "NL"),
-    ("school ransomware", "nl", "NL"),
-    # Japanese
-    ("大学 サイバー攻撃", "ja", "JP"),
-    ("大学 ランサムウェア", "ja", "JP"),
-    ("学校 情報漏洩", "ja", "JP"),
-    # Korean
-    ("대학교 사이버공격", "ko", "KR"),
-    ("학교 랜섬웨어", "ko", "KR"),
-    ("대학 해킹", "ko", "KR"),
-    # Chinese
-    ("大学 网络攻击", "zh", "TW"),
-    ("学校 勒索软件", "zh", "TW"),
-    # Arabic
-    ("جامعة هجوم إلكتروني", "ar", "SA"),
-    ("مدرسة اختراق", "ar", "AE"),
-    # Turkish
-    ("üniversite siber saldırı", "tr", "TR"),
-    ("okul ransomware", "tr", "TR"),
-    # Polish
-    ("uniwersytet cyberatak", "pl", "PL"),
-    ("szkoła ransomware", "pl", "PL"),
-    # Russian
-    ("университет кибератака", "ru", "RU"),
-    ("школа хакерская атака", "ru", "RU"),
-    # Hindi (uses English script for Google News)
-    ("university cyber attack India", "hi", "IN"),
-]
+# Queries are defined centrally in:
+#   src/edu_cti/core/config.py → GOOGLE_NEWS_RSS_QUERIES
+# Each entry is a (query, language_code, country_code) tuple.
+# Edit config.py to add/modify queries — changes apply here automatically.
+GOOGLE_NEWS_QUERIES = GOOGLE_NEWS_RSS_QUERIES
 
 # Delay between requests to be respectful
 REQUEST_DELAY = 2.0
