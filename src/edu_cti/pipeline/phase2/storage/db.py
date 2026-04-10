@@ -627,7 +627,32 @@ def save_enrichment_result(
         """,
         tuple(update_params)
     )
-    
+
+    # --- Post-enrichment dedup ---
+    # If another already-enriched incident has the same primary_url + incident_date,
+    # they're almost certainly the same event. Delete the current (weaker) one.
+    if primary_url and llm_incident_date:
+        existing = conn.execute(
+            """
+            SELECT incident_id FROM incidents
+            WHERE primary_url = ?
+              AND incident_date = ?
+              AND incident_id != ?
+              AND llm_enriched = 1
+            LIMIT 1
+            """,
+            (primary_url, llm_incident_date, incident_id),
+        ).fetchone()
+        if existing:
+            survivor_id = existing[0]
+            logger.warning(
+                f"POST-ENRICH DEDUP: '{incident_id}' shares primary_url+date with "
+                f"'{survivor_id}' — deleting duplicate (CASCADE cleans related tables)"
+            )
+            conn.execute("DELETE FROM incidents WHERE incident_id = ?", (incident_id,))
+            conn.commit()
+            return  # Nothing more to do for this incident
+
     # Save full JSON to incident_enrichments table
     cur = conn.execute(
         "SELECT incident_id FROM incident_enrichments WHERE incident_id = ?",

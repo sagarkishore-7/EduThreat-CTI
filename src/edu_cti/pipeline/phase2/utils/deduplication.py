@@ -45,7 +45,12 @@ def normalize_institution_name(name: str) -> str:
     
     # Lowercase
     normalized = name.lower().strip()
-    
+
+    # If the name looks like a domain (has dots, no spaces), reduce to first label
+    # e.g. "salfordcc.ac.uk" → "salfordcc", "mit.edu" → "mit"
+    if re.search(r"\.", normalized) and " " not in normalized:
+        normalized = normalized.split(".")[0]
+
     # Remove common prefixes
     prefixes = [
         r"^university\s+of\s+",

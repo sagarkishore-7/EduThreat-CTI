@@ -169,6 +169,61 @@ def fetch_sector_education_victims(client: Optional[HttpClient] = None) -> List[
     return victims
 
 
+def _dedup_raw_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Dedup raw ransomware.live API records before creating BaseIncidents.
+
+    Same victim, same date, different groups (e.g. "Salford City College" from
+    Qilin + "salfordcc.ac.uk" from Dragonforce) → merge into one record.
+
+    Merge key: (domain_root, attackdate_day)
+      - domain_root = first label of domain field, e.g. "salfordcc" from "salfordcc.ac.uk"
+      - attackdate_day = first 10 chars of attackdate ("YYYY-MM-DD")
+
+    The merged record keeps the entry with the most human-readable victim name,
+    and records all claiming groups in a synthetic "all_groups" key.
+    """
+    import logging
+    log = logging.getLogger(__name__)
+
+    from collections import defaultdict
+    groups: dict = defaultdict(list)
+
+    for row in records:
+        domain = _safe_str(row.get("domain") or "").lower().strip()
+        domain_root = domain.split(".")[0] if domain else ""
+        date_key = _safe_str(row.get("attackdate") or "")[:10]
+
+        if domain_root and date_key:
+            groups[(domain_root, date_key)].append(row)
+        else:
+            # No domain or date — can't group, keep as-is with a unique placeholder
+            groups[(id(row), date_key)].append(row)
+
+    merged: List[Dict[str, Any]] = []
+    for key, group in groups.items():
+        if len(group) == 1:
+            merged.append(group[0])
+            continue
+
+        # Multiple entries for same domain+date — pick best name, combine groups
+        primary = next(
+            (r for r in group if "." not in _safe_str(r.get("victim") or r.get("name") or "")),
+            group[0],
+        )
+        all_groups = sorted({_safe_str(r.get("group") or "") for r in group} - {""})
+        primary = dict(primary)  # copy so we don't mutate the original
+        primary["all_groups"] = all_groups
+
+        log.info(
+            f"RansomwareLive pre-dedup: merged {len(group)} entries for domain "
+            f"'{key[0]}' on {key[1]} — groups: {all_groups}"
+        )
+        merged.append(primary)
+
+    return merged
+
+
 def build_ransomwarelive_incidents(
     client: Optional[HttpClient] = None,
     save_callback: Optional[Callable[[List[BaseIncident]], None]] = None,
@@ -189,6 +244,8 @@ def build_ransomwarelive_incidents(
     incidents: List[BaseIncident] = []
 
     records = fetch_sector_education_victims(client=client)
+    # Dedup raw records by (domain-root, date) before creating BaseIncidents
+    records = _dedup_raw_records(records)
     seen_keys = set()
 
     for row in records:
@@ -245,9 +302,12 @@ def build_ransomwarelive_incidents(
         elif claim_url:
             source_event_id = claim_url.rstrip("/").rsplit("/", 1)[-1]
 
-        # Notes: group + infostealer brief summary
+        # Notes: group(s) + infostealer brief summary
         note_parts = []
-        if group:
+        all_groups = row.get("all_groups")  # set by _dedup_raw_records when merged
+        if all_groups:
+            note_parts.append(f"groups={','.join(all_groups)};multi_claimed=true")
+        elif group:
             note_parts.append(f"group={group}")
 
         infostealer = row.get("infostealer")
@@ -312,7 +372,7 @@ def build_ransomwarelive_incidents(
             notes=notes,
         )
         incidents.append(incident)
-    
+
     # Save all incidents if callback provided (API source, save after processing all records)
     if save_callback is not None and incidents:
         try:
