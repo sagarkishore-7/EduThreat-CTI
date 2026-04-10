@@ -215,7 +215,7 @@ def build_comparitech_incidents(
             primary_url=None,
             all_urls=[],  # Phase 2 discovers articles via Oxylabs SERP
             leak_site_url=None,
-            source_detail_url="https://www.comparitech.com/ransomware-attack-map/",
+            source_detail_url=None,  # Reference page, not an article — would cause all incidents to dedup into one
             screenshot_url=None,
             attack_type_hint="ransomware",
             status="confirmed",

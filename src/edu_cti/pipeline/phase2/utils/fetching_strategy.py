@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import sqlite3
 
 from src.edu_cti.core.db import get_connection
+from src.edu_cti.core.config import EDUCATION_KEYWORDS, CYBER_KEYWORDS
 from src.edu_cti.core.oxylabs import OxylabsClient
 from src.edu_cti.pipeline.phase2.storage.article_fetcher import (
     ArticleFetcher,
@@ -52,7 +53,13 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
     title = (incident.get("title") or "").strip()
 
     if name and name.lower() not in INVALID_NAMES:
-        # Institution-based query
+        # Skip domain-format names (e.g. unila.edu.mx, saiedu.fi) — Google News
+        # won't find news articles for a bare domain name. These consistently
+        # return 0 results and waste Oxylabs credits.
+        if "." in name and " " not in name:
+            logger.debug(f"SERP skip: domain-format name '{name}' — won't appear in news search")
+            return []
+        # Institution-based query — name already implies education context
         attack_hint = incident.get("attack_type_hint") or "cyberattack"
         incident_date = incident.get("incident_date") or ""
         year = incident_date[:4] if incident_date and len(incident_date) >= 4 else ""
@@ -62,9 +69,20 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
         query = " ".join(query_parts)
         log_label = f"institution '{name}'"
     elif title:
-        # Title-based fallback — useful for paywalled sources like securityweek where
-        # university_name is blank because no article text was ever fetched.
-        # Searching for the headline finds the same story on open news sites.
+        # Title-based fallback for paywalled sources (securityweek, etc.).
+        # Guard: the title must mention at least one education keyword AND one
+        # cyber keyword — otherwise we're burning Oxylabs credits on articles
+        # about botnets, car hacks, insurance dongles, etc. that will never
+        # be education incidents.
+        title_lower = title.lower()
+        has_edu = any(k.lower() in title_lower for k in EDUCATION_KEYWORDS)
+        has_cyber = any(k.lower() in title_lower for k in CYBER_KEYWORDS)
+        if not has_edu or not has_cyber:
+            logger.debug(
+                f"SERP skip: title lacks edu+cyber keywords "
+                f"(edu={has_edu}, cyber={has_cyber}): '{title[:80]}'"
+            )
+            return []
         query = f'"{title}"'
         log_label = f"title '{title[:60]}'"
     else:
