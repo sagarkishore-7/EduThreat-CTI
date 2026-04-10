@@ -41,10 +41,9 @@ from src.edu_cti.sources.rss import (
 
 # Import API-based source builders (free APIs, no scraping)
 from src.edu_cti.sources.api.ransomwatch import build_ransomlook_incidents
-from src.edu_cti.sources.api.cisa_kev import build_cisa_kev_incidents
-from src.edu_cti.sources.api.otx_alienvault import build_otx_incidents
-from src.edu_cti.sources.api.threatfox import build_threatfox_incidents
-from src.edu_cti.sources.api.urlhaus import build_urlhaus_incidents
+# NOTE: threatfox, urlhaus, otx_alienvault, cisa_kev moved to sources/future_work/
+# They provide IOC/malware hashes — not news articles about education sector incidents.
+# Re-enable if you want to build a broader threat intelligence dataset in future.
 
 # Import new RSS sources
 from src.edu_cti.sources.rss.cisa_rss import build_cisa_rss_incidents
@@ -80,10 +79,7 @@ RSS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
 # API-based sources registry (free APIs, no web scraping needed)
 API_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "ransomlook": build_ransomlook_incidents,
-    "cisa_kev": build_cisa_kev_incidents,
-    "otx_alienvault": build_otx_incidents,
-    "threatfox": build_threatfox_incidents,
-    "urlhaus": build_urlhaus_incidents,
+    # threatfox, urlhaus, otx_alienvault, cisa_kev removed — see sources/future_work/
 }
 
 # All sources (for reference)

@@ -45,10 +45,16 @@ _cancel_event = threading.Event()
 # Uses two sub-phases: "Fetching articles" (0-30%) and "LLM Enrichment" (30-100%)
 _progress = {"step": "", "detail": "", "percent": 0}
 
-# IOC-only sources that return no education articles — skip enrichment to avoid
-# wasting time and API credits. Ingestion code is kept intact; re-enable by removing
-# entries from this set.
-SKIP_ENRICHMENT_SOURCES = {"threatfox", "urlhaus", "otx_alienvault", "cisa_kev"}
+# Sources to skip entirely in both fetch and enrichment phases.
+# These are IOC/malware feeds whose URLs point to abuse.ch, NVD, censys etc.
+# — not news articles, no education CTI value whatsoever.
+# Ingestion code is kept intact; re-enable by removing from this set.
+SKIP_ENRICHMENT_SOURCES = {
+    "threatfox",
+    "urlhaus",
+    "otx_alienvault",
+    "cisa_kev",
+}
 
 
 def dict_to_incident(incident_dict: Dict, conn) -> BaseIncident:
@@ -188,6 +194,14 @@ def fetch_articles_phase(
                 break
 
             incident_id = incident["incident_id"]
+
+            # Skip IOC-only sources at fetch time — no point fetching abuse.ch/censys URLs
+            source_prefix = incident_id.split("_")[0]
+            if source_prefix in SKIP_ENRICHMENT_SOURCES:
+                logger.debug(f"Skipping fetch for IOC source incident: {incident_id}")
+                stats["processed"] += 1
+                continue
+
             progress_pct = (idx / total_incidents) * 100
             # Update module-level progress for pipeline manager
             # Fetch phase maps to 0-30% of overall enrichment progress
@@ -241,25 +255,17 @@ def fetch_articles_phase(
                     logger.info(f"Incident {incident_id} has {len(existing_articles)} articles in DB")
                     should_push_to_queue = True
                 else:
-                    # All fetch methods failed and no existing articles.
-                    # Check if incident has structured metadata (e.g. Comparitech
-                    # provides ransomware strain, ransom amount in notes) — if so,
-                    # keep it for metadata-only enrichment.
-                    has_metadata = bool(incident.get("notes") or incident.get("attack_type_hint"))
-                    if has_metadata:
-                        logger.info(f"No articles for {incident_id} but has metadata — keeping for metadata-only enrichment")
-                        should_push_to_queue = True
-                        stats["errors"] += 1
-                    else:
-                        # Dead URLs with no metadata — delete to keep DB clean
-                        from src.edu_cti.pipeline.phase2.storage.db import delete_incident
-                        if delete_incident(conn, incident_id):
-                            stats["errors"] += 1
-                            logger.info(f"Deleted unfetchable incident {incident_id} — all URLs dead")
-                        else:
-                            stats["errors"] += 1
-                            logger.warning(f"Failed to delete unfetchable incident {incident_id}")
-                        should_push_to_queue = False
+                    # No articles fetched and nothing in DB.
+                    # Don't push to enrichment queue — it will just fail with
+                    # "No articles found in DB". The incident stays unenriched
+                    # and SERP will try again on the next pipeline run.
+                    source = incident_id.split("_")[0]
+                    logger.info(
+                        f"No articles for {incident_id} (source={source}) — "
+                        f"skipping enrichment queue, will retry next run"
+                    )
+                    stats["errors"] += 1
+                    should_push_to_queue = False
 
                 # Push incident to queue for enrichment (with or without articles)
                 if should_push_to_queue:

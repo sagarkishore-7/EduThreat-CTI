@@ -62,6 +62,32 @@ CLOUDFLARE_PROTECTED_DOMAINS = [
     "databreaches.net",
 ]
 
+# Domains that never contain usable article content for CTI extraction.
+# These are immediately rejected before any fetch attempt.
+BLOCKED_FETCH_DOMAINS = {
+    # Social media — paywalled/login-gated, no article text
+    "twitter.com", "x.com",
+    "facebook.com", "fb.com",
+    "linkedin.com",
+    "instagram.com",
+    "reddit.com",
+    "tiktok.com",
+    # IOC databases — not news articles, no education CTI value
+    "threatfox.abuse.ch",
+    "bazaar.abuse.ch",
+    "urlhaus.abuse.ch",
+    "abuse.ch",
+    "search.censys.io",
+    "shodan.io",
+    "virustotal.com",
+    "any.run",
+    "tria.ge",
+    # Malware/IOC analysis platforms
+    "malwarebazaar.abuse.ch",
+    "otx.alienvault.com",
+    "nvd.nist.gov",
+}
+
 
 @dataclass
 class ArticleContent:
@@ -311,7 +337,18 @@ class ArticleFetcher:
         url = _resolve_google_news_url(url)
 
         from urllib.parse import urlparse
-        domain = urlparse(url).netloc
+        domain = urlparse(url).netloc.lower()
+
+        # Reject domains that never contain usable article content
+        base_domain = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
+        if domain in BLOCKED_FETCH_DOMAINS or base_domain in BLOCKED_FETCH_DOMAINS:
+            logger.info(f"FETCH SKIP blocked domain={domain} url={url[:80]}")
+            return ArticleContent(
+                url=url, title="", content="", fetch_successful=False,
+                error_message=f"Domain blocked (social media / IOC database): {domain}",
+                content_length=0,
+            )
+
         logger.info(f"FETCH CHAIN START: {domain} — {url[:100]}")
 
         # --- Tier 1: newspaper3k (free, fast) ---
