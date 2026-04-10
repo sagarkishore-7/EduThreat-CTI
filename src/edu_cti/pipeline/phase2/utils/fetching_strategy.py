@@ -519,8 +519,36 @@ class SmartArticleFetchingStrategy:
                     logger.error(f"Fetch exception {incident_id} {domain}: {str(e)[:200]}")
                     self.rate_limiter.record_fetch(domain, success=False)
             
+            # If primary URLs all failed, fall back to SERP discovery
+            # (catches paywalled sources like securityweek.com where all tiers fail)
+            if not incident_articles and all_urls:
+                logger.info(
+                    f"Primary URL(s) all failed for {incident_id} — trying SERP fallback"
+                )
+                serp_urls = discover_articles_via_serp(incident)
+                for serp_url in serp_urls:
+                    domain = self.rate_limiter.extract_domain(serp_url)
+                    if not domain or not self.rate_limiter.can_fetch_from_domain(domain):
+                        continue
+                    if serp_url in self.fetched_urls:
+                        continue
+                    self.rate_limiter.wait_if_needed(domain)
+                    try:
+                        article_content = self.article_fetcher.fetch_article(serp_url)
+                        self.rate_limiter.record_fetch(domain, success=article_content.fetch_successful)
+                        if article_content.fetch_successful:
+                            self.fetched_urls.add(serp_url)
+                            incident_articles.append(article_content)
+                            try:
+                                save_article(self.conn, incident_id=incident_id, url=serp_url, article=article_content)
+                                logger.info(f"SERP fallback: fetched {domain} ({len(article_content.content)} chars)")
+                            except Exception as se:
+                                logger.error(f"SERP fallback save error {serp_url}: {se}")
+                    except Exception as e:
+                        logger.debug(f"SERP fallback fetch error {serp_url}: {e}")
+
             results[incident_id] = incident_articles
-            
+
             if not incident_articles:
                 logger.warning(
                     f"No articles fetched for incident {incident_id} "

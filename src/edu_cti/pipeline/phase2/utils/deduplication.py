@@ -15,8 +15,8 @@ except ImportError:
     # Fallback if dateutil not available
     date_parser = None
 
-from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
-from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_result
+# CTIEnrichmentResult and get_enrichment_result no longer needed here
+# (extraction_confidence was removed from the schema; confidence proxy is now llm_summary length)
 
 logger = logging.getLogger(__name__)
 
@@ -166,10 +166,10 @@ def find_duplicate_institutions(
     # Parse incident date
     incident_dt = parse_incident_date(incident_date)
     
-    # Get all enriched incidents
+    # Get all enriched incidents (include llm_summary for confidence proxy)
     cur = conn.execute(
         """
-        SELECT incident_id, university_name, victim_raw_name, incident_date
+        SELECT incident_id, university_name, victim_raw_name, incident_date, llm_summary
         FROM incidents
         WHERE incident_id != ?
           AND llm_enriched = 1
@@ -177,31 +177,28 @@ def find_duplicate_institutions(
         """,
         (incident_id,)
     )
-    
+
     duplicates = []
     for row in cur.fetchall():
         # Check if institution name matches
         uni_name = row["university_name"] or row["victim_raw_name"] or ""
         normalized_uni_name = normalize_institution_name(uni_name)
-        
+
         if normalized_uni_name == normalized_name:
             # Check date window
             row_date = parse_incident_date(row["incident_date"])
-            
+
             if dates_within_window(incident_dt, row_date, window_days):
-                # Get enrichment confidence from enrichment data
-                enrichment = get_enrichment_result(conn, row["incident_id"])
-                confidence = (
-                    enrichment.extraction_confidence if enrichment else 0.0
-                )
-                
+                # Use summary length as confidence proxy (longer = more detail = better)
+                confidence = len(row["llm_summary"] or "")
+
                 duplicates.append({
                     "incident_id": row["incident_id"],
                     "university_name": uni_name,
                     "incident_date": row["incident_date"],
                     "confidence": confidence,
                 })
-    
+
     return duplicates
 
 
@@ -264,11 +261,11 @@ def deduplicate_by_institution(
         
         checked_count += 1
         
-        # Get current incident's enrichment confidence
-        current_enrichment = get_enrichment_result(conn, incident_id)
-        current_confidence = (
-            current_enrichment.extraction_confidence if current_enrichment else 0.0
-        )
+        # Get current incident's confidence (summary length proxy)
+        summary_row = conn.execute(
+            "SELECT llm_summary FROM incidents WHERE incident_id = ?", (incident_id,)
+        ).fetchone()
+        current_confidence = len((summary_row["llm_summary"] if summary_row else None) or "")
         
         # Collect all incident IDs to compare (including current)
         all_incident_ids = [incident_id] + [d["incident_id"] for d in duplicates]
@@ -284,8 +281,8 @@ def deduplicate_by_institution(
                 # Mark as removed (we'll delete them)
                 logger.info(
                     f"Removing duplicate incident {dup_id} "
-                    f"(confidence: {all_confidences[idx]:.2f}) - "
-                    f"keeping {best_incident_id} (confidence: {all_confidences[best_idx]:.2f})"
+                    f"(summary_len: {all_confidences[idx]}) - "
+                    f"keeping {best_incident_id} (summary_len: {all_confidences[best_idx]})"
                 )
                 
                 # Delete the duplicate incident
