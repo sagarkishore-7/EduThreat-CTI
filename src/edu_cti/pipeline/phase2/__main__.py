@@ -93,8 +93,8 @@ def fetch_articles_phase(
     unenriched: List[Dict],
     incident_queue: queue.Queue,
     limit: Optional[int] = None,
-    min_delay_seconds: float = 2.0,
-    max_delay_seconds: float = 5.0,
+    min_delay_seconds: float = 0.5,  # Oxylabs rotates IPs — no need for long domain delays
+    max_delay_seconds: float = 1.5,
 ) -> Dict[str, int]:
     """
     Phase 1: Fetch articles and store in database using smart fetching strategy.
@@ -128,7 +128,7 @@ def fetch_articles_phase(
     rate_limiter = DomainRateLimiter(
         min_delay_seconds=min_delay_seconds,
         max_delay_seconds=max_delay_seconds,
-        max_fetches_per_hour=100,  # 100 fetches per domain per hour (was 10 — too conservative)
+        max_fetches_per_hour=200,  # Oxylabs rotates IPs — server-side per-IP limits don't apply
         block_duration_seconds=3600,
     )
     

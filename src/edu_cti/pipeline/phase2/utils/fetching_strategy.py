@@ -629,11 +629,10 @@ class SmartArticleFetchingStrategy:
                     f"Fetched {len(incident_articles)} articles for incident {incident_id}"
                 )
             
-            # Delay between incidents
+            # Minimal delay between incidents — Oxylabs handles anti-bot rotation,
+            # so long inter-incident sleeps are unnecessary and waste time.
             if i < len(incidents):
-                delay = random.uniform(1.0, 3.0)
-                logger.debug(f"Waiting {delay:.2f}s before next incident...")
-                time.sleep(delay)
+                time.sleep(0.2)
         
         return results
     
