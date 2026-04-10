@@ -65,7 +65,7 @@ This gap has three consequences. \textit{First}, institutions lack sector-specif
 
 We address these gaps with \sys, the first open-source, automated CTI pipeline purpose-built for the education sector. \sys implements a three-phase architecture: (1)~\textit{Ingestion}, which continuously collects candidate incidents from \numsources diverse OSINT sources---curated databases, ransomware trackers, security news, and RSS feeds---using source-specific scrapers, incremental state tracking, and cross-source URL-based deduplication; (2)~\textit{Enrichment}, which retrieves full-text articles through a multi-fallback pipeline (newspaper3k $\rightarrow$ Selenium $\rightarrow$ archive.org), performs LLM-based education-relevance verification to filter noise from keyword-matched scraping, and applies schema-constrained extraction to produce 192+ structured CTI fields per verified incident; and (3)~\textit{Analytics}, which serves the enriched corpus through a REST API with 40+ analytical endpoints and an interactive dashboard.
 
-Using \sys, we conduct what is, to our knowledge, the largest empirical study of cyber incidents targeting educational institutions. Over a 9-year window (2017--2026), our pipeline ingests \rawcollected candidate incidents from \numsources sources, from which LLM-assisted verification confirms \numincidents education-sector cyber incidents across \numcountries countries---each enriched with comprehensive CTI metadata spanning 192+ fields. Compared to the largest prior education-focused dataset (898 incidents, 334 fully enriched, 11 countries)~\cite{kishore2025eduhijack}, \sys replaces manual curation with fully automated, continuously running processing, more than doubles the enrichment depth from 90 to 192+ fields per incident, and extends geographic coverage from 11 to \numcountries countries. As new incidents are reported, \sys automatically ingests, verifies, and enriches them without human intervention.
+Using \sys, we conduct what is, to our knowledge, the largest systematic OSINT-based measurement study of cyber incidents targeting educational institutions. Over a 9-year window (2017--2026), our pipeline ingests \rawcollected candidate incidents from \numsources sources, from which LLM-assisted verification confirms \numincidents education-sector cyber incidents across \numcountries countries---each enriched with comprehensive CTI metadata spanning 192+ structured fields. Unlike prior work that relies on single curated sources, annual surveys, or qualitative reviews, \sys automates the full intelligence cycle from multi-source collection through structured enrichment to analytical serving, and runs continuously as new incidents are reported.
 
 \smallskip
 \noindent\textbf{Contributions.} This paper makes four contributions:
@@ -93,7 +93,7 @@ We situate our work at the intersection of three research threads: (1)~cybersecu
 
 The education sector has been recognized as a high-risk target for over a decade. Garrison and Ncube~\cite{garrison2011longitudinal} documented 290 university breaches exposing 10.8 million records between 2005 and 2009, identifying stolen devices and hacking as primary causes. More recently, industry measurement efforts have quantified the acceleration: Malwarebytes reported a 70\% year-over-year increase in higher-education ransomware (68 attacks in 2022 vs.\ 116 in 2023)~\cite{malwarebytes2024education}, while Sophos found that 66\% of surveyed higher-education organizations experienced a ransomware incident in the prior year, with median ransom payments of \$4.4M and recovery costs averaging \$4.02M~\cite{sophos2024education}. Comparitech estimated that ransomware attacks on U.S.\ schools and colleges have cost \$9.45 billion cumulatively~\cite{comparitech2024schools}.
 
-However, these reports are either narrow in scope (single-country, single-attack-type) or rely on survey self-reports rather than systematic OSINT collection. Academic research on education-sector cybersecurity remains sparse. Lallie et al.~\cite{lallie2025ukuniversities} provide a chronological assessment of cyber attacks on UK universities from 2012--2024, while Jawaid~\cite{jawaid2022eduthreats} survey cyber threats to educational institutes as an emerging concern. Both works are qualitative reviews lacking large-scale empirical corpora. Kishore~\cite{kishore2025eduhijack} constructed the EduHijack dataset of 898 verified incidents using two sources and manual enrichment, but the corpus was limited to 11 countries with 334 fully enriched records. Our work extends this foundation through automated multi-source ingestion from \numsources sources, LLM-driven relevance verification and enrichment producing 192+ fields per incident, and expanded global coverage across \numcountries countries---yielding \numincidents verified incidents from \rawcollected candidates.
+However, these reports suffer from three shared limitations. First, they are either narrow in geographic scope (e.g., single-country reviews~\cite{lallie2025ukuniversities}), restricted to a single attack type, or rely on annual survey self-reports rather than systematic OSINT collection~\cite{sophos2024education,malwarebytes2024education}. Second, existing academic studies are largely qualitative: Lallie et al.~\cite{lallie2025ukuniversities} provide a chronological narrative of UK university attacks, and Jawaid~\cite{jawaid2022eduthreats} surveys institutional threats without an empirical corpus. Third, no prior work provides an open, reproducible, continuously updated dataset enriched with structured CTI metadata. \sys addresses all three gaps by combining automated multi-source ingestion from \numsources OSINT sources with LLM-driven relevance verification and 192-field enrichment across \numcountries countries, yielding \numincidents verified incidents from \rawcollected candidates.
 
 %% --- 2.2 ---
 \subsection{Cyber Threat Intelligence Platforms}\label{sec:related:cti}
@@ -113,6 +113,104 @@ A critical limitation identified by Mezzi et al.~\cite{mezzi2025unreliable} is t
 
 Our approach addresses these challenges through schema-constrained extraction: rather than open-ended generation, we provide the LLM with a detailed JSON schema (192+ fields with controlled enumerations) and validate outputs against Pydantic models, achieving structured extraction at scale while mitigating hallucination through type enforcement and enumeration constraints. We evaluate extraction quality through manual validation of sampled records (\S\ref{sec:dataset}).
 
+
+%% ============================================================
+%% SECTION 3: CONTRIBUTIONS & NOVELTY
+%% ============================================================
+\section{Contributions \& Novelty}\label{sec:contributions}
+
+\sys makes four distinct contributions that, taken together, address the absence of dedicated CTI infrastructure for the education sector. Table~\ref{tab:comparison} positions each contribution against representative prior work.
+
+%% --- 3.1 ---
+\subsection{An Automated, Education-Specific CTI Pipeline}\label{sec:contrib:system}
+
+Existing open-source CTI platforms---MISP~\cite{wagner2016misp} and OpenCTI~\cite{opencti}---are sector-agnostic ingestion and sharing frameworks. They require manual feed curation, do not perform education-relevance filtering, and provide no domain-tailored enrichment schema. Commercial feeds (Recorded Future, Mandiant) are similarly generic and closed.
+
+\sys is the first CTI pipeline designed ground-up for the education sector. Its novel engineering contributions are:
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{Heterogeneous multi-source ingestion.} Fifteen source-specific scrapers cover curated databases (KonBriefing~\cite{konbriefing}), ransomware leak-site mirrors (Ransomware.live~\cite{ransomwarelive}), breach archives (DataBreaches.net~\cite{databreach2024}), five security news outlets, and five RSS feeds. Each scraper implements incremental state tracking so that only new incidents are processed on each run.
+
+  \item \textbf{Cross-source deduplication.} A URL-normalization and hash-based merging layer deduplicates across all \numsources sources, preserving multi-source attribution while emitting each incident exactly once. This is non-trivial: the same incident is routinely reported by 3--6 outlets with divergent URLs, titles, and dates.
+
+  \item \textbf{Multi-fallback article retrieval.} Full-text fetching uses a three-tier fallback: direct HTTP retrieval via newspaper3k, JavaScript-rendered fetching via Playwright/Selenium for bot-protected sources, and archive.org as a last resort for expired pages. This maximises corpus completeness across source types.
+
+  \item \textbf{Schema-constrained LLM enrichment.} A structured JSON schema (192+ typed fields with controlled enumerations) is provided to a large language model at inference time. All outputs are validated against Pydantic models; type violations and out-of-vocabulary values are rejected and flagged for re-processing. This enforces structure at scale and directly addresses the hallucination degradation documented for open-ended CTI extraction~\cite{mezzi2025unreliable}.
+
+  \item \textbf{Continuous production operation.} \sys runs as a scheduled service on Railway, re-ingesting new incidents without human intervention. The pipeline has been in continuous operation since deployment, with the corpus growing automatically as new incidents are reported.
+\end{itemize}
+
+%% --- 3.2 ---
+\subsection{The EduThreat Corpus: A Structured Education CTI Dataset}\label{sec:contrib:dataset}
+
+No prior open dataset provides structured, multi-field CTI records for education-sector cyber incidents at scale. Existing resources are either raw unstructured lists (KonBriefing), paywalled surveys (Sophos, Malwarebytes), or single-country qualitative reviews (Lallie et al.~\cite{lallie2025ukuniversities}).
+
+The EduThreat corpus comprises \numincidents verified education-sector incidents across \numcountries countries, spanning 2017--2026, and is enriched with 192+ structured CTI fields per incident. Fields novel to this corpus include:
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{Education-specific institution taxonomy:} university, college, K-12 school, research institute, hospital-affiliated, consortium.
+  \item \textbf{Operational impact on core functions:} teaching disruption, research slowdown, admissions suspension, library/HPC outage---categories absent from generic CTI schemas.
+  \item \textbf{Regulatory exposure flags:} FERPA, GDPR, HIPAA, and state-level breach-notification obligations per incident.
+  \item \textbf{Transparency scoring:} disclosure timing, detection source, update frequency, and post-incident communication quality---enabling empirical study of institutional disclosure behaviour.
+  \item \textbf{MITRE ATT\&CK mapping:} tactic and technique labels extracted per incident, enabling cross-incident TTP analysis without requiring manual annotation.
+  \item \textbf{Ransom economics:} demanded amounts, paid amounts, cryptocurrency denomination, and negotiation outcome where disclosed.
+\end{itemize}
+
+Table~\ref{tab:comparison} compares the EduThreat corpus against representative prior resources along key dimensions.
+
+\begin{table}[t]
+\centering
+\caption{Comparison of education-sector cybersecurity resources. ``Automated'' = pipeline runs without manual intervention per incident. ``Open'' = freely available without registration or payment.}
+\label{tab:comparison}
+\small
+\begin{tabular}{lcccc}
+\toprule
+& \textbf{KonBriefing} & \textbf{Sophos /} & \textbf{Lallie} & \textbf{\sys} \\
+& \textbf{(raw list)} & \textbf{Malwarebytes} & \textbf{et al.~\cite{lallie2025ukuniversities}} & \textbf{(ours)} \\
+\midrule
+Incidents        & $\sim$600   & Survey-based  & Qualitative   & \numincidents \\
+Countries        & 40+         & 14            & UK only       & \numcountries \\
+CTI fields       & $\sim$5     & $\sim$8       & None          & \textbf{192+} \\
+MITRE ATT\&CK   & \texttimes  & \texttimes    & \texttimes    & \checkmark    \\
+Automated        & \texttimes  & Annual survey & \texttimes    & \checkmark    \\
+Open             & \checkmark  & \texttimes    & \checkmark    & \checkmark    \\
+API + Dashboard  & \texttimes  & \texttimes    & \texttimes    & \checkmark    \\
+Continuously updated & \texttimes & \texttimes & \texttimes   & \checkmark    \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%% --- 3.3 ---
+\subsection{A Large-Scale Measurement of the Education Threat Landscape}\label{sec:contrib:measurement}
+
+Leveraging the EduThreat corpus, we present the most comprehensive empirical characterisation of education-sector cyber threats to date. Prior measurement work in adjacent sectors (healthcare~\cite{sophos2024education}, government) relies on surveys or single-source datasets. Our measurement study reveals several findings not previously documented at this scale:
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{Geographic inequality:} Incident distribution across \numcountries countries follows a power-law, with the United States accounting for 68.9\% of reported incidents. We quantify this concentration empirically rather than via survey approximation.
+
+  \item \textbf{Ransomware dominance and economics:} Ransomware (encryption + double extortion) accounts for 24.0\% of categorised incidents. Across \numransomware ransomware incidents, we document \totaldemanded in total demands against a \paymentrate payment rate---the first such estimate derived from a systematic OSINT corpus for education.
+
+  \item \textbf{Transparency crisis:} 29.5\% of incidents have no identified initial access vector; disclosure-timeline data is missing for the majority of cases. We characterise this structural opacity and its implications for sector-wide learning.
+
+  \item \textbf{Threat actor and TTP profiling:} \numactors distinct threat actors and \numfamilies ransomware families are identified across the corpus, with MITRE ATT\&CK techniques mapped for a representative subset, enabling the first TTP-level view of education-targeting adversaries.
+
+  \item \textbf{Operational impact:} Average recovery time is \avgrecovery days, with ransomware-induced outages following a heavy-tailed distribution (median 72h, P90 $\approx$ 20 days).
+\end{itemize}
+
+%% --- 3.4 ---
+\subsection{Open Science Artifact}\label{sec:contrib:openscience}
+
+In alignment with ACM's open science policy, we release all artifacts associated with this paper:
+
+\begin{itemize}[leftmargin=*,nosep]
+  \item \textbf{Pipeline code:} Full source code for all three phases (ingestion, enrichment, analytics) released under an open-source licence. [Anonymous repository provided at submission.]
+
+  \item \textbf{Enriched dataset:} The EduThreat corpus in CSV and JSON formats, with identifiable fields anonymised where required by institutional privacy obligations.
+
+  \item \textbf{REST API:} A production REST API exposing 40+ analytical endpoints over the live corpus, documented at [anonymous URL].
+
+  \item \textbf{Interactive dashboard:} A web-based analytics dashboard providing geographic, temporal, actor, and TTP views of the corpus without requiring API access.
+\end{itemize}
 
 %% ============================================================
 %% Placeholder sections (to be written)

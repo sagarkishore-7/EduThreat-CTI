@@ -34,13 +34,13 @@ Usage:
 
 import argparse
 import logging
-import re
 import sqlite3
 from collections import defaultdict
 from typing import Dict, List, Optional, Tuple
-from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 from src.edu_cti.core.config import DB_PATH
+from src.edu_cti.core.deduplication import normalize_url
+from src.edu_cti.pipeline.phase2.utils.deduplication import normalize_institution_name as normalize_name
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 logger = logging.getLogger(__name__)
@@ -65,46 +65,6 @@ SOURCE_PRIORITY: Dict[str, int] = {
     "ransomlook": 2,
 }
 
-TRACKING_PARAMS = {
-    "utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term",
-    "ref", "source", "via", "fbclid", "gclid",
-}
-
-
-def normalize_url(url: str) -> str:
-    if not url:
-        return ""
-    try:
-        p = urlparse(url.strip())
-        scheme = p.scheme.lower()
-        netloc = p.netloc.lower().lstrip("www.")
-        path = p.path.rstrip("/")
-        params = parse_qs(p.query, keep_blank_values=False)
-        filtered = {k: v for k, v in params.items() if k.lower() not in TRACKING_PARAMS}
-        query = urlencode(filtered, doseq=True) if filtered else ""
-        return urlunparse((scheme, netloc, path, "", query, ""))
-    except Exception:
-        return url
-
-
-def normalize_name(name: str) -> str:
-    if not name:
-        return ""
-    n = name.lower().strip()
-    # Domain-format name → reduce to first label
-    if "." in n and " " not in n:
-        n = n.split(".")[0]
-    # Strip common prefix/suffix words
-    for pat in [
-        r"^university\s+of\s+", r"^the\s+university\s+of\s+", r"^the\s+",
-        r"^university\s+", r"^college\s+of\s+", r"^college\s+",
-        r"^school\s+of\s+", r"^school\s+",
-        r"\s+university$", r"\s+college$", r"\s+school$", r"\s+institute$",
-    ]:
-        n = re.sub(pat, "", n)
-    n = re.sub(r"[^\w\s-]", "", n)
-    n = re.sub(r"\s+", " ", n).strip()
-    return n
 
 
 def source_prefix(incident_id: str) -> str:

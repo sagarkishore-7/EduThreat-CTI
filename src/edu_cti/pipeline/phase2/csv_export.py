@@ -12,7 +12,6 @@ from pathlib import Path
 from typing import List, Dict, Optional, Any
 
 from src.edu_cti.core.db import get_connection
-from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_result
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult, EducationRelevanceCheck
 from src.edu_cti.pipeline.phase2.utils.deduplication import normalize_institution_name
 

@@ -40,7 +40,9 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
         List of discovered article URLs (may be empty if Oxylabs not configured or no results)
     """
     name = incident.get("university_name") or incident.get("victim_raw_name") or ""
-    if not name:
+    # Skip SERP if name is empty, a placeholder, or clearly not a real institution
+    INVALID_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
+    if not name or name.strip().lower() in INVALID_NAMES:
         return []
 
     attack_hint = incident.get("attack_type_hint") or "cyberattack"
@@ -280,7 +282,7 @@ class SmartArticleFetchingStrategy:
             incident_dict = {
                 "incident_id": incident_id,
                 "all_urls": all_urls,
-                "university_name": row["university_name"] or row["victim_raw_name"] or "Unknown",
+                "university_name": row["university_name"] or row["victim_raw_name"] or "",
                 "title": row["title"],
                 "source_published_date": row["source_published_date"],
                 "attack_type_hint": row["attack_type_hint"],

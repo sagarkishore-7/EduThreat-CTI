@@ -468,9 +468,5 @@ PROXY_URL = os.getenv("PROXY_URL")  # Optional paid proxy URL
 OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
 OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")
 
-# Zyte API configuration (deprecated — replaced by Oxylabs)
-ZYTE_API_KEY = os.getenv("ZYTE_API_KEY", "")
-ZYTE_API_URL = "https://api.zyte.com/v1/extract"
-
 # Historical scraping start year
 HISTORICAL_START_YEAR = int(os.getenv("HISTORICAL_START_YEAR", "2019"))

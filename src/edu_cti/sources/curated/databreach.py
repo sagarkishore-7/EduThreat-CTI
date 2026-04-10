@@ -29,7 +29,7 @@ from src.edu_cti.core.http import HttpClient
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.pagination import extract_last_page_from_numbers
 from src.edu_cti.core.utils import now_utc_iso
-from .common import (
+from src.edu_cti.sources.news.common import (
     default_client,
     extract_date,
     fetch_html,
