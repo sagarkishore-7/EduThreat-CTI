@@ -6,7 +6,6 @@ Uses newspaper3k for primary article extraction, with curl_cffi/Playwright fallb
 Includes advanced bot detection bypass via TLS fingerprinting and headless browser.
 """
 
-import base64
 import json
 import logging
 import time
@@ -17,7 +16,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse, quote
 
 from src.edu_cti.core.http import HttpClient, build_http_client
-from src.edu_cti.core.config import ZYTE_API_KEY, ZYTE_API_URL
+from src.edu_cti.core.oxylabs import OxylabsClient
 from bs4 import BeautifulSoup
 
 # Optional newspaper3k support for article extraction
@@ -156,12 +155,12 @@ class ArticleFetcher:
         
         return None
 
-    def _fetch_with_zyte(self, url: str) -> Optional[ArticleContent]:
+    def _fetch_with_oxylabs(self, url: str) -> Optional[ArticleContent]:
         """
-        Fetch article using Zyte API (paid service, used as fallback).
+        Fetch article using Oxylabs Realtime API (replaces Zyte).
 
-        Tries Zyte's automatic article extraction first (cheapest, ~$0.001/req).
-        Falls back to browserHtml for JS-heavy pages if article extraction fails.
+        Fetches rendered HTML via Oxylabs universal scraper, then extracts
+        content using BeautifulSoup — same extraction logic as HttpClient.
 
         Args:
             url: URL to fetch
@@ -169,129 +168,54 @@ class ArticleFetcher:
         Returns:
             ArticleContent if successful, None otherwise
         """
-        if not ZYTE_API_KEY:
-            logger.warning("Zyte API key not configured, skipping Zyte fallback")
+        client = OxylabsClient()
+        if not client._is_configured():
+            logger.warning("Oxylabs credentials not configured, skipping Oxylabs fallback")
             return None
 
-        auth = base64.b64encode(f"{ZYTE_API_KEY}:".encode()).decode()
-        headers = {
-            "Authorization": f"Basic {auth}",
-            "Content-Type": "application/json",
-            "Accept": "application/json",
-        }
+        html = client.fetch_url(url, render_js=True)
+        if not html:
+            logger.info(f"Oxylabs: no content returned for {url}")
+            return None
 
-        # --- Tier 1: Automatic article extraction (cheapest) ---
-        try:
-            payload = {
-                "url": url,
-                "article": True,
-                "articleOptions": {"extractFrom": "httpResponseBody"},
-            }
-            logger.info(f"Zyte article extraction: {url}")
-            resp = requests.post(
-                ZYTE_API_URL, headers=headers, json=payload, timeout=60
+        soup = BeautifulSoup(html, "html.parser")
+        title = self._extract_title(soup)
+        content = self._extract_content(soup)
+        author = self._extract_author(soup)
+        publish_date = self._extract_publish_date(soup)
+        content = self._clean_content(content)
+
+        # Detect soft-404 pages (site returns 200 but content is a "not found" page)
+        _404_signals = ["page can't be found", "page can\u2019t be found",
+                        "page cannot be found", "not found", "404",
+                        "no longer available", "nothing was found",
+                        "page not found", "error 404"]
+        title_lower = (title or "").lower()
+        text_lower = (content or "").lower()[:300]
+        is_soft_404 = any(s in title_lower or s in text_lower for s in _404_signals)
+        if is_soft_404:
+            logger.info(f"Oxylabs detected soft-404 for {url}: title='{(title or '')[:60]}'")
+            return None
+
+        min_length = 50 if "databreaches.net" in url.lower() else 100
+        content_stripped = (content or "").strip()
+        if content_stripped and len(content_stripped) >= min_length:
+            logger.info(f"Oxylabs succeeded for {url} ({len(content_stripped)} chars)")
+            return ArticleContent(
+                url=url,
+                title=title or "",
+                content=content,
+                author=author,
+                publish_date=publish_date,
+                fetch_successful=True,
+                content_length=len(content_stripped),
             )
-
-            if resp.status_code == 200:
-                data = resp.json()
-                article = data.get("article", {})
-                text = article.get("articleBody", "")
-                title = article.get("headline", "")
-                author_list = article.get("authors", [])
-                author = ", ".join(
-                    a.get("name", "") for a in author_list if a.get("name")
-                ) or None
-                pub_date = article.get("datePublished")
-                if pub_date:
-                    pub_date = pub_date[:10]  # YYYY-MM-DD
-
-                # Detect soft-404 pages (site returns 200 but content is a "not found" page)
-                _404_signals = ["page can't be found", "page can\u2019t be found",
-                                "page cannot be found", "not found", "404",
-                                "no longer available", "nothing was found"]
-                title_lower = (title or "").lower()
-                text_lower = (text or "").lower()[:300]
-                is_soft_404 = any(s in title_lower or s in text_lower for s in _404_signals)
-                if is_soft_404:
-                    logger.info(f"Zyte detected soft-404 for {url}: title='{title[:60]}'")
-                    return None  # Skip browserHtml fallback — page genuinely doesn't exist
-
-                min_length = 50 if "databreaches.net" in url.lower() else 100
-                if text and len(text.strip()) >= min_length:
-                    logger.info(
-                        f"Zyte article extraction succeeded for {url} "
-                        f"({len(text)} chars)"
-                    )
-                    return ArticleContent(
-                        url=url,
-                        title=title,
-                        content=self._clean_content(text),
-                        author=author,
-                        publish_date=pub_date,
-                        fetch_successful=True,
-                        content_length=len(text),
-                    )
-                else:
-                    logger.warning(
-                        f"Zyte article extraction returned insufficient content "
-                        f"for {url}: {len(text.strip()) if text else 0} chars (min={min_length})"
-                    )
-            elif resp.status_code == 422:
-                logger.debug(f"Zyte: URL not supported for article extraction: {url}")
-            else:
-                logger.warning(
-                    f"Zyte article extraction failed for {url}: "
-                    f"HTTP {resp.status_code}"
-                )
-        except requests.RequestException as e:
-            logger.warning(f"Zyte article extraction error for {url}: {e}")
-
-        # --- Tier 2: browserHtml fallback (JS rendering, slightly more expensive) ---
-        try:
-            payload = {
-                "url": url,
-                "browserHtml": True,
-            }
-            logger.info(f"Zyte browserHtml fallback: {url}")
-            resp = requests.post(
-                ZYTE_API_URL, headers=headers, json=payload, timeout=90
+        else:
+            logger.warning(
+                f"Oxylabs: insufficient content for {url}: "
+                f"{len(content_stripped)} chars (min={min_length})"
             )
-
-            if resp.status_code == 200:
-                data = resp.json()
-                html = data.get("browserHtml", "")
-                if html:
-                    soup = BeautifulSoup(html, "html.parser")
-                    title = self._extract_title(soup)
-                    content = self._extract_content(soup)
-                    author = self._extract_author(soup)
-                    publish_date = self._extract_publish_date(soup)
-                    content = self._clean_content(content)
-
-                    min_length = 50 if "databreaches.net" in url.lower() else 100
-                    if content and len(content.strip()) >= min_length:
-                        logger.info(
-                            f"Zyte browserHtml succeeded for {url} "
-                            f"({len(content)} chars)"
-                        )
-                        return ArticleContent(
-                            url=url,
-                            title=title,
-                            content=content,
-                            author=author,
-                            publish_date=publish_date,
-                            fetch_successful=True,
-                            content_length=len(content),
-                        )
-            else:
-                logger.warning(
-                    f"Zyte browserHtml failed for {url}: HTTP {resp.status_code}"
-                )
-        except requests.RequestException as e:
-            logger.warning(f"Zyte browserHtml error for {url}: {e}")
-
-        logger.debug(f"Zyte: all methods failed for {url}")
-        return None
+            return None
 
     def _fetch_from_archive(self, original_url: str) -> Optional[ArticleContent]:
         """
@@ -405,12 +329,12 @@ class ArticleFetcher:
             return article_content
         logger.info(f"FETCH FAIL tier=HttpClient domain={domain}")
 
-        # --- Tier 3: Zyte API (paid, only when local methods fail) ---
-        zyte_content = self._fetch_with_zyte(url)
-        if zyte_content and zyte_content.fetch_successful:
-            logger.info(f"FETCH OK tier=Zyte domain={domain} chars={zyte_content.content_length}")
-            return zyte_content
-        logger.info(f"FETCH FAIL tier=Zyte domain={domain} (key={'set' if ZYTE_API_KEY else 'MISSING'})")
+        # --- Tier 3: Oxylabs (paid, anti-bot cloud scraper) ---
+        oxylabs_content = self._fetch_with_oxylabs(url)
+        if oxylabs_content and oxylabs_content.fetch_successful:
+            logger.info(f"FETCH OK tier=Oxylabs domain={domain} chars={oxylabs_content.content_length}")
+            return oxylabs_content
+        logger.info(f"FETCH FAIL tier=Oxylabs domain={domain}")
 
         # --- Tier 4: archive.org (free, historical fallback) ---
         archive_content = self._fetch_from_archive(url)
@@ -425,7 +349,7 @@ class ArticleFetcher:
             title="",
             content="",
             fetch_successful=False,
-            error_message="All fetch methods failed (newspaper3k, curl_cffi/Playwright, Zyte, archive.org)",
+            error_message="All fetch methods failed (newspaper3k, curl_cffi/Playwright, Oxylabs, archive.org)",
             content_length=0
         )
 

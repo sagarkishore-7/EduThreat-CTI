@@ -45,6 +45,11 @@ _cancel_event = threading.Event()
 # Uses two sub-phases: "Fetching articles" (0-30%) and "LLM Enrichment" (30-100%)
 _progress = {"step": "", "detail": "", "percent": 0}
 
+# IOC-only sources that return no education articles — skip enrichment to avoid
+# wasting time and API credits. Ingestion code is kept intact; re-enable by removing
+# entries from this set.
+SKIP_ENRICHMENT_SOURCES = {"threatfox", "urlhaus", "otx_alienvault", "cisa_kev"}
+
 
 def dict_to_incident(incident_dict: Dict, conn) -> BaseIncident:
     """Convert incident dict to BaseIncident."""
@@ -406,6 +411,15 @@ def enrich_articles_phase(
                 break
             
             incident_id = incident_dict["incident_id"]
+
+            # Skip IOC-only sources that produce no education articles
+            source_prefix = incident_id.split("_")[0]
+            if source_prefix in SKIP_ENRICHMENT_SOURCES:
+                logger.debug(f"Skipping IOC source incident: {incident_id}")
+                stats["skipped"] += 1
+                incident_queue.task_done()
+                continue
+
             stats["processed"] += 1
 
             # Calculate progress percentage - log every 10th or at milestones

@@ -16,9 +16,6 @@ Reference: https://www.comparitech.com/ransomware-attack-map/
 import csv
 import io
 import logging
-import time
-import urllib.parse
-import xml.etree.ElementTree as ET
 from typing import Callable, List, Optional
 
 from src.edu_cti.core.http import HttpClient, build_http_client
@@ -90,74 +87,6 @@ def _guess_institution_type(name: str) -> Optional[str]:
     return "Unknown"
 
 
-def _resolve_google_news_link(url: str) -> Optional[str]:
-    """Decode a Google News redirect URL to the actual article URL."""
-    if "news.google.com" not in url:
-        return url
-    try:
-        from googlenewsdecoder import new_decoderv1
-        result = new_decoderv1(url)
-        if result and result.get("status") and result.get("decoded_url"):
-            return result["decoded_url"]
-    except ImportError:
-        logger.debug("googlenewsdecoder not installed — returning raw Google News URL")
-    except Exception as e:
-        logger.debug(f"Failed to decode Google News URL: {e}")
-    return None
-
-
-def _resolve_article_urls(
-    name: str, year: str, client: HttpClient, max_articles: int = 3,
-) -> List[str]:
-    """
-    Search Google News RSS for articles about this incident.
-
-    Decodes Google News redirect URLs to actual article URLs using
-    googlenewsdecoder. Returns up to max_articles unique resolved URLs.
-    """
-    article_urls: List[str] = []
-    seen = set()
-
-    for query_template in [
-        '"{name}" ransomware {year}',
-        '"{name}" cyberattack {year}',
-    ]:
-        if len(article_urls) >= max_articles:
-            break
-
-        q = query_template.format(name=name, year=year)
-        encoded = urllib.parse.quote(q)
-        rss_url = (
-            f"https://news.google.com/rss/search?"
-            f"q={encoded}&hl=en&gl=US&ceid=US:en"
-        )
-
-        try:
-            resp = client.get(rss_url, to_soup=False)
-            if resp is None or resp.status_code != 200:
-                continue
-            root = ET.fromstring(resp.text)
-            for item in root.iter("item"):
-                link_el = item.find("link")
-                if link_el is not None and link_el.text:
-                    raw_url = link_el.text.strip()
-                    # Resolve Google News redirect to actual article URL
-                    resolved = _resolve_google_news_link(raw_url)
-                    if not resolved:
-                        continue
-                    if resolved not in seen:
-                        seen.add(resolved)
-                        article_urls.append(resolved)
-                        if len(article_urls) >= max_articles:
-                            break
-        except Exception as e:
-            logger.debug(f"RSS fetch failed for '{q}': {e}")
-
-        time.sleep(1)  # Polite delay between Google requests
-
-    return article_urls
-
-
 def _parse_ransom_amount(raw: str) -> Optional[str]:
     """Parse ransom amount string, return cleaned value or None."""
     raw = raw.strip()
@@ -214,7 +143,7 @@ def build_comparitech_incidents(
             continue
         edu_rows.append(row)
 
-    logger.info(f"Comparitech: {len(edu_rows)} education rows found, resolving article URLs...")
+    logger.info(f"Comparitech: {len(edu_rows)} education rows found, saving immediately (article discovery via Oxylabs SERP in Phase 2)")
 
     for idx, row in enumerate(edu_rows, 1):
         name = (row.get("Company Affected") or "").strip()
@@ -264,9 +193,6 @@ def build_comparitech_incidents(
         if year_str:
             title += f" ({year_str})"
 
-        # Resolve actual article URLs from Google News RSS
-        article_urls = _resolve_article_urls(name, year_str, http_client) if year_str else []
-
         # Region (US state)
         region = state if state else None
 
@@ -287,7 +213,7 @@ def build_comparitech_incidents(
             title=title,
             subtitle=None,
             primary_url=None,
-            all_urls=article_urls,
+            all_urls=[],  # Phase 2 discovers articles via Oxylabs SERP
             leak_site_url=None,
             source_detail_url="https://www.comparitech.com/ransomware-attack-map/",
             screenshot_url=None,
@@ -300,11 +226,7 @@ def build_comparitech_incidents(
 
         # Progress logging
         if idx % 50 == 0 or idx == len(edu_rows):
-            with_urls = sum(1 for i in incidents if i.all_urls)
-            logger.info(
-                f"Comparitech: [{idx}/{len(edu_rows)}] "
-                f"{len(incidents)} incidents, {with_urls} with article URLs"
-            )
+            logger.info(f"Comparitech: [{idx}/{len(edu_rows)}] {len(incidents)} incidents saved")
 
         # Batch save every 100 incidents
         if save_callback and len(incidents) >= 100 and len(incidents) % 100 == 0:

@@ -258,7 +258,11 @@ OTX_API_KEY = os.getenv("OTX_API_KEY", "")
 # Proxy configuration (cost-effective: free proxies + curl_cffi TLS fingerprinting)
 PROXY_URL = os.getenv("PROXY_URL")  # Optional paid proxy URL
 
-# Zyte API configuration (paid fallback for when local scraping fails)
+# Oxylabs API configuration (replaces Zyte for web scraping and SERP discovery)
+OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
+OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")
+
+# Zyte API configuration (deprecated — replaced by Oxylabs)
 ZYTE_API_KEY = os.getenv("ZYTE_API_KEY", "")
 ZYTE_API_URL = "https://api.zyte.com/v1/extract"
 

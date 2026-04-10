@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import sqlite3
 
 from src.edu_cti.core.db import get_connection
+from src.edu_cti.core.oxylabs import OxylabsClient
 from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleFetcher, ArticleContent
 from src.edu_cti.pipeline.phase2.storage.article_storage import (
     init_articles_table,
@@ -23,6 +24,43 @@ from src.edu_cti.pipeline.phase2.storage.article_storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def discover_articles_via_serp(incident: Dict) -> List[str]:
+    """
+    Use Oxylabs Google News SERP to find article URLs for URL-less incidents.
+
+    Called when an incident has no all_urls (e.g. Comparitech ransomware incidents
+    which are saved with empty URLs so ingestion doesn't block on URL resolution).
+
+    Args:
+        incident: Incident dict with university_name, attack_type_hint, incident_date
+
+    Returns:
+        List of discovered article URLs (may be empty if Oxylabs not configured or no results)
+    """
+    name = incident.get("university_name") or incident.get("victim_raw_name") or ""
+    if not name:
+        return []
+
+    attack_hint = incident.get("attack_type_hint") or "cyberattack"
+    incident_date = incident.get("incident_date") or ""
+    year = incident_date[:4] if incident_date and len(incident_date) >= 4 else ""
+
+    query_parts = [f'"{name}"', attack_hint]
+    if year:
+        query_parts.append(year)
+    query = " ".join(query_parts)
+
+    client = OxylabsClient()
+    results = client.search_news(query, max_results=5)
+
+    urls = [r["url"] for r in results if r.get("url")]
+    if urls:
+        logger.info(f"SERP discovery: found {len(urls)} articles for '{name}' via Oxylabs")
+    else:
+        logger.info(f"SERP discovery: no results for '{name}'")
+    return urls
 
 
 class DomainRateLimiter:
@@ -204,41 +242,59 @@ class SmartArticleFetchingStrategy:
         """
         exclude_domains = exclude_domains or []
         
-        # Get all unenriched incidents with URLs
+        # Get all unenriched incidents (with or without URLs)
+        # URL-less incidents with metadata (e.g. Comparitech ransomware) will use
+        # Oxylabs SERP to discover articles during fetching
         query = """
-            SELECT 
+            SELECT
                 incident_id,
                 all_urls,
                 university_name,
                 victim_raw_name,
                 title,
-                source_published_date
+                source_published_date,
+                attack_type_hint,
+                notes,
+                incident_date
             FROM incidents
             WHERE llm_enriched = 0
-              AND all_urls IS NOT NULL
-              AND all_urls != ''
             ORDER BY RANDOM()
             LIMIT ?
         """
-        
+
         cur = self.conn.execute(query, (limit * 5,))  # Get 5x more for filtering (increased from 3x)
         rows = cur.fetchall()
-        
+
         if not rows:
             return []
-        
+
         # Group by domain and select diverse incidents
         domain_incidents: Dict[str, List[Dict]] = defaultdict(list)
         no_domain_incidents: List[Dict] = []
-        
+
         for row in rows:
             incident_id = row["incident_id"]
             all_urls_str = row["all_urls"] or ""
             all_urls = [url.strip() for url in all_urls_str.split(";") if url.strip()]
-            
+
+            incident_dict = {
+                "incident_id": incident_id,
+                "all_urls": all_urls,
+                "university_name": row["university_name"] or row["victim_raw_name"] or "Unknown",
+                "title": row["title"],
+                "source_published_date": row["source_published_date"],
+                "attack_type_hint": row["attack_type_hint"],
+                "notes": row["notes"],
+                "incident_date": row["incident_date"],
+            }
+
             if not all_urls:
+                # URL-less but has metadata — will use SERP discovery
+                has_metadata = bool(row["attack_type_hint"] or row["notes"])
+                if has_metadata:
+                    no_domain_incidents.append(incident_dict)
                 continue
-            
+
             # Find first valid URL domain
             domain = None
             for url in all_urls:
@@ -247,15 +303,7 @@ class SmartArticleFetchingStrategy:
                     if self.rate_limiter.can_fetch_from_domain(d):
                         domain = d
                         break
-            
-            incident_dict = {
-                "incident_id": incident_id,
-                "all_urls": all_urls,
-                "university_name": row["university_name"] or row["victim_raw_name"] or "Unknown",
-                "title": row["title"],
-                "source_published_date": row["source_published_date"],
-            }
-            
+
             if domain:
                 domain_incidents[domain].append(incident_dict)
             else:
@@ -373,7 +421,21 @@ class SmartArticleFetchingStrategy:
         for i, incident in enumerate(incidents, 1):
             incident_id = incident["incident_id"]
             all_urls = incident["all_urls"]
-            
+
+            # For URL-less incidents (e.g. Comparitech), discover articles via Oxylabs SERP
+            if not all_urls:
+                logger.info(
+                    f"[{i}/{len(incidents)}] No URLs for {incident_id} — trying Oxylabs SERP discovery"
+                )
+                discovered = discover_articles_via_serp(incident)
+                if discovered:
+                    all_urls = discovered
+                    incident = dict(incident, all_urls=all_urls)
+                else:
+                    logger.info(f"[{i}/{len(incidents)}] SERP found no articles for {incident_id}")
+                    results[incident_id] = []
+                    continue
+
             logger.info(
                 f"[{i}/{len(incidents)}] Fetching articles for incident {incident_id} "
                 f"({len(all_urls)} URLs)"
