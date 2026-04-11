@@ -850,6 +850,15 @@ async def deduplicate_incidents_endpoint(
                 "preview": preview[:50],  # cap at 50 for response size
                 "_v": 2,  # inline dedup v2 — remove after confirming
                 "_stats": {"rows": len(rows), "dated": len(dated_idx), "undated": len(undated_idx), "fuzz": _HAS_FUZZ},
+                "_test": {
+                    "norm_infinite_campus": _norm("Infinite Campus"),
+                    "names_match_test": _names_match("Infinite Campus", "Infinite Campus", 85),
+                    "infinite_campus_rows": [
+                        {"id": rows[i]["incident_id"], "date": rows[i]["incident_date"], "name": rows[i]["university_name"]}
+                        for i in range(len(rows))
+                        if (rows[i]["university_name"] or "").lower().startswith("infinite")
+                    ],
+                },
             }
 
         # Apply merges
