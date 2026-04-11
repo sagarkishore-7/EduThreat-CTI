@@ -369,6 +369,7 @@ async def get_dashboard():
 
         incidents_over_time = [
             TimeSeriesPoint(**t) for t in get_incidents_over_time(conn, months=24)
+            if t.get("date") is not None
         ]
 
         recent_incidents = [

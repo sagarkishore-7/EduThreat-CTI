@@ -564,15 +564,17 @@ def get_incidents_over_time(
     """Get incident counts over time (by month) - only education-related."""
     cur = conn.execute(
         """
-        SELECT 
+        SELECT
             strftime('%Y-%m', i.incident_date) as date,
             COUNT(*) as count
         FROM incidents i
         JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE i.incident_date IS NOT NULL
+          AND i.incident_date != ''
           AND ef.is_education_related = 1
           AND i.incident_date >= date('now', '-' || ? || ' months')
         GROUP BY date
+        HAVING date IS NOT NULL
         ORDER BY date ASC
         """,
         (months,)
