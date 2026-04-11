@@ -848,6 +848,8 @@ async def deduplicate_incidents_endpoint(
                 "groups_found": len(merge_groups),
                 "incidents_to_remove": sum(len(m) - 1 for _, m in merge_groups),
                 "preview": preview[:50],  # cap at 50 for response size
+                "_v": 2,  # inline dedup v2 — remove after confirming
+                "_stats": {"rows": len(rows), "dated": len(dated_idx), "undated": len(undated_idx), "fuzz": _HAS_FUZZ},
             }
 
         # Apply merges
