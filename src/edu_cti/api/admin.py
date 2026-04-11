@@ -804,6 +804,7 @@ async def deduplicate_incidents_endpoint(
         merge_groups = [(root, members) for root, members in groups.items() if len(members) > 1]
 
         if request.dry_run:
+            from src.edu_cti.sources.future_work.fuzzy_dedup import FUZZY_AVAILABLE
             preview = []
             for root, members in merge_groups:
                 keep = rows[root]
@@ -824,6 +825,17 @@ async def deduplicate_incidents_endpoint(
                 "groups_found": len(merge_groups),
                 "incidents_to_remove": sum(len(m) - 1 for _, m in merge_groups),
                 "preview": preview[:50],  # cap at 50 for response size
+                "_debug": {
+                    "rows_fetched": len(rows),
+                    "dated_count": len(dated_idx),
+                    "undated_count": len(undated_idx),
+                    "fuzzy_available": FUZZY_AVAILABLE,
+                    "sample_dates": [rows[i]["incident_date"] for i, _ in dated_idx[:5]],
+                    "sample_names": [
+                        rows[i]["university_name"] or rows[i]["victim_raw_name"]
+                        for i, _ in dated_idx[:5]
+                    ],
+                },
             }
 
         # Apply merges
