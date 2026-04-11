@@ -635,6 +635,12 @@ class ReEnrichRequest(BaseModel):
     before_date: str  # ISO date string, e.g. "2026-03-15"
 
 
+class DeduplicateRequest(BaseModel):
+    date_window_days: int = 14   # merge same victim if dates are within this many days
+    name_threshold: int = 85     # fuzzy name match threshold (0-100)
+    dry_run: bool = False        # if True, return what would be merged without changing DB
+
+
 @router.post("/re-enrich")
 async def re_enrich_incidents(
     request: ReEnrichRequest,
@@ -665,6 +671,205 @@ async def re_enrich_incidents(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Re-enrichment failed: {str(e)}")
+    finally:
+        conn.close()
+
+
+@router.post("/deduplicate")
+async def deduplicate_incidents_endpoint(
+    request: DeduplicateRequest,
+    _: bool = Depends(authenticate),
+):
+    """
+    Merge duplicate incidents that refer to the same victim within a date window.
+
+    Uses fuzzy name matching + temporal proximity (default 14 days) to find
+    incidents across sources that describe the same attack event.  The incident
+    with the most sources / richest data is kept; duplicates are removed and
+    their source attributions are transferred to the surviving incident.
+    """
+    from src.edu_cti.sources.future_work.fuzzy_dedup import are_likely_same_incident
+    from src.edu_cti.core.db import load_incident_by_id
+
+    conn = get_api_connection(read_only=False)
+    try:
+        cur = conn.execute(
+            """
+            SELECT incident_id,
+                   university_name, victim_raw_name, incident_date,
+                   llm_enriched, source_confidence,
+                   (SELECT COUNT(*) FROM source_events WHERE incident_id = i.incident_id) AS source_count
+            FROM incidents i
+            WHERE (university_name IS NOT NULL AND university_name != '')
+               OR (victim_raw_name  IS NOT NULL AND victim_raw_name  != '')
+            ORDER BY incident_date, university_name
+            """
+        )
+        rows = cur.fetchall()
+
+        # Group into merge clusters using a union-find approach
+        # row_idx -> canonical_idx
+        parent: dict[int, int] = {i: i for i in range(len(rows))}
+
+        def find(x):
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        def union(a, b):
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                # keep the one with higher source_count / enriched status as root
+                row_a, row_b = rows[ra], rows[rb]
+                score_a = (row_a["llm_enriched"] or 0) * 10 + (row_a["source_count"] or 0)
+                score_b = (row_b["llm_enriched"] or 0) * 10 + (row_b["source_count"] or 0)
+                if score_a >= score_b:
+                    parent[rb] = ra
+                else:
+                    parent[ra] = rb
+
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                ri, rj = rows[i], rows[j]
+                name_i = ri["university_name"] or ri["victim_raw_name"] or ""
+                name_j = rj["university_name"] or rj["victim_raw_name"] or ""
+                date_i = ri["incident_date"]
+                date_j = rj["incident_date"]
+                if are_likely_same_incident(
+                    name_i, name_j, date_i, date_j,
+                    name_threshold=request.name_threshold,
+                    date_window_days=request.date_window_days,
+                ):
+                    union(i, j)
+
+        # Collect groups with >1 member
+        from collections import defaultdict
+        groups: dict[int, list] = defaultdict(list)
+        for i in range(len(rows)):
+            groups[find(i)].append(i)
+
+        merge_groups = [(root, members) for root, members in groups.items() if len(members) > 1]
+
+        if request.dry_run:
+            preview = []
+            for root, members in merge_groups:
+                keep = rows[root]
+                dupes = [rows[m] for m in members if m != root]
+                preview.append({
+                    "keep": keep["incident_id"],
+                    "keep_name": keep["university_name"] or keep["victim_raw_name"],
+                    "keep_date": keep["incident_date"],
+                    "merge_count": len(dupes),
+                    "duplicates": [
+                        {"id": d["incident_id"], "date": d["incident_date"]}
+                        for d in dupes
+                    ],
+                })
+            return {
+                "success": True,
+                "dry_run": True,
+                "groups_found": len(merge_groups),
+                "incidents_to_remove": sum(len(m) - 1 for _, m in merge_groups),
+                "preview": preview[:50],  # cap at 50 for response size
+            }
+
+        # Apply merges
+        removed = 0
+        for root, members in merge_groups:
+            keep_id = rows[root]["incident_id"]
+            for m in members:
+                if m == root:
+                    continue
+                dup_id = rows[m]["incident_id"]
+
+                # Fetch full rows so we can fill missing fields on the keeper
+                keep_row = conn.execute(
+                    "SELECT all_urls, leak_site_url, screenshot_url, notes, attack_type_hint "
+                    "FROM incidents WHERE incident_id = ?", (keep_id,)
+                ).fetchone()
+                dup_row = conn.execute(
+                    "SELECT all_urls, leak_site_url, screenshot_url, notes, attack_type_hint "
+                    "FROM incidents WHERE incident_id = ?", (dup_id,)
+                ).fetchone()
+
+                if not dup_row:
+                    continue
+
+                # --- Merge all_urls: union of both sets ---
+                existing_urls = set((keep_row["all_urls"] or "").split(";")) if keep_row else set()
+                dup_urls = set((dup_row["all_urls"] or "").split(";"))
+                merged_urls = ";".join(u for u in (existing_urls | dup_urls) if u.strip())
+
+                # --- Fill missing CTI fields from duplicate onto keeper ---
+                # Only fill if keeper has no value (never overwrite populated fields)
+                fill_fields = {}
+                if not (keep_row["leak_site_url"] or "").strip() and (dup_row["leak_site_url"] or "").strip():
+                    fill_fields["leak_site_url"] = dup_row["leak_site_url"]
+                if not (keep_row["screenshot_url"] or "").strip() and (dup_row["screenshot_url"] or "").strip():
+                    fill_fields["screenshot_url"] = dup_row["screenshot_url"]
+                if not (keep_row["attack_type_hint"] or "").strip() and (dup_row["attack_type_hint"] or "").strip():
+                    fill_fields["attack_type_hint"] = dup_row["attack_type_hint"]
+
+                # Append duplicate's notes so no info is silently dropped
+                dup_notes = (dup_row["notes"] or "").strip()
+                keep_notes = (keep_row["notes"] or "").strip()
+                if dup_notes and dup_notes not in keep_notes:
+                    fill_fields["notes"] = (keep_notes + " | " + dup_notes).strip(" | ")
+
+                # Build UPDATE
+                set_clauses = ["all_urls = ?"]
+                params: list = [merged_urls or None]
+                for col, val in fill_fields.items():
+                    set_clauses.append(f"{col} = ?")
+                    params.append(val)
+                params.append(keep_id)
+                conn.execute(
+                    f"UPDATE incidents SET {', '.join(set_clauses)} WHERE incident_id = ?",
+                    params,
+                )
+
+                # --- Transfer source attributions (avoid duplicating existing sources) ---
+                dup_sources = conn.execute(
+                    "SELECT DISTINCT source FROM source_events WHERE incident_id = ?", (dup_id,)
+                ).fetchall()
+                for src_row in dup_sources:
+                    src = src_row["source"]
+                    exists = conn.execute(
+                        "SELECT 1 FROM source_events WHERE incident_id = ? AND source = ?",
+                        (keep_id, src)
+                    ).fetchone()
+                    if not exists:
+                        conn.execute(
+                            "UPDATE source_events SET incident_id = ? WHERE incident_id = ? AND source = ?",
+                            (keep_id, dup_id, src),
+                        )
+
+                # --- Delete the duplicate and all its dependents ---
+                conn.execute("DELETE FROM incidents WHERE incident_id = ?", (dup_id,))
+                conn.execute("DELETE FROM source_events WHERE incident_id = ?", (dup_id,))
+                conn.execute("DELETE FROM incident_enrichments WHERE incident_id = ?", (dup_id,))
+                conn.execute("DELETE FROM incident_enrichments_flat WHERE incident_id = ?", (dup_id,))
+                removed += 1
+                filled = list(fill_fields.keys())
+                logger.info(
+                    f"Dedup: merged {dup_id} → {keep_id}"
+                    + (f" (filled: {', '.join(filled)})" if filled else "")
+                )
+
+        conn.commit()
+        cache_invalidate()
+        return {
+            "success": True,
+            "dry_run": False,
+            "groups_merged": len(merge_groups),
+            "incidents_removed": removed,
+            "date_window_days": request.date_window_days,
+            "name_threshold": request.name_threshold,
+        }
+    except Exception as e:
+        conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Deduplication failed: {str(e)}")
     finally:
         conn.close()
 

@@ -52,6 +52,112 @@ _progress = {"step": "", "detail": "", "percent": 0}
 SKIP_ENRICHMENT_SOURCES = ENRICHMENT_SKIP_SOURCES
 
 
+def _create_secondary_incidents(
+    conn,
+    parent_incident: Dict,
+    secondary_list: List[Dict],
+    source_url: str,
+) -> None:
+    """
+    Create stub incidents for secondary victims found in a roundup article.
+
+    Each stub gets:
+    - The roundup article URL in all_urls so Phase 2 can SERP-discover a dedicated article
+    - llm_enriched=0 so it will be picked up for enrichment on the next run
+    - Source attribution copied from the parent incident
+
+    Name+date dedup in _ingest_batch will silently skip any that already exist.
+    """
+    from src.edu_cti.core.models import BaseIncident, make_incident_id
+    from src.edu_cti.core.db import insert_incident, add_incident_source, source_event_exists
+    from src.edu_cti.core.db import find_duplicate_by_name_and_date
+
+    parent_source = (parent_incident.get("source") or
+                     parent_incident.get("incident_id", "unknown").split("_")[0])
+
+    created = 0
+    # Names that indicate the LLM couldn't identify the institution.
+    # Creating a stub for these is pointless — SERP can't search for "Unknown"
+    # and the LLM prompt hint would be useless. Skip them entirely.
+    _INVALID_VICTIM_NAMES = {
+        "", "unknown", "unknown school", "unknown institution", "unknown university",
+        "unnamed", "unnamed school", "undisclosed", "undisclosed institution",
+        "n/a", "none", "redacted", "unidentified",
+    }
+
+    skipped = 0
+    for entry in secondary_list:
+        victim_name = (entry.get("victim_name") or "").strip()
+        if not victim_name or victim_name.lower() in _INVALID_VICTIM_NAMES:
+            logger.debug(f"Skipping secondary stub with unusable victim name: {victim_name!r}")
+            skipped += 1
+            continue
+
+        incident_date = entry.get("incident_date") or None
+        attack_type   = entry.get("attack_type") or None
+        country       = entry.get("country") or None
+        brief_desc    = entry.get("brief_description") or None
+
+        # Build notes: store the roundup reference + brief description for context.
+        # The roundup URL is intentionally NOT put in all_urls — if it were, the
+        # next enrichment run would re-fetch the same roundup article, the LLM
+        # would see all N victims again with no context about which one to focus on,
+        # and would arbitrarily pick a different "primary". Instead we leave
+        # all_urls=[] so fetch_articles_phase() triggers SERP to find a dedicated article.
+        stub_notes_parts = []
+        if source_url:
+            stub_notes_parts.append(f"Extracted from roundup: {source_url}")
+        if brief_desc:
+            stub_notes_parts.append(brief_desc)
+        stub_notes = "\n".join(stub_notes_parts) or None
+
+        # Dedup: skip if an incident for this victim+date already exists in DB
+        stub = BaseIncident(
+            incident_id="",  # temp — assigned below
+            source=parent_source,
+            university_name=victim_name,
+            victim_raw_name=victim_name,
+            incident_date=incident_date,
+            attack_type_hint=attack_type,
+            country=country,
+            notes=stub_notes,
+            all_urls=[],  # empty: SERP discovery will find a dedicated article
+        )
+        dup_id = find_duplicate_by_name_and_date(conn, stub)
+        if dup_id:
+            logger.debug(f"Secondary incident already exists for '{victim_name}' → {dup_id}")
+            skipped += 1
+            continue
+
+        # Build stable ID and event key
+        dedup_key = f"{victim_name.lower()}|{incident_date or ''}|roundup_extract"
+        incident_id = make_incident_id(parent_source, dedup_key)
+
+        if source_event_exists(conn, parent_source, dedup_key):
+            skipped += 1
+            continue
+
+        stub.incident_id = incident_id
+        stub.source_event_id = dedup_key
+
+        try:
+            insert_incident(conn, stub)
+            add_incident_source(conn, incident_id, parent_source, dedup_key)
+            conn.commit()
+            created += 1
+            logger.info(
+                f"Created secondary incident {incident_id} for '{victim_name}' "
+                f"(extracted from roundup article)"
+            )
+        except Exception as e:
+            logger.warning(f"Failed to create secondary incident for '{victim_name}': {e}")
+
+    if created or skipped:
+        logger.info(
+            f"Secondary incidents from roundup: {created} created, {skipped} already exist"
+        )
+
+
 def dict_to_incident(incident_dict: Dict, conn) -> BaseIncident:
     """Convert incident dict to BaseIncident."""
     from src.edu_cti.core.db import get_incident_sources
@@ -190,6 +296,24 @@ def fetch_articles_phase(
 
             incident_id = incident["incident_id"]
 
+            # Skip URL-less incidents with no identifiable institution name.
+            # These can never be enriched: SERP can't build a query and the LLM
+            # prompt hint would be empty. Mark them skipped to stop retry loops.
+            _UNENRICHABLE_NAMES = {
+                "unknown", "unknown school", "unknown institution", "unknown university",
+                "unnamed", "unnamed school", "undisclosed", "n/a", "none",
+                "redacted", "unidentified",
+            }
+            incident_name = (incident.get("university_name") or incident.get("victim_raw_name") or "").strip()
+            incident_urls = incident.get("all_urls") or []
+            if not incident_urls and incident_name.lower() in _UNENRICHABLE_NAMES:
+                logger.info(f"Skipping unenrichable stub {incident_id} (name={incident_name!r}, no URLs) — marking skipped")
+                from src.edu_cti.pipeline.phase2.storage.db import mark_incident_skipped
+                mark_incident_skipped(conn, incident_id, reason=f"No URLs and unidentifiable institution name: {incident_name!r}")
+                conn.commit()
+                stats["processed"] += 1
+                continue
+
             # Skip IOC-only sources at fetch time — no point fetching abuse.ch/censys URLs
             source_prefix = incident_id.split("_")[0]
             if source_prefix in SKIP_ENRICHMENT_SOURCES:
@@ -286,16 +410,55 @@ def fetch_articles_phase(
                     should_push_to_queue = True
                 else:
                     # No articles fetched and nothing in DB.
-                    # Don't push to enrichment queue — it will just fail with
-                    # "No articles found in DB". The incident stays unenriched
-                    # and SERP will try again on the next pipeline run.
-                    source = incident_id.split("_")[0]
-                    logger.info(
-                        f"No articles for {incident_id} (source={source}) — "
-                        f"skipping enrichment queue, will retry next run"
-                    )
-                    stats["errors"] += 1
-                    should_push_to_queue = False
+                    # For URL-less incidents (e.g. secondary stubs from roundup articles),
+                    # try SERP to find a dedicated article before giving up.
+                    incident_urls = incident.get("all_urls") or []
+                    serp_found = False
+                    if not incident_urls:
+                        from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
+                        from src.edu_cti.pipeline.phase2.storage.article_storage import save_article
+                        serp_urls = discover_articles_via_serp(incident)
+
+                        # Filter out the roundup URL that spawned this stub so SERP
+                        # doesn't loop back to the same multi-school article.
+                        # The roundup URL is stored in notes as "Extracted from roundup: <url>"
+                        notes_text = incident.get("notes") or ""
+                        roundup_url = None
+                        if notes_text.startswith("Extracted from roundup: "):
+                            roundup_url = notes_text.split("Extracted from roundup: ", 1)[1].split("\n")[0].strip()
+                        if roundup_url:
+                            before = len(serp_urls)
+                            serp_urls = [u for u in serp_urls if u.rstrip("/") != roundup_url.rstrip("/")]
+                            if len(serp_urls) < before:
+                                logger.debug(f"Filtered roundup URL from SERP results for {incident_id}")
+
+                        for serp_url in serp_urls:
+                            s_domain = fetching_strategy.rate_limiter.extract_domain(serp_url)
+                            if not s_domain or not fetching_strategy.rate_limiter.can_fetch_from_domain(s_domain):
+                                continue
+                            fetching_strategy.rate_limiter.wait_if_needed(s_domain)
+                            try:
+                                ac = fetching_strategy.article_fetcher.fetch_article(serp_url)
+                                fetching_strategy.rate_limiter.record_fetch(s_domain, success=ac.fetch_successful)
+                                if ac.fetch_successful:
+                                    save_article(conn, incident_id=incident_id, url=serp_url, article=ac)
+                                    conn.commit()
+                                    serp_found = True
+                                    stats["articles_fetched"] += 1
+                                    logger.info(f"SERP found article for {incident_id}: {serp_url[:80]}")
+                                    should_push_to_queue = True
+                                    break
+                            except Exception as _se:
+                                logger.debug(f"SERP fetch error {serp_url}: {_se}")
+
+                    if not serp_found:
+                        source = incident_id.split("_")[0]
+                        logger.info(
+                            f"No articles for {incident_id} (source={source}) — "
+                            f"skipping enrichment queue, will retry next run"
+                        )
+                        stats["errors"] += 1
+                        should_push_to_queue = False
 
                 # Push incident to queue for enrichment (with or without articles)
                 if should_push_to_queue:
@@ -351,14 +514,12 @@ def enrich_articles_phase(
     rate_limit_delay: float = 1.0,
     total_expected: int = 0,
     cancel_event: Optional[threading.Event] = None,
+    db_already_enriched: int = 0,
+    db_total_incidents: int = 0,
 ) -> Dict[str, int]:
     """
     Phase 2: Sequential LLM enrichment (queue-based consumer).
-    
-    Consumes incidents from queue and processes them ONE AT A TIME, waiting for
-    each LLM response before processing the next. This prevents rate limiting and
-    ensures proper sequencing.
-    
+
     Args:
         conn: Database connection
         enricher: IncidentEnricher instance
@@ -366,8 +527,10 @@ def enrich_articles_phase(
         fetch_complete_event: Event to signal when fetching is complete
         skip_if_not_education: Whether to skip non-education incidents
         rate_limit_delay: Delay between LLM calls
-        total_expected: Total number of incidents expected (for progress tracking)
-    
+        total_expected: Incidents to process in this run (for per-run progress)
+        db_already_enriched: Incidents already enriched in DB at run start (for cumulative display)
+        db_total_incidents: Total incidents in DB at run start (for cumulative display)
+
     Returns:
         Statistics dict with counts
     """
@@ -411,7 +574,7 @@ def enrich_articles_phase(
 
             # Check for sentinel (None) — producer pushes one per worker after fetching
             if incident_dict is SENTINEL:
-                logger.info(f"Received sentinel — stopping consumer (processed {items_processed} items)")
+                logger.debug(f"Received sentinel — stopping consumer (processed {items_processed} items)")
                 incident_queue.task_done()
                 break
             
@@ -433,12 +596,23 @@ def enrich_articles_phase(
                 raw_pct = (stats["processed"] / total_expected) * 100
                 # Map 0-100% enrichment progress into 30-100% overall range
                 scaled_pct = 30 + int(raw_pct * 0.70)
+                # Cumulative DB progress: already enriched before this run + enriched so far in this run
+                db_enriched_now = db_already_enriched + stats.get("enriched", 0)
+                db_total_str = f"/{db_total_incidents}" if db_total_incidents else ""
                 # Update module-level progress for pipeline manager
                 _progress["step"] = "LLM Enrichment"
-                _progress["detail"] = f"{stats['processed']}/{total_expected} ({stats.get('enriched', 0)} enriched, {stats.get('skipped', 0)} skipped)"
+                _progress["detail"] = (
+                    f"{stats['processed']}/{total_expected} this run | "
+                    f"{db_enriched_now}{db_total_str} enriched in DB"
+                )
                 _progress["percent"] = min(scaled_pct, 100)
                 if stats["processed"] % 10 == 0 or raw_pct % 10 < 1:  # Every 10 or every 10%
-                    logger.info(f"Enriching [{stats['processed']}/{total_expected}] ({raw_pct:.1f}%) — {stats.get('enriched', 0)} enriched, {stats.get('skipped', 0)} skipped, {stats.get('errors', 0)} errors")
+                    logger.info(
+                        f"Enriching [{stats['processed']}/{total_expected} this run"
+                        f" | {db_enriched_now}{db_total_str} enriched in DB]"
+                        f" ({raw_pct:.1f}%) — "
+                        f"{stats.get('enriched', 0)} enriched, {stats.get('skipped', 0)} skipped, {stats.get('errors', 0)} errors"
+                    )
             else:
                 if stats["processed"] % 10 == 0:
                     logger.info(f"Enriching [{stats['processed']}]")
@@ -541,10 +715,26 @@ def enrich_articles_phase(
                         # This allows API reads to proceed while enrichment is running
                         conn.commit()
                         stats["enriched"] += 1
-                        logger.info(f"Enriched {incident_id}")
+                        primary = enrichment_result.primary_url or ""
+                        logger.info(
+                            f"✓ ENRICHED  {incident_id} | {primary[:80]}"
+                        )
+
+                        # --- Secondary incidents from roundup articles ---
+                        # If the LLM detected other edu victims in the same article
+                        # (e.g. "week in breach" digest), create stub incidents for each.
+                        # They have no article URLs yet — Phase 2 SERP discovery will
+                        # find dedicated articles for them on the next pipeline run.
+                        if enrichment_result.other_edu_incidents:
+                            _create_secondary_incidents(
+                                conn,
+                                parent_incident=incident,
+                                secondary_list=enrichment_result.other_edu_incidents,
+                                source_url=incident.get("primary_url") or (incident.get("all_urls") or [""])[0],
+                            )
                     else:
                         stats["skipped"] += 1
-                        logger.warning(f"Skipped {incident_id} - lower confidence")
+                        logger.warning(f"~ SKIPPED   {incident_id} | save rejected (lower confidence)")
                 else:
                     # Check what kind of failure we have
                     if raw_json_data and isinstance(raw_json_data, dict):
@@ -554,27 +744,24 @@ def enrich_articles_phase(
                             reason = raw_json_data.get("_reason", "Not education-related")
                             if delete_incident(conn, incident_id):
                                 stats["skipped"] += 1
-                                logger.info(f"Deleted non-education incident {incident_id}: {reason[:80]}")
+                                logger.info(f"⊘ DELETED   {incident_id} | not edu: {reason[:80]}")
                             else:
                                 stats["errors"] += 1
-                                logger.warning(f"Failed to delete non-education incident {incident_id}")
+                                logger.warning(f"✗ DEL-FAIL  {incident_id} | could not delete non-edu incident")
                         elif raw_json_data.get("_enrichment_failed"):
                             # Enrichment failed (JSON parsing, etc.) - DON'T mark as skipped, will retry
                             reason = raw_json_data.get("_reason", "Enrichment failed")
                             stats["errors"] += 1
-                            logger.warning(f"Enrichment failed for {incident_id}: {reason[:100]}")
+                            logger.warning(f"✗ RETRY     {incident_id} | LLM failed: {reason[:80]}")
                         else:
-                            # Unknown error in raw_json_data - don't mark as skipped
                             stats["errors"] += 1
-                            logger.warning(f"Unknown enrichment result for {incident_id}")
+                            logger.warning(f"✗ RETRY     {incident_id} | unknown LLM result")
                     else:
-                        # No enrichment result and no error info — do NOT mark as
-                        # enriched.  This typically means the article could not be
-                        # fetched or content was too short.  Leaving llm_enriched=0
-                        # allows the incident to be retried on the next run (e.g.
-                        # after Zyte API is configured or the site becomes reachable).
+                        # No enrichment result and no error info — typically means no
+                        # fetchable article content.  Leaving llm_enriched=0 so the
+                        # incident is retried on the next run.
                         stats["errors"] += 1
-                        logger.warning(f"No enrichment result for {incident_id} — will retry on next run")
+                        logger.warning(f"✗ RETRY     {incident_id} | no article content (will retry)")
                 
                 # Rate limiting between LLM calls
                 if rate_limit_delay > 0:
@@ -595,8 +782,6 @@ def enrich_articles_phase(
         except Exception as e:
             logger.error(f"✗ Error in consumer loop: {e}", exc_info=True)
             stats["errors"] += 1
-    
-    logger.info(f"Enrichment complete: {stats['processed']} processed, {stats['enriched']} enriched, {stats['skipped']} skipped, {stats['errors']} errors")
     
     return stats
 
@@ -714,10 +899,14 @@ def main() -> None:
         return
     
     # PHASE 1 & 2: Concurrent producer-consumer pattern
-    logger.info(f"\n{'='*60}")
-    logger.info(f"Starting Phase 2 Pipeline with {len(unenriched)} incidents")
-    logger.info(f"Using concurrent producer-consumer pattern (fetching + enrichment)")
-    logger.info(f"{'='*60}\n")
+    already_e = stats.get("enriched_incidents", 0)
+    total_db  = stats.get("total_incidents", 0)
+    logger.info(f"{'='*60}")
+    logger.info(
+        f"Phase 2 run starting | DB: {already_e}/{total_db} enriched | "
+        f"{len(unenriched)} remaining in this batch"
+    )
+    logger.info(f"{'='*60}")
     
     # Initialize LLM enricher (needed for consumer thread)
     try:
@@ -742,6 +931,12 @@ def main() -> None:
     total_to_process = len(unenriched)
     num_workers = max(1, min(args.workers, 8))  # Cap at 8 workers
 
+    # Snapshot DB enrichment state at run start for cumulative progress display.
+    # This lets each progress line show "[N/M this run | X/Y enriched in DB]"
+    # so it's clear how far along the overall dataset we are, not just this cycle.
+    db_already_enriched = stats.get("enriched_incidents", 0)
+    db_total_incidents = stats.get("total_incidents", 0)
+
     # Aggregated stats across all consumer threads (thread-safe)
     stats_lock = threading.Lock()
     combined_enrich_stats = {"processed": 0, "enriched": 0, "skipped": 0, "errors": 0}
@@ -762,7 +957,7 @@ def main() -> None:
             else:
                 worker_enricher = enricher
 
-            logger.info(f"Consumer worker-{worker_id} started")
+            logger.info(f"Worker-{worker_id} started")
             worker_stats = enrich_articles_phase(
                 conn=thread_conn,
                 enricher=worker_enricher,
@@ -772,8 +967,15 @@ def main() -> None:
                 rate_limit_delay=args.rate_limit_delay,
                 total_expected=total_to_process,
                 cancel_event=_cancel_event,
+                db_already_enriched=db_already_enriched,
+                db_total_incidents=db_total_incidents,
             )
-            logger.info(f"Consumer worker-{worker_id} completed: {worker_stats}")
+            s = worker_stats
+            logger.info(
+                f"Worker-{worker_id} done — "
+                f"processed={s['processed']} enriched={s['enriched']} "
+                f"skipped={s['skipped']} errors={s['errors']}"
+            )
 
             # Merge stats thread-safely
             with stats_lock:

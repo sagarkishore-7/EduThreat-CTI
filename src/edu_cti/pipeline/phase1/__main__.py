@@ -20,6 +20,7 @@ from src.edu_cti.core.db import (
     insert_incident,
     add_incident_source,
     find_duplicate_incident_by_urls,
+    find_duplicate_by_name_and_date,
     load_incident_by_id,
 )
 from src.edu_cti.core.models import BaseIncident
@@ -204,9 +205,30 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
                 else:
                     incident_id = insert_incident(conn, inc)
         else:
-            # Step 4: New incident - insert
-            incident_id = insert_incident(conn, inc)
-            new_count += 1
+            # Step 2.5: Name + date dedup — catches same victim from different sources
+            # that share no URLs (e.g. Comparitech vs ransomware.live for same school).
+            # Rule: fuzzy name match (>=85 token_sort_ratio) AND dates within 14 days.
+            # If dates are both absent, only merge on exact normalized name.
+            name_dup_id = find_duplicate_by_name_and_date(conn, inc)
+            if name_dup_id:
+                existing_incident = load_incident_by_id(conn, name_dup_id)
+                if existing_incident:
+                    merged = merge_incidents([existing_incident, inc])
+                    merged.incident_id = name_dup_id
+                    insert_incident(conn, merged, preserve_enrichment=True)
+                    incident_id = name_dup_id
+                    logger.info(
+                        f"Name+date dedup: merged {inc.incident_id} ({inc.source}) "
+                        f"→ {name_dup_id} (same victim within 14 days)"
+                    )
+                else:
+                    # Step 4: New incident - insert
+                    incident_id = insert_incident(conn, inc)
+                    new_count += 1
+            else:
+                # Step 4: New incident - insert
+                incident_id = insert_incident(conn, inc)
+                new_count += 1
 
         # Step 4.5: Set country_code if we normalized it
         if _country_code:

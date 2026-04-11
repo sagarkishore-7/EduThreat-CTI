@@ -111,12 +111,18 @@ class IngestionScheduler:
             logger.info(f"RSS ingestion complete: {new_count} new, {count_after} total")
             logger.info(f"RSS ingestion complete: {new_count} new, {count_after} total, {duration:.2f}s")
             
-            # Run enrichment if enabled
-            if self.enable_enrichment and new_count > 0:
-                logger.info(f"Triggering enrichment for {new_count} new incidents")
-                self._run_enrichment()
-            else:
-                logger.debug(f"Skipping enrichment (enabled={self.enable_enrichment}, new={new_count})")
+            # Run enrichment if enabled.
+            # Always check total unenriched — not just new_count — because Phase 2 itself
+            # creates secondary-incident stubs (from roundup articles) that need enriching
+            # even when Phase 1 added nothing new this cycle.
+            if self.enable_enrichment:
+                from src.edu_cti.core.db import get_connection as _gc
+                _c = _gc(); _unenriched = _c.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched=0").fetchone()[0]; _c.close()
+                if _unenriched > 0:
+                    logger.info(f"Triggering enrichment ({new_count} new from Phase 1, {_unenriched} total unenriched)")
+                    self._run_enrichment()
+                else:
+                    logger.debug("Skipping enrichment — no unenriched incidents")
                 
         except Exception as e:
             stop_timer("rss_ingestion")

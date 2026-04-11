@@ -41,6 +41,7 @@ class JSONFormatter(logging.Formatter):
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "level": record.levelname,
             "logger": record.name,
+            "thread": record.threadName,
             "message": record.getMessage(),
             "module": record.module,
             "function": record.funcName,
@@ -78,8 +79,9 @@ def configure_logging(
     log_level = getattr(logging, level.upper(), logging.INFO)
 
     # Console formatter (human-readable)
+    # threadName distinguishes enricher-0..N workers; asctime lets you correlate events
     console_formatter = TruncatingFormatter(
-        "%(levelname)s [%(name)s] %(message)s",
+        "%(asctime)s %(levelname)-8s [%(name)s/%(threadName)s] %(message)s",
         datefmt="%H:%M:%S",
     )
 

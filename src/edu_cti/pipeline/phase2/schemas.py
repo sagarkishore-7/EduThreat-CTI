@@ -386,6 +386,15 @@ class CTIEnrichmentResult(BaseModel):
         description="Comprehensive summary of the incident with all extracted details"
     )
     
+    # Secondary incidents from roundup/digest articles
+    other_edu_incidents: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description=(
+            "Other education sector incidents mentioned in a roundup article. "
+            "Each dict has: victim_name (required), incident_date, attack_type, country, brief_description."
+        )
+    )
+
     # Additional metadata
     extraction_notes: Optional[str] = Field(
         default=None,

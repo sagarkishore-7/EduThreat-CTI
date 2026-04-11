@@ -998,6 +998,42 @@ EXTRACTION_SCHEMA = {
             "minimum": 0,
             "maximum": 1.0,
             "description": "Confidence in the accuracy of extracted information"
+        },
+        "other_edu_incidents": {
+            "type": "array",
+            "description": (
+                "OTHER education sector cyber incidents briefly mentioned in this article "
+                "that are NOT the primary incident being extracted. "
+                "Only populate when this is a roundup/digest/weekly-breach article "
+                "covering multiple separate victims. "
+                "Each entry becomes a separate incident record in the database."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "victim_name": {
+                        "type": "string",
+                        "description": "Full name of the educational institution"
+                    },
+                    "incident_date": {
+                        "type": "string",
+                        "description": "ISO date YYYY-MM-DD or null if not stated"
+                    },
+                    "attack_type": {
+                        "type": "string",
+                        "description": "e.g. ransomware, data_breach, phishing"
+                    },
+                    "country": {
+                        "type": "string",
+                        "description": "Country of the institution"
+                    },
+                    "brief_description": {
+                        "type": "string",
+                        "description": "1-2 sentence summary of what happened"
+                    }
+                },
+                "required": ["victim_name"]
+            }
         }
     },
     "required": [

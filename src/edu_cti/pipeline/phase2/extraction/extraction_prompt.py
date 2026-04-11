@@ -185,6 +185,16 @@ CRITICAL OUTPUT REQUIREMENTS:
     - attack_campaign_name: If part of a known campaign (e.g., "MOVEit", "PaperCut")
     - sector_targeting_pattern: "targeted_education_only" or "opportunistic_multi_sector"
 
+17. ROUNDUP / MULTI-INCIDENT ARTICLES:
+    If this article is a digest, weekly roundup, or breach summary that covers MULTIPLE
+    separate education sector incidents (e.g. "Week in Breach", "ransomware attacks in 2023"):
+    - Extract the PRIMARY/most-detailed incident in all fields above as normal
+    - List every OTHER education institution mentioned as a victim in `other_edu_incidents`
+    - Each entry needs at minimum: victim_name (required), plus whatever date/attack_type/country
+      is mentioned for them
+    - Do NOT duplicate the primary victim in `other_edu_incidents`
+    - If the article is about a SINGLE incident, leave `other_edu_incidents` as null
+
 JSON SCHEMA:
 
 {schema_json}
@@ -192,7 +202,7 @@ JSON SCHEMA:
 ARTICLE INFORMATION:
 
 - URL: {url}
-- Title: {title}
+- Title: {title}{target_institution_line}
 
 ARTICLE CONTENT:
 

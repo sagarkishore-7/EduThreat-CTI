@@ -584,6 +584,70 @@ def find_duplicate_incident_by_urls(
     return None
 
 
+def find_duplicate_by_name_and_date(
+    conn: sqlite3.Connection,
+    incident: "BaseIncident",
+    date_window_days: int = 14,
+    name_threshold: int = 85,
+) -> Optional[str]:
+    """
+    Find an existing incident that matches by victim name + date window.
+
+    Used as a fallback when URL-based dedup finds no match (e.g. Comparitech
+    incidents have no URLs, ransomware.live incidents link to different articles
+    than kompriefing/konbriefing for the same event).
+
+    Rules:
+    - Names must score >= name_threshold (fuzzy token_sort_ratio after normalization)
+    - If both incidents have dates, they must be within date_window_days of each other
+    - If one or both dates are missing, only merge if names are an exact (normalized) match
+
+    Returns the existing incident_id if a duplicate is found, else None.
+    """
+    from src.edu_cti.sources.future_work.fuzzy_dedup import are_likely_same_incident
+
+    candidate_name = incident.university_name or incident.victim_raw_name or ""
+    candidate_date = incident.incident_date
+    if not candidate_name:
+        return None
+
+    # Only scan the same rough year to avoid cross-year false positives
+    # (a school attacked in 2019 and again in 2023 are different incidents)
+    year_filter = ""
+    year_params: list = []
+    if candidate_date and len(candidate_date) >= 4:
+        try:
+            yr = int(candidate_date[:4])
+            year_filter = "AND (incident_date IS NULL OR incident_date LIKE ? OR incident_date LIKE ? OR incident_date LIKE ?)"
+            year_params = [f"{yr}%", f"{yr-1}%", f"{yr+1}%"]
+        except ValueError:
+            pass
+
+    query = f"""
+        SELECT incident_id, university_name, victim_raw_name, incident_date
+        FROM incidents
+        WHERE (university_name IS NOT NULL AND university_name != '')
+          OR  (victim_raw_name  IS NOT NULL AND victim_raw_name  != '')
+        {year_filter}
+    """
+    rows = conn.execute(query, year_params).fetchall()
+
+    for row in rows:
+        existing_name = row["university_name"] or row["victim_raw_name"] or ""
+        existing_date = row["incident_date"]
+        if not existing_name:
+            continue
+        if are_likely_same_incident(
+            candidate_name, existing_name,
+            candidate_date, existing_date,
+            name_threshold=name_threshold,
+            date_window_days=date_window_days,
+        ):
+            return row["incident_id"]
+
+    return None
+
+
 def mark_urls_as_broken(conn: sqlite3.Connection, incident_id: str, broken_urls: List[str]) -> None:
     """
     Mark URLs as broken for an incident.

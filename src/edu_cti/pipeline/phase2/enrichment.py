@@ -171,9 +171,9 @@ class IncidentEnricher:
             
             # Check education relevance - directly from LLM analysis
             if skip_if_not_education and not enrichment_result.education_relevance.is_education_related:
-                logger.info(
-                    f"Skipping incident {incident.incident_id} - not education-related. "
-                    f"Reasoning: {enrichment_result.education_relevance.reasoning}"
+                logger.debug(
+                    f"{incident.incident_id} not edu-related: "
+                    f"{enrichment_result.education_relevance.reasoning}"
                 )
                 # Return marker indicating explicitly not education-related
                 return None, {"_not_education_related": True, "_reason": enrichment_result.education_relevance.reasoning}
@@ -201,9 +201,9 @@ class IncidentEnricher:
             if deleted_count > 0:
                 logger.info(f"Cleaned up {deleted_count} non-primary articles for {incident.incident_id}")
         
-        logger.info(
-            f"Enrichment complete for {incident.incident_id} "
-            f"(education: {enrichment_result.education_relevance.is_education_related})"
+        logger.debug(
+            f"{incident.incident_id}: enrichment done "
+            f"(edu={enrichment_result.education_relevance.is_education_related})"
         )
         
         return enrichment_result, raw_json_data
@@ -215,9 +215,8 @@ class IncidentEnricher:
         skip_if_not_education: bool,
     ) -> Tuple[Optional[CTIEnrichmentResult], Optional[Dict[str, Any]]]:
         """Process multiple articles and select the best one based on field coverage."""
-        logger.info(
-            f"Multiple articles ({len(article_contents)}) for incident {incident.incident_id}. "
-            f"Enriching all and selecting best."
+        logger.debug(
+            f"{incident.incident_id}: {len(article_contents)} articles — enriching all, selecting best"
         )
         
         article_scores: List[Tuple[str, CTIEnrichmentResult, int, Optional[Dict[str, Any]]]] = []
@@ -225,7 +224,7 @@ class IncidentEnricher:
         all_not_education = True  # Track if all articles are not education-related
         
         for idx, (url, article_content) in enumerate(article_contents.items(), 1):
-            logger.info(f"[{idx}/{len(article_contents)}] Enriching: {url}")
+            logger.debug(f"[{idx}/{len(article_contents)}] enriching {url[:80]}")
             try:
                 single_article = {url: article_content}
                 enrichment_result, raw_json_data = self._enrich_article(incident, single_article)
@@ -240,7 +239,7 @@ class IncidentEnricher:
                     
                     score = count_filled_fields(enrichment_result)
                     article_scores.append((url, enrichment_result, score, raw_json_data))
-                    logger.info(f"✓ {url} - {score} fields filled")
+                    logger.debug(f"  scored {score} fields: {url[:80]}")
                 elif raw_json_data and isinstance(raw_json_data, dict):
                     # Check what kind of failure
                     if raw_json_data.get("_not_education_related"):
@@ -258,17 +257,18 @@ class IncidentEnricher:
         if not article_scores:
             if all_not_education:
                 # All articles were explicitly not education-related
-                logger.info(f"All articles for {incident.incident_id} are not education-related")
+                logger.debug(f"All articles for {incident.incident_id} are not education-related")
                 return None, {"_not_education_related": True, "_reason": "All articles not education-related"}
             else:
-                # Some or all articles failed to enrich (not due to education-relevance)
-                logger.warning(f"No articles enriched for {incident.incident_id}")
+                # Some or all articles failed to enrich (not due to education-relevance).
+                # Caller (__main__.py) will log the actionable "will retry" warning.
+                logger.debug(f"No articles scored for {incident.incident_id} (all failed or irrelevant)")
                 return None, {"_enrichment_failed": True, "_reason": "All articles failed to enrich"}
         
         # Select best article
         best_url, best_result, best_score, best_raw_json = max(article_scores, key=lambda x: x[2])
         
-        logger.info(f"Selected PRIMARY: {best_url} ({best_score} fields)")
+        logger.debug(f"Primary: {best_url[:80]} ({best_score} fields)")
         best_result.primary_url = best_url
         
         return best_result, best_raw_json
@@ -326,11 +326,30 @@ class IncidentEnricher:
             "Output ONLY valid JSON matching the provided schema. "
             "No prose, no explanations, no markdown - pure JSON only."
         )
-        
+
+        # Only inject a TARGET INSTITUTION hint when the incident is a secondary stub
+        # extracted from a roundup article — i.e. its notes start with
+        # "Extracted from roundup:". For normal single-article incidents the LLM
+        # infers the primary institution from the article itself, and anchoring it
+        # to a potentially-wrong DB name would reduce accuracy.
+        notes_text = (incident.notes or "").strip()
+        is_roundup_stub = notes_text.startswith("Extracted from roundup:")
+        known_name = (incident.university_name or "").strip()
+        _UNKNOWN_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
+        if is_roundup_stub and known_name and known_name.lower() not in _UNKNOWN_NAMES:
+            target_institution_line = (
+                f"\n- TARGET INSTITUTION: {known_name}"
+                f"\n  (This article may cover multiple institutions. Extract THIS institution's"
+                f" incident as the primary. List all others in other_edu_incidents.)"
+            )
+        else:
+            target_institution_line = ""
+
         user_prompt = PROMPT_TEMPLATE.format(
             schema_json=json.dumps(EXTRACTION_SCHEMA, ensure_ascii=False, indent=2),
             url=primary_url,
             title=title,
+            target_institution_line=target_institution_line,
             text=combined_text
         )
         
