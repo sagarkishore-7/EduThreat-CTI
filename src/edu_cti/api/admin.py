@@ -688,8 +688,55 @@ async def deduplicate_incidents_endpoint(
     with the most sources / richest data is kept; duplicates are removed and
     their source attributions are transferred to the surviving incident.
     """
-    from src.edu_cti.sources.future_work.fuzzy_dedup import are_likely_same_incident
+    import re as _re
+    from datetime import datetime as _dt, timedelta as _td
+    from collections import defaultdict
     from src.edu_cti.core.db import load_incident_by_id
+
+    # Inline name comparison — does NOT depend on thefuzz/fuzzy_dedup.py so it
+    # works even if thefuzz is not installed on the server.
+    _STRIP_PATS = [
+        _re.compile(r'\s*\(.*?\)\s*', _re.I),
+        _re.compile(r'\s*-\s*.*$', _re.I),
+        _re.compile(r'^\s*the\s+', _re.I),
+        _re.compile(r'\s+(university|college|school|institute|inc\.?|llc\.?|corp\.?)$', _re.I),
+    ]
+
+    def _norm(name: str) -> str:
+        n = (name or "").strip()
+        for pat in _STRIP_PATS:
+            n = pat.sub('', n)
+        return n.strip().lower()
+
+    try:
+        from thefuzz import fuzz as _fuzz
+        _HAS_FUZZ = True
+    except Exception:
+        _HAS_FUZZ = False
+
+    def _names_match(a: str, b: str, threshold: int) -> bool:
+        na, nb = _norm(a), _norm(b)
+        if not na or not nb:
+            return False
+        if na == nb:
+            return True
+        if _HAS_FUZZ:
+            return _fuzz.token_sort_ratio(na, nb) >= threshold
+        # Fallback: simple prefix / substring check (catches e.g. "Alamo Heights ISD"
+        # vs "Alamo Heights Independent School District" after stripping).
+        return na.startswith(nb[:15]) or nb.startswith(na[:15])
+
+    def _parse_date(d):
+        """Parse incident_date string to datetime. Handles YYYY-MM-DD / YYYY-MM / YYYY."""
+        if not d:
+            return None
+        s = str(d)
+        for fmt, length in (("%Y-%m-%d", 10), ("%Y-%m", 7), ("%Y", 4)):
+            try:
+                return _dt.strptime(s[:length], fmt)
+            except ValueError:
+                continue
+        return None
 
     conn = get_api_connection(read_only=False)
     try:
@@ -738,19 +785,6 @@ async def deduplicate_incidents_endpoint(
         #    average window contains ~15 incidents → ~15k comparisons (100× faster).
         # 3. For undated: compare within the bucket only (no date constraint, so
         #    fuzzy name match alone determines duplicates).
-        from datetime import datetime as _dt, timedelta as _td
-
-        def _parse_date(d):
-            """Parse incident_date string to datetime. Returns None if unparseable.
-            Handles YYYY-MM-DD, YYYY-MM (month precision), and YYYY (year only)."""
-            if not d:
-                return None
-            for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
-                try:
-                    return _dt.strptime(d, fmt)
-                except ValueError:
-                    continue
-            return None  # unrecognised format — treat as undated
 
         # Split based on whether the date actually parsed successfully.
         # A non-empty date string that fails all formats (e.g. ISO timestamps,
@@ -775,12 +809,7 @@ async def deduplicate_incidents_endpoint(
                 if date_j - date_i > window_td:
                     break  # list is sorted → no later entries can match
                 name_j = rows[j]["university_name"] or rows[j]["victim_raw_name"] or ""
-                if are_likely_same_incident(
-                    name_i, name_j,
-                    rows[i]["incident_date"], rows[j]["incident_date"],
-                    name_threshold=request.name_threshold,
-                    date_window_days=request.date_window_days,
-                ):
+                if _names_match(name_i, name_j, request.name_threshold):
                     union(i, j)
 
         # Compare undated incidents with each other (name match only)
@@ -788,15 +817,10 @@ async def deduplicate_incidents_endpoint(
             name_i = rows[i]["university_name"] or rows[i]["victim_raw_name"] or ""
             for j in undated_idx[pos + 1:]:
                 name_j = rows[j]["university_name"] or rows[j]["victim_raw_name"] or ""
-                if are_likely_same_incident(
-                    name_i, name_j, None, None,
-                    name_threshold=request.name_threshold,
-                    date_window_days=request.date_window_days,
-                ):
+                if _names_match(name_i, name_j, request.name_threshold):
                     union(i, j)
 
         # Collect groups with >1 member
-        from collections import defaultdict
         groups: dict[int, list] = defaultdict(list)
         for i in range(len(rows)):
             groups[find(i)].append(i)
@@ -804,7 +828,6 @@ async def deduplicate_incidents_endpoint(
         merge_groups = [(root, members) for root, members in groups.items() if len(members) > 1]
 
         if request.dry_run:
-            from src.edu_cti.sources.future_work.fuzzy_dedup import FUZZY_AVAILABLE
             preview = []
             for root, members in merge_groups:
                 keep = rows[root]
@@ -825,17 +848,6 @@ async def deduplicate_incidents_endpoint(
                 "groups_found": len(merge_groups),
                 "incidents_to_remove": sum(len(m) - 1 for _, m in merge_groups),
                 "preview": preview[:50],  # cap at 50 for response size
-                "_debug": {
-                    "rows_fetched": len(rows),
-                    "dated_count": len(dated_idx),
-                    "undated_count": len(undated_idx),
-                    "fuzzy_available": FUZZY_AVAILABLE,
-                    "sample_dates": [rows[i]["incident_date"] for i, _ in dated_idx[:5]],
-                    "sample_names": [
-                        rows[i]["university_name"] or rows[i]["victim_raw_name"]
-                        for i, _ in dated_idx[:5]
-                    ],
-                },
             }
 
         # Apply merges
