@@ -726,8 +726,10 @@ def enrich_articles_phase(
                             resolved_name = enrichment_result.education_relevance.institution_identified.strip()
                         elif raw_json_data and raw_json_data.get("institution_name"):
                             resolved_name = str(raw_json_data["institution_name"]).strip()
-                        # Also check the original incident name (may have been set by ingestor)
-                        original_name = (incident.get("university_name") or incident.get("victim_raw_name") or "").strip()
+                        # Also check the original incident name (may have been set by ingestor).
+                        # incident can be a dict OR a BaseIncident Pydantic object.
+                        _ig = (lambda f: incident.get(f) if isinstance(incident, dict) else getattr(incident, f, None))
+                        original_name = (_ig("university_name") or _ig("victim_raw_name") or "").strip()
                         effective_name = resolved_name or original_name
 
                         if effective_name.lower() in _UNKNOWN_INSTITUTION_NAMES:
@@ -757,11 +759,14 @@ def enrich_articles_phase(
                         # They have no article URLs yet — Phase 2 SERP discovery will
                         # find dedicated articles for them on the next pipeline run.
                         if enrichment_result.other_edu_incidents:
+                            _ig2 = (lambda f: incident.get(f) if isinstance(incident, dict) else getattr(incident, f, None))
+                            _all_urls = _ig2("all_urls") or []
+                            _source_url = _ig2("primary_url") or (_all_urls[0] if _all_urls else "")
                             _create_secondary_incidents(
                                 conn,
-                                parent_incident=incident,
+                                parent_incident=incident if isinstance(incident, dict) else incident.__dict__,
                                 secondary_list=enrichment_result.other_edu_incidents,
-                                source_url=incident.get("primary_url") or (incident.get("all_urls") or [""])[0],
+                                source_url=_source_url,
                             )
                     else:
                         stats["skipped"] += 1
