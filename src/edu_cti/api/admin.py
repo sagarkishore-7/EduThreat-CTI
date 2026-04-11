@@ -960,17 +960,24 @@ async def deduplicate_incidents_endpoint(
 @router.post("/cleanup-unknown-institutions")
 async def cleanup_unknown_institutions_endpoint(
     dry_run: bool = True,
+    action: str = "reset",
     _: bool = Depends(authenticate),
 ):
     """
-    Delete enriched incidents where no specific institution was identified.
+    Handle enriched incidents where no specific institution was identified.
 
-    These are sector-wide report articles (e.g. "Hackers increasingly target
-    school districts", "NYS school data incidents rose 72%") that the LLM
-    enriched but could not attribute to a specific victim.  They appear as
-    "Unknown" in the dashboard and pollute the dataset.
+    These are sector-wide report/trend articles (e.g. "NYS school data incidents
+    rose 72%", "Hackers increasingly target school districts") that the LLM
+    enriched but could not attribute to a specific victim.
 
-    Set dry_run=false to actually delete them.
+    Actions (set dry_run=false to apply):
+    - action=reset  (default): Strip enrichment so the pipeline re-processes them.
+                    Recommended first step — roundup articles will have secondary
+                    stubs created for any named schools, then the parent will be
+                    auto-deleted by the new post-enrichment logic.
+    - action=delete: Hard-delete immediately.  Use only after a reset+re-enrichment
+                    cycle has already run (or for incidents you're sure have no
+                    specific victims).
     """
     _UNKNOWN_NAMES = {
         "", "unknown", "unknown institution", "unknown school",
@@ -1033,11 +1040,38 @@ async def cleanup_unknown_institutions_endpoint(
             return {
                 "success": True,
                 "dry_run": True,
+                "action": action,
                 "found": len(candidates),
                 "sample": candidates[:20],
             }
 
-        # Delete them
+        if action == "reset":
+            # Strip enrichment — pipeline will re-enrich them.
+            # The new post-enrichment logic will then auto-delete true sector
+            # reports and create secondary stubs for roundup articles.
+            reset_count = 0
+            for row in rows:
+                iid = row["incident_id"]
+                conn.execute("DELETE FROM incident_enrichments WHERE incident_id = ?", (iid,))
+                conn.execute("DELETE FROM incident_enrichments_flat WHERE incident_id = ?", (iid,))
+                conn.execute(
+                    "UPDATE incidents SET llm_enriched = 0, llm_enriched_at = NULL, "
+                    "primary_url = NULL WHERE incident_id = ?",
+                    (iid,)
+                )
+                reset_count += 1
+            conn.commit()
+            cache_invalidate()
+            logger.info(f"Cleanup reset: {reset_count} Unknown-institution incidents queued for re-enrichment")
+            return {
+                "success": True,
+                "dry_run": False,
+                "action": "reset",
+                "reset_count": reset_count,
+                "message": f"Reset {reset_count} incidents for re-enrichment. Run the enrichment pipeline — sector reports will be auto-deleted, roundup articles will create stubs for named schools.",
+            }
+
+        # action == "delete" — hard delete
         deleted = 0
         for row in rows:
             iid = row["incident_id"]
@@ -1049,10 +1083,11 @@ async def cleanup_unknown_institutions_endpoint(
 
         conn.commit()
         cache_invalidate()
-        logger.info(f"Cleanup: deleted {deleted} Unknown-institution incidents")
+        logger.info(f"Cleanup deleted: {deleted} Unknown-institution incidents")
         return {
             "success": True,
             "dry_run": False,
+            "action": "delete",
             "deleted": deleted,
         }
     except Exception as e:
