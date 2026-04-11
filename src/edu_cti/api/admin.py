@@ -740,16 +740,23 @@ async def deduplicate_incidents_endpoint(
 
     conn = get_api_connection(read_only=False)
     try:
+        # Join incident_enrichments_flat so enriched incidents (whose university_name
+        # lives in ef.institution_name, not incidents.university_name) are included.
+        # This matches how the incidents API resolves names via COALESCE.
         cur = conn.execute(
             """
-            SELECT incident_id,
-                   university_name, victim_raw_name, incident_date,
-                   llm_enriched, source_confidence,
+            SELECT i.incident_id,
+                   COALESCE(ef.institution_name, i.university_name, i.victim_raw_name) AS university_name,
+                   i.victim_raw_name,
+                   i.incident_date,
+                   i.llm_enriched,
+                   i.source_confidence,
                    (SELECT COUNT(*) FROM source_events WHERE incident_id = i.incident_id) AS source_count
             FROM incidents i
-            WHERE (university_name IS NOT NULL AND university_name != '')
-               OR (victim_raw_name  IS NOT NULL AND victim_raw_name  != '')
-            ORDER BY incident_date, university_name
+            LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+            WHERE COALESCE(ef.institution_name, i.university_name, i.victim_raw_name) IS NOT NULL
+              AND COALESCE(ef.institution_name, i.university_name, i.victim_raw_name) != ''
+            ORDER BY i.incident_date, university_name
             """
         )
         rows = cur.fetchall()
@@ -848,24 +855,6 @@ async def deduplicate_incidents_endpoint(
                 "groups_found": len(merge_groups),
                 "incidents_to_remove": sum(len(m) - 1 for _, m in merge_groups),
                 "preview": preview[:50],  # cap at 50 for response size
-                "_v": 2,  # inline dedup v2 — remove after confirming
-                "_stats": {"rows": len(rows), "dated": len(dated_idx), "undated": len(undated_idx), "fuzz": _HAS_FUZZ},
-                "_test": {
-                    "names_match_inc_ic": _names_match("Infinite Campus, Inc.", "Infinite Campus", 85),
-                    "specific_ids_in_rows": {
-                        iid: next(({"uni": rows[k]["university_name"], "raw": rows[k]["victim_raw_name"]} for k in range(len(rows)) if rows[k]["incident_id"] == iid), "NOT FOUND")
-                        for iid in ["databreaches_rss_c156a1f2d873d6f5", "databreaches_132fe6e046ec2c1b", "ransomwarelive_628186f6c492a2f1"]
-                    },
-                    "infinite_campus_rows": [
-                        {
-                            "id": rows[i]["incident_id"],
-                            "uni_name": rows[i]["university_name"],
-                            "raw_name": rows[i]["victim_raw_name"],
-                        }
-                        for i in range(len(rows))
-                        if "infinite" in (rows[i]["university_name"] or rows[i]["victim_raw_name"] or "").lower()
-                    ],
-                },
             }
 
         # Apply merges
