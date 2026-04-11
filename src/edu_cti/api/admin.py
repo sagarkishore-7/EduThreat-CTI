@@ -741,13 +741,28 @@ async def deduplicate_incidents_endpoint(
         from datetime import datetime as _dt, timedelta as _td
 
         def _parse_date(d):
-            try:
-                return _dt.strptime(d, "%Y-%m-%d") if d else None
-            except ValueError:
+            """Parse incident_date string to datetime. Returns None if unparseable.
+            Handles YYYY-MM-DD, YYYY-MM (month precision), and YYYY (year only)."""
+            if not d:
                 return None
+            for fmt in ("%Y-%m-%d", "%Y-%m", "%Y"):
+                try:
+                    return _dt.strptime(d, fmt)
+                except ValueError:
+                    continue
+            return None  # unrecognised format — treat as undated
 
-        dated_idx   = [(i, _parse_date(rows[i]["incident_date"])) for i in range(len(rows)) if rows[i]["incident_date"]]
-        undated_idx = [i for i in range(len(rows)) if not rows[i]["incident_date"]]
+        # Split based on whether the date actually parsed successfully.
+        # A non-empty date string that fails all formats (e.g. ISO timestamps,
+        # free-text) is treated as undated to avoid TypeError in sort().
+        dated_idx = []
+        undated_idx = []
+        for i in range(len(rows)):
+            parsed = _parse_date(rows[i]["incident_date"])
+            if parsed is not None:
+                dated_idx.append((i, parsed))
+            else:
+                undated_idx.append(i)
 
         # Sort dated incidents by date for the sliding window
         dated_idx.sort(key=lambda x: x[1])
