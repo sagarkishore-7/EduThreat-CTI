@@ -1,6 +1,6 @@
 # REST API Documentation
 
-**Version**: 1.6.0  
+**Version**: 2.6.0  
 **Base URL**: `https://eduthreat-cti-production.up.railway.app` (Production)  
 **Local URL**: `http://localhost:8000` (Development)
 
