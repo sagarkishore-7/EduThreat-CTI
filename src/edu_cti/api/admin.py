@@ -851,12 +851,28 @@ async def deduplicate_incidents_endpoint(
                 "_v": 2,  # inline dedup v2 — remove after confirming
                 "_stats": {"rows": len(rows), "dated": len(dated_idx), "undated": len(undated_idx), "fuzz": _HAS_FUZZ},
                 "_test": {
-                    "norm_infinite_campus": _norm("Infinite Campus"),
-                    "names_match_test": _names_match("Infinite Campus", "Infinite Campus", 85),
+                    "norm_inc": _norm("Infinite Campus, Inc."),
+                    "norm_ic": _norm("Infinite Campus"),
+                    "names_match_inc_ic": _names_match("Infinite Campus, Inc.", "Infinite Campus", 85),
                     "infinite_campus_rows": [
-                        {"id": rows[i]["incident_id"], "date": rows[i]["incident_date"], "name": rows[i]["university_name"]}
+                        {
+                            "id": rows[i]["incident_id"],
+                            "date": rows[i]["incident_date"],
+                            "uni_name": rows[i]["university_name"],
+                            "raw_name": rows[i]["victim_raw_name"],
+                            "effective_name": rows[i]["university_name"] or rows[i]["victim_raw_name"],
+                        }
                         for i in range(len(rows))
-                        if (rows[i]["university_name"] or "").lower().startswith("infinite")
+                        if "infinite" in (rows[i]["university_name"] or rows[i]["victim_raw_name"] or "").lower()
+                    ],
+                    "alamo_rows": [
+                        {
+                            "id": rows[i]["incident_id"],
+                            "date": rows[i]["incident_date"],
+                            "effective_name": rows[i]["university_name"] or rows[i]["victim_raw_name"],
+                        }
+                        for i in range(len(rows))
+                        if "alamo" in (rows[i]["university_name"] or rows[i]["victim_raw_name"] or "").lower()
                     ],
                 },
             }
