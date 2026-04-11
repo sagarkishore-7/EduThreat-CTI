@@ -957,6 +957,112 @@ async def deduplicate_incidents_endpoint(
         conn.close()
 
 
+@router.post("/cleanup-unknown-institutions")
+async def cleanup_unknown_institutions_endpoint(
+    dry_run: bool = True,
+    _: bool = Depends(authenticate),
+):
+    """
+    Delete enriched incidents where no specific institution was identified.
+
+    These are sector-wide report articles (e.g. "Hackers increasingly target
+    school districts", "NYS school data incidents rose 72%") that the LLM
+    enriched but could not attribute to a specific victim.  They appear as
+    "Unknown" in the dashboard and pollute the dataset.
+
+    Set dry_run=false to actually delete them.
+    """
+    _UNKNOWN_NAMES = {
+        "", "unknown", "unknown institution", "unknown school",
+        "unknown university", "unnamed", "unidentified", "undisclosed",
+        "n/a", "none", "redacted",
+    }
+
+    conn = get_api_connection(read_only=dry_run)
+    try:
+        # Find enriched incidents whose effective institution name is Unknown:
+        # ef.institution_name IS NULL means the LLM found no specific victim.
+        # Also include incidents where ef.institution_name is a placeholder.
+        cur = conn.execute(
+            """
+            SELECT i.incident_id, i.title,
+                   ef.institution_name,
+                   i.university_name,
+                   i.victim_raw_name
+            FROM incidents i
+            JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+            WHERE (
+                ef.institution_name IS NULL
+                OR LOWER(TRIM(ef.institution_name)) IN (
+                    '', 'unknown', 'unknown institution', 'unknown school',
+                    'unknown university', 'unnamed', 'unidentified',
+                    'undisclosed', 'n/a', 'none', 'redacted'
+                )
+            )
+            AND (
+                i.university_name IS NULL
+                OR LOWER(TRIM(i.university_name)) IN (
+                    '', 'unknown', 'unknown institution', 'unknown school',
+                    'unknown university', 'unnamed', 'unidentified',
+                    'undisclosed', 'n/a', 'none', 'redacted'
+                )
+            )
+            AND (
+                i.victim_raw_name IS NULL
+                OR LOWER(TRIM(i.victim_raw_name)) IN (
+                    '', 'unknown', 'unknown institution', 'unknown school',
+                    'unknown university', 'unnamed', 'unidentified',
+                    'undisclosed', 'n/a', 'none', 'redacted'
+                )
+            )
+            ORDER BY i.ingested_at DESC
+            """
+        )
+        rows = cur.fetchall()
+
+        candidates = [
+            {
+                "incident_id": r["incident_id"],
+                "title": r["title"],
+                "institution_name": r["institution_name"],
+            }
+            for r in rows
+        ]
+
+        if dry_run:
+            return {
+                "success": True,
+                "dry_run": True,
+                "found": len(candidates),
+                "sample": candidates[:20],
+            }
+
+        # Delete them
+        deleted = 0
+        for row in rows:
+            iid = row["incident_id"]
+            conn.execute("DELETE FROM incident_enrichments WHERE incident_id = ?", (iid,))
+            conn.execute("DELETE FROM incident_enrichments_flat WHERE incident_id = ?", (iid,))
+            conn.execute("DELETE FROM source_events WHERE incident_id = ?", (iid,))
+            conn.execute("DELETE FROM incidents WHERE incident_id = ?", (iid,))
+            deleted += 1
+
+        conn.commit()
+        cache_invalidate()
+        logger.info(f"Cleanup: deleted {deleted} Unknown-institution incidents")
+        return {
+            "success": True,
+            "dry_run": False,
+            "deleted": deleted,
+        }
+    except Exception as e:
+        if not dry_run:
+            conn.rollback()
+        raise HTTPException(status_code=500, detail=f"Cleanup failed: {str(e)}")
+    finally:
+        conn.close()
+
+
 @router.post("/reset-phantom-enrichments")
 async def reset_phantom_enrichments_endpoint(
     _: bool = Depends(authenticate),

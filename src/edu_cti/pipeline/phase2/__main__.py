@@ -711,6 +711,37 @@ def enrich_articles_phase(
                     # Save enrichment result (with raw JSON data for country/region/city extraction)
                     saved = save_enrichment_result(conn, incident_id, enrichment_result, raw_json_data=raw_json_data)
                     if saved:
+                        # --- Post-save: delete sector-report / no-victim incidents ---
+                        # If the LLM could not identify a specific institution (institution_name
+                        # is null or a placeholder like "Unknown") this is a trend/report
+                        # article, not a specific incident.  Delete it so the DB only contains
+                        # real discrete incidents.
+                        _UNKNOWN_INSTITUTION_NAMES = {
+                            "", "unknown", "unknown institution", "unknown school",
+                            "unknown university", "unnamed", "unidentified", "undisclosed",
+                            "n/a", "none", "redacted",
+                        }
+                        resolved_name = ""
+                        if enrichment_result.education_relevance and enrichment_result.education_relevance.institution_identified:
+                            resolved_name = enrichment_result.education_relevance.institution_identified.strip()
+                        elif raw_json_data and raw_json_data.get("institution_name"):
+                            resolved_name = str(raw_json_data["institution_name"]).strip()
+                        # Also check the original incident name (may have been set by ingestor)
+                        original_name = (incident.get("university_name") or incident.get("victim_raw_name") or "").strip()
+                        effective_name = resolved_name or original_name
+
+                        if effective_name.lower() in _UNKNOWN_INSTITUTION_NAMES:
+                            from src.edu_cti.pipeline.phase2.storage.db import delete_incident
+                            if delete_incident(conn, incident_id):
+                                conn.commit()
+                                stats["skipped"] += 1
+                                logger.info(f"⊘ DELETED   {incident_id} | no specific institution identified (sector report/trend article)")
+                            else:
+                                conn.commit()
+                                stats["enriched"] += 1
+                                logger.warning(f"✓ ENRICHED  {incident_id} | WARNING: institution unknown — could not delete")
+                            continue
+
                         # Commit immediately after each save to prevent long-running transactions
                         # This allows API reads to proceed while enrichment is running
                         conn.commit()
