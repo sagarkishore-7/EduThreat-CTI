@@ -309,9 +309,15 @@ class IncidentEnricher:
         title = primary_article.title or ""
 
         # Truncate article text to fit within LLM context window.
-        # DeepSeek V3 has 64K context; prompt+schema uses ~10K tokens,
-        # output needs ~4K tokens → ~50K tokens left for article text.
-        # At ~4 chars/token, that's ~200K chars. Use 180K for safety margin.
+        # DeepSeek V3 has 64K context (~256K chars):
+        #   - prompt template + instructions : ~2K tokens  (~8K chars)
+        #   - JSON schema                    : ~8K tokens  (~32K chars)
+        #   - title + URL                    : ~100 tokens (~400 chars)
+        #   - target_institution_line (max)  : ~50 tokens  (~200 chars)
+        #   - LLM output budget              : ~4K tokens  (~16K chars)
+        #   ─────────────────────────────────────────────────────────
+        #   Remaining for article text       : ~50K tokens (~200K chars)
+        # Use 180K chars as the cutoff for a comfortable safety margin.
         MAX_ARTICLE_CHARS = 180_000
         if len(combined_text) > MAX_ARTICLE_CHARS:
             logger.warning(
