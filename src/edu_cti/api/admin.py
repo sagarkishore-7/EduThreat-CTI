@@ -707,7 +707,7 @@ async def deduplicate_incidents_endpoint(
         )
         rows = cur.fetchall()
 
-        # Group into merge clusters using a union-find approach
+        # Group into merge clusters using union-find.
         # row_idx -> canonical_idx
         parent: dict[int, int] = {i: i for i in range(len(rows))}
 
@@ -720,7 +720,6 @@ async def deduplicate_incidents_endpoint(
         def union(a, b):
             ra, rb = find(a), find(b)
             if ra != rb:
-                # keep the one with higher source_count / enriched status as root
                 row_a, row_b = rows[ra], rows[rb]
                 score_a = (row_a["llm_enriched"] or 0) * 10 + (row_a["source_count"] or 0)
                 score_b = (row_b["llm_enriched"] or 0) * 10 + (row_b["source_count"] or 0)
@@ -729,15 +728,53 @@ async def deduplicate_incidents_endpoint(
                 else:
                     parent[ra] = rb
 
-        for i in range(len(rows)):
-            for j in range(i + 1, len(rows)):
-                ri, rj = rows[i], rows[j]
-                name_i = ri["university_name"] or ri["victim_raw_name"] or ""
-                name_j = rj["university_name"] or rj["victim_raw_name"] or ""
-                date_i = ri["incident_date"]
-                date_j = rj["incident_date"]
+        # O(n²) brute-force is too slow for large DBs (2k incidents = ~2M fuzzy
+        # comparisons → Railway request timeout). Instead:
+        #
+        # 1. Split into dated / undated buckets.
+        # 2. For dated: sort by date and use a sliding window — only compare
+        #    incident i against incidents j where |date_j - date_i| ≤ window.
+        #    With ~2k incidents spread over 5 years and a 14-day window, the
+        #    average window contains ~15 incidents → ~15k comparisons (100× faster).
+        # 3. For undated: compare within the bucket only (no date constraint, so
+        #    fuzzy name match alone determines duplicates).
+        from datetime import datetime as _dt, timedelta as _td
+
+        def _parse_date(d):
+            try:
+                return _dt.strptime(d, "%Y-%m-%d") if d else None
+            except ValueError:
+                return None
+
+        dated_idx   = [(i, _parse_date(rows[i]["incident_date"])) for i in range(len(rows)) if rows[i]["incident_date"]]
+        undated_idx = [i for i in range(len(rows)) if not rows[i]["incident_date"]]
+
+        # Sort dated incidents by date for the sliding window
+        dated_idx.sort(key=lambda x: x[1])
+        window_td = _td(days=request.date_window_days)
+
+        for pos, (i, date_i) in enumerate(dated_idx):
+            name_i = rows[i]["university_name"] or rows[i]["victim_raw_name"] or ""
+            # Walk forward while within the date window
+            for j, date_j in dated_idx[pos + 1:]:
+                if date_j - date_i > window_td:
+                    break  # list is sorted → no later entries can match
+                name_j = rows[j]["university_name"] or rows[j]["victim_raw_name"] or ""
                 if are_likely_same_incident(
-                    name_i, name_j, date_i, date_j,
+                    name_i, name_j,
+                    rows[i]["incident_date"], rows[j]["incident_date"],
+                    name_threshold=request.name_threshold,
+                    date_window_days=request.date_window_days,
+                ):
+                    union(i, j)
+
+        # Compare undated incidents with each other (name match only)
+        for pos, i in enumerate(undated_idx):
+            name_i = rows[i]["university_name"] or rows[i]["victim_raw_name"] or ""
+            for j in undated_idx[pos + 1:]:
+                name_j = rows[j]["university_name"] or rows[j]["victim_raw_name"] or ""
+                if are_likely_same_incident(
+                    name_i, name_j, None, None,
                     name_threshold=request.name_threshold,
                     date_window_days=request.date_window_days,
                 ):
