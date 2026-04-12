@@ -460,28 +460,31 @@ class IncidentEnricher:
             except json.JSONDecodeError as e:
                 # Try fixing common LLM JSON issues
                 fixed_response = raw_response
-                
+
                 # Fix 1: LLM sometimes outputs \' which is invalid JSON (should be ')
                 fixed_response = fixed_response.replace("\\'", "'")
-                
+
                 # Fix 2: Handle double-escaped quotes
                 fixed_response = fixed_response.replace('\\"', '"').replace('\\\\', '\\')
-                
-                # Fix 3: Try with fixed response
+
+                # Fix 3: Remove trailing commas before } or ] — deepseek often emits these
+                fixed_response = re.sub(r',\s*([}\]])', r'\1', fixed_response)
+
+                # Fix 4: Try with fixed response
                 try:
                     return json.loads(fixed_response)
                 except json.JSONDecodeError:
                     pass
                 
-                # Fix 4: Handle leading newline after brace
+                # Fix 5: Handle leading newline after brace
                 if raw_response.startswith('{\n'):
                     fixed = '{' + raw_response[2:].lstrip()
                     try:
                         return json.loads(fixed)
                     except json.JSONDecodeError:
                         pass
-                
-                # Fix 5: Truncated JSON — attempt repair then salvage what we can.
+
+                # Fix 6: Truncated JSON — attempt repair then salvage what we can.
                 # The LLM often returns valid JSON that gets cut off at the token
                 # limit. Strategy:
                 #   a) Try closing the unclosed JSON object with "}" and re-parse.
