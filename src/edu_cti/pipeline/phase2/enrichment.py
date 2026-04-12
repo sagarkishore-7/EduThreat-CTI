@@ -484,10 +484,16 @@ class IncidentEnricher:
                 #      \n极 "mttd_hours": null
                 #   c) Non-ASCII embedded within a JSON key name:
                 #      "field_name极": null
-                # Drop lines with no JSON structural chars (pure garbage lines).
+                # Drop lines with no JSON structural chars (pure garbage lines), AND
+                # lines that are just an opening quote followed by only non-ASCII chars
+                # (e.g. `    "极速赛车开奖结果历史` — after nuclear strip becomes `    "`
+                # which is an unclosed string and breaks the parse).
                 fixed_response = '\n'.join(
                     line for line in fixed_response.split('\n')
-                    if re.search(r'[":{}\[\]]', line) or not line.strip()
+                    if (
+                        (re.search(r'[":{}\[\]]', line) and not re.match(r'^\s*"[^\x00-\x7F]+$', line))
+                        or not line.strip()
+                    )
                 )
                 # Strip leading non-ASCII prefix from remaining lines.
                 fixed_response = re.sub(r'^[^\x00-\x7F]+', '', fixed_response, flags=re.MULTILINE)

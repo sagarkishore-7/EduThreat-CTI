@@ -621,7 +621,7 @@ class SankeyNode(BaseModel):
 class SankeyLink(BaseModel):
     source: str
     target: str
-    value: int
+    value: float
 
 class AttackFlowResponse(BaseModel):
     """Sankey flow: Attack Vector → Category → Impact Outcome."""
