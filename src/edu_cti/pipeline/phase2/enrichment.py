@@ -367,7 +367,13 @@ class IncidentEnricher:
         system_prompt = (
             "You are a Cyber Threat Intelligence Analyst. "
             "Output ONLY valid JSON matching the provided schema. "
-            "No prose, no explanations, no markdown - pure JSON only."
+            "No prose, no explanations, no markdown - pure JSON only. "
+            "CRITICAL: Use strict ASCII/UTF-8 encoding. "
+            "Do NOT output any Chinese, Japanese, Korean, Arabic, or other non-Latin characters "
+            "anywhere in the JSON — not in keys, not in values, not between fields. "
+            "Every character in your response must be standard ASCII (0-127) or escaped Unicode. "
+            "Do NOT insert any text between JSON fields. "
+            "Do NOT add trailing commas after the last field in any object or array."
         )
 
         # Only inject a TARGET INSTITUTION hint when the incident is a secondary stub
@@ -470,15 +476,23 @@ class IncidentEnricher:
                 # Fix 3: Remove trailing commas before } or ] — deepseek often emits these
                 fixed_response = re.sub(r',\s*([}\]])', r'\1', fixed_response)
 
-                # Fix 4: deepseek occasionally inserts a non-ASCII character (e.g. Chinese
-                # token 极) where the opening " of a JSON key name should be.
-                # Pattern: one or more non-ASCII chars immediately before identifier + "
-                # e.g. `极records_affected_min"` → `"records_affected_min"`
-                fixed_response = re.sub(
-                    r'[^\x00-\x7F]+([A-Za-z_]\w*")',
-                    r'"\1',
-                    fixed_response,
+                # Fix 4: deepseek injects Chinese lottery-spam tokens into the JSON in
+                # three patterns:
+                #   a) Entire garbage lines between valid fields:
+                #      null,\n极速赛车开奖直播历史记录\n  "field": null
+                #   b) Leading non-ASCII before a JSON field on a line:
+                #      \n极 "mttd_hours": null
+                #   c) Non-ASCII embedded within a JSON key name:
+                #      "field_name极": null
+                # Drop lines with no JSON structural chars (pure garbage lines).
+                fixed_response = '\n'.join(
+                    line for line in fixed_response.split('\n')
+                    if re.search(r'[":{}\[\]]', line) or not line.strip()
                 )
+                # Strip leading non-ASCII prefix from remaining lines.
+                fixed_response = re.sub(r'^[^\x00-\x7F]+', '', fixed_response, flags=re.MULTILINE)
+                # Strip non-ASCII embedded within key names.
+                fixed_response = re.sub(r'([A-Za-z_]\w*)[^\x00-\x7F]+(")', r'\1\2', fixed_response)
 
                 # Fix 5: Try with fixed response
                 try:
