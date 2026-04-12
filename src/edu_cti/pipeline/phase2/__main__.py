@@ -41,6 +41,9 @@ from src.edu_cti.core.logging_utils import configure_logging
 from src.edu_cti.core.db import get_connection, init_db
 from pathlib import Path
 
+# Module-level logger — used by module-level helpers (_record_serp_failure, etc.)
+logger = logging.getLogger(__name__)
+
 # Module-level cancel event — set by pipeline manager to request graceful stop
 _cancel_event = threading.Event()
 
