@@ -554,6 +554,11 @@ class IncidentEnricher:
 
                 logger.error(f"JSON parse error: {e}")
                 logger.error(f"Response (first 500 chars): {repr(raw_response[:500])}")
+                # Log chars around the failure position to diagnose the pattern
+                if hasattr(e, 'pos') and e.pos is not None:
+                    pos = e.pos
+                    snippet = raw_response[max(0, pos - 80):pos + 40]
+                    logger.error(f"Context around error (pos={pos}): {repr(snippet)}")
                 return None
             
         except Exception as e:
