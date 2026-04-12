@@ -1672,6 +1672,7 @@ def get_breach_severity_timeline(
           AND i.incident_date IS NOT NULL
           AND i.incident_date >= date('now', ? || ' months')
         GROUP BY month
+        HAVING month IS NOT NULL
         ORDER BY month ASC
         """,
         (f"-{months}",)
@@ -2098,9 +2099,9 @@ def get_attack_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
             ) as vector,
             COALESCE(NULLIF(attack_category, ''), 'Unknown') as category,
             CASE
-                WHEN data_exfiltrated = 1 AND ransom_demanded = 1 THEN 'Breach + Ransom'
+                WHEN data_exfiltrated = 1 AND was_ransom_demanded = 1 THEN 'Breach + Ransom'
                 WHEN data_exfiltrated = 1 THEN 'Data Breach'
-                WHEN ransom_demanded = 1 THEN 'Ransom Only'
+                WHEN was_ransom_demanded = 1 THEN 'Ransom Only'
                 ELSE 'Other Impact'
             END as outcome,
             COUNT(*) as count
@@ -2274,7 +2275,7 @@ def get_ransom_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
             COALESCE(NULLIF(ransomware_family, ''), 'Unknown Family') as family,
             CASE
                 WHEN ransom_paid = 1 THEN 'Paid'
-                WHEN ransom_demanded = 1 AND (ransom_paid = 0 OR ransom_paid IS NULL) THEN 'Refused'
+                WHEN was_ransom_demanded = 1 AND (ransom_paid = 0 OR ransom_paid IS NULL) THEN 'Refused'
                 ELSE 'Unknown Outcome'
             END as outcome,
             COUNT(*) as count,
