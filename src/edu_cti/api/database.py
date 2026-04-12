@@ -2114,27 +2114,27 @@ def get_attack_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
     )
     rows = [dict(r) for r in cur.fetchall()]
 
-    nodes_set: set = set()
     links = []
 
-    # Vector → Category links
+    # Prefix node IDs by level so the same label (e.g. "Unknown", "Phishing")
+    # in two different Sankey columns doesn't create a circular link in d3-sankey.
     vec_cat: Dict[tuple, int] = {}
     cat_out: Dict[tuple, int] = {}
     for r in rows:
         v, c, o, cnt = r["vector"], r["category"], r["outcome"], r["count"]
-        vec_cat[(v, c)] = vec_cat.get((v, c), 0) + cnt
-        cat_out[(c, o)] = cat_out.get((c, o), 0) + cnt
-        nodes_set.update([v, c, o])
+        vid, cid, oid = f"vec:{v}", f"cat:{c}", f"out:{o}"
+        vec_cat[(vid, cid)] = vec_cat.get((vid, cid), 0) + cnt
+        cat_out[(cid, oid)] = cat_out.get((cid, oid), 0) + cnt
 
-    for (v, c), cnt in vec_cat.items():
+    for (vid, cid), cnt in vec_cat.items():
         if cnt >= 2:
-            links.append({"source": v, "target": c, "value": cnt})
-    for (c, o), cnt in cat_out.items():
+            links.append({"source": vid, "target": cid, "value": cnt})
+    for (cid, oid), cnt in cat_out.items():
         if cnt >= 2:
-            links.append({"source": c, "target": o, "value": cnt})
+            links.append({"source": cid, "target": oid, "value": cnt})
 
     # Collect only nodes that appear in links
-    used = set()
+    used: set = set()
     for lnk in links:
         used.add(lnk["source"])
         used.add(lnk["target"])
