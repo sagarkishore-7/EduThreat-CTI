@@ -131,8 +131,11 @@ def dates_within_window(
     """
     if not date1 or not date2:
         return False
-    
-    delta = abs((date1 - date2).days)
+
+    # Strip timezone info so offset-naive and offset-aware datetimes can be compared
+    d1 = date1.replace(tzinfo=None)
+    d2 = date2.replace(tzinfo=None)
+    delta = abs((d1 - d2).days)
     return delta <= days
 
 

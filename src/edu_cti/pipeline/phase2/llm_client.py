@@ -135,7 +135,7 @@ class OllamaLLMClient:
                 stream=stream,
                 options={
                     'temperature': temperature,
-                    'num_predict': 8192,  # Extraction schema needs ~4-6K tokens output
+                    'num_predict': 16384,  # Extraction schema needs ~4-6K tokens; 16K covers complex multi-institution articles
                 }
             )
             return response
@@ -195,12 +195,15 @@ class OllamaLLMClient:
                         elif isinstance(message, str):
                             content = message
                         else:
-                            # Try attribute access
+                            # Try attribute access (Pydantic Message object)
                             content = getattr(message, 'content', None) or str(message)
                     elif 'content' in response:
                         content = response['content']
                     else:
                         content = str(response)
+                elif hasattr(response, 'message') and hasattr(response.message, 'content'):
+                    # Ollama ChatResponse object: response.message.content
+                    content = response.message.content
                 elif hasattr(response, 'content'):
                     content = response.content
                 elif isinstance(response, str):

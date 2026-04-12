@@ -412,7 +412,14 @@ class IncidentEnricher:
             
             # Parse JSON
             try:
-                return json.loads(raw_response)
+                parsed = json.loads(raw_response)
+                # LLM sometimes returns [] meaning "not applicable / not education-related"
+                if isinstance(parsed, list):
+                    return {
+                        "is_edu_cyber_incident": False,
+                        "education_relevance_reasoning": "LLM returned empty array (not education-related)",
+                    }
+                return parsed
             except json.JSONDecodeError as e:
                 # Try fixing common LLM JSON issues
                 fixed_response = raw_response
