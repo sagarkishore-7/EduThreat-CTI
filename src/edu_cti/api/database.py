@@ -2279,7 +2279,7 @@ def get_ransom_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
                 ELSE 'Unknown Outcome'
             END as outcome,
             COUNT(*) as count,
-            COALESCE(SUM(ransom_amount_usd), 0) as total_amount
+            COALESCE(SUM(ransom_amount), 0) as total_amount
         FROM incident_enrichments_flat
         WHERE is_education_related = 1
           AND attack_category LIKE '%ransomware%'
