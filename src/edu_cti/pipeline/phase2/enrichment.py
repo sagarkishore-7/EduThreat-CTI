@@ -214,63 +214,100 @@ class IncidentEnricher:
         article_contents: Dict[str, ArticleContent],
         skip_if_not_education: bool,
     ) -> Tuple[Optional[CTIEnrichmentResult], Optional[Dict[str, Any]]]:
-        """Process multiple articles and select the best one based on field coverage."""
-        logger.debug(
-            f"{incident.incident_id}: {len(article_contents)} articles — enriching all, selecting best"
-        )
-        
+        """
+        Process multiple articles with a single combined LLM call.
+
+        Strategy:
+        1. Send all articles concatenated in one LLM call — _enrich_article already
+           combines texts, so passing the full dict costs one call regardless of N.
+        2. If the combined call succeeds and passes the education relevance check, return
+           immediately (1 LLM call total).
+        3. If the combined call fails (LLM error, bad JSON, not-education), fall back to
+           trying each article individually so a single bad article doesn't sink the whole
+           incident.  Only articles that individually succeed and pass relevance are scored;
+           the highest-scoring one wins.
+        """
+        n = len(article_contents)
+        primary_url = next(iter(article_contents))
+
+        logger.debug(f"{incident.incident_id}: {n} articles — trying combined LLM call first")
+
+        # ── Step 1: single combined call ──────────────────────────────────────────
+        try:
+            enrichment_result, raw_json_data = self._enrich_article(incident, article_contents)
+
+            if enrichment_result:
+                is_edu = enrichment_result.education_relevance.is_education_related
+                if skip_if_not_education and not is_edu:
+                    logger.info(f"{incident.incident_id}: combined call — not education-related, skipping")
+                    return None, {"_not_education_related": True, "_reason": "Combined article not education-related"}
+
+                enrichment_result.primary_url = primary_url
+                score = count_filled_fields(enrichment_result)
+                logger.debug(
+                    f"{incident.incident_id}: combined call succeeded ({score} fields, "
+                    f"edu={is_edu}) — skipping per-article loop"
+                )
+                return enrichment_result, raw_json_data
+
+            # Combined call returned None (explicit not-education or total failure)
+            if raw_json_data and isinstance(raw_json_data, dict):
+                if raw_json_data.get("_not_education_related"):
+                    logger.info(f"{incident.incident_id}: combined call — not education-related")
+                    return None, raw_json_data
+                # Enrichment failed — fall through to per-article fallback
+                logger.warning(
+                    f"{incident.incident_id}: combined call failed "
+                    f"({raw_json_data.get('_reason', 'unknown')}) — trying per-article fallback"
+                )
+            else:
+                logger.warning(f"{incident.incident_id}: combined call returned None — trying per-article fallback")
+
+        except Exception as e:
+            logger.warning(f"{incident.incident_id}: combined call exception ({e}) — trying per-article fallback")
+
+        # ── Step 2: per-article fallback ─────────────────────────────────────────
+        logger.debug(f"{incident.incident_id}: per-article fallback ({n} articles)")
         article_scores: List[Tuple[str, CTIEnrichmentResult, int, Optional[Dict[str, Any]]]] = []
-        
-        all_not_education = True  # Track if all articles are not education-related
-        
+        all_not_education = True
+
         for idx, (url, article_content) in enumerate(article_contents.items(), 1):
-            logger.debug(f"[{idx}/{len(article_contents)}] enriching {url[:80]}")
+            logger.debug(f"  [{idx}/{n}] enriching {url[:80]}")
             try:
                 single_article = {url: article_content}
                 enrichment_result, raw_json_data = self._enrich_article(incident, single_article)
-                
+
                 if enrichment_result:
-                    all_not_education = False  # At least one article was enriched
-                    
-                    # Check education relevance - directly from LLM analysis
+                    all_not_education = False
                     if skip_if_not_education and not enrichment_result.education_relevance.is_education_related:
-                        logger.info(f"Skipping {url} - not education-related")
+                        logger.info(f"  ⊘ {url[:80]} — not education-related")
                         continue
-                    
                     score = count_filled_fields(enrichment_result)
                     article_scores.append((url, enrichment_result, score, raw_json_data))
                     logger.debug(f"  scored {score} fields: {url[:80]}")
                 elif raw_json_data and isinstance(raw_json_data, dict):
-                    # Check what kind of failure
                     if raw_json_data.get("_not_education_related"):
-                        logger.info(f"⊘ {url} - not education-related")
+                        logger.info(f"  ⊘ {url[:80]} — not education-related")
                     elif raw_json_data.get("_enrichment_failed"):
-                        all_not_education = False  # Enrichment failed, not "not education-related"
-                        logger.warning(f"✗ Failed to enrich {url}: {raw_json_data.get('_reason', 'unknown')}")
+                        all_not_education = False
+                        logger.warning(f"  ✗ {url[:80]}: {raw_json_data.get('_reason', 'unknown')}")
                 else:
-                    all_not_education = False  # Unknown failure, not "not education-related"
-                    logger.warning(f"✗ Failed to enrich {url}")
+                    all_not_education = False
+                    logger.warning(f"  ✗ {url[:80]}: no result")
             except Exception as e:
-                all_not_education = False  # Exception, not "not education-related"
-                logger.error(f"✗ Error enriching {url}: {e}", exc_info=True)
-        
+                all_not_education = False
+                logger.error(f"  ✗ {url[:80]}: {e}", exc_info=True)
+
         if not article_scores:
             if all_not_education:
-                # All articles were explicitly not education-related
                 logger.debug(f"All articles for {incident.incident_id} are not education-related")
                 return None, {"_not_education_related": True, "_reason": "All articles not education-related"}
-            else:
-                # Some or all articles failed to enrich (not due to education-relevance).
-                # Caller (__main__.py) will log the actionable "will retry" warning.
-                logger.debug(f"No articles scored for {incident.incident_id} (all failed or irrelevant)")
-                return None, {"_enrichment_failed": True, "_reason": "All articles failed to enrich"}
-        
-        # Select best article
+            logger.debug(f"No articles scored for {incident.incident_id} (all failed or irrelevant)")
+            return None, {"_enrichment_failed": True, "_reason": "All articles failed to enrich"}
+
         best_url, best_result, best_score, best_raw_json = max(article_scores, key=lambda x: x[2])
-        
         logger.debug(f"Primary: {best_url[:80]} ({best_score} fields)")
         best_result.primary_url = best_url
-        
         return best_result, best_raw_json
     
     def _enrich_article(

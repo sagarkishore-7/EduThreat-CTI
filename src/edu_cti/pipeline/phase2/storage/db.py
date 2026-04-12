@@ -414,20 +414,36 @@ def get_unenriched_incidents(
         List of incident dicts ready for enrichment
     """
     query = """
-        SELECT * FROM incidents
-        WHERE llm_enriched = 0
+        SELECT
+            i.*,
+            CASE WHEN a.incident_id IS NOT NULL THEN 1 ELSE 0 END AS has_articles
+        FROM incidents i
+        LEFT JOIN (
+            SELECT DISTINCT incident_id FROM articles WHERE fetch_successful = 1
+        ) a ON a.incident_id = i.incident_id
+        WHERE i.llm_enriched = 0
           AND (
             -- Has at least one URL, OR
-            (all_urls IS NOT NULL AND all_urls != '')
+            (i.all_urls IS NOT NULL AND i.all_urls != '')
             OR
-            -- URL-less but has a named institution (Comparitech ransomware, etc.)
-            -- Phase 2 SERP discovery will find articles for these at fetch time.
+            -- Has existing fetched articles in the articles table (resume after restart)
+            a.incident_id IS NOT NULL
+            OR
+            -- URL-less but has a named institution (SERP discovery at fetch time).
+            -- Exclude incidents that have exhausted their SERP attempts — they are
+            -- unenrichable and will be deleted on the next enrichment run.
             (
-              (university_name IS NOT NULL AND university_name != '')
-              OR (victim_raw_name IS NOT NULL AND victim_raw_name != '')
+              COALESCE(i.serp_attempt_count, 0) < 3
+              AND (
+                (i.university_name IS NOT NULL AND i.university_name != '')
+                OR (i.victim_raw_name IS NOT NULL AND i.victim_raw_name != '')
+              )
             )
           )
-        ORDER BY ingested_at DESC
+        ORDER BY
+            -- Incidents with existing articles first (fast-path, no fetch needed)
+            has_articles DESC,
+            i.ingested_at DESC
     """
     
     if limit:
@@ -462,6 +478,9 @@ def get_unenriched_incidents(
             "status": row["status"] or "suspected",
             "source_confidence": row["source_confidence"] or "medium",
             "notes": row["notes"],
+            # True when articles already exist in DB from a previous run.
+            # The fetch phase uses this to skip re-fetching and push directly to the LLM queue.
+            "has_articles": bool(row["has_articles"]),
         }
         incidents.append(incident_dict)
     

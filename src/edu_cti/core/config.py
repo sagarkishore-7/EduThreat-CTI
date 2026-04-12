@@ -455,6 +455,10 @@ ENRICHMENT_BATCH_SIZE = int(os.getenv("ENRICHMENT_BATCH_SIZE", "10"))  # Process
 ENRICHMENT_MAX_RETRIES = int(os.getenv("ENRICHMENT_MAX_RETRIES", "3"))  # Max retries per incident
 ENRICHMENT_RATE_LIMIT_DELAY = float(os.getenv("ENRICHMENT_RATE_LIMIT_DELAY", "2.0"))  # Seconds between API calls
 ENRICHMENT_WORKERS = int(os.getenv("ENRICHMENT_WORKERS", "3"))  # Parallel LLM workers (1-8)
+# Max consecutive SERP failures before permanently deleting the incident.
+# URL-less incidents that never yield search results are unenrichable;
+# deleting them after N attempts stops them retrying on every pipeline run.
+SERP_MAX_ATTEMPTS = int(os.getenv("SERP_MAX_ATTEMPTS", "3"))
 
 # Sources to skip in fetch + enrichment phases (IOC/malware feeds, not news articles)
 # Ingestion code is kept intact; re-enable by removing from this set.

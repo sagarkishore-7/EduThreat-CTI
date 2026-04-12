@@ -167,7 +167,12 @@ def init_db(conn: sqlite3.Connection) -> None:
             llm_summary          TEXT,
             llm_timeline         TEXT,
             llm_mitre_attack     TEXT,
-            llm_attack_dynamics   TEXT
+            llm_attack_dynamics   TEXT,
+
+            -- SERP discovery tracking (Oxylabs Google News search)
+            -- Prevents re-spending credits on the same failed search each restart.
+            -- After SERP_MAX_ATTEMPTS consecutive failures the incident is deleted.
+            serp_attempt_count   INTEGER DEFAULT 0
         );
 
         -- Track which sources contributed to each incident (many-to-many)
@@ -356,7 +361,24 @@ def init_db(conn: sqlite3.Connection) -> None:
         import logging
         logger = logging.getLogger(__name__)
         logger.debug(f"Migration check for country_code column: {e}")
-    
+
+    # Migration: Add serp_attempt_count column if it doesn't exist
+    try:
+        cur = conn.execute("PRAGMA table_info(incidents)")
+        columns = [row[1] for row in cur.fetchall()]
+        if "serp_attempt_count" not in columns:
+            conn.execute(
+                "ALTER TABLE incidents ADD COLUMN serp_attempt_count INTEGER DEFAULT 0"
+            )
+            conn.commit()
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("Added serp_attempt_count column to incidents table (migration)")
+    except sqlite3.Error as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Migration check for serp_attempt_count column: {e}")
+
     conn.commit()
 
 

@@ -16,7 +16,7 @@ import sqlite3
 
 from src.edu_cti.core.db import get_connection, get_broken_urls, mark_urls_as_broken
 from src.edu_cti.core.deduplication import normalize_url
-from src.edu_cti.core.config import EDUCATION_KEYWORDS, CYBER_KEYWORDS
+from src.edu_cti.core.config import EDUCATION_KEYWORDS, CYBER_KEYWORDS, SERP_MAX_ATTEMPTS
 from src.edu_cti.core.oxylabs import OxylabsClient
 from src.edu_cti.pipeline.phase2.storage.article_fetcher import (
     ArticleFetcher,
@@ -291,27 +291,49 @@ class SmartArticleFetchingStrategy:
         """
         exclude_domains = exclude_domains or []
         
-        # Get all unenriched incidents (with or without URLs)
-        # URL-less incidents with metadata (e.g. Comparitech ransomware) will use
-        # Oxylabs SERP to discover articles during fetching
+        # Get all unenriched incidents (with or without URLs).
+        # LEFT JOIN articles so we know which already have fetched content —
+        # those will be fast-pathed to the LLM queue without re-fetching.
+        # Exclude incidents that have exhausted SERP attempts (unenrichable).
         query = """
             SELECT
-                incident_id,
-                all_urls,
-                university_name,
-                victim_raw_name,
-                title,
-                source_published_date,
-                attack_type_hint,
-                notes,
-                incident_date
-            FROM incidents
-            WHERE llm_enriched = 0
-            ORDER BY RANDOM()
+                i.incident_id,
+                i.all_urls,
+                i.university_name,
+                i.victim_raw_name,
+                i.title,
+                i.source_published_date,
+                i.attack_type_hint,
+                i.notes,
+                i.incident_date,
+                i.city,
+                i.region,
+                i.country,
+                CASE WHEN a.incident_id IS NOT NULL THEN 1 ELSE 0 END AS has_articles
+            FROM incidents i
+            LEFT JOIN (
+                SELECT DISTINCT incident_id FROM articles WHERE fetch_successful = 1
+            ) a ON a.incident_id = i.incident_id
+            WHERE i.llm_enriched = 0
+              AND (
+                (i.all_urls IS NOT NULL AND i.all_urls != '')
+                OR a.incident_id IS NOT NULL
+                OR (
+                    COALESCE(i.serp_attempt_count, 0) < ?
+                    AND (
+                        (i.university_name IS NOT NULL AND i.university_name != '')
+                        OR (i.victim_raw_name IS NOT NULL AND i.victim_raw_name != '')
+                    )
+                )
+              )
+            ORDER BY
+                -- Articles-ready incidents first so they drain the LLM queue fast
+                has_articles DESC,
+                RANDOM()
             LIMIT ?
         """
 
-        cur = self.conn.execute(query, (limit * 5,))  # Get 5x more for filtering (increased from 3x)
+        cur = self.conn.execute(query, (SERP_MAX_ATTEMPTS, limit * 5,))
         rows = cur.fetchall()
 
         if not rows:
@@ -326,22 +348,35 @@ class SmartArticleFetchingStrategy:
             all_urls_str = row["all_urls"] or ""
             all_urls = [url.strip() for url in all_urls_str.split(";") if url.strip()]
 
+            has_articles = bool(row["has_articles"])
             incident_dict = {
                 "incident_id": incident_id,
                 "all_urls": all_urls,
                 "university_name": row["university_name"] or row["victim_raw_name"] or "",
+                "victim_raw_name": row["victim_raw_name"],
                 "title": row["title"],
                 "source_published_date": row["source_published_date"],
                 "attack_type_hint": row["attack_type_hint"],
                 "notes": row["notes"],
                 "incident_date": row["incident_date"],
+                "city": row["city"],
+                "region": row["region"],
+                "country": row["country"],
+                "has_articles": has_articles,
             }
 
-            if not all_urls:
+            if not all_urls and not has_articles:
                 # URL-less but has metadata — will use SERP discovery
-                has_metadata = bool(row["attack_type_hint"] or row["notes"])
+                has_metadata = bool(row["attack_type_hint"] or row["notes"]
+                                    or row["university_name"] or row["victim_raw_name"])
                 if has_metadata:
                     no_domain_incidents.append(incident_dict)
+                continue
+
+            if has_articles and not all_urls:
+                # Has saved articles but no URLs (e.g. comparitech synthetic) —
+                # treat as no-domain so it goes straight to the fast-path queue.
+                no_domain_incidents.append(incident_dict)
                 continue
 
             # Find first valid URL domain

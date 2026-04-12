@@ -35,6 +35,7 @@ from src.edu_cti.core.config import (
     ENRICHMENT_RATE_LIMIT_DELAY,
     ENRICHMENT_SKIP_SOURCES,
     FETCH_IMPOSSIBLE_SOURCES,
+    SERP_MAX_ATTEMPTS,
 )
 from src.edu_cti.core.logging_utils import configure_logging
 from src.edu_cti.core.db import get_connection, init_db
@@ -42,6 +43,38 @@ from pathlib import Path
 
 # Module-level cancel event — set by pipeline manager to request graceful stop
 _cancel_event = threading.Event()
+
+
+def _record_serp_failure(conn, incident_id: str) -> bool:
+    """
+    Increment serp_attempt_count for an incident after a failed SERP search.
+
+    Returns True if the incident has now hit SERP_MAX_ATTEMPTS and was deleted,
+    False if it was only incremented (caller should skip it for this run).
+    """
+    conn.execute(
+        "UPDATE incidents SET serp_attempt_count = COALESCE(serp_attempt_count, 0) + 1 WHERE incident_id = ?",
+        (incident_id,),
+    )
+    conn.commit()
+    row = conn.execute(
+        "SELECT serp_attempt_count FROM incidents WHERE incident_id = ?", (incident_id,)
+    ).fetchone()
+    count = row[0] if row else 0
+    if count >= SERP_MAX_ATTEMPTS:
+        # Delete the incident and all its related rows (CASCADE handles articles,
+        # incident_sources, source_events, enrichments).
+        conn.execute("DELETE FROM incidents WHERE incident_id = ?", (incident_id,))
+        conn.commit()
+        logger.info(
+            f"Deleted {incident_id} after {count} failed SERP attempts "
+            f"(no articles found, incident is unenrichable)"
+        )
+        return True
+    logger.info(
+        f"SERP attempt {count}/{SERP_MAX_ATTEMPTS} for {incident_id} — will retry next run"
+    )
+    return False
 
 # Module-level progress dict — updated during execution, read by pipeline manager
 # Uses two sub-phases: "Fetching articles" (0-30%) and "LLM Enrichment" (30-100%)
@@ -284,7 +317,40 @@ def fetch_articles_phase(
         return stats
     
     logger.info(f"Selected {len(incidents_to_process)} incidents for fetching (random selection with domain diversity)")
-    
+
+    # --- Fast-path: incidents that already have articles saved from a previous run ---
+    # Push them directly to the LLM queue without re-fetching anything.
+    # This makes pipeline restarts essentially free for the article-fetch phase.
+    fast_path = [i for i in incidents_to_process if i.get("has_articles")]
+    needs_fetch = [i for i in incidents_to_process if not i.get("has_articles")]
+    if fast_path:
+        logger.info(f"Fast-pathing {len(fast_path)} incidents with existing articles straight to LLM queue")
+        for fp_incident in fast_path:
+            incident_queue.put({
+                "incident_id": fp_incident["incident_id"],
+                "university_name": fp_incident.get("university_name") or "Unknown",
+                "victim_raw_name": fp_incident.get("victim_raw_name"),
+                "institution_type": None,
+                "country": fp_incident.get("country"),
+                "region": fp_incident.get("region"),
+                "city": fp_incident.get("city"),
+                "incident_date": fp_incident.get("incident_date"),
+                "date_precision": "unknown",
+                "source_published_date": fp_incident.get("source_published_date"),
+                "ingested_at": None,
+                "title": fp_incident.get("title"),
+                "subtitle": None,
+                "primary_url": None,
+                "all_urls": fp_incident.get("all_urls") or [],
+                "attack_type_hint": fp_incident.get("attack_type_hint"),
+                "status": "suspected",
+                "source_confidence": "medium",
+                "notes": fp_incident.get("notes"),
+            })
+            stats["processed"] += 1
+            stats["articles_fetched"] += 1
+    incidents_to_process = needs_fetch
+
     try:
         # Process incidents one by one and push to queue as soon as articles are fetched
         total_incidents = len(incidents_to_process)
@@ -333,8 +399,6 @@ def fetch_articles_phase(
                     fetched_any = False
                     for serp_url in serp_urls:
                         domain = fetching_strategy.rate_limiter.extract_domain(serp_url)
-                        # SERP results already filtered via discover_articles_via_serp,
-                        # but double-check here to be safe.
                         if not domain or not fetching_strategy.rate_limiter.can_fetch_from_domain(domain):
                             continue
                         fetching_strategy.rate_limiter.wait_if_needed(domain)
@@ -351,6 +415,8 @@ def fetch_articles_phase(
                     if fetched_any:
                         incident_queue.put({**incident, "incident_id": incident_id})
                         stats["articles_fetched"] += 1
+                    else:
+                        _record_serp_failure(conn, incident_id)
                 else:
                     incident_queue.put({**incident, "incident_id": incident_id})
                 stats["processed"] += 1
@@ -453,12 +519,54 @@ def fetch_articles_phase(
 
                     if not serp_found:
                         source = incident_id.split("_")[0]
-                        logger.info(
-                            f"No articles for {incident_id} (source={source}) — "
-                            f"skipping enrichment queue, will retry next run"
-                        )
-                        stats["errors"] += 1
-                        should_push_to_queue = False
+
+                        # Comparitech incidents already carry fully structured metadata
+                        # (school name, date, ransomware strain, ransom amount/paid,
+                        # records affected) in the `notes` and `title` fields.
+                        # Synthesize an article from that data so the LLM can produce
+                        # a valid enrichment record without needing a real news article.
+                        if source == "comparitech":
+                            from src.edu_cti.pipeline.phase2.storage.article_storage import save_article
+                            from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
+                            inc_name = incident.get("university_name") or incident.get("victim_raw_name") or "an educational institution"
+                            inc_date = incident.get("incident_date") or ""
+                            inc_city = incident.get("city") or ""
+                            inc_region = incident.get("region") or ""
+                            inc_country = incident.get("country") or "US"
+                            inc_notes = incident.get("notes") or ""
+                            inc_title = incident.get("title") or f"Ransomware attack on {inc_name}"
+                            location_parts = [p for p in [inc_city, inc_region, inc_country] if p]
+                            location_str = ", ".join(location_parts) if location_parts else inc_country
+                            synthetic_content = (
+                                f"{inc_title}\n\n"
+                                f"{inc_name} suffered a ransomware cyberattack"
+                                + (f" in {inc_date[:4]}" if inc_date else "") + "."
+                                + (f" Location: {location_str}." if location_str else "")
+                                + (f"\n\nDetails from Comparitech tracker: {inc_notes}" if inc_notes else "")
+                                + "\n\nThis is a confirmed ransomware incident targeting an educational institution "
+                                "recorded in the Comparitech ransomware attack database."
+                            )
+                            synthetic_article = ArticleContent(
+                                url=f"comparitech://synthetic/{incident_id}",
+                                title=inc_title,
+                                content=synthetic_content,
+                                fetch_successful=True,
+                            )
+                            save_article(conn, incident_id=incident_id,
+                                         url=synthetic_article.url, article=synthetic_article)
+                            conn.commit()
+                            should_push_to_queue = True
+                            stats["articles_fetched"] += 1
+                            logger.info(f"Comparitech: synthesized article for {incident_id} ({inc_name})")
+                        else:
+                            # Track the failed SERP attempt. After SERP_MAX_ATTEMPTS the
+                            # incident is permanently deleted — it has no articles and
+                            # SERP consistently finds nothing, so it can never be enriched.
+                            deleted = _record_serp_failure(conn, incident_id)
+                            stats["errors"] += 1
+                            should_push_to_queue = False
+                            if deleted:
+                                stats["processed"] += 1  # count deletion as processed
 
                 # Push incident to queue for enrichment (with or without articles)
                 if should_push_to_queue:
