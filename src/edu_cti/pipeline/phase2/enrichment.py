@@ -497,9 +497,24 @@ class IncidentEnricher:
                 # Fix 5: Try with fixed response
                 try:
                     return json.loads(fixed_response)
+                except json.JSONDecodeError as e5:
+                    # Log what fixed_response looks like near the new failure position
+                    # so we can diagnose any remaining garbage patterns
+                    if hasattr(e5, 'pos') and e5.pos is not None:
+                        snip = fixed_response[max(0, e5.pos - 60):e5.pos + 30]
+                        logger.error(f"Fix5 still failing at pos={e5.pos}: {repr(snip)}")
+
+                # Fix 5b: Nuclear — strip ALL non-ASCII chars from the entire response.
+                # Last resort for responses with many scattered garbage injections.
+                # May corrupt non-ASCII string values but JSON is unparseable anyway.
+                try:
+                    nuclear = re.sub(r'[^\x00-\x7F]', '', fixed_response)
+                    # Re-apply trailing comma removal after stripping (new `,}` may appear)
+                    nuclear = re.sub(r',\s*([}\]])', r'\1', nuclear)
+                    return json.loads(nuclear)
                 except json.JSONDecodeError:
                     pass
-                
+
                 # Fix 6: Handle leading newline after brace
                 if raw_response.startswith('{\n'):
                     fixed = '{' + raw_response[2:].lstrip()
