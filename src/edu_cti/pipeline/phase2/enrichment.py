@@ -470,13 +470,23 @@ class IncidentEnricher:
                 # Fix 3: Remove trailing commas before } or ] — deepseek often emits these
                 fixed_response = re.sub(r',\s*([}\]])', r'\1', fixed_response)
 
-                # Fix 4: Try with fixed response
+                # Fix 4: deepseek occasionally inserts a non-ASCII character (e.g. Chinese
+                # token 极) where the opening " of a JSON key name should be.
+                # Pattern: one or more non-ASCII chars immediately before identifier + "
+                # e.g. `极records_affected_min"` → `"records_affected_min"`
+                fixed_response = re.sub(
+                    r'[^\x00-\x7F]+([A-Za-z_]\w*")',
+                    r'"\1',
+                    fixed_response,
+                )
+
+                # Fix 5: Try with fixed response
                 try:
                     return json.loads(fixed_response)
                 except json.JSONDecodeError:
                     pass
                 
-                # Fix 5: Handle leading newline after brace
+                # Fix 6: Handle leading newline after brace
                 if raw_response.startswith('{\n'):
                     fixed = '{' + raw_response[2:].lstrip()
                     try:
@@ -484,7 +494,7 @@ class IncidentEnricher:
                     except json.JSONDecodeError:
                         pass
 
-                # Fix 6: Truncated JSON — attempt repair then salvage what we can.
+                # Fix 7: Truncated JSON — attempt repair then salvage what we can.
                 # The LLM often returns valid JSON that gets cut off at the token
                 # limit. Strategy:
                 #   a) Try closing the unclosed JSON object with "}" and re-parse.
