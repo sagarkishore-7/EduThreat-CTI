@@ -1,21 +1,17 @@
 """
 Prompt template for Cyber Threat Intelligence (CTI) extraction.
 
-This prompt positions the LLM as a Cyber Threat Analyst and instructs it
-to extract comprehensive CTI data for education sector incidents.
+The JSON schema is passed separately as the Ollama format= parameter (grammar-constrained
+generation), so it is NOT included in this prompt. This removes ~8K tokens per call while
+keeping all semantic guidance the model needs to make the right choices within the schema.
 
-Version: 2.0.0 (Enhanced for comprehensive CTI extraction)
+Version: 3.0.0 (Token-optimised — schema moved to format= parameter)
 """
 
-PROMPT_TEMPLATE = """You are a Senior Cyber Threat Intelligence (CTI) Analyst specializing in educational sector cyber incidents. Your role is to analyze news articles and extract COMPREHENSIVE threat intelligence data for cross-incident analysis and sector-wide threat assessment.
+PROMPT_TEMPLATE = """You are a Senior Cyber Threat Intelligence (CTI) Analyst specialising in education sector cyber incidents. Analyse the article below and extract comprehensive threat intelligence, outputting a valid JSON object matching the schema.
 
 YOUR TASK:
-Extract detailed CTI information from the article and output a valid JSON object matching the schema. This data will be used for:
-- Threat actor tracking and attribution
-- Attack pattern analysis across the education sector
-- Incident correlation and campaign identification
-- Regulatory and compliance assessment
-- Financial impact analysis
+Extract detailed CTI information for cross-incident analysis, threat actor tracking, attack pattern analysis, regulatory assessment, and financial impact analysis.
 
 CRITICAL OUTPUT REQUIREMENTS:
 
@@ -30,174 +26,122 @@ CRITICAL OUTPUT REQUIREMENTS:
      * Educational service providers, student information systems, learning management systems
    - education_relevance_reasoning: Provide a 1-2 sentence explanation WHY this is or isn't
      education-related, citing specific evidence from the article
-   - Examples of education-related: 
+   - Examples of education-related:
      * "University of X", "XYZ School District", "College of ABC"
      * "Asbury Theological Seminary" (theological seminary = educational institution)
      * "Type of Organization: Education" in data breach notifications
-     * Any formal breach filing mentioning educational institutions
    - Examples of NOT education-related: general companies, government agencies (unless education dept)
 
-2. OUTPUT FORMAT:
-   - Output ONLY valid JSON matching the JSON Schema below
-   - No prose, explanations, or markdown formatting
-   - No code blocks or backticks
-   - Pure JSON object only
-
-3. NULL VALUES FOR UNKNOWN INFORMATION:
+2. NULL VALUES FOR UNKNOWN INFORMATION:
    - If information is NOT mentioned in the article, set field to null
-   - Do NOT guess, assume, or infer values
+   - Do NOT guess, assume, or infer values not explicitly stated
    - Boolean fields: Use null if not mentioned (NOT false)
    - Array fields: Use null if no items found (NOT empty array [])
    - Number fields: Use null if not mentioned (NOT 0)
 
-4. ATTACK CATEGORY (USE EXACT TAGS - EXTENSIVE LIST):
-   Select the MOST SPECIFIC category that applies:
-   
-   RANSOMWARE TYPES:
-   - "ransomware_encryption" - Basic ransomware with file encryption
-   - "ransomware_double_extortion" - Encryption + data theft with leak threat
-   - "ransomware_triple_extortion" - Double + DDoS or contacting victims
-   - "ransomware_data_leak_only" - No encryption, just data theft and extortion
-   
-   PHISHING/SOCIAL ENGINEERING:
-   - "phishing_credential_harvest" - Credential stealing phishing
-   - "phishing_malware_delivery" - Malware delivered via phishing
-   - "spear_phishing" - Targeted phishing
-   - "whaling" - Executive-targeted phishing
-   - "business_email_compromise" - BEC scams
-   
+3. ATTACK CATEGORY — choose the most specific tag that applies:
+   RANSOMWARE:
+   - "ransomware_encryption" — file encryption only, no confirmed exfiltration
+   - "ransomware_double_extortion" — encryption + data theft with leak threat
+   - "ransomware_triple_extortion" — double extortion + DDoS or contacting victims/partners
+   - "ransomware_data_leak_only" — data stolen and threatened for release, no encryption
+
+   PHISHING / SOCIAL ENGINEERING:
+   - "phishing_credential_harvest" — phishing aimed at stealing login credentials
+   - "phishing_malware_delivery" — phishing email used to deliver malware payload
+   - "spear_phishing" — targeted phishing at specific individuals
+   - "whaling" — executive-targeted phishing (CEO, CFO, etc.)
+   - "business_email_compromise" — fraudulent email impersonating trusted party for wire transfer/data
+
    DATA BREACHES:
-   - "data_breach_external" - External actor data theft
-   - "data_breach_internal" - Insider-caused breach
-   - "data_exposure_misconfiguration" - Cloud/config exposure
-   - "data_leak_accidental" - Unintentional data exposure
-   
-   UNAUTHORIZED ACCESS:
-   - "unauthorized_access" - General unauthorized access
-   - "credential_stuffing" - Using stolen credentials
-   - "brute_force" - Password guessing attacks
-   - "account_takeover" - Account compromise
-   
-   OTHER:
-   - "ddos_volumetric", "ddos_application" - DDoS variants
-   - "malware_trojan", "malware_infostealer", "malware_cryptominer" - Specific malware
-   - "supply_chain_software", "third_party_compromise" - Supply chain
-   - "insider_malicious", "insider_negligent" - Insider threats
-   - "hacktivism", "espionage", "web_defacement"
+   - "data_breach_external" — external actor exfiltrated data
+   - "data_breach_internal" — insider-caused data theft or exposure
+   - "data_exposure_misconfiguration" — data exposed due to cloud/server misconfiguration
+   - "data_leak_accidental" — unintentional data exposure (no malicious actor)
 
-5. ATTACK VECTOR (USE EXACT TAGS):
-   CREDENTIAL-BASED:
-   - "stolen_credentials", "credential_stuffing", "brute_force", "password_spraying"
-   
-   EMAIL-BASED:
-   - "phishing_email", "spear_phishing_email", "malicious_attachment", "business_email_compromise"
-   
-   VULNERABILITY:
-   - "vulnerability_exploit_known", "vulnerability_exploit_zero_day", "unpatched_system", "misconfiguration"
-   
-   EXPOSED SERVICES:
-   - "exposed_rdp", "exposed_vpn", "exposed_ssh", "exposed_database", "exposed_api"
-   
-   SUPPLY CHAIN:
-   - "supply_chain_compromise", "third_party_vendor", "trusted_relationship"
-   
-   CLOUD:
-   - "cloud_misconfiguration", "api_key_exposure", "storage_bucket_exposure"
+   NETWORK / MALWARE / OTHER:
+   - "ddos_volumetric", "ddos_application", "ddos_protocol" — DDoS by type
+   - "malware_trojan", "malware_worm", "malware_backdoor", "malware_rootkit",
+     "malware_cryptominer", "malware_infostealer", "malware_rat", "malware_botnet"
+   - "unauthorized_access" — confirmed intrusion with no further classification
+   - "credential_stuffing" — automated login attempts with previously leaked credentials
+   - "brute_force" — systematic password guessing
+   - "supply_chain_software", "third_party_compromise" — compromise via vendor/software
+   - "insider_malicious", "insider_negligent" — internal actor incidents
+   - "hacktivism" — politically/ideologically motivated attack
+   - "espionage" — nation-state intelligence collection
+   - "web_defacement" — website content replaced by attacker
 
-6. RANSOMWARE FAMILY (USE EXACT TAGS):
-   Major families: "lockbit", "lockbit_2", "lockbit_3", "blackcat_alphv", "cl0p_clop", "akira", 
-   "play", "8base", "bianlian", "royal", "black_basta", "medusa", "rhysida", 
-   "hunters_international", "inc_ransom", "vice_society", "hive", "conti", "ryuk",
-   "revil_sodinokibi", "darkside", "blackmatter", "maze", "cuba", "other", "unknown"
+4. ATTACK VECTOR — primary method used for initial access:
+   CREDENTIAL-BASED: "stolen_credentials", "credential_stuffing", "brute_force",
+     "password_spraying", "credential_phishing", "session_hijacking"
+   EMAIL-BASED: "phishing_email", "spear_phishing_email", "malicious_attachment",
+     "malicious_link", "business_email_compromise"
+   VULNERABILITY: "vulnerability_exploit_known" (CVE exists), "vulnerability_exploit_zero_day"
+     (no patch at time), "unpatched_system", "misconfiguration", "default_credentials"
+   EXPOSED SERVICES: "exposed_rdp", "exposed_vpn", "exposed_ssh", "exposed_database",
+     "exposed_api", "exposed_service" (generic)
+   SUPPLY CHAIN: "supply_chain_compromise", "third_party_vendor", "software_update_compromise",
+     "trusted_relationship"
+   WEB: "drive_by_download", "watering_hole", "sql_injection", "xss", "ssrf", "path_traversal"
+   CLOUD: "cloud_misconfiguration", "api_key_exposure", "storage_bucket_exposure"
+   PHYSICAL/SOCIAL: "social_engineering", "usb_drop", "tailgating"
+   INSIDER: "insider_access", "former_employee"
 
-7. THREAT ACTOR CATEGORY:
-   - "apt_nation_state" - Government-sponsored APT
-   - "apt_state_sponsored" - State-affiliated group
-   - "cybercriminal_organized" - Organized crime group
-   - "ransomware_gang" - Ransomware-as-a-Service operator
-   - "ransomware_affiliate" - RaaS affiliate
-   - "hacktivist" - Politically motivated
-   - "insider_threat" - Internal actor
+5. RANSOMWARE FAMILY:
+   Use the exact known family name in lowercase (e.g. "lockbit", "blackcat_alphv", "cl0p_clop",
+   "akira", "play", "black_basta", "rhysida", "medusa", "conti", "ryuk", "revil_sodinokibi").
+   Use "unknown" if the family is not identified. Use "other" for confirmed but unlisted families.
+
+6. THREAT ACTOR CATEGORY:
+   - "apt_nation_state" — confirmed government-sponsored APT group
+   - "apt_state_sponsored" — state-affiliated but not confirmed government-direct
+   - "cybercriminal_organized" — organised crime group (not ransomware-specific)
+   - "ransomware_gang" — ransomware-as-a-Service operator (the group running the platform)
+   - "ransomware_affiliate" — RaaS affiliate (uses the platform, not the operator)
+   - "hacktivist" — politically or ideologically motivated attacker
+   - "insider_threat" — current or former employee, contractor
    - "unknown"
 
-8. DATA CATEGORIES (EXTENSIVE - SELECT ALL THAT APPLY):
-   STUDENT DATA: "student_pii", "student_ssn", "student_grades", "student_transcripts",
-   "student_financial_aid", "student_health_records", "student_immigration"
-   
-   EMPLOYEE DATA: "employee_pii", "employee_ssn", "employee_payroll", "employee_benefits"
-   
-   RESEARCH: "research_data", "research_grants", "research_ip", "research_unpublished"
-   
-   FINANCIAL: "financial_records", "bank_accounts", "credit_cards", "donor_information"
-   
-   CREDENTIALS: "usernames_passwords", "api_keys", "certificates"
+7. DATA CATEGORIES, SYSTEMS AFFECTED, OPERATIONAL IMPACTS, SECURITY IMPROVEMENTS:
+   Select all tags that apply from the schema enum. Tag names are self-describing
+   (e.g. "student_pii", "employee_ssn", "email_system", "classes_cancelled",
+   "mfa_implemented"). Extract only values explicitly mentioned in the article.
 
-9. SYSTEMS AFFECTED (USE EXACT CODES):
-   CORE IT: "email_system", "active_directory", "vpn", "file_servers", "backup_systems"
-   
-   ACADEMIC: "lms_learning_management", "sis_student_information", "registration_system",
-   "grade_system", "library_system", "exam_proctoring"
-   
-   ADMINISTRATIVE: "hr_system", "payroll_system", "financial_system", "admissions_system"
-   
-   PUBLIC: "public_website", "student_portal", "staff_portal"
-   
-   NETWORK: "core_network", "wifi_network", "voip_phone"
+8. STANDARDIZED NUMERIC VALUES:
+   - Convert ALL monetary amounts to USD integers:
+     * "$4.75 million" → 4750000
+     * "5.2M dollars" → 5200000
+   - Durations as specified by field:
+     * downtime_days: "2 weeks" → 14
+     * outage_duration_hours: "3 days" → 72
+   - User/record counts as integers: "45,000 students" → 45000
 
-10. OPERATIONAL IMPACTS (SELECT ALL THAT APPLY):
-   "classes_cancelled", "classes_moved_online", "exams_postponed", "graduation_delayed",
-   "semester_extended", "campus_closed", "research_halted", "payroll_delayed",
-   "email_unavailable", "website_down", "student_portal_down", "lms_unavailable",
-   "network_offline", "manual_processes_required"
+9. DATE FORMATTING:
+   - All dates MUST be in ISO format: YYYY-MM-DD
+   - Use null for unknown or estimated dates (NOT made-up dates)
+   - incident_date = date the attack/breach OCCURRED (not when it was reported)
+   - publication_date = date this article was published
 
-11. SECURITY IMPROVEMENTS (SELECT ALL MENTIONED):
-    "mfa_implemented", "mfa_expanded", "network_segmentation", "endpoint_detection_response",
-    "backup_strategy_improved", "air_gapped_backups", "security_awareness_training",
-    "vulnerability_management", "penetration_testing", "zero_trust_initiative", 
-    "privileged_access_management", "incident_response_plan_updated"
+10. INCIDENT SEVERITY:
+    - "critical" — business-stopping, major confirmed data loss, significant financial impact
+    - "high" — major operational disruption, substantial data at risk
+    - "medium" — notable impact, contained relatively quickly, limited data exposure
+    - "low" — minor incident, limited impact, quickly resolved
 
-12. STANDARDIZED NUMERIC VALUES:
-    - Convert ALL monetary amounts to USD numbers:
-      * "$4.75 million" → 4750000
-      * "5.2M dollars" → 5200000
-    - Durations to hours OR days as specified by field:
-      * downtime_days: "2 weeks" → 14
-      * outage_duration_hours: "3 days" → 72
-    - User counts as integers:
-      * "45,000 students" → 45000
-
-13. DATE FORMATTING:
-    - All dates MUST be in ISO format: YYYY-MM-DD
-    - Use null for unknown dates (NOT made-up dates)
-
-14. TIMELINE EVENT TYPES:
-    "initial_access", "reconnaissance", "lateral_movement", "privilege_escalation",
-    "data_exfiltration", "encryption_started", "ransom_demand", "discovery",
-    "containment", "recovery", "disclosure", "law_enforcement_contact"
-
-15. INCIDENT SEVERITY:
-    - "critical" - Business-stopping, major data loss, significant financial impact
-    - "high" - Major disruption, substantial data at risk
-    - "medium" - Notable impact, contained relatively quickly
-    - "low" - Minor incident, limited impact
-
-16. CROSS-INCIDENT ANALYSIS FIELDS:
-    - attack_campaign_name: If part of a known campaign (e.g., "MOVEit", "PaperCut")
+11. CROSS-INCIDENT ANALYSIS:
+    - attack_campaign_name: Only if the article explicitly links this to a named campaign
+      (e.g., "MOVEit", "PaperCut", "Cl0p campaign") — do NOT infer campaign names
     - sector_targeting_pattern: "targeted_education_only" or "opportunistic_multi_sector"
 
-17. ROUNDUP / MULTI-INCIDENT ARTICLES:
-    If this article is a digest, weekly roundup, or breach summary that covers MULTIPLE
-    separate education sector incidents (e.g. "Week in Breach", "ransomware attacks in 2023"):
+12. ROUNDUP / MULTI-INCIDENT ARTICLES:
+    If this article covers MULTIPLE separate education sector incidents (digest, weekly roundup,
+    breach summary, "Week in Breach", "ransomware attacks in 2023", etc.):
     - Extract the PRIMARY/most-detailed incident in all fields above as normal
     - List every OTHER education institution mentioned as a victim in `other_edu_incidents`
-    - Each entry needs at minimum: victim_name (required), plus whatever date/attack_type/country
-      is mentioned for them
+    - Each entry needs at minimum: victim_name, plus any date/attack_type/country mentioned
     - Do NOT duplicate the primary victim in `other_edu_incidents`
-    - If the article is about a SINGLE incident, leave `other_edu_incidents` as null
-
-JSON SCHEMA:
-
-{schema_json}
+    - If the article covers a SINGLE incident, leave `other_edu_incidents` as null
 
 ARTICLE INFORMATION:
 
@@ -211,12 +155,11 @@ ARTICLE CONTENT:
 ---
 
 EXTRACTION GUIDELINES:
-- Be COMPREHENSIVE - extract every piece of threat intelligence mentioned
-- Use the MOST SPECIFIC enum value available
-- For multi-stage attacks, capture the full attack chain
-- Note relationships to other incidents or campaigns
-- Extract IOCs (IP addresses, domains, hashes) if mentioned
-- Capture recovery timeline and security improvements
-- Set confidence_score based on information completeness (0.0-1.0)
+- Be COMPREHENSIVE — extract every piece of threat intelligence mentioned in the article
+- For multi-stage attacks, capture the full attack chain in the timeline
+- Extract IOCs (IP addresses, domains, file hashes) if mentioned
+- Capture recovery timeline and any security improvements implemented post-incident
+- Use the MOST SPECIFIC enum value available for classification fields
+- Set confidence_score based on information completeness (0.0 = almost no detail, 1.0 = very detailed)
 
 Output ONLY the JSON object, no other text."""

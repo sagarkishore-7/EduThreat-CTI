@@ -156,16 +156,20 @@ class OllamaLLMClient:
         self,
         system_prompt: str,
         user_prompt: str,
+        schema: Optional[Dict[str, Any]] = None,
         max_retries: int = 2,
     ) -> str:
         """
         Extract JSON from LLM using simple system/user prompt approach.
-        
+
         Args:
             system_prompt: System prompt
             user_prompt: User prompt with article content
+            schema: Optional JSON schema dict to pass as format — Ollama builds a GBNF
+                    grammar from it, constraining output to exactly the schema's structure
+                    and enum values. Falls back to "json" (valid JSON only) if not provided.
             max_retries: Maximum number of retries
-            
+
         Returns:
             Raw JSON string response
         """
@@ -173,14 +177,19 @@ class OllamaLLMClient:
             {'role': 'system', 'content': system_prompt},
             {'role': 'user', 'content': user_prompt}
         ]
-        
+
+        # Use the provided schema for grammar-constrained generation, or fall back to "json"
+        # Schema-based format enforces enum values at token level — the model cannot output
+        # values outside the enum, preventing hallucinated field values.
+        format_param = schema if schema is not None else "json"
+
         last_error = None
         for attempt in range(max_retries + 1):
             try:
                 logger.debug(f"Making LLM API call (attempt {attempt + 1}/{max_retries + 1})")
                 response = self.chat(
                     messages=messages,
-                    format="json",  # Grammar-constrained JSON generation — prevents non-JSON tokens (e.g. Chinese spam) in structural positions
+                    format=format_param,
                     stream=False,
                     temperature=0.1,  # Low for deterministic structured output
                 )
@@ -244,9 +253,10 @@ class OllamaLLMClient:
             except Exception as e:
                 last_error = e
                 if attempt < max_retries:
-                    logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying...")
+                    wait = 0.1 * (2 ** attempt)  # exponential: 0.1s, 0.2s — much less blocking than linear 1s/2s
+                    logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait:.1f}s...")
                     import time
-                    time.sleep(1.0 * (attempt + 1))
+                    time.sleep(wait)
                 else:
                     raise
         

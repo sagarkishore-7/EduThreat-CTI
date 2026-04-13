@@ -363,17 +363,12 @@ class IncidentEnricher:
             )
             combined_text = combined_text[:MAX_ARTICLE_CHARS] + "\n\n[TRUNCATED — article too long]"
 
-        # Use centralized prompt template
+        # System prompt — kept short and static so Ollama's KV-cache can reuse the prefix
+        # across consecutive calls. Character-encoding warnings removed: the schema passed
+        # as format= already enforces valid JSON tokens at generation level.
         system_prompt = (
-            "You are a Cyber Threat Intelligence Analyst. "
-            "Output ONLY valid JSON matching the provided schema. "
-            "No prose, no explanations, no markdown - pure JSON only. "
-            "CRITICAL: Use strict ASCII/UTF-8 encoding. "
-            "Do NOT output any Chinese, Japanese, Korean, Arabic, or other non-Latin characters "
-            "anywhere in the JSON — not in keys, not in values, not between fields. "
-            "Every character in your response must be standard ASCII (0-127) or escaped Unicode. "
-            "Do NOT insert any text between JSON fields. "
-            "Do NOT add trailing commas after the last field in any object or array."
+            "You are a Cyber Threat Intelligence Analyst specialising in education sector incidents. "
+            "Output ONLY valid JSON. Null for unknown fields. No prose, no markdown."
         )
 
         # Only inject a TARGET INSTITUTION hint when the incident is a secondary stub
@@ -395,19 +390,21 @@ class IncidentEnricher:
             target_institution_line = ""
 
         user_prompt = PROMPT_TEMPLATE.format(
-            schema_json=json.dumps(EXTRACTION_SCHEMA, ensure_ascii=False, indent=2),
             url=primary_url,
             title=title,
             target_institution_line=target_institution_line,
             text=combined_text
         )
-        
+
         try:
-            # Call LLM
+            # Call LLM — pass EXTRACTION_SCHEMA as format so Ollama builds a GBNF grammar
+            # from it. This enforces enum values at token level AND removes ~8K tokens of
+            # schema JSON from the user prompt.
             raw_response = self.llm_client.extract_json(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
-                max_retries=2
+                schema=EXTRACTION_SCHEMA,
+                max_retries=2,
             )
             
             # Parse JSON response
