@@ -418,11 +418,16 @@ def _flatten_enrichment_for_db(
         'confidence': raw_get("confidence"),
     }
     
-    # Convert booleans to integers for SQLite
+    # Columns whose values are intentionally JSON-serialised lists (stored as TEXT).
+    _JSON_TEXT_COLS = {"systems_affected_codes", "timeline_json", "mitre_techniques_json"}
+
     for key, value in flat.items():
         if isinstance(value, bool):
             flat[key] = 1 if value else 0
-    
+        elif isinstance(value, list) and key not in _JSON_TEXT_COLS:
+            # LLM returned a scalar field as a list — coerce to first element
+            flat[key] = value[0] if value else None
+
     return flat
 
 
@@ -760,7 +765,22 @@ def save_enrichment_result(
         raise
 
     # Flatten and save to incident_enrichments_flat table
-    # Pass raw_json_data to capture all LLM-extracted fields
+    # Pre-coerce raw_json_data: grammar-constrained LLM may return scalar fields as lists.
+    # _flatten_enrichment_for_db also applies a post-pass, but doing it here means
+    # the individual _scalar() calls above (country, region, etc.) share the same
+    # normalised source without duplicating coercion logic.
+    _FLAT_ARRAY_KEYS = {
+        "timeline", "mitre_attack_techniques", "systems_affected_codes",
+        "data_categories_affected", "data_types", "operational_impacts",
+        "security_improvements", "third_parties_involved", "other_edu_incidents",
+        "iocs", "target_demographics", "attack_chain",
+    }
+    if raw_json_data:
+        raw_json_data = {
+            k: (v[0] if isinstance(v, list) and v and k not in _FLAT_ARRAY_KEYS else
+                (None if isinstance(v, list) and k not in _FLAT_ARRAY_KEYS else v))
+            for k, v in raw_json_data.items()
+        }
     flat_data = _flatten_enrichment_for_db(enrichment_result, raw_json_data)
     flat_data['incident_id'] = incident_id
     # Override with incident table fallbacks only if not already set from raw_json_data
