@@ -32,14 +32,29 @@ CRITICAL OUTPUT REQUIREMENTS:
      * "Type of Organization: Education" in data breach notifications
    - Examples of NOT education-related: general companies, government agencies (unless education dept)
 
-2. NULL VALUES FOR UNKNOWN INFORMATION:
+2. NORMALISATION RULES (MANDATORY — apply to ALL text fields):
+   - INSTITUTION NAMES: Always translate and romanise to standard English.
+     * Japanese: "国立大学法人 新潟大学" → "Niigata University"
+     * Chinese: "北京大学" → "Peking University"
+     * Arabic, Korean, Cyrillic, or any other non-Latin script → translate to English
+     * Use the internationally recognised English name where one exists
+     * If no English name exists, romanise (transliterate) to Latin characters
+   - ALL TEXT FIELDS (institution_name, city, region, threat_actor_name, etc.):
+     Output in English only. No non-Latin characters anywhere in the JSON.
+   - CURRENCY: Convert ALL monetary values to USD integers before storing.
+     * British pounds, Euros, Bitcoin, etc. must be converted to USD equivalent
+     * Use approximate exchange rate if exact rate not stated in article
+     * "$4.75 million" → 4750000; "£2M" → ~2540000; "€5M" → ~5400000
+   - COUNTRY / COUNTRY CODE: Use the standard English country name and ISO 3166-1 alpha-2 code.
+
+3. NULL VALUES FOR UNKNOWN INFORMATION:
    - If information is NOT mentioned in the article, set field to null
    - Do NOT guess, assume, or infer values not explicitly stated
    - Boolean fields: Use null if not mentioned (NOT false)
    - Array fields: Use null if no items found (NOT empty array [])
    - Number fields: Use null if not mentioned (NOT 0)
 
-3. ATTACK CATEGORY — choose the most specific tag that applies:
+4. ATTACK CATEGORY — choose the most specific tag that applies:
    RANSOMWARE:
    - "ransomware_encryption" — file encryption only, no confirmed exfiltration
    - "ransomware_double_extortion" — encryption + data theft with leak threat
@@ -72,7 +87,7 @@ CRITICAL OUTPUT REQUIREMENTS:
    - "espionage" — nation-state intelligence collection
    - "web_defacement" — website content replaced by attacker
 
-4. ATTACK VECTOR — primary method used for initial access:
+5. ATTACK VECTOR — primary method used for initial access:
    CREDENTIAL-BASED: "stolen_credentials", "credential_stuffing", "brute_force",
      "password_spraying", "credential_phishing", "session_hijacking"
    EMAIL-BASED: "phishing_email", "spear_phishing_email", "malicious_attachment",
@@ -88,12 +103,12 @@ CRITICAL OUTPUT REQUIREMENTS:
    PHYSICAL/SOCIAL: "social_engineering", "usb_drop", "tailgating"
    INSIDER: "insider_access", "former_employee"
 
-5. RANSOMWARE FAMILY:
+6. RANSOMWARE FAMILY:
    Use the exact known family name in lowercase (e.g. "lockbit", "blackcat_alphv", "cl0p_clop",
    "akira", "play", "black_basta", "rhysida", "medusa", "conti", "ryuk", "revil_sodinokibi").
    Use "unknown" if the family is not identified. Use "other" for confirmed but unlisted families.
 
-6. THREAT ACTOR CATEGORY:
+7. THREAT ACTOR CATEGORY:
    - "apt_nation_state" — confirmed government-sponsored APT group
    - "apt_state_sponsored" — state-affiliated but not confirmed government-direct
    - "cybercriminal_organized" — organised crime group (not ransomware-specific)
@@ -103,12 +118,12 @@ CRITICAL OUTPUT REQUIREMENTS:
    - "insider_threat" — current or former employee, contractor
    - "unknown"
 
-7. DATA CATEGORIES, SYSTEMS AFFECTED, OPERATIONAL IMPACTS, SECURITY IMPROVEMENTS:
+8. DATA CATEGORIES, SYSTEMS AFFECTED, OPERATIONAL IMPACTS, SECURITY IMPROVEMENTS:
    Select all tags that apply from the schema enum. Tag names are self-describing
    (e.g. "student_pii", "employee_ssn", "email_system", "classes_cancelled",
    "mfa_implemented"). Extract only values explicitly mentioned in the article.
 
-8. STANDARDIZED NUMERIC VALUES:
+9. STANDARDIZED NUMERIC VALUES:
    - Convert ALL monetary amounts to USD integers:
      * "$4.75 million" → 4750000
      * "5.2M dollars" → 5200000
@@ -117,24 +132,24 @@ CRITICAL OUTPUT REQUIREMENTS:
      * outage_duration_hours: "3 days" → 72
    - User/record counts as integers: "45,000 students" → 45000
 
-9. DATE FORMATTING:
+10. DATE FORMATTING:
    - All dates MUST be in ISO format: YYYY-MM-DD
    - Use null for unknown or estimated dates (NOT made-up dates)
    - incident_date = date the attack/breach OCCURRED (not when it was reported)
    - publication_date = date this article was published
 
-10. INCIDENT SEVERITY:
+11. INCIDENT SEVERITY:
     - "critical" — business-stopping, major confirmed data loss, significant financial impact
     - "high" — major operational disruption, substantial data at risk
     - "medium" — notable impact, contained relatively quickly, limited data exposure
     - "low" — minor incident, limited impact, quickly resolved
 
-11. CROSS-INCIDENT ANALYSIS:
+12. CROSS-INCIDENT ANALYSIS:
     - attack_campaign_name: Only if the article explicitly links this to a named campaign
       (e.g., "MOVEit", "PaperCut", "Cl0p campaign") — do NOT infer campaign names
     - sector_targeting_pattern: "targeted_education_only" or "opportunistic_multi_sector"
 
-12. ROUNDUP / MULTI-INCIDENT ARTICLES:
+13. ROUNDUP / MULTI-INCIDENT ARTICLES:
     If this article covers MULTIPLE separate education sector incidents (digest, weekly roundup,
     breach summary, "Week in Breach", "ransomware attacks in 2023", etc.):
     - Extract the PRIMARY/most-detailed incident in all fields above as normal
