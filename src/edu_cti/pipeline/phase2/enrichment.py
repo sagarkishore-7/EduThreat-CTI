@@ -489,13 +489,14 @@ class IncidentEnricher:
                 #   c) Non-ASCII embedded within a JSON key name:
                 #      "field_name极": null
                 # Drop lines with no JSON structural chars (pure garbage lines), AND
-                # lines that are just an opening quote followed by only non-ASCII chars
-                # (e.g. `    "极速赛车开奖结果历史` — after nuclear strip becomes `    "`
-                # which is an unclosed string and breaks the parse).
+                # lines that are pure non-ASCII strings (with or without closing quote/comma):
+                #   e.g. `    "极速赛车开奖结果历史` → unclosed string after nuclear strip
+                #   e.g. `    "极速赛车开奖直播历史记录官网",` → becomes `"",` (orphaned in object)
+                _pure_nonascii_str = re.compile(r'^\s*"[^\x00-\x7F]+"?\s*,?\s*$')
                 fixed_response = '\n'.join(
                     line for line in fixed_response.split('\n')
                     if (
-                        (re.search(r'[":{}\[\]]', line) and not re.match(r'^\s*"[^\x00-\x7F]+$', line))
+                        (re.search(r'[":{}\[\]]', line) and not _pure_nonascii_str.match(line))
                         or not line.strip()
                     )
                 )
