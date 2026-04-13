@@ -132,11 +132,24 @@ CRITICAL OUTPUT REQUIREMENTS:
      * outage_duration_hours: "3 days" → 72
    - User/record counts as integers: "45,000 students" → 45000
 
-10. DATE FORMATTING:
+10. DATE FORMATTING AND RELATIVE DATE RESOLUTION:
    - All dates MUST be in ISO format: YYYY-MM-DD
-   - Use null for unknown or estimated dates (NOT made-up dates)
    - incident_date = date the attack/breach OCCURRED (not when it was reported)
-   - publication_date = date this article was published
+   - publication_date = date this article was published (use the URL or article metadata)
+   - RELATIVE DATES: Resolve all relative time expressions using publication_date as the anchor.
+     Examples (assuming article published 2024-03-15):
+     * "last week" → 2024-03-08 (subtract 7 days), set date_precision to "approximate"
+     * "last month" → 2024-02-15, set date_precision to "month_only"
+     * "yesterday" → 2024-03-14, set date_precision to "day"
+     * "two weeks ago" → 2024-03-01, set date_precision to "approximate"
+     * "earlier this year" → 2024-01-01 (use year only), set date_precision to "year_only"
+     * "last year" → 2023-01-01, set date_precision to "year_only"
+     * "recently" → use publication_date minus 14 days as estimate, set date_precision to "approximate"
+   - If you cannot determine publication_date from the article, use null for relative dates
+     rather than guessing — do NOT fabricate absolute dates from unresolvable relative expressions
+   - Always set incident_date_precision to reflect how confident the date is:
+     "exact" (specific date stated), "approximate" (relative expression resolved),
+     "month_only" (only month known), "year_only" (only year known), "unknown"
 
 11. INCIDENT SEVERITY:
     - "critical" — business-stopping, major confirmed data loss, significant financial impact
