@@ -639,17 +639,21 @@ def json_to_cti_enrichment(
     # Timeline - normalize event_type and date_precision values
     timeline = None
     if json_data.get("timeline"):
-        timeline = [
-            TimelineEvent(
+        timeline = []
+        for event in json_data["timeline"]:
+            # LLM sometimes emits a plain string instead of a dict — skip non-dicts
+            if not isinstance(event, dict):
+                continue
+            timeline.append(TimelineEvent(
                 date=event.get("date"),
                 date_precision=normalize_date_precision(event.get("date_precision")),
                 event_description=event.get("event_description"),
                 event_type=normalize_event_type(event.get("event_type")),
                 actor_attribution=event.get("actor_attribution"),
                 indicators=event.get("indicators")
-            )
-            for event in json_data["timeline"]
-        ]
+            ))
+        if not timeline:
+            timeline = None
     
     # MITRE ATT&CK techniques
     mitre_techniques = None
@@ -711,6 +715,14 @@ def json_to_cti_enrichment(
         data_exfil = json_data.get("data_exfiltrated")
         if data_exfil is None:
             data_exfil = json_data.get("data_breached")
+        # Coerce to bool — LLM sometimes puts a record count (int) in this field
+        if data_exfil is not None and not isinstance(data_exfil, bool):
+            if isinstance(data_exfil, (int, float)):
+                data_exfil = data_exfil > 0
+            elif isinstance(data_exfil, str):
+                data_exfil = data_exfil.strip().lower() in ("true", "yes", "1")
+            else:
+                data_exfil = bool(data_exfil)
         
         # Recovery timeframe - check multiple sources
         recovery_days = json_data.get("recovery_timeframe_days")
@@ -730,7 +742,17 @@ def json_to_cti_enrichment(
         
         # Operational impact from extraction schema - normalize to valid enum list
         operational_impact = normalize_operational_impact(json_data.get("operational_impact"))
-        
+
+        def _to_bool(v):
+            """Coerce any LLM value to Optional[bool]. Integers/strings → bool; None → None."""
+            if v is None or isinstance(v, bool):
+                return v
+            if isinstance(v, (int, float)):
+                return v > 0
+            if isinstance(v, str):
+                return v.strip().lower() in ("true", "yes", "1")
+            return bool(v)
+
         attack_dynamics = AttackDynamics(
             attack_vector=final_attack_vector,
             attack_chain=attack_chain,
@@ -738,9 +760,9 @@ def json_to_cti_enrichment(
             data_exfiltration=data_exfil,
             encryption_impact=encryption_impact,
             impact_scope=None,
-            ransom_demanded=json_data.get("was_ransom_demanded"),
+            ransom_demanded=_to_bool(json_data.get("was_ransom_demanded")),
             ransom_amount=ransom_amt_str,
-            ransom_paid=json_data.get("ransom_paid"),
+            ransom_paid=_to_bool(json_data.get("ransom_paid")),
             recovery_timeframe_days=recovery_days,
             business_impact=business_impact,
             operational_impact=operational_impact
