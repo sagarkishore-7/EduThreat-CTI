@@ -441,11 +441,17 @@ def map_systems_affected_codes(codes: List[str]) -> List[str]:
     return mapped if mapped else None
 
 
-def map_attack_category_to_vector(category: str) -> Optional[str]:
+def map_attack_category_to_vector(category) -> Optional[str]:
     """Map attack category to attack vector (handles extensive new categories)."""
     if not category:
         return None
-    
+
+    # LLM may return a list when the schema allows multiple categories — take the first
+    if isinstance(category, list):
+        category = category[0] if category else None
+        if not category:
+            return None
+
     # Normalize to lowercase for matching
     category_lower = category.lower()
     
@@ -637,7 +643,13 @@ def json_to_cti_enrichment(
     # Attack dynamics - capture all attack-related fields
     attack_dynamics = None
     attack_category = json_data.get("attack_category")
+    # LLM may return attack_category as a list — coerce to string (use first element)
+    if isinstance(attack_category, list):
+        attack_category = attack_category[0] if attack_category else None
     attack_vector = json_data.get("attack_vector")  # Direct attack_vector from schema
+    # Same guard for attack_vector
+    if isinstance(attack_vector, list):
+        attack_vector = attack_vector[0] if attack_vector else None
     
     # Check if we have any attack-related data
     has_attack_data = (
