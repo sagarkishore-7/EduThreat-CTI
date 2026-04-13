@@ -423,6 +423,13 @@ class IncidentEnricher:
                 # Education-related but truncated — treat as failed for retry
                 return None, None
 
+            # Coerce any scalar fields that the LLM returned as lists.
+            # Grammar-constrained generation occasionally wraps a single value in an array.
+            # We normalise here so that BOTH json_to_cti_enrichment AND the raw_json_data
+            # returned to save_enrichment_result see consistent scalar types.
+            from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import _coerce_llm_scalars
+            json_data = _coerce_llm_scalars(json_data)
+
             # Map to CTIEnrichmentResult
             result = json_to_cti_enrichment(json_data, primary_url, incident)
             return result, json_data
