@@ -238,7 +238,39 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         except sqlite3.OperationalError:
             pass  # Column already exists
 
+    # Checkpoint table — tracks which incidents have had articles fetched so
+    # a crashed pipeline resumes without re-fetching already-processed URLs.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS pipeline_checkpoint (
+            incident_id TEXT PRIMARY KEY,
+            phase TEXT NOT NULL DEFAULT 'article_fetch',
+            completed_at TEXT NOT NULL
+        )
+        """
+    )
+
     conn.commit()
+
+
+def checkpoint_mark(conn: sqlite3.Connection, incident_id: str, phase: str = "article_fetch") -> None:
+    """Record that article fetching is complete for an incident."""
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """
+        INSERT INTO pipeline_checkpoint (incident_id, phase, completed_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(incident_id) DO UPDATE SET phase=excluded.phase, completed_at=excluded.completed_at
+        """,
+        (incident_id, phase, now),
+    )
+    conn.commit()
+
+
+def checkpoint_get_fetched(conn: sqlite3.Connection) -> set:
+    """Return set of incident_ids that have already completed article fetch."""
+    cur = conn.execute("SELECT incident_id FROM pipeline_checkpoint WHERE phase = 'article_fetch'")
+    return {row[0] for row in cur.fetchall()}
 
 
 def _flatten_enrichment_for_db(
@@ -647,15 +679,26 @@ def save_enrichment_result(
         update_params.extend([llm_incident_date, llm_date_precision or "approximate"])
     
     update_params.append(incident_id)
-    
-    conn.execute(
-        f"""
-        UPDATE incidents
-        SET {update_fields}
-        WHERE incident_id = ?
-        """,
-        tuple(update_params)
-    )
+
+    # BEGIN IMMEDIATE acquires the write lock up-front, preventing "database is locked"
+    # errors when multiple enrichment workers try to write at the same time.
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError:
+        pass  # Already in a transaction — caller manages the transaction boundary
+
+    try:
+        conn.execute(
+            f"""
+            UPDATE incidents
+            SET {update_fields}
+            WHERE incident_id = ?
+            """,
+            tuple(update_params)
+        )
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
     # --- Post-enrichment dedup ---
     # If another already-enriched incident has the same primary_url + incident_date,
@@ -683,31 +726,35 @@ def save_enrichment_result(
             return  # Nothing more to do for this incident
 
     # Save full JSON to incident_enrichments table
-    cur = conn.execute(
-        "SELECT incident_id FROM incident_enrichments WHERE incident_id = ?",
-        (incident_id,)
-    )
-    exists = cur.fetchone() is not None
-    
-    if exists:
-        conn.execute(
-            """
-            UPDATE incident_enrichments
-            SET enrichment_data = ?, updated_at = ?
-            WHERE incident_id = ?
-            """,
-            (enrichment_json, now, incident_id)
+    try:
+        cur = conn.execute(
+            "SELECT incident_id FROM incident_enrichments WHERE incident_id = ?",
+            (incident_id,)
         )
-    else:
-        conn.execute(
-            """
-            INSERT INTO incident_enrichments
-            (incident_id, enrichment_data, created_at, updated_at)
-            VALUES (?, ?, ?, ?)
-            """,
-            (incident_id, enrichment_json, now, now)
-        )
-    
+        exists = cur.fetchone() is not None
+
+        if exists:
+            conn.execute(
+                """
+                UPDATE incident_enrichments
+                SET enrichment_data = ?, updated_at = ?
+                WHERE incident_id = ?
+                """,
+                (enrichment_json, now, incident_id)
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO incident_enrichments
+                (incident_id, enrichment_data, created_at, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (incident_id, enrichment_json, now, now)
+            )
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+
     # Flatten and save to incident_enrichments_flat table
     # Pass raw_json_data to capture all LLM-extracted fields
     flat_data = _flatten_enrichment_for_db(enrichment_result, raw_json_data)
@@ -758,33 +805,37 @@ def save_enrichment_result(
         'created_at', 'updated_at'
     ]
     
-    if flat_exists:
-        # Update existing flat record
-        update_fields = [f"{col} = ?" for col in all_columns if col != 'incident_id']
-        update_values = [flat_data.get(col) for col in all_columns if col != 'incident_id']
-        update_values.append(incident_id)
-        
-        conn.execute(
-            f"""
-            UPDATE incident_enrichments_flat
-            SET {', '.join(update_fields)}
-            WHERE incident_id = ?
-            """,
-            update_values
-        )
-    else:
-        # Insert new flat record
-        values = [flat_data.get(col) for col in all_columns]
-        
-        conn.execute(
-            f"""
-            INSERT INTO incident_enrichments_flat ({', '.join(all_columns)})
-            VALUES ({', '.join(['?'] * len(all_columns))})
-            """,
-            values
-        )
-    
-    conn.commit()
+    try:
+        if flat_exists:
+            # Update existing flat record
+            update_fields = [f"{col} = ?" for col in all_columns if col != 'incident_id']
+            update_values = [flat_data.get(col) for col in all_columns if col != 'incident_id']
+            update_values.append(incident_id)
+
+            conn.execute(
+                f"""
+                UPDATE incident_enrichments_flat
+                SET {', '.join(update_fields)}
+                WHERE incident_id = ?
+                """,
+                update_values
+            )
+        else:
+            # Insert new flat record
+            values = [flat_data.get(col) for col in all_columns]
+
+            conn.execute(
+                f"""
+                INSERT INTO incident_enrichments_flat ({', '.join(all_columns)})
+                VALUES ({', '.join(['?'] * len(all_columns))})
+                """,
+                values
+            )
+
+        conn.commit()
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     logger.info(
         f"Saved enrichment result for incident {incident_id} (JSON + flattened)"
     )

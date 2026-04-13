@@ -293,7 +293,16 @@ app.include_router(admin_router, prefix="/api")
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    """Basic liveness probe."""
+    """Basic liveness probe. Returns 503 if the enrichment pipeline is stalled."""
+    try:
+        from src.edu_cti.pipeline.phase2.__main__ import _get_watchdog
+        watchdog = _get_watchdog()
+        if watchdog and watchdog.is_stalled():
+            import os
+            logger.error("[HEALTH] Enrichment watchdog stall detected — triggering restart")
+            os._exit(1)
+    except Exception:
+        pass
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
 
 

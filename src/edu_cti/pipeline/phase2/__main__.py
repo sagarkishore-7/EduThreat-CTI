@@ -8,6 +8,8 @@ and comprehensive CTI extraction.
 
 import argparse
 import logging
+import os
+import random
 import sys
 import time
 import queue
@@ -23,6 +25,8 @@ from src.edu_cti.pipeline.phase2.storage.db import (
     save_enrichment_result,
     mark_incident_skipped,
     get_enrichment_stats,
+    checkpoint_mark,
+    checkpoint_get_fetched,
 )
 from src.edu_cti.pipeline.phase2.utils.deduplication import deduplicate_by_institution
 from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
@@ -46,6 +50,72 @@ logger = logging.getLogger(__name__)
 
 # Module-level cancel event — set by pipeline manager to request graceful stop
 _cancel_event = threading.Event()
+
+# Per-incident in-progress guard — prevents two workers from enriching the same
+# incident simultaneously when the queue is fed from multiple sources.
+_in_progress: set = set()
+_in_progress_lock = threading.Lock()
+
+
+class EnrichmentWatchdog:
+    """
+    Detects enrichment pipeline stalls and triggers a clean process exit.
+
+    A stall is defined as no successful enrichment heartbeat for more than
+    ``stall_seconds`` seconds.  On stall detection the watchdog calls
+    ``os._exit(1)`` so Railway/Docker restarts the container automatically.
+
+    Usage:
+        watchdog = EnrichmentWatchdog(stall_seconds=300)
+        watchdog.start()
+        ...
+        watchdog.heartbeat()   # call after each successful enrichment
+        ...
+        watchdog.stop()
+    """
+
+    def __init__(self, stall_seconds: int = 300):
+        self._stall_seconds = stall_seconds
+        self._last_beat = time.monotonic()
+        self._stop_event = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self) -> None:
+        self._last_beat = time.monotonic()
+        self._stop_event.clear()
+        self._thread = threading.Thread(
+            target=self._watch, daemon=True, name="enrichment-watchdog"
+        )
+        self._thread.start()
+        logger.info(f"[WATCHDOG] Started — stall threshold {self._stall_seconds}s")
+
+    def stop(self) -> None:
+        self._stop_event.set()
+
+    def heartbeat(self) -> None:
+        """Call after every successful enrichment to reset the stall timer."""
+        self._last_beat = time.monotonic()
+
+    def is_stalled(self) -> bool:
+        return (time.monotonic() - self._last_beat) > self._stall_seconds
+
+    def _watch(self) -> None:
+        while not self._stop_event.wait(timeout=30):
+            elapsed = time.monotonic() - self._last_beat
+            if elapsed > self._stall_seconds:
+                logger.error(
+                    f"[WATCHDOG] Enrichment stalled for {elapsed:.0f}s "
+                    f"(threshold {self._stall_seconds}s) — triggering restart"
+                )
+                os._exit(1)
+
+
+# Module-level watchdog instance — shared by all consumer threads
+_watchdog: Optional["EnrichmentWatchdog"] = None
+
+
+def _get_watchdog() -> Optional["EnrichmentWatchdog"]:
+    return _watchdog
 
 
 def _record_serp_failure(conn, incident_id: str) -> bool:
@@ -600,7 +670,10 @@ def fetch_articles_phase(
                     # Push to queue - enrichment consumer will pick it up
                     incident_queue.put(incident_dict)
                     logger.debug(f"Pushed {incident_id} to queue (size: {incident_queue.qsize()})")
-                
+                    # Checkpoint: record that article fetch completed for this incident.
+                    # On crash+restart, incidents already checkpointed skip re-fetch.
+                    checkpoint_mark(conn, incident_id, phase="article_fetch")
+
                 stats["processed"] += 1
                 
             except Exception as e:
@@ -691,11 +764,22 @@ def enrich_articles_phase(
             
             incident_id = incident_dict["incident_id"]
 
+            # Per-incident guard: if another worker already claimed this incident,
+            # drop it — SQLite would serialise the write anyway and we'd overwrite.
+            with _in_progress_lock:
+                if incident_id in _in_progress:
+                    logger.debug(f"Worker collision avoided — {incident_id} already in progress, skipping")
+                    incident_queue.task_done()
+                    continue
+                _in_progress.add(incident_id)
+
             # Skip IOC-only sources that produce no education articles
             source_prefix = incident_id.split("_")[0]
             if source_prefix in SKIP_ENRICHMENT_SOURCES:
                 logger.debug(f"Skipping IOC source incident: {incident_id}")
                 stats["skipped"] += 1
+                with _in_progress_lock:
+                    _in_progress.discard(incident_id)
                 incident_queue.task_done()
                 continue
 
@@ -739,13 +823,17 @@ def enrich_articles_phase(
                 if not row:
                     logger.warning(f"Incident {incident_id} not found in database")
                     stats["errors"] += 1
+                    with _in_progress_lock:
+                        _in_progress.discard(incident_id)
                     incident_queue.task_done()
                     continue
-                
+
                 # Check if already enriched (shouldn't happen, but check anyway)
                 if row["llm_enriched"] == 1:
                     logger.warning(f"Incident {incident_id} is already enriched - skipping")
                     stats["skipped"] += 1
+                    with _in_progress_lock:
+                        _in_progress.discard(incident_id)
                     incident_queue.task_done()
                     continue
                 
@@ -787,28 +875,48 @@ def enrich_articles_phase(
                     )
                     logger.debug(f"process_incident returned: {type(enrichment_result)}, is None: {enrichment_result is None}")
                 except Exception as e:
-                    # Check if it's a rate limit error that should stop enrichment
                     from src.edu_cti.pipeline.phase2.llm_client import RateLimitError
                     if isinstance(e, RateLimitError):
-                        logger.warning(f"Rate limit error in process_incident for {incident_id}: {e}")
-                        wait_time = 60.0
-                        logger.info(f"Waiting {wait_time}s before retrying due to rate limit...")
+                        # Jittered exponential backoff — only THIS worker sleeps.
+                        # Other workers keep enriching uninterrupted.
+                        retry_count = incident_dict.get("_rate_limit_retries", 0)
+                        wait_time = min(120, (2 ** retry_count) * 10 + random.uniform(0, 5))
+                        logger.warning(
+                            f"Rate limit for {incident_id} (retry #{retry_count+1}) — "
+                            f"this worker sleeping {wait_time:.0f}s, others continue"
+                        )
+                        with _in_progress_lock:
+                            _in_progress.discard(incident_id)
+                        incident_queue.task_done()
+                        # Annotate retry count so backoff grows on repeated hits
+                        incident_dict["_rate_limit_retries"] = retry_count + 1
+                        # Use put_nowait with fallback — queue may be full during back-pressure
+                        try:
+                            incident_queue.put_nowait(incident_dict)
+                        except queue.Full:
+                            # Queue full: drop requeue and let it be retried next pipeline run
+                            logger.warning(f"Queue full — {incident_id} will retry next run")
                         time.sleep(wait_time)
                         stats["errors"] += 1
-                        incident_queue.task_done()
-                        incident_queue.put(incident_dict)
                         continue
                     elif isinstance(e, (TimeoutError, OSError)):
-                        # LLM request timed out or connection error — re-queue for retry
-                        logger.warning(f"Timeout/connection error for {incident_id}: {e} — will retry")
-                        stats["errors"] += 1
+                        # LLM timeout/connection error — re-queue, brief pause, continue
+                        logger.warning(f"Timeout/connection error for {incident_id}: {e} — requeueing")
+                        with _in_progress_lock:
+                            _in_progress.discard(incident_id)
                         incident_queue.task_done()
-                        incident_queue.put(incident_dict)
-                        time.sleep(5.0)  # Brief pause before retry
+                        try:
+                            incident_queue.put_nowait(incident_dict)
+                        except queue.Full:
+                            logger.warning(f"Queue full — {incident_id} timeout retry deferred to next run")
+                        time.sleep(2.0)  # Reduced from 5s — other workers unaffected
+                        stats["errors"] += 1
                         continue
                     else:
                         logger.error(f"Error in process_incident for {incident_id}: {e}", exc_info=True)
                         stats["errors"] += 1
+                        with _in_progress_lock:
+                            _in_progress.discard(incident_id)
                         incident_queue.task_done()
                         continue
                 
@@ -853,12 +961,17 @@ def enrich_articles_phase(
                                 conn.commit()
                                 stats["enriched"] += 1
                                 logger.warning(f"✓ ENRICHED  {incident_id} | WARNING: institution unknown — could not delete")
+                            with _in_progress_lock:
+                                _in_progress.discard(incident_id)
+                            incident_queue.task_done()
                             continue
 
                         # Commit immediately after each save to prevent long-running transactions
                         # This allows API reads to proceed while enrichment is running
                         conn.commit()
                         stats["enriched"] += 1
+                        if _watchdog:
+                            _watchdog.heartbeat()
                         primary = enrichment_result.primary_url or ""
                         logger.info(
                             f"✓ ENRICHED  {incident_id} | {primary[:80]}"
@@ -916,20 +1029,45 @@ def enrich_articles_phase(
                     time.sleep(rate_limit_delay)
                 
                 # Mark task as done
+                with _in_progress_lock:
+                    _in_progress.discard(incident_id)
                 incident_queue.task_done()
                 items_processed += 1
-                
+
+                # Memory management: gc every 1,000 items; hard exit if RSS > 600 MB.
+                # os._exit(0) triggers a clean Railway restart without a non-zero code.
+                if items_processed % 1000 == 0:
+                    import gc
+                    gc.collect()
+                    logger.debug(f"[MEM] gc.collect() after {items_processed} items")
+                if items_processed % 100 == 0:
+                    try:
+                        import psutil, os as _os
+                        rss_mb = psutil.Process(_os.getpid()).memory_info().rss / (1024 * 1024)
+                        if rss_mb > 600:
+                            logger.warning(
+                                f"[MEM] RSS {rss_mb:.0f} MB > 600 MB threshold — "
+                                "triggering clean restart to reclaim memory"
+                            )
+                            _os.exit(0)
+                        elif rss_mb > 400:
+                            logger.info(f"[MEM] RSS {rss_mb:.0f} MB (approaching threshold)")
+                    except ImportError:
+                        pass  # psutil not installed — memory monitoring disabled
+
             except Exception as e:
                 stats["errors"] += 1
                 logger.error(f"✗ Error processing incident {incident_id}: {e}", exc_info=True)
+                with _in_progress_lock:
+                    _in_progress.discard(incident_id)
                 incident_queue.task_done()
                 items_processed += 1
                 # Don't mark as processed - will retry on next run
-                
+
         except Exception as e:
             logger.error(f"✗ Error in consumer loop: {e}", exc_info=True)
             stats["errors"] += 1
-    
+
     return stats
 
 
@@ -1039,7 +1177,19 @@ def main() -> None:
     
     # Get unenriched incidents
     unenriched = get_unenriched_incidents(conn, limit=args.limit)
-    
+
+    # Crash-recovery: skip incidents that were already pushed to the enrichment
+    # queue in a previous (crashed) run.  The checkpoint table records every
+    # incident_id for which article fetching completed.  On restart they skip
+    # the fetch phase and go straight to LLM enrichment via the fast-path.
+    checkpointed = checkpoint_get_fetched(conn)
+    if checkpointed:
+        before = len(unenriched)
+        unenriched = [i for i in unenriched if i["incident_id"] not in checkpointed]
+        skipped_cp = before - len(unenriched)
+        if skipped_cp:
+            logger.info(f"Checkpoint: skipping {skipped_cp} already-fetched incidents (crash recovery)")
+
     if not unenriched:
         logger.info("No incidents ready for processing")
         conn.close()
@@ -1069,8 +1219,16 @@ def main() -> None:
         logger.error("Make sure OLLAMA_API_KEY is set in environment")
         sys.exit(1)
     
+    # Start enrichment watchdog — kills process if no heartbeat for 5 minutes.
+    # Railway/Docker will auto-restart on exit(1), recovering any stall.
+    global _watchdog
+    _watchdog = EnrichmentWatchdog(stall_seconds=300)
+    _watchdog.start()
+
     # Create queue and synchronization primitives
-    incident_queue = queue.Queue()
+    # maxsize=100 provides back-pressure: if enrichment falls behind (slow LLM),
+    # the fetch producer blocks on put() automatically — prevents memory explosion.
+    incident_queue = queue.Queue(maxsize=100)
     fetch_complete_event = threading.Event()
     fetch_stats = {"processed": 0, "articles_fetched": 0, "errors": 0}
 
@@ -1180,6 +1338,10 @@ def main() -> None:
                 logger.info(f"Still waiting for {t.name}... ({done}/{total_to_process} done so far)")
 
     logger.info("All consumer threads finished")
+
+    # Stop watchdog — normal completion, no restart needed
+    if _watchdog:
+        _watchdog.stop()
 
     # Final stats
     enrich_stats = combined_enrich_stats

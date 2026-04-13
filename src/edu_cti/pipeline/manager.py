@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from enum import Enum
 from typing import Any, Callable, Dict, List, Optional
 
-import schedule
+from apscheduler.schedulers.background import BackgroundScheduler
 
 logger = logging.getLogger(__name__)
 
@@ -182,7 +182,7 @@ class PipelineManager:
         self._scheduler_running = False
         self._scheduler_thread: Optional[threading.Thread] = None
         self._scheduler_stop_event = threading.Event()
-        self._scheduler_schedule = schedule.Scheduler()
+        self._scheduler_schedule = BackgroundScheduler(daemon=True)
         self._scheduler_started_at: Optional[str] = None
         self._scheduler_last_runs: Dict[str, Optional[str]] = {
             "rss": None,
@@ -842,20 +842,28 @@ class PipelineManager:
             self._scheduler_last_runs[key] = None
         self._scheduler_last_runs["enrich"] = None
 
-        # Clear any previous jobs and register new ones
-        self._scheduler_schedule.clear()
+        # Clear any previous jobs and register new ones.
+        # APScheduler manages its own thread pool — no manual loop needed.
+        if self._scheduler_schedule.running:
+            self._scheduler_schedule.remove_all_jobs()
+        else:
+            self._scheduler_schedule.start()
 
-        self._scheduler_schedule.every(rss_interval_hours).hours.do(
-            self._scheduler_run_job, "rss", {"max_age_days": 7}
+        self._scheduler_schedule.add_job(
+            self._scheduler_run_job, "interval", hours=rss_interval_hours,
+            args=["rss", {"max_age_days": 7}], id="rss_ingest", replace_existing=True,
         )
-        self._scheduler_schedule.every(api_interval_hours).hours.do(
-            self._scheduler_run_job, "ingest_source", {"group": "api"}
+        self._scheduler_schedule.add_job(
+            self._scheduler_run_job, "interval", hours=api_interval_hours,
+            args=["ingest_source", {"group": "api"}], id="api_ingest", replace_existing=True,
         )
-        self._scheduler_schedule.every(enrich_interval_minutes).minutes.do(
-            self._scheduler_run_enrich_if_needed,
+        self._scheduler_schedule.add_job(
+            self._scheduler_run_enrich_if_needed, "interval", minutes=enrich_interval_minutes,
+            id="enrichment", replace_existing=True,
         )
-        self._scheduler_schedule.every(daily_interval_hours).hours.do(
-            self._scheduler_run_job, "daily", {}
+        self._scheduler_schedule.add_job(
+            self._scheduler_run_job, "interval", hours=daily_interval_hours,
+            args=["daily", {}], id="daily_pipeline", replace_existing=True,
         )
 
         logger.info(
@@ -863,14 +871,6 @@ class PipelineManager:
             f"API every {api_interval_hours}h, Enrich every {enrich_interval_minutes}min, "
             f"Daily every {daily_interval_hours}h"
         )
-
-        # Start the scheduler loop thread
-        self._scheduler_thread = threading.Thread(
-            target=self._scheduler_loop,
-            daemon=True,
-            name="scheduler-loop",
-        )
-        self._scheduler_thread.start()
 
         # Run initial catch-up in yet another thread so start_scheduler returns immediately
         if catch_up:
@@ -895,10 +895,9 @@ class PipelineManager:
 
         self._scheduler_running = False
         self._scheduler_stop_event.set()
-        self._scheduler_schedule.clear()
-
-        if self._scheduler_thread and self._scheduler_thread.is_alive():
-            self._scheduler_thread.join(timeout=10)
+        if self._scheduler_schedule.running:
+            self._scheduler_schedule.remove_all_jobs()
+            self._scheduler_schedule.shutdown(wait=False)
 
         logger.info("[SCHEDULER] Stopped")
         return {"status": "stopped"}
@@ -908,9 +907,8 @@ class PipelineManager:
         jobs = []
         for job in self._scheduler_schedule.get_jobs():
             jobs.append({
-                "interval": str(job.interval),
-                "unit": job.unit,
-                "next_run": job.next_run.isoformat() if job.next_run else None,
+                "id": job.id,
+                "next_run": job.next_run_time.isoformat() if job.next_run_time else None,
             })
 
         return {
@@ -922,15 +920,6 @@ class PipelineManager:
         }
 
     # --- internal helpers ---
-
-    def _scheduler_loop(self):
-        """Background loop that ticks the schedule library."""
-        logger.info("[SCHEDULER] Loop started")
-        while self._scheduler_running and not self._scheduler_stop_event.is_set():
-            self._scheduler_schedule.run_pending()
-            # Sleep in small increments so we can react to stop quickly
-            self._scheduler_stop_event.wait(timeout=30)
-        logger.info("[SCHEDULER] Loop exited")
 
     def _scheduler_catchup(self):
         """Run an initial catch-up: daily pipeline to ingest recent incidents."""
