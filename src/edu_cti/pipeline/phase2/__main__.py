@@ -61,15 +61,15 @@ class EnrichmentWatchdog:
     """
     Detects enrichment pipeline stalls and triggers a clean process exit.
 
-    A stall is defined as no successful enrichment heartbeat for more than
-    ``stall_seconds`` seconds.  On stall detection the watchdog calls
+    A stall is defined as no worker activity (any queue item processed) for more
+    than ``stall_seconds`` seconds.  On stall detection the watchdog calls
     ``os._exit(1)`` so Railway/Docker restarts the container automatically.
 
     Usage:
         watchdog = EnrichmentWatchdog(stall_seconds=300)
         watchdog.start()
         ...
-        watchdog.heartbeat()   # call after each successful enrichment
+        watchdog.heartbeat()   # call after each queue item is processed
         ...
         watchdog.stop()
     """
@@ -93,7 +93,7 @@ class EnrichmentWatchdog:
         self._stop_event.set()
 
     def heartbeat(self) -> None:
-        """Call after every successful enrichment to reset the stall timer."""
+        """Call after every queue item processed (any outcome) to reset the stall timer."""
         self._last_beat = time.monotonic()
 
     def is_stalled(self) -> bool:
@@ -1033,6 +1033,10 @@ def enrich_articles_phase(
                     _in_progress.discard(incident_id)
                 incident_queue.task_done()
                 items_processed += 1
+                # Heartbeat on any completed item (not just successful enrichment)
+                # so the watchdog doesn't fire when enrichers are busy deleting/skipping.
+                if _watchdog:
+                    _watchdog.heartbeat()
 
                 # Memory management: gc every 1,000 items; hard exit if RSS > 600 MB.
                 # os._exit(0) triggers a clean Railway restart without a non-zero code.
@@ -1062,6 +1066,8 @@ def enrich_articles_phase(
                     _in_progress.discard(incident_id)
                 incident_queue.task_done()
                 items_processed += 1
+                if _watchdog:
+                    _watchdog.heartbeat()
                 # Don't mark as processed - will retry on next run
 
         except Exception as e:
