@@ -129,8 +129,15 @@ def dates_within_window(
     Returns:
         True if dates are within window, False otherwise
     """
+    # If both dates are unknown, treat as within window — same institution + no dates
+    # almost certainly means the same incident reported by multiple sources.
+    if not date1 and not date2:
+        return True
+
+    # If only one date is known we cannot confirm they're in different windows,
+    # so conservatively treat as within window.
     if not date1 or not date2:
-        return False
+        return True
 
     # Strip timezone info so offset-naive and offset-aware datetimes can be compared
     d1 = date1.replace(tzinfo=None)
