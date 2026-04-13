@@ -589,17 +589,21 @@ def save_enrichment_result(
     region_fallback = incident_row["region"] if incident_row else None
     city_fallback = incident_row["city"] if incident_row else None
     
+    def _scalar(v):
+        """Coerce list → first element; return other values unchanged."""
+        return v[0] if isinstance(v, list) and v else (None if isinstance(v, list) else v)
+
     # Use LLM-extracted values if available (from raw JSON), otherwise fallback to incident table
-    institution_type = raw_json_data.get("institution_type") if raw_json_data else institution_type_fallback
-    
+    institution_type = _scalar(raw_json_data.get("institution_type")) if raw_json_data else institution_type_fallback
+
     # Normalize country to full name and get ISO code
     from src.edu_cti.core.countries import normalize_country, get_country_code
-    country_raw = raw_json_data.get("country") if raw_json_data else country_fallback
+    country_raw = _scalar(raw_json_data.get("country")) if raw_json_data else country_fallback
     country = normalize_country(country_raw) if country_raw else None
     country_code = get_country_code(country) if country else None
-    
-    region = raw_json_data.get("region") if raw_json_data else region_fallback
-    city = raw_json_data.get("city") if raw_json_data else city_fallback
+
+    region = _scalar(raw_json_data.get("region")) if raw_json_data else region_fallback
+    city = _scalar(raw_json_data.get("city")) if raw_json_data else city_fallback
     
     # Update incident with enrichment data
     primary_url = enrichment_result.primary_url
@@ -626,8 +630,8 @@ def save_enrichment_result(
     
     # Try to get incident_date from raw JSON data (direct extraction)
     if raw_json_data:
-        llm_incident_date = raw_json_data.get("incident_date")
-        llm_date_precision = raw_json_data.get("incident_date_precision")
+        llm_incident_date = _scalar(raw_json_data.get("incident_date"))
+        llm_date_precision = _scalar(raw_json_data.get("incident_date_precision"))
     
     # Fallback: Try to extract from timeline (earliest event)
     if not llm_incident_date and enrichment_result.timeline:

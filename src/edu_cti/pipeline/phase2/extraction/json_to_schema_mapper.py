@@ -570,22 +570,47 @@ def map_data_types(data_types: List[str]) -> Dict[str, bool]:
     return result
 
 
+def _coerce_llm_scalars(json_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Normalise LLM output: any field that SHOULD be a scalar but arrived as a list
+    is coerced to its first element.  Known array fields (timeline, mitre_attack_techniques,
+    systems_affected_codes, data_types, etc.) are left untouched.
+    """
+    _KNOWN_ARRAYS = {
+        "timeline", "mitre_attack_techniques", "systems_affected_codes",
+        "data_categories_affected", "data_types", "operational_impacts",
+        "security_improvements", "third_parties_involved", "other_edu_incidents",
+        "iocs", "target_demographics", "attack_chain",
+    }
+    result = {}
+    for key, value in json_data.items():
+        if isinstance(value, list) and key not in _KNOWN_ARRAYS:
+            result[key] = value[0] if value else None
+        else:
+            result[key] = value
+    return result
+
+
 def json_to_cti_enrichment(
-    json_data: Dict[str, Any], 
+    json_data: Dict[str, Any],
     primary_url: str,
     incident: Optional[Any] = None
 ) -> CTIEnrichmentResult:
     """
     Convert JSON schema extraction response to CTIEnrichmentResult.
-    
+
     Args:
         json_data: JSON response from LLM extraction
         primary_url: Primary URL for the incident
         incident: Optional BaseIncident to get leak_site_url from phase1
-        
+
     Returns:
         CTIEnrichmentResult object
     """
+    # Normalise list-typed scalar fields from LLM (grammar-constrained generation
+    # can occasionally return a single-item array for fields defined as strings).
+    json_data = _coerce_llm_scalars(json_data)
+
     # Get threat_actor_claim_url from LLM response, or fallback to leak_site_url from phase1
     threat_actor_claim_url = json_data.get("threat_actor_claim_url")
     if not threat_actor_claim_url and incident and hasattr(incident, 'leak_site_url') and incident.leak_site_url:
