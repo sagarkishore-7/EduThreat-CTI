@@ -180,7 +180,7 @@ class OllamaLLMClient:
                 logger.debug(f"Making LLM API call (attempt {attempt + 1}/{max_retries + 1})")
                 response = self.chat(
                     messages=messages,
-                    format=None,  # No format constraint - we want raw JSON
+                    format="json",  # Grammar-constrained JSON generation — prevents non-JSON tokens (e.g. Chinese spam) in structural positions
                     stream=False,
                     temperature=0.1,  # Low for deterministic structured output
                 )
