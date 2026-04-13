@@ -61,9 +61,9 @@ class EnrichmentWatchdog:
     """
     Detects enrichment pipeline stalls and triggers a clean process exit.
 
-    A stall is defined as no worker activity (any queue item processed) for more
-    than ``stall_seconds`` seconds.  On stall detection the watchdog calls
-    ``os._exit(1)`` so Railway/Docker restarts the container automatically.
+    A stall is defined as no pipeline activity (fetch iteration or queue item
+    processed) for more than ``stall_seconds`` seconds.  On stall detection the
+    watchdog calls ``os._exit(1)`` so Railway/Docker restarts the container.
 
     Usage:
         watchdog = EnrichmentWatchdog(stall_seconds=300)
@@ -503,6 +503,10 @@ def fetch_articles_phase(
             _progress["percent"] = int(progress_pct * 0.30)  # 0-30% range
             if idx % 10 == 0 or idx == total_incidents:  # Log every 10th or last
                 logger.info(f"Fetching [{idx}/{total_incidents}] ({progress_pct:.1f}%)")
+            # Heartbeat on every fetch iteration so the watchdog knows the pipeline
+            # is alive even when enricher workers are blocked on an empty queue.
+            if _watchdog:
+                _watchdog.heartbeat()
             
             try:
                 # Check if incident already has articles in database
@@ -1225,10 +1229,11 @@ def main() -> None:
         logger.error("Make sure OLLAMA_API_KEY is set in environment")
         sys.exit(1)
     
-    # Start enrichment watchdog — kills process if no heartbeat for 5 minutes.
-    # Railway/Docker will auto-restart on exit(1), recovering any stall.
+    # Start enrichment watchdog — kills process if no heartbeat for 10 minutes.
+    # The fetch phase can be slow (SERP retries, TheRecord pagination), so we give
+    # it 600s before declaring a stall. Railway auto-restarts on exit(1).
     global _watchdog
-    _watchdog = EnrichmentWatchdog(stall_seconds=300)
+    _watchdog = EnrichmentWatchdog(stall_seconds=600)
     _watchdog.start()
 
     # Create queue and synchronization primitives
