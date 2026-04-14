@@ -392,12 +392,34 @@ def fetch_articles_phase(
     logger.info(f"Selected {len(incidents_to_process)} incidents for fetching (random selection with domain diversity)")
 
     # --- Fast-path: incidents that already have articles saved from a previous run ---
-    # Push them directly to the LLM queue without re-fetching anything.
-    # This makes pipeline restarts essentially free for the article-fetch phase.
-    fast_path = [i for i in incidents_to_process if i.get("has_articles")]
+    # Push them directly to the LLM queue without re-fetching anything, BUT only
+    # when the stored article URLs are aligned with the incident's current all_urls.
+    # If all_urls changed between runs (scraper re-ingested a different URL), the DB
+    # articles are stale and would produce misaligned enrichment (wrong primary_url).
+    from src.edu_cti.pipeline.phase2.storage.article_storage import get_all_articles_for_incident
+    fast_path_raw = [i for i in incidents_to_process if i.get("has_articles")]
     needs_fetch = [i for i in incidents_to_process if not i.get("has_articles")]
+    fast_path = []
+    for fp_incident in fast_path_raw:
+        fp_id = fp_incident["incident_id"]
+        current_urls = set(fp_incident.get("all_urls") or [])
+        if current_urls:
+            db_articles = get_all_articles_for_incident(conn, fp_id)
+            db_urls = {a["url"] for a in db_articles if a.get("url")}
+            if not (current_urls & db_urls):
+                # No overlap — stale articles from a different URL set.  Purge and re-fetch.
+                conn.execute("DELETE FROM articles WHERE incident_id = ?", (fp_id,))
+                conn.commit()
+                logger.warning(
+                    f"Fast-path purged stale articles for {fp_id}: "
+                    f"DB had {db_urls}, current all_urls={current_urls}"
+                )
+                needs_fetch.append(fp_incident)
+                continue
+        fast_path.append(fp_incident)
+
     if fast_path:
-        logger.info(f"Fast-pathing {len(fast_path)} incidents with existing articles straight to LLM queue")
+        logger.info(f"Fast-pathing {len(fast_path)} incidents with existing aligned articles straight to LLM queue")
         for fp_incident in fast_path:
             incident_queue.put({
                 "incident_id": fp_incident["incident_id"],
@@ -548,9 +570,29 @@ def fetch_articles_phase(
                     
                     should_push_to_queue = True
                 elif has_existing_articles:
-                    # Incident already has articles in DB from previous fetch attempts
-                    logger.info(f"Incident {incident_id} has {len(existing_articles)} articles in DB")
-                    should_push_to_queue = True
+                    # Validate that existing articles are actually from the incident's
+                    # current all_urls.  If all_urls changed between runs (e.g. scraper
+                    # re-ingested a different URL for the same incident), the DB articles
+                    # come from a stale URL set and will produce misaligned enrichment
+                    # (wrong primary_url vs all_urls, wrong article content).
+                    current_urls = set(incident.get("all_urls") or [])
+                    existing_urls = {a["url"] for a in existing_articles if a.get("url")}
+                    aligned = current_urls & existing_urls if current_urls else existing_urls
+                    if current_urls and not aligned:
+                        # No overlap — stale articles from a different URL set.  Delete
+                        # them so the next SERP/fetch attempt starts fresh.
+                        conn.execute(
+                            "DELETE FROM articles WHERE incident_id = ?", (incident_id,)
+                        )
+                        conn.commit()
+                        logger.warning(
+                            f"Purged {len(existing_articles)} stale article(s) for {incident_id} "
+                            f"(DB URLs {existing_urls} ∉ current all_urls {current_urls})"
+                        )
+                        should_push_to_queue = False
+                    else:
+                        logger.info(f"Incident {incident_id} has {len(existing_articles)} aligned articles in DB")
+                        should_push_to_queue = True
                 else:
                     # No articles fetched and nothing in DB.
                     # For URL-less incidents (e.g. secondary stubs from roundup articles),

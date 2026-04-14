@@ -82,3 +82,6 @@ Thumbs.db
 # Environment variables (keep .env.example)
 .env
 !.env.example
+
+# Paper directory (LaTeX source — managed separately on Overleaf)
+paper/
