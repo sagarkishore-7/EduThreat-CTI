@@ -1003,15 +1003,41 @@ def enrich_articles_phase(
                     # Check what kind of failure we have
                     if raw_json_data and isinstance(raw_json_data, dict):
                         if raw_json_data.get("_not_education_related"):
-                            # Not education-related — delete from DB entirely
-                            from src.edu_cti.pipeline.phase2.storage.db import delete_incident
-                            reason = raw_json_data.get("_reason", "Not education-related")
-                            if delete_incident(conn, incident_id):
+                            # Curated education sources (comparitech, ransomwarelive, etc.) list
+                            # real incidents but their stored articles may be stale/wrong.
+                            # LLM correctly says "not edu" about wrong articles — but the incident
+                            # IS real.  Protect these from deletion: clear bad articles and keep
+                            # the incident as a stub (source metadata is still valuable).
+                            _CURATED_EDU_SOURCES = {"comparitech", "ransomlook"}
+                            _src_prefix = incident_id.split("_")[0]
+                            if _src_prefix in _CURATED_EDU_SOURCES:
+                                # Delete stale articles so they don't cause wrong classification again.
+                                # Mark llm_enriched=1 so SERP doesn't retry this incident forever —
+                                # the source metadata (institution, attack type, date) is already good.
+                                conn.execute(
+                                    "DELETE FROM articles WHERE incident_id = ?", (incident_id,)
+                                )
+                                conn.execute(
+                                    "UPDATE incidents SET llm_enriched = 1, "
+                                    "llm_enriched_at = datetime('now') WHERE incident_id = ?",
+                                    (incident_id,)
+                                )
+                                conn.commit()
                                 stats["skipped"] += 1
-                                logger.info(f"⊘ DELETED   {incident_id} | not edu: {reason[:80]}")
+                                logger.warning(
+                                    f"~ STUB      {incident_id} | curated-source: wrong articles cleared, "
+                                    f"kept as metadata stub (institution/date/attack from source)"
+                                )
                             else:
-                                stats["errors"] += 1
-                                logger.warning(f"✗ DEL-FAIL  {incident_id} | could not delete non-edu incident")
+                                # Non-curated source — delete from DB entirely
+                                from src.edu_cti.pipeline.phase2.storage.db import delete_incident
+                                reason = raw_json_data.get("_reason", "Not education-related")
+                                if delete_incident(conn, incident_id):
+                                    stats["skipped"] += 1
+                                    logger.info(f"⊘ DELETED   {incident_id} | not edu: {reason[:80]}")
+                                else:
+                                    stats["errors"] += 1
+                                    logger.warning(f"✗ DEL-FAIL  {incident_id} | could not delete non-edu incident")
                         elif raw_json_data.get("_enrichment_failed"):
                             # Enrichment failed (JSON parsing, etc.) - DON'T mark as skipped, will retry
                             reason = raw_json_data.get("_reason", "Enrichment failed")
