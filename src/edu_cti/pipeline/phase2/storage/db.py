@@ -459,6 +459,7 @@ def get_unenriched_incidents(
             SELECT DISTINCT incident_id FROM articles WHERE fetch_successful = 1
         ) a ON a.incident_id = i.incident_id
         WHERE i.llm_enriched = 0
+          AND (i.llm_excluded IS NULL OR i.llm_excluded = 0)
           AND (
             -- Has at least one URL, OR
             (i.all_urls IS NOT NULL AND i.all_urls != '')
@@ -996,26 +997,38 @@ def mark_incident_skipped(
     logger.info(f"Marked incident {incident_id} as skipped: {reason}")
 
 
-def delete_incident(conn: sqlite3.Connection, incident_id: str) -> bool:
+def delete_incident(
+    conn: sqlite3.Connection,
+    incident_id: str,
+    reason: str = "not_education_related",
+) -> bool:
     """
-    Permanently delete an incident and all related records from the database.
+    Soft-delete an incident: keep the incidents row but clear articles and
+    enrichment data, and set llm_excluded=1 so Phase 2 won't reprocess it.
 
-    Used during pipeline processing to auto-remove incidents that are
-    unfetchable (dead URLs) or classified as non-education by the LLM.
+    This replaces the previous hard-DELETE approach.  Hard-deleting caused
+    permanent data loss when stale articles (from a prior pipeline run) caused
+    the LLM to misclassify a real education incident as "not edu". Keeping the
+    row lets administrators review/restore and lets Phase 1 re-ingest via the
+    source_events cascade reset if needed.
+
+    The incident row is NOT deleted — only its LLM-derived artifacts are cleared.
+    The public API never shows llm_excluded=1 rows (they have no enrichment data).
 
     Args:
         conn: Database connection (must be writable)
-        incident_id: Incident ID to delete
+        incident_id: Incident ID to soft-delete
+        reason: Short label for llm_excluded_reason (default: "not_education_related")
 
     Returns:
-        True if deleted, False on error
+        True if soft-deleted, False on error
     """
     try:
+        # Clear derived data (articles + enrichments) but keep the incident row.
         for table in [
             "incident_enrichments_flat",
             "incident_enrichments",
             "articles",
-            "incident_sources",
         ]:
             try:
                 conn.execute(
@@ -1024,11 +1037,22 @@ def delete_incident(conn: sqlite3.Connection, incident_id: str) -> bool:
             except Exception:
                 pass  # Table might not exist
 
-        conn.execute("DELETE FROM incidents WHERE incident_id = ?", (incident_id,))
+        # Mark as excluded so Phase 2 won't pick it up again, and record why.
+        conn.execute(
+            """
+            UPDATE incidents
+            SET llm_excluded = 1,
+                llm_excluded_reason = ?,
+                llm_enriched = 1,
+                llm_enriched_at = datetime('now')
+            WHERE incident_id = ?
+            """,
+            (reason, incident_id),
+        )
         conn.commit()
         return True
     except Exception as e:
-        logger.error(f"Failed to delete incident {incident_id}: {e}")
+        logger.error(f"Failed to soft-delete incident {incident_id}: {e}")
         conn.rollback()
         return False
 

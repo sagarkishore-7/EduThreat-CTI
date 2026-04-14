@@ -122,7 +122,7 @@ def _record_serp_failure(conn, incident_id: str) -> bool:
     """
     Increment serp_attempt_count for an incident after a failed SERP search.
 
-    Returns True if the incident has now hit SERP_MAX_ATTEMPTS and was deleted,
+    Returns True if the incident has now hit SERP_MAX_ATTEMPTS and was soft-deleted,
     False if it was only incremented (caller should skip it for this run).
     """
     conn.execute(
@@ -135,12 +135,22 @@ def _record_serp_failure(conn, incident_id: str) -> bool:
     ).fetchone()
     count = row[0] if row else 0
     if count >= SERP_MAX_ATTEMPTS:
-        # Delete the incident and all its related rows (CASCADE handles articles,
-        # incident_sources, source_events, enrichments).
-        conn.execute("DELETE FROM incidents WHERE incident_id = ?", (incident_id,))
+        # Soft-delete: mark as excluded so we stop trying, but keep the row for audit.
+        # (The public API never shows llm_excluded=1 rows since they have no enrichment data.)
+        conn.execute(
+            """
+            UPDATE incidents
+            SET llm_excluded = 1,
+                llm_excluded_reason = 'serp_exhausted',
+                llm_enriched = 1,
+                llm_enriched_at = datetime('now')
+            WHERE incident_id = ?
+            """,
+            (incident_id,),
+        )
         conn.commit()
         logger.info(
-            f"Deleted {incident_id} after {count} failed SERP attempts "
+            f"Soft-excluded {incident_id} after {count} failed SERP attempts "
             f"(no articles found, incident is unenrichable)"
         )
         return True
@@ -999,10 +1009,10 @@ def enrich_articles_phase(
 
                         if effective_name.lower() in _UNKNOWN_INSTITUTION_NAMES:
                             from src.edu_cti.pipeline.phase2.storage.db import delete_incident
-                            if delete_incident(conn, incident_id):
+                            if delete_incident(conn, incident_id, reason="sector_report_no_institution"):
                                 conn.commit()
                                 stats["skipped"] += 1
-                                logger.info(f"⊘ DELETED   {incident_id} | no specific institution identified (sector report/trend article)")
+                                logger.info(f"⊘ EXCLUDED  {incident_id} | no specific institution identified (sector report/trend article)")
                             else:
                                 conn.commit()
                                 stats["enriched"] += 1
@@ -1071,15 +1081,15 @@ def enrich_articles_phase(
                                     f"kept as metadata stub (institution/date/attack from source)"
                                 )
                             else:
-                                # Non-curated source — delete from DB entirely
+                                # Non-curated source — soft-delete (keep row, clear articles/enrichments)
                                 from src.edu_cti.pipeline.phase2.storage.db import delete_incident
                                 reason = raw_json_data.get("_reason", "Not education-related")
-                                if delete_incident(conn, incident_id):
+                                if delete_incident(conn, incident_id, reason="not_education_related"):
                                     stats["skipped"] += 1
-                                    logger.info(f"⊘ DELETED   {incident_id} | not edu: {reason[:80]}")
+                                    logger.info(f"⊘ EXCLUDED  {incident_id} | not edu: {reason[:80]}")
                                 else:
                                     stats["errors"] += 1
-                                    logger.warning(f"✗ DEL-FAIL  {incident_id} | could not delete non-edu incident")
+                                    logger.warning(f"✗ EXCL-FAIL {incident_id} | could not soft-exclude non-edu incident")
                         elif raw_json_data.get("_enrichment_failed"):
                             # Enrichment failed (JSON parsing, etc.) - DON'T mark as skipped, will retry
                             reason = raw_json_data.get("_reason", "Enrichment failed")

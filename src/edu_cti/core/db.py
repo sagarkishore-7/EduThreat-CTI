@@ -379,6 +379,29 @@ def init_db(conn: sqlite3.Connection) -> None:
         logger = logging.getLogger(__name__)
         logger.debug(f"Migration check for serp_attempt_count column: {e}")
 
+    # Migration: Add llm_excluded columns for soft-delete support.
+    # Previously, incidents classified as "not education-related" were hard-deleted.
+    # Now we keep them as soft-deleted rows so they can be reviewed / re-enriched
+    # with corrected articles without losing the original ingestion metadata.
+    try:
+        cur = conn.execute("PRAGMA table_info(incidents)")
+        columns = [row[1] for row in cur.fetchall()]
+        if "llm_excluded" not in columns:
+            conn.execute(
+                "ALTER TABLE incidents ADD COLUMN llm_excluded INTEGER DEFAULT 0"
+            )
+            conn.execute(
+                "ALTER TABLE incidents ADD COLUMN llm_excluded_reason TEXT"
+            )
+            conn.commit()
+            import logging
+            logger = logging.getLogger(__name__)
+            logger.info("Added llm_excluded columns to incidents table (migration)")
+    except sqlite3.Error as e:
+        import logging
+        logger = logging.getLogger(__name__)
+        logger.debug(f"Migration check for llm_excluded column: {e}")
+
     conn.commit()
 
 

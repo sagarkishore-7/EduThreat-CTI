@@ -1136,8 +1136,9 @@ async def purge_non_education_preview(
     try:
         counts = {}
         counts["incidents_total"] = conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0]
-        counts["incidents_enriched"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 1").fetchone()[0]
-        counts["incidents_unenriched"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 0").fetchone()[0]
+        counts["incidents_enriched"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 1 AND (llm_excluded IS NULL OR llm_excluded = 0)").fetchone()[0]
+        counts["incidents_unenriched"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 0 AND (llm_excluded IS NULL OR llm_excluded = 0)").fetchone()[0]
+        counts["incidents_soft_deleted"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_excluded = 1").fetchone()[0]
         counts["incidents_with_llm_summary"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_summary IS NOT NULL AND length(llm_summary) > 10").fetchone()[0]
         counts["incidents_without_llm_summary"] = conn.execute("SELECT COUNT(*) FROM incidents WHERE llm_enriched = 1 AND (llm_summary IS NULL OR length(llm_summary) <= 10)").fetchone()[0]
 
@@ -2184,6 +2185,92 @@ async def delete_incidents(
     except Exception as e:
         logger.error(f"Delete incidents failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Delete failed: {str(e)}")
+    finally:
+        conn.close()
+
+
+@router.get("/incidents/soft-deleted")
+async def list_soft_deleted_incidents(
+    limit: int = 200,
+    _: bool = Depends(authenticate),
+):
+    """
+    List all soft-deleted (llm_excluded=1) incidents for review.
+    These were classified as not-education-related by the LLM but kept in
+    the DB rather than hard-deleted, so they can be reviewed and restored.
+    """
+    conn = get_api_connection()
+    try:
+        rows = conn.execute(
+            """
+            SELECT incident_id, university_name, victim_raw_name, incident_date,
+                   llm_excluded_reason, llm_enriched_at, ingested_at
+            FROM incidents
+            WHERE llm_excluded = 1
+            ORDER BY llm_enriched_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        ).fetchall()
+        return {
+            "count": len(rows),
+            "incidents": [dict(r) for r in rows],
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/incidents/restore")
+async def restore_soft_deleted_incidents(
+    request: DeleteIncidentsRequest,
+    _: bool = Depends(authenticate),
+):
+    """
+    Restore soft-deleted incidents: clear llm_excluded flag and reset
+    llm_enriched=0 so Phase 2 will re-enrich them with fresh articles.
+
+    Pass incident_ids=[] to restore ALL soft-deleted incidents.
+    """
+    conn = get_api_connection(read_only=False)
+    try:
+        if request.incident_ids:
+            placeholders = ",".join(["?"] * len(request.incident_ids))
+            rows = conn.execute(
+                f"SELECT incident_id FROM incidents WHERE llm_excluded = 1 AND incident_id IN ({placeholders})",
+                request.incident_ids,
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT incident_id FROM incidents WHERE llm_excluded = 1"
+            ).fetchall()
+
+        ids = [r["incident_id"] for r in rows]
+        if not ids:
+            return {"success": True, "restored": 0, "message": "No soft-deleted incidents found"}
+
+        placeholders = ",".join(["?"] * len(ids))
+        conn.execute(
+            f"""
+            UPDATE incidents
+            SET llm_excluded = 0,
+                llm_excluded_reason = NULL,
+                llm_enriched = 0,
+                llm_enriched_at = NULL
+            WHERE incident_id IN ({placeholders})
+            """,
+            ids,
+        )
+        conn.commit()
+        cache_invalidate()
+        logger.info(f"Restored {len(ids)} soft-deleted incidents for re-enrichment")
+        return {
+            "success": True,
+            "restored": len(ids),
+            "message": f"Restored {len(ids)} incident(s). Phase 2 will re-enrich them with fresh articles on the next run.",
+        }
+    except Exception as e:
+        logger.error(f"Restore incidents failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Restore failed: {str(e)}")
     finally:
         conn.close()
 
