@@ -456,6 +456,23 @@ def fetch_articles_phase(
             stats["articles_fetched"] += 1
     incidents_to_process = needs_fetch
 
+    # Keep the watchdog alive during the fetch phase via a background thread.
+    # The main loop heartbeats once per incident, but a single slow fetch_article()
+    # call (hanging newspaper3k / slow proxy) can block for minutes without
+    # returning — preventing the next iteration's heartbeat.  This thread fires
+    # every 30 s unconditionally, so the watchdog never false-fires during fetch.
+    import threading as _threading
+    _keepalive_stop = _threading.Event()
+
+    def _fetch_keepalive():
+        while not _keepalive_stop.is_set():
+            if _watchdog:
+                _watchdog.heartbeat()
+            _keepalive_stop.wait(30)
+
+    _keepalive_thread = _threading.Thread(target=_fetch_keepalive, daemon=True, name="fetch-keepalive")
+    _keepalive_thread.start()
+
     try:
         # Process incidents one by one and push to queue as soon as articles are fetched
         total_incidents = len(incidents_to_process)
@@ -739,9 +756,13 @@ def fetch_articles_phase(
     except Exception as e:
         stats["errors"] += len(incidents_to_process)
         logger.error(f"Error during article fetching: {e}")
-    
+    finally:
+        # Stop the keepalive thread — fetch phase is done.
+        _keepalive_stop.set()
+        _keepalive_thread.join(timeout=5)
+
     logger.info(f"Fetching complete: {stats['processed']} processed, {stats['articles_fetched']} fetched, {stats['errors']} errors")
-    
+
     return stats
 
 
