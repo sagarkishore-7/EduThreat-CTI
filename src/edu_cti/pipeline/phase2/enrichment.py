@@ -165,8 +165,13 @@ class IncidentEnricher:
             )
             
             if not enrichment_result:
+                # If _enrich_article already set a marker (e.g. _not_education_related),
+                # preserve it so __main__ can delete rather than retry.
+                if raw_json_data and isinstance(raw_json_data, dict) and (
+                    raw_json_data.get("_not_education_related") or raw_json_data.get("_enrichment_failed")
+                ):
+                    return None, raw_json_data
                 logger.warning(f"Failed to enrich incident {incident.incident_id}")
-                # Return special marker to indicate enrichment failed (not "not education-related")
                 return None, {"_enrichment_failed": True, "_reason": "LLM enrichment failed"}
             
             # Check education relevance - directly from LLM analysis
@@ -183,8 +188,10 @@ class IncidentEnricher:
                 enrichment_result.primary_url = list(article_contents.keys())[0]
         
         if not enrichment_result:
-            return None, None
-        
+            # Preserve raw_json_data so __main__ can act on _not_education_related /
+            # _enrichment_failed markers rather than treating this as "no article content".
+            return None, raw_json_data
+
         # Mark primary article in database and cleanup
         if enrichment_result.primary_url:
             conn.execute(
@@ -488,22 +495,37 @@ class IncidentEnricher:
                 #      \n极 "mttd_hours": null
                 #   c) Non-ASCII embedded within a JSON key name:
                 #      "field_name极": null
-                # Drop lines with no JSON structural chars (pure garbage lines), AND
-                # lines that are pure non-ASCII strings (with or without closing quote/comma):
-                #   e.g. `    "极速赛车开奖结果历史` → unclosed string after nuclear strip
-                #   e.g. `    "极速赛车开奖直播历史记录官网",` → becomes `"",` (orphaned in object)
-                _pure_nonascii_str = re.compile(r'^\s*"[^\x00-\x7F]+"?\s*,?\s*$')
+                #   d) Bare quoted non-ASCII string inside an object (no colon):
+                #      "极速赛车开奖结果记录查询官网",
+                # Strategy: drop any line that has NO colon (not a key-value pair) AND
+                # contains at least one non-ASCII character.  Also drop lines with no
+                # JSON structural chars at all (pure unquoted garbage).
+                def _is_spam_line(line: str) -> bool:
+                    stripped = line.strip()
+                    if not stripped:
+                        return False  # keep blank lines
+                    has_nonascii = bool(re.search(r'[^\x00-\x7F]', stripped))
+                    if not has_nonascii:
+                        return False  # no non-ASCII → not spam
+                    # If the line has a colon it's likely a key-value pair — keep it
+                    # (e.g. `"field极": null` — handled later by key-name strip).
+                    if ':' in stripped:
+                        return False
+                    # No colon + has non-ASCII → spam line (bare string / garbage)
+                    return True
+
                 fixed_response = '\n'.join(
                     line for line in fixed_response.split('\n')
-                    if (
-                        (re.search(r'[":{}\[\]]', line) and not _pure_nonascii_str.match(line))
-                        or not line.strip()
+                    if not _is_spam_line(line) and (
+                        re.search(r'[":{}\[\]]', line) or not line.strip()
                     )
                 )
                 # Strip leading non-ASCII prefix from remaining lines.
                 fixed_response = re.sub(r'^[^\x00-\x7F]+', '', fixed_response, flags=re.MULTILINE)
                 # Strip non-ASCII embedded within key names.
                 fixed_response = re.sub(r'([A-Za-z_]\w*)[^\x00-\x7F]+(")', r'\1\2', fixed_response)
+                # Re-apply trailing comma removal (spam-line removal may expose new `,}`)
+                fixed_response = re.sub(r',\s*([}\]])', r'\1', fixed_response)
 
                 # Fix 5: Try with fixed response
                 try:
@@ -521,6 +543,10 @@ class IncidentEnricher:
                 try:
                     nuclear = re.sub(r'[^\x00-\x7F]', '', fixed_response)
                     # Re-apply trailing comma removal after stripping (new `,}` may appear)
+                    nuclear = re.sub(r',\s*([}\]])', r'\1', nuclear)
+                    # Remove orphaned empty strings left by nuclear strip of spam lines.
+                    # e.g. `"极速赛车官网",` → `"",` which is invalid in object context.
+                    nuclear = re.sub(r'^\s*""\s*,?\s*$', '', nuclear, flags=re.MULTILINE)
                     nuclear = re.sub(r',\s*([}\]])', r'\1', nuclear)
                     return json.loads(nuclear)
                 except json.JSONDecodeError:
