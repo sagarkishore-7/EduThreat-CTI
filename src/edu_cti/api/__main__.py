@@ -52,7 +52,12 @@ def main():
 
     class _QuietPollFilter(_logging.Filter):
         """Filter out repetitive polling request logs."""
-        _quiet_paths = ("/api/admin/pipeline/status", "/api/admin/pipeline/logs", "/health")
+        _quiet_paths = (
+            "/api/admin/pipeline/status",
+            "/api/admin/pipeline/logs",
+            "/health",
+            "/api/health",
+        )
 
         def filter(self, record: _logging.LogRecord) -> bool:
             msg = record.getMessage()
@@ -71,4 +76,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

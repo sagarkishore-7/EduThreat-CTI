@@ -22,6 +22,19 @@ from apscheduler.schedulers.background import BackgroundScheduler
 logger = logging.getLogger(__name__)
 
 
+def _load_enrichment_stats() -> Dict[str, int]:
+    """Read the latest enrichment counters from the database."""
+    from src.edu_cti.core.db import get_connection, init_db
+    from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_stats
+
+    conn = get_connection()
+    try:
+        init_db(conn)
+        return get_enrichment_stats(conn)
+    finally:
+        conn.close()
+
+
 def _persist_run(run: "PipelineRun") -> None:
     """Persist pipeline run state to DB (fire-and-forget)."""
     try:
@@ -518,7 +531,7 @@ class PipelineManager:
         Ingestion and enrichment run concurrently:
         - Phase 1 (ingestion) saves incidents to DB incrementally
         - Phase 2 (enrichment) picks up unenriched incidents as they appear
-        - Enrichment loops until ingestion is done AND no unenriched incidents remain
+        - Enrichment loops until ingestion is done AND no actionable incidents remain
         """
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
@@ -575,32 +588,40 @@ class PipelineManager:
             if run._cancel_requested:
                 break
 
-            # Check how many unenriched incidents are available
-            from src.edu_cti.core.db import get_connection, init_db
-            from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_stats
-
-            conn = get_connection()
-            init_db(conn)
-            stats = get_enrichment_stats(conn)
-            conn.close()
+            # Check how many actionable incidents are available.
+            # Use ready_for_enrichment instead of raw unenriched count so we do not
+            # spin forever on checkpointed/excluded/non-actionable rows.
+            stats = _load_enrichment_stats()
             unenriched = stats.get("unenriched_incidents", 0)
+            ready = stats.get("ready_for_enrichment", 0)
 
-            if unenriched == 0:
+            if ready == 0:
                 if ingest_done.is_set():
-                    # Ingestion finished and nothing left to enrich — done
-                    logger.info(
-                        f"Historical pipeline: ingestion done, no unenriched incidents remain "
-                        f"(enriched {total_enriched} across {enrich_rounds} rounds)"
-                    )
+                    if unenriched == 0:
+                        logger.info(
+                            f"Historical pipeline: ingestion done, no actionable incidents remain "
+                            f"(enriched {total_enriched} across {enrich_rounds} rounds)"
+                        )
+                    else:
+                        logger.warning(
+                            f"Historical pipeline: ingestion done with {unenriched} unenriched incident(s), "
+                            "but none are actionable right now; stopping to avoid a busy loop"
+                        )
                     break
                 else:
-                    # Ingestion still running but no incidents yet — wait
+                    # Ingestion still running but nothing actionable yet — wait
                     run.progress = {
                         "step": "Waiting for incidents",
-                        "detail": "Ingestion in progress, waiting for new incidents...",
+                        "detail": (
+                            "Ingestion in progress, waiting for incidents that are ready "
+                            "for article fetch or enrichment..."
+                        ),
                         "percent": self._scale_percent(0, 30, 100),
                     }
-                    logger.info("Enrichment waiting for incidents from ingestion...")
+                    logger.info(
+                        f"Historical pipeline: waiting for actionable incidents "
+                        f"({unenriched} unenriched, {ready} ready)"
+                    )
                     time.sleep(30)
                     continue
 
@@ -608,7 +629,7 @@ class PipelineManager:
             enrich_rounds += 1
             logger.info(
                 f"Historical pipeline: enrichment round {enrich_rounds} — "
-                f"{unenriched} unenriched incidents available"
+                f"{ready} actionable / {unenriched} unenriched incidents available"
             )
             enrich_result = self._run_enrich(run, {
                 "limit": enrich_limit,
@@ -622,20 +643,19 @@ class PipelineManager:
 
             # If ingestion is still running, loop to pick up new incidents
             if not ingest_done.is_set():
-                logger.info("Ingestion still running — will check for new incidents...")
+                logger.info("Ingestion still running — will check for more actionable incidents...")
+                time.sleep(5)
                 continue
             # Ingestion done — do one final check for stragglers
             else:
-                conn = get_connection()
-                init_db(conn)
-                final_stats = get_enrichment_stats(conn)
-                conn.close()
-                if final_stats.get("unenriched_incidents", 0) == 0:
+                final_stats = _load_enrichment_stats()
+                if final_stats.get("ready_for_enrichment", 0) == 0:
                     break
                 # Still some unenriched — loop again
                 logger.info(
-                    f"Ingestion done but {final_stats['unenriched_incidents']} "
-                    f"unenriched incidents remain — running another enrichment round"
+                    f"Ingestion done but {final_stats['ready_for_enrichment']} actionable "
+                    f"incident(s) remain ({final_stats['unenriched_incidents']} unenriched total) — "
+                    "running another enrichment round"
                 )
 
         # Wait for ingestion thread to finish (should already be done)
@@ -711,28 +731,35 @@ class PipelineManager:
         enrich_rounds = 0
 
         while not run._cancel_requested:
-            from src.edu_cti.core.db import get_connection, init_db
-            from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_stats
-
-            conn = get_connection()
-            init_db(conn)
-            stats = get_enrichment_stats(conn)
-            conn.close()
+            stats = _load_enrichment_stats()
             unenriched = stats.get("unenriched_incidents", 0)
+            ready = stats.get("ready_for_enrichment", 0)
 
-            if unenriched == 0:
+            if ready == 0:
                 if ingest_done.is_set():
+                    if unenriched > 0:
+                        logger.warning(
+                            f"Daily pipeline: ingestion done with {unenriched} unenriched incident(s), "
+                            "but none are actionable right now; stopping to avoid a busy loop"
+                        )
                     break
                 run.progress = {
                     "step": "Waiting for incidents",
-                    "detail": "Ingestion in progress...",
+                    "detail": "Ingestion in progress, waiting for actionable incidents...",
                     "percent": self._scale_percent(0, 30, 100),
                 }
+                logger.info(
+                    f"Daily pipeline: waiting for actionable incidents "
+                    f"({unenriched} unenriched, {ready} ready)"
+                )
                 time.sleep(15)
                 continue
 
             enrich_rounds += 1
-            logger.info(f"Daily pipeline: enrichment round {enrich_rounds} — {unenriched} unenriched")
+            logger.info(
+                f"Daily pipeline: enrichment round {enrich_rounds} — "
+                f"{ready} actionable / {unenriched} unenriched"
+            )
             enrich_result = self._run_enrich(run, {
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
@@ -745,12 +772,11 @@ class PipelineManager:
 
             if ingest_done.is_set():
                 # Final check for stragglers
-                conn = get_connection()
-                init_db(conn)
-                final = get_enrichment_stats(conn)
-                conn.close()
-                if final.get("unenriched_incidents", 0) == 0:
+                final = _load_enrichment_stats()
+                if final.get("ready_for_enrichment", 0) == 0:
                     break
+            else:
+                time.sleep(5)
 
         ingest_thread.join(timeout=10)
 
@@ -942,20 +968,23 @@ class PipelineManager:
 
         # Check if there's work to do
         try:
-            from src.edu_cti.core.db import get_connection, init_db
-            from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_stats
-
-            conn = get_connection()
-            init_db(conn)
-            stats = get_enrichment_stats(conn)
-            conn.close()
-
+            stats = _load_enrichment_stats()
             unenriched = stats.get("unenriched_incidents", 0)
-            if unenriched == 0:
-                logger.debug("[SCHEDULER] Enrichment skipped — no unenriched incidents")
+            ready = stats.get("ready_for_enrichment", 0)
+            if ready == 0:
+                if unenriched > 0:
+                    logger.debug(
+                        f"[SCHEDULER] Enrichment skipped — {unenriched} unenriched incidents exist, "
+                        "but none are actionable yet"
+                    )
+                else:
+                    logger.debug("[SCHEDULER] Enrichment skipped — no unenriched incidents")
                 return
 
-            logger.info(f"[SCHEDULER] {unenriched} unenriched incidents found — starting enrichment")
+            logger.info(
+                f"[SCHEDULER] {ready} actionable incident(s) found "
+                f"({unenriched} unenriched total) — starting enrichment"
+            )
         except Exception as e:
             logger.warning(f"[SCHEDULER] Failed to check enrichment stats: {e}")
             return

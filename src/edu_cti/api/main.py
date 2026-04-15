@@ -181,7 +181,7 @@ async def lifespan(app: FastAPI):
 
     async def _keep_alive():
         port = os.getenv("PORT", "8000")
-        url = f"http://localhost:{port}/health"
+        url = f"http://localhost:{port}/api/health"
         while True:
             await asyncio.sleep(300)  # Ping every 5 minutes
             try:
@@ -293,14 +293,20 @@ app.include_router(admin_router, prefix="/api")
 
 @app.get("/health", tags=["Health"])
 async def health_check():
-    """Basic liveness probe. Returns 503 if the enrichment pipeline is stalled."""
+    """Basic liveness probe. Reports a stalled watchdog without killing the process."""
     try:
         from src.edu_cti.pipeline.phase2.__main__ import _get_watchdog
         watchdog = _get_watchdog()
         if watchdog and watchdog.is_stalled():
-            import os
-            logger.error("[HEALTH] Enrichment watchdog stall detected — triggering restart")
-            os._exit(1)
+            logger.error("[HEALTH] Enrichment watchdog stall detected")
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "degraded",
+                    "watchdog": "stalled",
+                    "timestamp": datetime.utcnow().isoformat(),
+                },
+            )
     except Exception:
         pass
     return {"status": "healthy", "timestamp": datetime.utcnow().isoformat()}
@@ -1582,4 +1588,3 @@ async def get_raw_incidents(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
-

@@ -27,6 +27,7 @@ from src.edu_cti.pipeline.phase2.storage.db import (
     get_enrichment_stats,
     checkpoint_mark,
     checkpoint_get_fetched,
+    checkpoint_clear,
 )
 from src.edu_cti.pipeline.phase2.utils.deduplication import deduplicate_by_institution
 from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
@@ -116,6 +117,18 @@ _watchdog: Optional["EnrichmentWatchdog"] = None
 
 def _get_watchdog() -> Optional["EnrichmentWatchdog"]:
     return _watchdog
+
+
+def _clear_watchdog() -> None:
+    """Stop and clear any lingering watchdog from the current process."""
+    global _watchdog
+    if _watchdog is None:
+        return
+    try:
+        _watchdog.stop()
+    except Exception:
+        pass
+    _watchdog = None
 
 
 def _record_serp_failure(conn, incident_id: str) -> bool:
@@ -900,6 +913,7 @@ def enrich_articles_phase(
                 if not row:
                     logger.warning(f"Incident {incident_id} not found in database")
                     stats["errors"] += 1
+                    checkpoint_clear(conn, incident_id)
                     with _in_progress_lock:
                         _in_progress.discard(incident_id)
                     incident_queue.task_done()
@@ -909,6 +923,7 @@ def enrich_articles_phase(
                 if row["llm_enriched"] == 1:
                     logger.warning(f"Incident {incident_id} is already enriched - skipping")
                     stats["skipped"] += 1
+                    checkpoint_clear(conn, incident_id)
                     with _in_progress_lock:
                         _in_progress.discard(incident_id)
                     incident_queue.task_done()
@@ -1033,10 +1048,12 @@ def enrich_articles_phase(
                             if delete_incident(conn, incident_id, reason="sector_report_no_institution"):
                                 conn.commit()
                                 stats["skipped"] += 1
+                                checkpoint_clear(conn, incident_id)
                                 logger.info(f"⊘ EXCLUDED  {incident_id} | no specific institution identified (sector report/trend article)")
                             else:
                                 conn.commit()
                                 stats["enriched"] += 1
+                                checkpoint_clear(conn, incident_id)
                                 logger.warning(f"✓ ENRICHED  {incident_id} | WARNING: institution unknown — could not delete")
                             with _in_progress_lock:
                                 _in_progress.discard(incident_id)
@@ -1047,6 +1064,7 @@ def enrich_articles_phase(
                         # This allows API reads to proceed while enrichment is running
                         conn.commit()
                         stats["enriched"] += 1
+                        checkpoint_clear(conn, incident_id)
                         if _watchdog:
                             _watchdog.heartbeat()
                         primary = enrichment_result.primary_url or ""
@@ -1097,6 +1115,7 @@ def enrich_articles_phase(
                                 )
                                 conn.commit()
                                 stats["skipped"] += 1
+                                checkpoint_clear(conn, incident_id)
                                 logger.warning(
                                     f"~ STUB      {incident_id} | curated-source: wrong articles cleared, "
                                     f"kept as metadata stub (institution/date/attack from source)"
@@ -1107,6 +1126,7 @@ def enrich_articles_phase(
                                 reason = raw_json_data.get("_reason", "Not education-related")
                                 if delete_incident(conn, incident_id, reason="not_education_related"):
                                     stats["skipped"] += 1
+                                    checkpoint_clear(conn, incident_id)
                                     logger.info(f"⊘ EXCLUDED  {incident_id} | not edu: {reason[:80]}")
                                 else:
                                     stats["errors"] += 1
@@ -1156,7 +1176,7 @@ def enrich_articles_phase(
                                 f"[MEM] RSS {rss_mb:.0f} MB > 600 MB threshold — "
                                 "triggering clean restart to reclaim memory"
                             )
-                            _os.exit(0)
+                            _os._exit(0)
                         elif rss_mb > 400:
                             logger.info(f"[MEM] RSS {rss_mb:.0f} MB (approaching threshold)")
                     except ImportError:
@@ -1265,6 +1285,7 @@ Examples:
 def main() -> None:
     """Main entry point for Phase 2 enrichment pipeline."""
     args = parse_args()
+    _clear_watchdog()
     
     # Setup logging
     from pathlib import Path as PathLib
@@ -1276,234 +1297,229 @@ def main() -> None:
     conn = get_connection()
     init_db(conn)  # Ensure tables exist
     
-    # Get enrichment stats
-    stats = get_enrichment_stats(conn)
-    logger.info(f"Enrichment Statistics:")
-    logger.info(f"  Total incidents: {stats['total_incidents']}")
-    logger.info(f"  Already enriched: {stats['enriched_incidents']}")
-    logger.info(f"  Unenriched: {stats['unenriched_incidents']}")
-    logger.info(f"  Ready for enrichment: {stats['ready_for_enrichment']}")
-    
-    # Get unenriched incidents
-    unenriched = get_unenriched_incidents(conn, limit=args.limit)
-
-    # Crash-recovery: skip incidents that were already pushed to the enrichment
-    # queue in a previous (crashed) run.  The checkpoint table records every
-    # incident_id for which article fetching completed.  On restart they skip
-    # the fetch phase and go straight to LLM enrichment via the fast-path.
-    checkpointed = checkpoint_get_fetched(conn)
-    if checkpointed:
-        before = len(unenriched)
-        unenriched = [i for i in unenriched if i["incident_id"] not in checkpointed]
-        skipped_cp = before - len(unenriched)
-        if skipped_cp:
-            logger.info(f"Checkpoint: skipping {skipped_cp} already-fetched incidents (crash recovery)")
-
-    if not unenriched:
-        logger.info("No incidents ready for processing")
-        conn.close()
-        return
-    
-    # PHASE 1 & 2: Concurrent producer-consumer pattern
-    already_e = stats.get("enriched_incidents", 0)
-    total_db  = stats.get("total_incidents", 0)
-    logger.info(f"{'='*60}")
-    logger.info(
-        f"Phase 2 run starting | DB: {already_e}/{total_db} enriched | "
-        f"{len(unenriched)} remaining in this batch"
-    )
-    logger.info(f"{'='*60}")
-    
-    # Initialize LLM enricher (needed for consumer thread)
     try:
-        llm_client = OllamaLLMClient(
-            api_key=OLLAMA_API_KEY,
-            host=OLLAMA_HOST,
-            model=OLLAMA_MODEL,
-        )
-        enricher = IncidentEnricher(llm_client=llm_client)
-        logger.info(f"Initialized LLM client with model: {OLLAMA_MODEL}")
-    except Exception as e:
-        logger.error(f"Failed to initialize LLM client: {e}")
-        logger.error("Make sure OLLAMA_API_KEY is set in environment")
-        sys.exit(1)
-    
-    # Start enrichment watchdog — kills process if no heartbeat for 10 minutes.
-    # The fetch phase can be slow (SERP retries, TheRecord pagination), so we give
-    # it 600s before declaring a stall. Railway auto-restarts on exit(1).
-    global _watchdog
-    _watchdog = EnrichmentWatchdog(stall_seconds=600)
-    _watchdog.start()
-
-    # Create queue and synchronization primitives
-    # maxsize=100 provides back-pressure: if enrichment falls behind (slow LLM),
-    # the fetch producer blocks on put() automatically — prevents memory explosion.
-    incident_queue = queue.Queue(maxsize=100)
-    fetch_complete_event = threading.Event()
-    fetch_stats = {"processed": 0, "articles_fetched": 0, "errors": 0}
-
-    # Total incidents to process (for progress tracking)
-    total_to_process = len(unenriched)
-    num_workers = max(1, min(args.workers, 8))  # Cap at 8 workers
-
-    # Snapshot DB enrichment state at run start for cumulative progress display.
-    # This lets each progress line show "[N/M this run | X/Y enriched in DB]"
-    # so it's clear how far along the overall dataset we are, not just this cycle.
-    db_already_enriched = stats.get("enriched_incidents", 0)
-    db_total_incidents = stats.get("total_incidents", 0)
-
-    # Aggregated stats across all consumer threads (thread-safe)
-    stats_lock = threading.Lock()
-    combined_enrich_stats = {"processed": 0, "enriched": 0, "skipped": 0, "errors": 0}
-
-    def consumer_thread(worker_id: int):
-        """Consumer thread that processes incidents from queue."""
-        # Each worker gets its own DB connection and LLM client
-        thread_conn = get_connection()
-        try:
-            if num_workers > 1:
-                # Each worker needs its own LLM client for thread safety
-                worker_llm = OllamaLLMClient(
-                    api_key=OLLAMA_API_KEY,
-                    host=OLLAMA_HOST,
-                    model=OLLAMA_MODEL,
+        # Get enrichment stats
+        stats = get_enrichment_stats(conn)
+        logger.info(f"Enrichment Statistics:")
+        logger.info(f"  Total incidents: {stats['total_incidents']}")
+        logger.info(f"  Already enriched: {stats['enriched_incidents']}")
+        logger.info(f"  Unenriched: {stats['unenriched_incidents']}")
+        logger.info(f"  Ready for enrichment: {stats['ready_for_enrichment']}")
+        
+        # Get actionable incidents for this run.
+        # Checkpointed incidents are intentionally retained here — if articles were
+        # already fetched before a crash/restart, fetch_articles_phase() will fast-path
+        # them directly into the LLM queue instead of re-fetching.
+        unenriched = get_unenriched_incidents(conn, limit=args.limit)
+        checkpointed = checkpoint_get_fetched(conn)
+        if checkpointed:
+            resumed = sum(1 for incident in unenriched if incident["incident_id"] in checkpointed)
+            if resumed:
+                logger.info(
+                    f"Checkpoint: resuming {resumed} already-fetched incident(s) via fast-path"
                 )
-                worker_enricher = IncidentEnricher(llm_client=worker_llm)
-            else:
-                worker_enricher = enricher
 
-            logger.info(f"Worker-{worker_id} started")
-            worker_stats = enrich_articles_phase(
-                conn=thread_conn,
-                enricher=worker_enricher,
-                incident_queue=incident_queue,
-                fetch_complete_event=fetch_complete_event,
-                skip_if_not_education=args.skip_non_education,
-                rate_limit_delay=args.rate_limit_delay,
-                total_expected=total_to_process,
-                cancel_event=_cancel_event,
-                db_already_enriched=db_already_enriched,
-                db_total_incidents=db_total_incidents,
-            )
-            s = worker_stats
-            logger.info(
-                f"Worker-{worker_id} done — "
-                f"processed={s['processed']} enriched={s['enriched']} "
-                f"skipped={s['skipped']} errors={s['errors']}"
-            )
-
-            # Merge stats thread-safely
-            with stats_lock:
-                for key in combined_enrich_stats:
-                    combined_enrich_stats[key] += worker_stats.get(key, 0)
-        except Exception as e:
-            logger.error(f"Error in consumer worker-{worker_id}: {e}", exc_info=True)
-            with stats_lock:
-                combined_enrich_stats["errors"] += 1
-        finally:
-            thread_conn.close()
-
-    # Start consumer threads
-    consumers = []
-    for i in range(num_workers):
-        t = threading.Thread(target=consumer_thread, args=(i,), daemon=False, name=f"enricher-{i}")
-        t.start()
-        consumers.append(t)
-    logger.info(f"Started {num_workers} enrichment consumer thread(s)")
-
-    # Run producer (fetching) in main thread
-    try:
-        fetch_stats = fetch_articles_phase(
-            conn,
-            unenriched,
-            incident_queue=incident_queue,
-            limit=args.limit,
-            min_delay_seconds=2.0,
-            max_delay_seconds=5.0,
+        if not unenriched:
+            logger.info("No incidents ready for processing")
+            return
+    
+        # PHASE 1 & 2: Concurrent producer-consumer pattern
+        already_e = stats.get("enriched_incidents", 0)
+        total_db  = stats.get("total_incidents", 0)
+        logger.info(f"{'='*60}")
+        logger.info(
+            f"Phase 2 run starting | DB: {already_e}/{total_db} enriched | "
+            f"{len(unenriched)} remaining in this batch"
         )
-    except Exception as e:
-        logger.error(f"Error in producer (fetching): {e}", exc_info=True)
-        fetch_stats["errors"] += 1
-    finally:
-        fetch_complete_event.set()
-        # Push one sentinel (None) per consumer so each worker exits its get() loop cleanly
-        # without backoff polling.
-        for _ in range(num_workers):
-            incident_queue.put(None)
-        logger.info(f"Fetching complete — pushed {num_workers} sentinel(s) to queue")
+        logger.info(f"{'='*60}")
+        
+        # Initialize LLM enricher (needed for consumer thread)
+        try:
+            llm_client = OllamaLLMClient(
+                api_key=OLLAMA_API_KEY,
+                host=OLLAMA_HOST,
+                model=OLLAMA_MODEL,
+            )
+            enricher = IncidentEnricher(llm_client=llm_client)
+            logger.info(f"Initialized LLM client with model: {OLLAMA_MODEL}")
+        except Exception as e:
+            logger.error(f"Failed to initialize LLM client: {e}")
+            logger.error("Make sure OLLAMA_API_KEY is set in environment")
+            sys.exit(1)
+        
+        # Start enrichment watchdog — kills process if no heartbeat for 10 minutes.
+        # The fetch phase can be slow (SERP retries, TheRecord pagination), so we give
+        # it 600s before declaring a stall. Railway auto-restarts on exit(1).
+        global _watchdog
+        _watchdog = EnrichmentWatchdog(stall_seconds=600)
+        _watchdog.start()
 
-    # Wait for all consumer threads — no timeout.
-    # Each LLM call can take up to 180s, so even a modest batch (e.g. 500 incidents)
-    # needs 500 * 180s = 25 hours. The old timeout of total*2 (e.g. 3300s = 55min)
-    # was killing the consumer mid-enrichment. Use None to wait indefinitely; the
-    # cancel_event mechanism provides graceful shutdown when needed.
-    logger.info(f"Waiting for {num_workers} consumer(s) to finish (no timeout — cancel via admin panel)...")
-    for t in consumers:
-        # Poll every 60s so we can log progress and check for cancel
-        while t.is_alive():
-            t.join(timeout=60)
-            if t.is_alive():
+        # Create queue and synchronization primitives
+        # maxsize=100 provides back-pressure: if enrichment falls behind (slow LLM),
+        # the fetch producer blocks on put() automatically — prevents memory explosion.
+        incident_queue = queue.Queue(maxsize=100)
+        fetch_complete_event = threading.Event()
+        fetch_stats = {"processed": 0, "articles_fetched": 0, "errors": 0}
+
+        # Total incidents to process (for progress tracking)
+        total_to_process = len(unenriched)
+        num_workers = max(1, min(args.workers, 8))  # Cap at 8 workers
+
+        # Snapshot DB enrichment state at run start for cumulative progress display.
+        # This lets each progress line show "[N/M this run | X/Y enriched in DB]"
+        # so it's clear how far along the overall dataset we are, not just this cycle.
+        db_already_enriched = stats.get("enriched_incidents", 0)
+        db_total_incidents = stats.get("total_incidents", 0)
+
+        # Aggregated stats across all consumer threads (thread-safe)
+        stats_lock = threading.Lock()
+        combined_enrich_stats = {"processed": 0, "enriched": 0, "skipped": 0, "errors": 0}
+
+        def consumer_thread(worker_id: int):
+            """Consumer thread that processes incidents from queue."""
+            # Each worker gets its own DB connection and LLM client
+            thread_conn = get_connection()
+            try:
+                if num_workers > 1:
+                    # Each worker needs its own LLM client for thread safety
+                    worker_llm = OllamaLLMClient(
+                        api_key=OLLAMA_API_KEY,
+                        host=OLLAMA_HOST,
+                        model=OLLAMA_MODEL,
+                    )
+                    worker_enricher = IncidentEnricher(llm_client=worker_llm)
+                else:
+                    worker_enricher = enricher
+
+                logger.info(f"Worker-{worker_id} started")
+                worker_stats = enrich_articles_phase(
+                    conn=thread_conn,
+                    enricher=worker_enricher,
+                    incident_queue=incident_queue,
+                    fetch_complete_event=fetch_complete_event,
+                    skip_if_not_education=args.skip_non_education,
+                    rate_limit_delay=args.rate_limit_delay,
+                    total_expected=total_to_process,
+                    cancel_event=_cancel_event,
+                    db_already_enriched=db_already_enriched,
+                    db_total_incidents=db_total_incidents,
+                )
+                s = worker_stats
+                logger.info(
+                    f"Worker-{worker_id} done — "
+                    f"processed={s['processed']} enriched={s['enriched']} "
+                    f"skipped={s['skipped']} errors={s['errors']}"
+                )
+
+                # Merge stats thread-safely
                 with stats_lock:
-                    done = combined_enrich_stats["enriched"] + combined_enrich_stats["skipped"] + combined_enrich_stats["errors"]
-                logger.info(f"Still waiting for {t.name}... ({done}/{total_to_process} done so far)")
+                    for key in combined_enrich_stats:
+                        combined_enrich_stats[key] += worker_stats.get(key, 0)
+            except Exception as e:
+                logger.error(f"Error in consumer worker-{worker_id}: {e}", exc_info=True)
+                with stats_lock:
+                    combined_enrich_stats["errors"] += 1
+            finally:
+                thread_conn.close()
 
-    logger.info("All consumer threads finished")
+        # Start consumer threads
+        consumers = []
+        for i in range(num_workers):
+            t = threading.Thread(target=consumer_thread, args=(i,), daemon=False, name=f"enricher-{i}")
+            t.start()
+            consumers.append(t)
+        logger.info(f"Started {num_workers} enrichment consumer thread(s)")
 
-    # Stop watchdog — normal completion, no restart needed
-    if _watchdog:
-        _watchdog.stop()
-
-    # Final stats
-    enrich_stats = combined_enrich_stats
-    processed = fetch_stats["processed"]
-    enriched = enrich_stats.get("enriched", 0)
-    skipped = enrich_stats.get("skipped", 0)
-    errors = fetch_stats.get("errors", 0) + enrich_stats.get("errors", 0)
-    
-    # Final pipeline stats
-    logger.info("=" * 60)
-    logger.info("Phase 2 Pipeline Complete")
-    logger.info(f"  Articles Fetched: {fetch_stats['articles_fetched']}")
-    logger.info(f"  LLM Enriched: {enriched}")
-    logger.info(f"  Skipped: {skipped}")
-    logger.info(f"  Errors: {errors}")
-    logger.info("=" * 60)
-    
-    # Post-enrichment deduplication by institution name (if enrichment occurred)
-    if enrich_stats.get("enriched", 0) > 0:
-        logger.info("=" * 60)
-        logger.info("Running post-enrichment deduplication by institution name...")
+        # Run producer (fetching) in main thread
         try:
-            dedup_stats = deduplicate_by_institution(conn, window_days=14)
-            logger.info(f"Post-enrichment deduplication complete:")
-            logger.info(f"  Checked: {dedup_stats['checked']}")
-            logger.info(f"  Removed: {dedup_stats['removed']}")
-            logger.info(f"  Remaining: {dedup_stats['remaining']}")
+            fetch_stats = fetch_articles_phase(
+                conn,
+                unenriched,
+                incident_queue=incident_queue,
+                limit=args.limit,
+                min_delay_seconds=2.0,
+                max_delay_seconds=5.0,
+            )
         except Exception as e:
-            logger.error(f"Error during post-enrichment deduplication: {e}", exc_info=True)
-    
-    # Update final stats
-    final_stats = get_enrichment_stats(conn)
-    logger.info(f"\n{'='*60}")
-    logger.info("Final Statistics:")
-    logger.info(f"  Ready for enrichment: {final_stats['ready_for_enrichment']}")
-    logger.info(f"  Enriched incidents: {final_stats['enriched_incidents']}")
-    logger.info(f"{'='*60}")
-    
-    # Export enriched dataset to CSV if requested
-    if args.export_csv or args.csv_output:
+            logger.error(f"Error in producer (fetching): {e}", exc_info=True)
+            fetch_stats["errors"] += 1
+        finally:
+            fetch_complete_event.set()
+            # Push one sentinel (None) per consumer so each worker exits its get() loop cleanly
+            # without backoff polling.
+            for _ in range(num_workers):
+                incident_queue.put(None)
+            logger.info(f"Fetching complete — pushed {num_workers} sentinel(s) to queue")
+
+        # Wait for all consumer threads — no timeout.
+        # Each LLM call can take up to 180s, so even a modest batch (e.g. 500 incidents)
+        # needs 500 * 180s = 25 hours. The old timeout of total*2 (e.g. 3300s = 55min)
+        # was killing the consumer mid-enrichment. Use None to wait indefinitely; the
+        # cancel_event mechanism provides graceful shutdown when needed.
+        logger.info(f"Waiting for {num_workers} consumer(s) to finish (no timeout — cancel via admin panel)...")
+        for t in consumers:
+            # Poll every 60s so we can log progress and check for cancel
+            while t.is_alive():
+                t.join(timeout=60)
+                if t.is_alive():
+                    with stats_lock:
+                        done = combined_enrich_stats["enriched"] + combined_enrich_stats["skipped"] + combined_enrich_stats["errors"]
+                    logger.info(f"Still waiting for {t.name}... ({done}/{total_to_process} done so far)")
+
+        logger.info("All consumer threads finished")
+
+        # Final stats
+        enrich_stats = combined_enrich_stats
+        processed = fetch_stats["processed"]
+        enriched = enrich_stats.get("enriched", 0)
+        skipped = enrich_stats.get("skipped", 0)
+        errors = fetch_stats.get("errors", 0) + enrich_stats.get("errors", 0)
+        
+        # Final pipeline stats
         logger.info("=" * 60)
-        logger.info("Exporting enriched dataset to CSV...")
-        try:
-            output_path = export_enriched_dataset(output_path=args.csv_output)
-            if output_path:
-                logger.info(f"✓ Enriched dataset exported to: {output_path}")
-            else:
-                logger.info("No enriched incidents to export")
-        except Exception as e:
-            logger.error(f"Error exporting enriched dataset: {e}", exc_info=True)
-    
-    conn.close()
+        logger.info("Phase 2 Pipeline Complete")
+        logger.info(f"  Articles Fetched: {fetch_stats['articles_fetched']}")
+        logger.info(f"  LLM Enriched: {enriched}")
+        logger.info(f"  Skipped: {skipped}")
+        logger.info(f"  Errors: {errors}")
+        logger.info("=" * 60)
+        
+        # Post-enrichment deduplication by institution name (if enrichment occurred)
+        if enrich_stats.get("enriched", 0) > 0:
+            logger.info("=" * 60)
+            logger.info("Running post-enrichment deduplication by institution name...")
+            try:
+                dedup_stats = deduplicate_by_institution(conn, window_days=14)
+                logger.info(f"Post-enrichment deduplication complete:")
+                logger.info(f"  Checked: {dedup_stats['checked']}")
+                logger.info(f"  Removed: {dedup_stats['removed']}")
+                logger.info(f"  Remaining: {dedup_stats['remaining']}")
+            except Exception as e:
+                logger.error(f"Error during post-enrichment deduplication: {e}", exc_info=True)
+        
+        # Update final stats
+        final_stats = get_enrichment_stats(conn)
+        logger.info(f"\n{'='*60}")
+        logger.info("Final Statistics:")
+        logger.info(f"  Ready for enrichment: {final_stats['ready_for_enrichment']}")
+        logger.info(f"  Enriched incidents: {final_stats['enriched_incidents']}")
+        logger.info(f"{'='*60}")
+        
+        # Export enriched dataset to CSV if requested
+        if args.export_csv or args.csv_output:
+            logger.info("=" * 60)
+            logger.info("Exporting enriched dataset to CSV...")
+            try:
+                output_path = export_enriched_dataset(output_path=args.csv_output)
+                if output_path:
+                    logger.info(f"✓ Enriched dataset exported to: {output_path}")
+                else:
+                    logger.info("No enriched incidents to export")
+            except Exception as e:
+                logger.error(f"Error exporting enriched dataset: {e}", exc_info=True)
+    finally:
+        _clear_watchdog()
+        conn.close()
 
 
 if __name__ == "__main__":

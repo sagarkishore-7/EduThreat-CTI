@@ -14,7 +14,7 @@ from datetime import datetime
 
 from src.edu_cti.core.db import get_connection
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
-from src.edu_cti.core.config import DB_PATH
+from src.edu_cti.core.config import DB_PATH, SERP_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
 
@@ -271,6 +271,15 @@ def checkpoint_get_fetched(conn: sqlite3.Connection) -> set:
     """Return set of incident_ids that have already completed article fetch."""
     cur = conn.execute("SELECT incident_id FROM pipeline_checkpoint WHERE phase = 'article_fetch'")
     return {row[0] for row in cur.fetchall()}
+
+
+def checkpoint_clear(conn: sqlite3.Connection, incident_id: str) -> None:
+    """Clear fetch checkpoint state once an incident reaches a terminal outcome."""
+    conn.execute(
+        "DELETE FROM pipeline_checkpoint WHERE incident_id = ?",
+        (incident_id,),
+    )
+    conn.commit()
 
 
 def _flatten_enrichment_for_db(
@@ -1451,13 +1460,31 @@ def get_enrichment_stats(conn: sqlite3.Connection) -> Dict[str, int]:
     )
     stats["incidents_with_urls"] = cur.fetchone()["count"]
     
-    # Unenriched with URLs (ready for processing)
+    # Actionable incidents ready for Phase 2.
+    # Keep this in sync with get_unenriched_incidents() so manager loops don't
+    # spin on rows that Phase 2 would immediately reject as non-actionable.
     cur = conn.execute(
         """
-        SELECT COUNT(*) as count FROM incidents 
-        WHERE llm_enriched = 0 
-          AND all_urls IS NOT NULL AND all_urls != ''
-        """
+        SELECT COUNT(*) as count
+        FROM incidents i
+        LEFT JOIN (
+            SELECT DISTINCT incident_id FROM articles WHERE fetch_successful = 1
+        ) a ON a.incident_id = i.incident_id
+        WHERE i.llm_enriched = 0
+          AND (i.llm_excluded IS NULL OR i.llm_excluded = 0)
+          AND (
+            (i.all_urls IS NOT NULL AND i.all_urls != '')
+            OR a.incident_id IS NOT NULL
+            OR (
+              COALESCE(i.serp_attempt_count, 0) < ?
+              AND (
+                (i.university_name IS NOT NULL AND i.university_name != '')
+                OR (i.victim_raw_name IS NOT NULL AND i.victim_raw_name != '')
+              )
+            )
+          )
+        """,
+        (SERP_MAX_ATTEMPTS,),
     )
     stats["ready_for_enrichment"] = cur.fetchone()["count"]
     
