@@ -8,7 +8,7 @@ version = "2.0.0"
 description = "Real-time cyber threat intelligence pipeline for the global education sector"
 readme = {text = "Real-time cyber threat intelligence pipeline for the global education sector", content-type = "text/plain"}
 requires-python = ">=3.11"
-license = {text = "MIT"}
+license = "MIT"
 authors = [
     {name = "EduThreat-CTI Contributors"}
 ]
@@ -16,7 +16,6 @@ keywords = ["cybersecurity", "threat-intelligence", "education", "OSINT", "CTI"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
-    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
@@ -88,6 +87,7 @@ eduthreat-build = "src.edu_cti.pipeline.phase1.build_dataset:main"
 eduthreat-api = "src.edu_cti.api.__main__:main"
 
 [tool.setuptools.packages.find]
+where = ["."]
 include = ["src*"]
 
 [tool.black]
