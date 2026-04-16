@@ -265,6 +265,70 @@ class TestEnrichmentDatabase:
         assert row["attack_vector"] == "phishing"
         assert row["ransomware_family"] == "LockBit"
 
+    def test_save_enrichment_result_derives_country_from_article_context(self, temp_db):
+        """Explicit country evidence in the fetched article should backfill missing LLM output."""
+        conn, _ = temp_db
+        incident = BaseIncident(
+            incident_id="country_fallback_incident",
+            source="googlenews_rss",
+            source_event_id="https://example.com/georgia-tech",
+            victim_raw_name=None,
+            title="Georgia Tech Security Breach Exposes 1.3 Million Records",
+            subtitle="Georgia Tech Security Breach Exposes 1.3 Million Records Security Magazine",
+            university_name="Georgia Tech",
+            institution_type=None,
+            country=None,
+            city=None,
+            region=None,
+            incident_date="2019-03-31",
+            date_precision="day",
+            source_published_date="2019-03-31",
+            ingested_at=None,
+            primary_url=None,
+            all_urls=["https://example.com/georgia-tech"],
+            attack_type_hint="data breach",
+            status="confirmed",
+            source_confidence="medium",
+        )
+        insert_incident(conn, incident)
+        save_article(
+            conn,
+            incident.incident_id,
+            "https://example.com/georgia-tech",
+            ArticleContent(
+                url="https://example.com/georgia-tech",
+                title="Georgia Tech Security Breach Exposes 1.3 Million Records",
+                content=(
+                    "Georgia Institute of Technology confirmed the breach. "
+                    "The U.S. Department of Education and University System of Georgia "
+                    "have been notified."
+                ),
+                fetch_successful=True,
+                content_length=160,
+            ),
+            is_primary=True,
+        )
+
+        assert save_enrichment_result(conn, incident.incident_id, _sample_enrichment_result())
+
+        incident_row = conn.execute(
+            "SELECT country, country_code FROM incidents WHERE incident_id = ?",
+            (incident.incident_id,),
+        ).fetchone()
+        flat_row = conn.execute(
+            """
+            SELECT country, country_code
+            FROM incident_enrichments_flat
+            WHERE incident_id = ?
+            """,
+            (incident.incident_id,),
+        ).fetchone()
+
+        assert incident_row["country"] == "United States"
+        assert incident_row["country_code"] == "US"
+        assert flat_row["country"] == "United States"
+        assert flat_row["country_code"] == "US"
+
     def test_get_enrichment_stats(self, temp_db, sample_incident):
         """Enrichment stats should move incidents from unenriched to enriched."""
         conn, _ = temp_db

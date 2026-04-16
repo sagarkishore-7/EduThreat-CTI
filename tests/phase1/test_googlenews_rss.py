@@ -3,6 +3,23 @@
 from src.edu_cti.sources.rss import googlenews_rss
 
 
+def test_clean_google_news_description_strips_feed_html():
+    """Google RSS descriptions should be plain text before they reach incident subtitles."""
+
+    raw = (
+        '<a href="https://news.google.com/rss/articles/CBMi...">Georgia Tech Security Breach '
+        'Exposes 1.3 Million Records</a>&nbsp;&nbsp;'
+        '<font color="#6f6f6f">Security Magazine</font>'
+    )
+
+    cleaned = googlenews_rss._clean_google_news_description(raw)
+
+    assert "<a " not in cleaned
+    assert "news.google.com/rss/articles" not in cleaned
+    assert "Georgia Tech Security Breach Exposes 1.3 Million Records" in cleaned
+    assert "Security Magazine" in cleaned
+
+
 def test_build_googlenews_rss_incidents_serializes_pub_date(monkeypatch):
     """Google News RSS should emit date strings that Phase 1 dedup can safely compare."""
 

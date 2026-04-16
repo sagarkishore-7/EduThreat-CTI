@@ -14,7 +14,9 @@ URL pattern:
   https://news.google.com/rss/search?q={query}+after:{start}+before:{end}&hl={lang}&gl={country}&ceid={country}:{lang}
 """
 
+import html
 import logging
+import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
@@ -84,6 +86,17 @@ def _generate_date_windows(start_year: int) -> List[tuple]:
     return windows
 
 
+def _clean_google_news_description(description: str) -> str:
+    """Convert Google RSS description HTML into plain text suitable for UI/search."""
+    if not description:
+        return ""
+
+    text = html.unescape(description)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def _fetch_google_news_rss(url: str) -> List[dict]:
     """Fetch and parse a Google News RSS feed. Returns list of item dicts."""
     items = []
@@ -121,6 +134,7 @@ def _fetch_google_news_rss(url: str) -> List[dict]:
         link = link_el.text.strip() if link_el is not None and link_el.text else ""
         pub_date = pub_date_el.text.strip() if pub_date_el is not None and pub_date_el.text else ""
         description = desc_el.text.strip() if desc_el is not None and desc_el.text else ""
+        description = _clean_google_news_description(description)
         source_name = source_el.text.strip() if source_el is not None and source_el.text else ""
 
         if title and link:

@@ -8,15 +8,35 @@ for CSV export and dashboard analytics.
 import json
 import sqlite3
 import logging
+import re
 from pathlib import Path
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
+from src.edu_cti.core.countries import (
+    COUNTRY_ALIASES,
+    COUNTRY_NAME_TO_CODE,
+    get_country_code,
+    normalize_country,
+)
 from src.edu_cti.core.db import get_connection
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
 from src.edu_cti.core.config import DB_PATH, SERP_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
+
+_COUNTRY_TEXT_PATTERNS = tuple(
+    (
+        re.compile(rf"(?<!\w){re.escape(label)}(?!\w)", re.IGNORECASE),
+        normalize_country(label),
+    )
+    for label in sorted(
+        set(COUNTRY_NAME_TO_CODE.keys()) | set(COUNTRY_ALIASES.keys()),
+        key=len,
+        reverse=True,
+    )
+    if label and not (len(label) == 2 and label.isalpha())
+)
 
 
 def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
@@ -282,6 +302,52 @@ def checkpoint_clear(conn: sqlite3.Connection, incident_id: str) -> None:
     conn.commit()
 
 
+def _derive_country_from_context(
+    conn: sqlite3.Connection,
+    incident_id: str,
+    incident_row: Optional[sqlite3.Row] = None,
+) -> Optional[str]:
+    """
+    Recover a country only from explicit textual evidence.
+
+    We intentionally require exactly one normalized country mention across the
+    incident title/subtitle and the primary fetched article. If the context
+    mentions multiple countries, we leave the field empty rather than guessing.
+    """
+    texts: List[str] = []
+
+    if incident_row:
+        texts.extend(
+            value for value in (incident_row["title"], incident_row["subtitle"]) if value
+        )
+
+    article_row = conn.execute(
+        """
+        SELECT title, content
+        FROM articles
+        WHERE incident_id = ? AND fetch_successful = 1
+        ORDER BY is_primary DESC, fetched_at DESC
+        LIMIT 1
+        """,
+        (incident_id,),
+    ).fetchone()
+    if article_row:
+        texts.extend(value for value in (article_row["title"], article_row["content"]) if value)
+
+    if not texts:
+        return None
+
+    combined_text = "\n".join(texts)
+    matches = {
+        normalized
+        for pattern, normalized in _COUNTRY_TEXT_PATTERNS
+        if normalized and pattern.search(combined_text)
+    }
+    if len(matches) == 1:
+        return next(iter(matches))
+    return None
+
+
 def _flatten_enrichment_for_db(
     enrichment: CTIEnrichmentResult,
     raw_json_data: Optional[Dict[str, Any]] = None
@@ -305,8 +371,6 @@ def _flatten_enrichment_for_db(
     def raw_get(key, default=None):
         return raw.get(key, default)
     
-    # Normalize country to full name and get ISO code
-    from src.edu_cti.core.countries import normalize_country, get_country_code
     country_raw = raw_get("country")
     country_normalized = normalize_country(country_raw) if country_raw else None
     country_code = get_country_code(country_normalized) if country_normalized else None
@@ -595,7 +659,11 @@ def save_enrichment_result(
     
     # Get incident data for flattened table (fallback values)
     cur = conn.execute(
-        "SELECT institution_type, country, region, city FROM incidents WHERE incident_id = ?",
+        """
+        SELECT institution_type, country, region, city, title, subtitle
+        FROM incidents
+        WHERE incident_id = ?
+        """,
         (incident_id,)
     )
     incident_row = cur.fetchone()
@@ -611,9 +679,9 @@ def save_enrichment_result(
     # Use LLM-extracted values if available (from raw JSON), otherwise fallback to incident table
     institution_type = _scalar(raw_json_data.get("institution_type")) if raw_json_data else institution_type_fallback
 
-    # Normalize country to full name and get ISO code
-    from src.edu_cti.core.countries import normalize_country, get_country_code
     country_raw = _scalar(raw_json_data.get("country")) if raw_json_data else country_fallback
+    if not country_raw:
+        country_raw = _derive_country_from_context(conn, incident_id, incident_row)
     country = normalize_country(country_raw) if country_raw else None
     country_code = get_country_code(country) if country else None
 
@@ -817,7 +885,7 @@ def save_enrichment_result(
     # Define all columns in order
     all_columns = [
         'incident_id', 'is_education_related', 'institution_name', 'institution_type',
-        'country', 'region', 'city', 'attack_category', 'attack_vector', 'initial_access_vector',
+        'country', 'country_code', 'region', 'city', 'attack_category', 'attack_vector', 'initial_access_vector',
         'initial_access_description', 'ransomware_family', 'threat_actor_name', 'threat_actor_claim_url',
         'was_ransom_demanded', 'ransom_amount', 'ransom_currency', 'ransom_paid', 'ransom_paid_amount',
         'data_breached', 'data_exfiltrated', 'records_affected_exact', 'records_affected_min',
