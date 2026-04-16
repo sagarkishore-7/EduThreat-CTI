@@ -25,7 +25,6 @@ Example:
 
 import os
 import sys
-import sqlite3
 import tempfile
 import pytest
 from pathlib import Path
@@ -44,36 +43,16 @@ from src.edu_cti.core.sources import (
 )
 
 
-# ============================================================================
-# TEST FIXTURES
-# ============================================================================
-
-def pytest_addoption(parser):
-    """Add command-line options for contributor tests."""
-    parser.addoption(
-        "--source-name",
-        action="store",
-        default=None,
-        help="Specific source name to test (e.g., 'darkreading', 'konbriefing')"
-    )
-    parser.addoption(
-        "--max-pages",
-        action="store",
-        default="1",
-        help="Maximum pages to fetch during testing (default: 1)"
-    )
-
-
 @pytest.fixture
 def source_name(request):
     """Get source name from command line or use default."""
-    return request.config.getoption("--source-name")
+    return request.config.getoption("source_name")
 
 
 @pytest.fixture
 def max_pages(request):
     """Get max pages from command line."""
-    return int(request.config.getoption("--max-pages"))
+    return int(request.config.getoption("max_pages"))
 
 
 @pytest.fixture
@@ -200,6 +179,7 @@ class TestSourceRegistry:
             assert source_name.replace("_", "").isalnum(), f"Source name should be alphanumeric: {source_name}"
 
 
+@pytest.mark.live_source
 class TestSourceIntegration:
     """
     Integration tests for individual source verification.
@@ -340,6 +320,7 @@ class TestSourceIntegration:
         assert with_urls == len(rows), "Some incidents missing URLs for Phase 2 article fetching"
 
 
+@pytest.mark.live_source
 class TestAllSourcesBasic:
     """Quick sanity tests for all registered sources."""
     
@@ -379,6 +360,7 @@ class TestAllSourcesBasic:
 # PHASE 2 READINESS VERIFICATION
 # ============================================================================
 
+@pytest.mark.live_source
 class TestPhase2Readiness:
     """Verify incidents are properly structured for Phase 2 enrichment."""
     
@@ -449,4 +431,3 @@ if __name__ == "__main__":
     
     # Run with pytest
     sys.exit(pytest.main([__file__, "-v"] + sys.argv[1:]))
-
