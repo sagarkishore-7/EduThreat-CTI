@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 import threading
 from typing import Iterable, List, Optional, Sequence, Tuple
 from urllib.parse import urljoin
@@ -14,6 +15,7 @@ from src.edu_cti.core.utils import (
 )
 
 DEFAULT_NEWS_KEYWORDS: List[str] = config.NEWS_KEYWORDS
+DEFAULT_EDUCATION_KEYWORDS: List[str] = config.EDUCATION_KEYWORDS
 DEFAULT_SEARCH_QUERIES: List[str] = config.NEWS_SEARCH_QUERIES
 CYBER_KEYWORDS: List[str] = [k.lower() for k in config.CYBER_KEYWORDS]
 DEFAULT_MAX_PAGES = config.NEWS_MAX_PAGES
@@ -30,7 +32,16 @@ def is_cancelled() -> bool:
 def prepare_keywords(
     keywords: Optional[Sequence[str]] = None,
 ) -> List[str]:
-    return [k.lower() for k in (keywords or DEFAULT_NEWS_KEYWORDS)]
+    combined = list(keywords or DEFAULT_NEWS_KEYWORDS) + list(DEFAULT_EDUCATION_KEYWORDS)
+    seen = set()
+    prepared: List[str] = []
+    for keyword in combined:
+        lowered = keyword.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        prepared.append(lowered)
+    return prepared
 
 
 def prepare_search_queries(
@@ -44,7 +55,32 @@ def prepare_search_queries(
 
 def _has_cyber_keyword(text: str) -> bool:
     """Check if text contains at least one cybersecurity-related keyword."""
-    return any(k in text for k in CYBER_KEYWORDS)
+    return _contains_keyword(text, CYBER_KEYWORDS)
+
+
+def _normalize_signal_text(text: str) -> str:
+    lowered = text.lower()
+    lowered = re.sub(r"[-_/]+", " ", lowered)
+    lowered = re.sub(r"\s+", " ", lowered)
+    return lowered.strip()
+
+
+def _contains_keyword(text: str, keywords: Iterable[str]) -> bool:
+    normalized = _normalize_signal_text(text)
+    collapsed = normalized.replace(" ", "")
+
+    for keyword in keywords:
+        normalized_keyword = _normalize_signal_text(keyword)
+        if not normalized_keyword:
+            continue
+        if normalized_keyword in normalized:
+            return True
+
+        compact_keyword = normalized_keyword.replace(" ", "")
+        if compact_keyword and compact_keyword in collapsed:
+            return True
+
+    return False
 
 
 def matches_keywords(text: str, keywords: Iterable[str]) -> bool:
@@ -56,7 +92,7 @@ def matches_keywords(text: str, keywords: Iterable[str]) -> bool:
     if not text:
         return False
     lowered = text.lower()
-    has_edu = is_edu_keyword_in_text(lowered) or any(k in lowered for k in keywords)
+    has_edu = is_edu_keyword_in_text(lowered) or _contains_keyword(lowered, keywords)
     if not has_edu:
         return False
     return _has_cyber_keyword(lowered)
@@ -95,4 +131,3 @@ def fetch_html(
 
 def default_client() -> HttpClient:
     return build_http_client()
-

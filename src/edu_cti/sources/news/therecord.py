@@ -23,6 +23,8 @@ from .common import (
 SOURCE_NAME = config.SOURCE_THERECORD
 BASE_URL = "https://therecord.media/search-results"
 logger = logging.getLogger(__name__)
+EMPTY_PAGE_STOP = config.THERECORD_EMPTY_PAGE_STOP
+STALE_PAGE_STOP = config.THERECORD_STALE_PAGE_STOP
 
 
 def _search_url(term: str) -> str:
@@ -149,7 +151,7 @@ def _iter_pages(
         
         # Verify we got results
         if nodes:
-            logger.info(f"Found {len(nodes)} articles on page {page_number} for term '{term}'")
+            logger.debug("The Record term '%s' page %s returned %s raw search hits", term, page_number, len(nodes))
         else:
             logger.warning(
                 "The Record term '%s' page %s returned no articles (Algolia may not have loaded)",
@@ -200,6 +202,13 @@ def build_therecord_incidents(
     ingested_at = now_utc_iso()
 
     for term in terms:
+        consecutive_empty_pages = 0
+        consecutive_stale_pages = 0
+        term_pages = 0
+        term_raw_hits = 0
+        term_matched = 0
+        term_saved = 0
+
         if is_cancelled():
             logger.info("The Record scraping cancelled before term '%s'", term)
             break
@@ -209,8 +218,13 @@ def build_therecord_incidents(
             if soup is None:
                 break
 
+            term_pages += 1
             page_incidents: List[BaseIncident] = []
-            for node in _select_nodes(soup):
+            nodes = _select_nodes(soup)
+            raw_hits = len(nodes)
+            term_raw_hits += raw_hits
+
+            for node in nodes:
                 # Find the article link (a.article-tile, can be --brief or --primary variant)
                 link = node.find("a", class_=lambda x: x and "article-tile" in x, href=True)
                 if not link:
@@ -289,15 +303,72 @@ def build_therecord_incidents(
                 )
                 page_incidents.append(incident)
                 incidents.append(incident)
-            
+
+            matched_count = len(page_incidents)
+            term_matched += matched_count
+            saved_new = None
+
             # Save incidents from this page incrementally if callback provided
             if save_callback is not None and page_incidents:
                 try:
-                    save_callback(page_incidents)
-                    logger.debug(f"The Record: Saved {len(page_incidents)} incidents from page {page_number} for term '{term}'")
+                    callback_result = save_callback(page_incidents)
+                    if isinstance(callback_result, int):
+                        saved_new = max(callback_result, 0)
+                        term_saved += saved_new
                 except Exception as e:
                     logger.error(f"The Record: Error saving page {page_number} for term '{term}': {e}", exc_info=True)
                     # Continue processing even if save fails
 
-    return incidents
+            if matched_count == 0:
+                consecutive_empty_pages += 1
+            else:
+                consecutive_empty_pages = 0
 
+            if saved_new is not None:
+                if saved_new == 0:
+                    consecutive_stale_pages += 1
+                else:
+                    consecutive_stale_pages = 0
+            else:
+                consecutive_stale_pages = consecutive_empty_pages
+
+            saved_fragment = (
+                f", {saved_new} new saved"
+                if saved_new is not None
+                else ""
+            )
+            logger.info(
+                "The Record term '%s' page %s: %s raw hits, %s matched edu/cyber%s",
+                term,
+                page_number,
+                raw_hits,
+                matched_count,
+                saved_fragment,
+            )
+
+            if consecutive_empty_pages >= EMPTY_PAGE_STOP:
+                logger.info(
+                    "The Record term '%s' stopping early after %s consecutive pages without edu/cyber matches",
+                    term,
+                    consecutive_empty_pages,
+                )
+                break
+
+            if consecutive_stale_pages >= STALE_PAGE_STOP:
+                logger.info(
+                    "The Record term '%s' stopping early after %s consecutive pages without new incidents",
+                    term,
+                    consecutive_stale_pages,
+                )
+                break
+
+        logger.info(
+            "The Record term '%s' summary: %s pages, %s raw hits, %s matched edu/cyber, %s new saved",
+            term,
+            term_pages,
+            term_raw_hits,
+            term_matched,
+            term_saved,
+        )
+
+    return incidents

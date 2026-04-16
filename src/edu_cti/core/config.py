@@ -352,6 +352,11 @@ EDUCATION_KEYWORDS: List[str] = [
 # Set to None by default to fetch all available pages
 NEWS_MAX_PAGES = 50  # Safety cap: 50 pages × 20 articles = 1000 per term
 
+# The Record historical search can return long duplicate-heavy tails after the
+# first genuinely new pages. Stop early once we see a sustained stale streak.
+THERECORD_EMPTY_PAGE_STOP = 5
+THERECORD_STALE_PAGE_STOP = 12
+
 # Source identifiers
 SOURCE_DATABREACHES = "databreaches"
 SOURCE_SECURITYWEEK = "securityweek"

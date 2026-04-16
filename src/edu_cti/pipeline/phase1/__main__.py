@@ -281,8 +281,6 @@ def _ingest_group(
     Args:
         incremental: If True, use incremental ingestion (only new incidents)
     """
-    from src.edu_cti.pipeline.phase1.incremental_save import create_db_saver
-    
     mode = "incremental" if incremental else "full historical"
     print(f"[*] Ingesting {label} ({mode} mode)…")
     
@@ -304,29 +302,37 @@ def _ingest_group(
     import inspect
     sig = inspect.signature(collector)
     supports_incremental = "save_callback" in sig.parameters
-    
+
     if supports_incremental:
-        saver = create_db_saver(conn, is_rss=is_rss, source_name=label)
-        collector_kwargs["save_callback"] = saver.add_batch
-        
-        try:
-            incidents_by_source: Dict[str, List[BaseIncident]] = collector(**collector_kwargs)
-            
-            new_total = 0
-            for source_label, incidents in incidents_by_source.items():
-                if incidents:
-                    added = _ingest_batch(conn, incidents, is_rss=is_rss)
-                    print(f"    {source_label}: {len(incidents)} incidents ({added} new)")
-                    new_total += added
-            
-            new_total += saver.finish()
-            return new_total
-        except Exception as e:
-            try:
-                saver.flush()
-            except:
-                pass
-            raise
+        saved_by_source: Dict[str, int] = {}
+
+        def _save_now(batch: List[BaseIncident]) -> int:
+            if not batch:
+                return 0
+            added = _ingest_batch(conn, batch, is_rss=is_rss)
+            source_key = batch[0].source or "unknown"
+            saved_by_source[source_key] = saved_by_source.get(source_key, 0) + added
+            return added
+
+        collector_kwargs["save_callback"] = _save_now
+        incidents_by_source: Dict[str, List[BaseIncident]] = collector(**collector_kwargs)
+
+        processed_total = 0
+        new_total = 0
+        for source_label, incidents in incidents_by_source.items():
+            processed_total += len(incidents)
+            source_key = incidents[0].source if incidents else source_label
+            added = saved_by_source.get(source_key, 0)
+            print(f"    {source_label}: {len(incidents)} incidents ({added} new)")
+            new_total += added
+
+        logger.info(
+            "%s: Collection complete. Processed %s incidents, saved %s new",
+            label,
+            processed_total,
+            new_total,
+        )
+        return new_total
     else:
         incidents_by_source: Dict[str, List[BaseIncident]] = collector(**collector_kwargs)
 
