@@ -268,6 +268,16 @@ def create_app() -> FastAPI:
 
 app = create_app()
 
+
+def _pipeline_is_running() -> bool:
+    """Return True when a background pipeline run is actively mutating the dataset."""
+    try:
+        from src.edu_cti.pipeline.manager import get_pipeline_manager
+
+        return get_pipeline_manager().is_running
+    except Exception:
+        return False
+
 # Add exception handler for validation errors
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
@@ -360,9 +370,11 @@ async def get_dashboard():
     Returns aggregated statistics, incident distributions, and recent activity.
     """
     cache_key = "dashboard"
-    cached = cache_get(cache_key, ttl_seconds=300)
-    if cached is not None:
-        return cached
+    bypass_cache = _pipeline_is_running()
+    if not bypass_cache:
+        cached = cache_get(cache_key, ttl_seconds=300)
+        if cached is not None:
+            return cached
 
     try:
         conn = get_api_connection()
@@ -401,7 +413,8 @@ async def get_dashboard():
             incidents_over_time=incidents_over_time,
             recent_incidents=recent_incidents,
         )
-        cache_set(cache_key, result)
+        if not bypass_cache:
+            cache_set(cache_key, result)
         return result
 
     except Exception as e:
@@ -413,16 +426,19 @@ async def get_dashboard():
 async def get_stats():
     """Get overall dashboard statistics."""
     cache_key = "stats"
-    cached = cache_get(cache_key, ttl_seconds=300)
-    if cached is not None:
-        return cached
+    bypass_cache = _pipeline_is_running()
+    if not bypass_cache:
+        cached = cache_get(cache_key, ttl_seconds=300)
+        if cached is not None:
+            return cached
 
     try:
         conn = get_api_connection()
         stats_data = get_dashboard_stats(conn)
         conn.close()
         result = DashboardStats(**stats_data)
-        cache_set(cache_key, result)
+        if not bypass_cache:
+            cache_set(cache_key, result)
         return result
     except Exception as e:
         logger.error(f"Error getting stats: {e}", exc_info=True)

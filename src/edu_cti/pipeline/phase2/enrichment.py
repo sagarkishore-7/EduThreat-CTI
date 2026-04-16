@@ -500,6 +500,19 @@ class IncidentEnricher:
                 # Strategy: drop any line that has NO colon (not a key-value pair) AND
                 # contains at least one non-ASCII character.  Also drop lines with no
                 # JSON structural chars at all (pure unquoted garbage).
+                fixed_response = re.sub(
+                    r'^\s*"[^"\n]*[^\x00-\x7F][^"\n]*"\s*,?\s*$',
+                    '',
+                    fixed_response,
+                    flags=re.MULTILINE,
+                )
+                fixed_response = re.sub(
+                    r'^\s*"[^"\n]*"\s*,?\s*$',
+                    '',
+                    fixed_response,
+                    flags=re.MULTILINE,
+                )
+
                 def _is_spam_line(line: str) -> bool:
                     stripped = line.strip()
                     if not stripped:

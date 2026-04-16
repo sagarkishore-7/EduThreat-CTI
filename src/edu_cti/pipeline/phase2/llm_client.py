@@ -280,6 +280,49 @@ class OllamaLLMClient:
             return response
         
         normalized = response.copy()
+
+        # Lightweight education relevance checks are validated directly against
+        # EducationRelevanceCheck, not the full CTIEnrichmentResult wrapper.
+        if schema_model.__name__ == "EducationRelevanceCheck":
+            source = normalized
+            if isinstance(normalized.get("incident_review"), dict):
+                source = normalized["incident_review"]
+            elif isinstance(normalized.get("education_relevance"), dict):
+                source = normalized["education_relevance"]
+
+            direct = dict(source)
+
+            if "is_education_related" not in direct and "is_edu_cyber_incident" in normalized:
+                direct["is_education_related"] = normalized.get("is_edu_cyber_incident")
+
+            if "reasoning" not in direct:
+                direct["reasoning"] = (
+                    normalized.get("education_reasoning")
+                    or normalized.get("education_relevance_reasoning")
+                    or "Education relevance reasoning not provided by LLM"
+                )
+
+            if "institution_identified" not in direct:
+                direct["institution_identified"] = (
+                    direct.get("institution_name")
+                    or normalized.get("institution_name")
+                )
+
+            raw_flag = direct.get("is_education_related", False)
+            if isinstance(raw_flag, str):
+                direct["is_education_related"] = raw_flag.strip().lower() in ("true", "yes", "1")
+            else:
+                direct["is_education_related"] = bool(raw_flag)
+
+            direct.pop("confidence", None)
+            direct.pop("confidence_score", None)
+            direct.pop("institution_name", None)
+
+            return {
+                "is_education_related": direct["is_education_related"],
+                "reasoning": direct["reasoning"],
+                "institution_identified": direct.get("institution_identified"),
+            }
         
         # Map incident_review -> education_relevance
         if 'incident_review' in normalized and 'education_relevance' not in normalized:
@@ -1259,7 +1302,11 @@ class OllamaLLMClient:
                         logger.debug(f"Found content in response.content (object attribute access)")
             except Exception as e:
                 logger.debug(f"Attribute access failed: {e}")
-        else:
+
+        # Only treat the response as a stream if we still have no content. Dict
+        # responses are often fully-populated non-stream payloads; iterating them
+        # would yield keys like "message" and clobber the JSON body we already found.
+        if not content and not isinstance(response, dict):
             # Handle streaming response (collect all parts)
             content = ''
             try:
@@ -1371,4 +1418,3 @@ class OllamaLLMClient:
                 logger.error(f"Expected top-level fields: {expected_fields}")
                 logger.error(f"Actual top-level fields: {list(parsed.keys())}")
             raise
-

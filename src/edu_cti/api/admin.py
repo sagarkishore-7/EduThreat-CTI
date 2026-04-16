@@ -23,7 +23,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 
 from src.edu_cti.core.config import DB_PATH, DATA_DIR
-from src.edu_cti.api.database import get_api_connection
+from src.edu_cti.api.database import get_api_connection, count_education_incidents
 from src.edu_cti.api.cache import cache_invalidate
 from src.edu_cti.pipeline.phase2.utils.deduplication import deduplicate_by_institution
 
@@ -197,8 +197,7 @@ async def get_export_stats(_: bool = Depends(authenticate)):
         enriched = cur.fetchone()[0]
         
         # Education related
-        cur = conn.execute("SELECT COUNT(*) FROM incident_enrichments_flat WHERE is_education_related = 1")
-        education = cur.fetchone()[0]
+        education = count_education_incidents(conn)
         
         # Total distinct sources
         cur = conn.execute("SELECT COUNT(DISTINCT source) FROM incident_sources")

@@ -1,41 +1,35 @@
-"""
-Tests for Phase 2: Enrichment Pipeline
-
-Tests LLM enrichment, article fetching, and enrichment database operations.
-"""
+"""Tests for Phase 2 enrichment, storage, and recovery behavior."""
 
 import importlib
-import pytest
-import sqlite3
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import Mock, patch, MagicMock
-from typing import Dict, List
+from typing import Optional
+from unittest.mock import Mock, patch
+
+import pytest
 
 from src.edu_cti.core.config import SERP_MAX_ATTEMPTS
-from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.db import get_connection, init_db, insert_incident
+from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.pipeline.phase2.enrichment import IncidentEnricher
 from src.edu_cti.pipeline.phase2.schemas import (
-    EducationRelevanceCheck,
-    CTIEnrichmentResult,
-    TimelineEvent,
-    MITREAttackTechnique,
     AttackDynamics,
+    CTIEnrichmentResult,
+    EducationRelevanceCheck,
+    MITREAttackTechnique,
+    TimelineEvent,
 )
-from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleFetcher, ArticleContent
+from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent, ArticleFetcher
 from src.edu_cti.pipeline.phase2.storage.article_storage import init_articles_table, save_article
-from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
 from src.edu_cti.pipeline.phase2.storage.db import (
-    init_incident_enrichments_table,
-    get_unenriched_incidents,
-    save_enrichment_result,
-    get_enrichment_result,
-    mark_incident_skipped,
-    get_enrichment_stats,
-    checkpoint_mark,
-    checkpoint_get_fetched,
     checkpoint_clear,
+    checkpoint_get_fetched,
+    checkpoint_mark,
+    delete_incident,
+    get_enrichment_result,
+    get_enrichment_stats,
+    get_unenriched_incidents,
+    init_incident_enrichments_table,
+    save_enrichment_result,
 )
 
 
@@ -78,218 +72,220 @@ def sample_incident():
     )
 
 
-@pytest.fixture
-def sample_article_content():
-    """Create sample article content for testing."""
-    return ArticleContent(
-        url="https://example.com/article1",
-        title="Test University Cyber Attack",
-        content="A ransomware attack hit Test University on January 15, 2025...",
-        fetch_successful=True,
-        fetch_error=None,
+def _sample_enrichment_result(
+    primary_url: str = "https://example.com/article1",
+    summary: str = "Test university was hit by ransomware.",
+    is_education_related: bool = True,
+    institution_name: Optional[str] = "Test University",
+) -> CTIEnrichmentResult:
+    return CTIEnrichmentResult(
+        education_relevance=EducationRelevanceCheck(
+            is_education_related=is_education_related,
+            reasoning="Education-targeted incident" if is_education_related else "Not education-related",
+            institution_identified=institution_name,
+        ),
+        primary_url=primary_url,
+        enriched_summary=summary,
+        timeline=[
+            TimelineEvent(
+                date="2025-01-15",
+                event_type="discovery",
+                event_description="Ransomware attack detected",
+            )
+        ],
+        mitre_attack_techniques=[
+            MITREAttackTechnique(
+                technique_id="T1486",
+                technique_name="Data Encrypted for Impact",
+                tactic="Impact",
+            )
+        ],
+        attack_dynamics=AttackDynamics(
+            attack_vector="malicious_attachment",
+            ransomware_family="LockBit",
+            data_exfiltration=True,
+        ),
+    )
+
+
+def _save_sample_article(conn, incident_id: str, url: str, title: str = "Test Article") -> None:
+    content = (
+        "This is a detailed article about an education-sector cyber incident. "
+        "It contains enough text to satisfy the Phase 2 content-length filter."
+    )
+    save_article(
+        conn,
+        incident_id=incident_id,
+        url=url,
+        article=ArticleContent(
+            url=url,
+            title=title,
+            content=content,
+            fetch_successful=True,
+            content_length=len(content),
+        ),
     )
 
 
 class TestArticleFetcher:
     """Tests for article fetching functionality."""
-    
-    @patch('src.edu_cti.pipeline.phase2.article_fetcher.build_http_client')
-    def test_fetch_article_success(self, mock_build_client):
-        """Test successful article fetching."""
-        mock_client = Mock()
-        mock_client.get.return_value.text = """
-        <html>
-            <head><title>Test Article</title></head>
-            <body>
-                <article>
-                    <h1>Test Article</h1>
-                    <p>This is test content about a cyber incident.</p>
-                </article>
-            </body>
-        </html>
-        """
-        mock_build_client.return_value = mock_client
-        
-        fetcher = ArticleFetcher()
-        result = fetcher.fetch_article_content("https://example.com/article")
-        
+
+    def test_fetch_article_success(self):
+        """Fetcher should return the first successful article from the fallback chain."""
+        fetcher = ArticleFetcher(http_client=Mock())
+        success = ArticleContent(
+            url="https://example.com/article",
+            title="Test Article",
+            content="This is test content about a cyber incident.",
+            fetch_successful=True,
+            content_length=42,
+        )
+        failed = ArticleContent(
+            url="https://example.com/article",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="newspaper failed",
+        )
+
+        with patch.object(fetcher, "_fetch_with_newspaper", return_value=failed), patch.object(
+            fetcher, "_fetch_with_browser", return_value=success
+        ):
+            result = fetcher.fetch_article("https://example.com/article")
+
         assert result.fetch_successful is True
         assert result.title == "Test Article"
         assert "test content" in result.content.lower()
-    
-    @patch('src.edu_cti.pipeline.phase2.article_fetcher.build_http_client')
-    def test_fetch_article_failure(self, mock_build_client):
-        """Test article fetching failure handling."""
-        mock_client = Mock()
-        mock_client.get.side_effect = Exception("Network error")
-        mock_build_client.return_value = mock_client
-        
-        fetcher = ArticleFetcher()
-        result = fetcher.fetch_article_content("https://example.com/article")
-        
+
+    def test_fetch_article_failure(self):
+        """Fetcher should return an error result if every tier fails."""
+        fetcher = ArticleFetcher(http_client=Mock())
+        failed = ArticleContent(
+            url="https://example.com/article",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="failed",
+        )
+
+        with patch.object(fetcher, "_fetch_with_newspaper", return_value=failed), patch.object(
+            fetcher, "_fetch_with_browser", return_value=failed
+        ), patch.object(fetcher, "_fetch_with_oxylabs", return_value=failed), patch.object(
+            fetcher, "_fetch_from_archive", return_value=failed
+        ):
+            result = fetcher.fetch_article("https://example.com/article")
+
         assert result.fetch_successful is False
-        assert result.fetch_error is not None
+        assert "All fetch methods failed" in result.error_message
 
 
 class TestEnrichmentDatabase:
     """Tests for enrichment database operations."""
-    
+
     def test_get_unenriched_incidents(self, temp_db, sample_incident):
         """Test retrieving unenriched incidents."""
         conn, _ = temp_db
-        
-        # Insert an unenriched incident
         insert_incident(conn, sample_incident)
-        
-        # Get unenriched incidents
+
         unenriched = get_unenriched_incidents(conn)
-        
+
         assert len(unenriched) == 1
         assert unenriched[0]["incident_id"] == sample_incident.incident_id
-    
+
     def test_save_enrichment_result(self, temp_db, sample_incident):
-        """Test saving enrichment result."""
+        """Saving an enrichment should persist the structured result."""
         conn, _ = temp_db
-        
-        # Insert incident first
         insert_incident(conn, sample_incident)
-        
-        # Create enrichment result
-        enrichment = CTIEnrichmentResult(
-            primary_url="https://example.com/article1",
-            extraction_confidence=0.85,
-            enriched_summary="Test university was hit by ransomware...",
-            timeline=[
-                TimelineEvent(
-                    event_date="2025-01-15",
-                    event_type="attack_discovered",
-                    description="Ransomware attack detected",
-                    confidence=0.9,
-                )
-            ],
-            mitre_attack_techniques=[
-                MITREAttackTechnique(
-                    technique_id="T1486",
-                    technique_name="Data Encrypted for Impact",
-                    tactic="Impact",
-                    confidence=0.85,
-                )
-            ],
-            attack_dynamics=AttackDynamics(
-                attack_type="ransomware",
-                attack_family="LockBit",
-                initial_access_vector="phishing",
-            ),
-            is_education_related=True,
-            education_relevance_confidence=0.9,
-        )
-        
-        # Save enrichment
+
+        enrichment = _sample_enrichment_result(primary_url="https://example.com/article1")
         saved = save_enrichment_result(conn, sample_incident.incident_id, enrichment)
-        
+
         assert saved is True
-        
-        # Verify enrichment was saved
+
         saved_enrichment = get_enrichment_result(conn, sample_incident.incident_id)
         assert saved_enrichment is not None
-        assert saved_enrichment.extraction_confidence == 0.85
         assert saved_enrichment.primary_url == "https://example.com/article1"
-    
-    def test_enrichment_upgrade_logic(self, temp_db, sample_incident):
-        """Test enrichment upgrade when new confidence is higher."""
+        assert saved_enrichment.enriched_summary == "Test university was hit by ransomware."
+
+    def test_save_enrichment_result_replaces_existing_entry(self, temp_db, sample_incident):
+        """Later saves should replace the existing enrichment snapshot."""
         conn, _ = temp_db
-        
-        # Insert incident
         insert_incident(conn, sample_incident)
-        
-        # First enrichment with lower confidence
-        enrichment1 = CTIEnrichmentResult(
+
+        first = _sample_enrichment_result(
             primary_url="https://example.com/article1",
-            extraction_confidence=0.70,
-            enriched_summary="First summary",
-            timeline=[],
-            mitre_attack_techniques=[],
-            is_education_related=True,
-            education_relevance_confidence=0.9,
+            summary="First summary",
         )
-        saved1 = save_enrichment_result(conn, sample_incident.incident_id, enrichment1)
-        assert saved1 is True
-        
-        # Second enrichment with higher confidence - should upgrade
-        enrichment2 = CTIEnrichmentResult(
+        second = _sample_enrichment_result(
             primary_url="https://example.com/article2",
-            extraction_confidence=0.90,
-            enriched_summary="Second summary",
-            timeline=[],
-            mitre_attack_techniques=[],
-            is_education_related=True,
-            education_relevance_confidence=0.9,
+            summary="Second summary",
         )
-        saved2 = save_enrichment_result(conn, sample_incident.incident_id, enrichment2)
-        assert saved2 is True
-        
-        # Verify upgrade
+
+        assert save_enrichment_result(conn, sample_incident.incident_id, first) is True
+        assert save_enrichment_result(conn, sample_incident.incident_id, second) is True
+
         final = get_enrichment_result(conn, sample_incident.incident_id)
-        assert final.extraction_confidence == 0.90
         assert final.primary_url == "https://example.com/article2"
-        
-        # Third enrichment with lower confidence - should not upgrade
-        enrichment3 = CTIEnrichmentResult(
-            primary_url="https://example.com/article3",
-            extraction_confidence=0.65,
-            enriched_summary="Third summary",
-            timeline=[],
-            mitre_attack_techniques=[],
-            is_education_related=True,
-            education_relevance_confidence=0.9,
-        )
-        saved3 = save_enrichment_result(conn, sample_incident.incident_id, enrichment3)
-        assert saved3 is False  # Should not save lower confidence
-        
-        # Verify original high confidence is still there
-        final_after = get_enrichment_result(conn, sample_incident.incident_id)
-        assert final_after.extraction_confidence == 0.90
-    
-    def test_get_enrichment_stats(self, temp_db, sample_incident):
-        """Test getting enrichment statistics."""
+        assert final.enriched_summary == "Second summary"
+
+    def test_save_enrichment_result_coerces_list_scalar_raw_json_fields(self, temp_db, sample_incident):
+        """List-typed scalar LLM fields should be flattened before writing to SQLite."""
         conn, _ = temp_db
-        
-        # Insert incident
         insert_incident(conn, sample_incident)
-        
-        # Get stats before enrichment
+
+        enrichment = _sample_enrichment_result()
+        raw_json_data = {
+            "country": ["United States"],
+            "institution_type": ["university"],
+            "attack_category": ["ransomware"],
+            "attack_vector": ["phishing"],
+            "ransomware_family_or_group": ["LockBit"],
+            "was_ransom_demanded": [True],
+        }
+
+        assert save_enrichment_result(
+            conn,
+            sample_incident.incident_id,
+            enrichment,
+            raw_json_data=raw_json_data,
+        )
+
+        row = conn.execute(
+            """
+            SELECT country, institution_type, attack_category, attack_vector, ransomware_family
+            FROM incident_enrichments_flat
+            WHERE incident_id = ?
+            """,
+            (sample_incident.incident_id,),
+        ).fetchone()
+
+        assert row["country"] == "United States"
+        assert row["institution_type"] == "university"
+        assert row["attack_category"] == "ransomware"
+        assert row["attack_vector"] == "phishing"
+        assert row["ransomware_family"] == "LockBit"
+
+    def test_get_enrichment_stats(self, temp_db, sample_incident):
+        """Enrichment stats should move incidents from unenriched to enriched."""
+        conn, _ = temp_db
+        insert_incident(conn, sample_incident)
+
         stats_before = get_enrichment_stats(conn)
         assert stats_before["unenriched_incidents"] == 1
         assert stats_before["enriched_incidents"] == 0
         assert stats_before["ready_for_enrichment"] == 1
-        
-        # Enrich incident
-        enrichment = CTIEnrichmentResult(
-            education_relevance=EducationRelevanceCheck(
-                is_education_related=True,
-                reasoning="The incident targets an educational institution.",
-                institution_identified="Test University",
-            ),
-            primary_url="https://example.com/article1",
-            extraction_confidence=0.85,
-            enriched_summary="Test summary",
-            timeline=[],
-            mitre_attack_techniques=[],
-            is_education_related=True,
-            education_relevance_confidence=0.9,
-        )
+
+        enrichment = _sample_enrichment_result()
         save_enrichment_result(conn, sample_incident.incident_id, enrichment)
-        
-        # Get stats after enrichment
+
         stats_after = get_enrichment_stats(conn)
         assert stats_after["unenriched_incidents"] == 0
         assert stats_after["enriched_incidents"] == 1
         assert stats_after["ready_for_enrichment"] == 0
 
     def test_get_enrichment_stats_counts_only_actionable_incidents(self, temp_db, sample_incident):
-        """Only incidents Phase 2 can actually work should count as ready."""
+        """Only incidents Phase 2 can work should count as ready."""
         conn, _ = temp_db
-
         insert_incident(conn, sample_incident)
 
         serp_ready = BaseIncident(
@@ -333,17 +329,7 @@ class TestEnrichmentDatabase:
             all_urls=[],
         )
         insert_incident(conn, article_backed)
-        save_article(
-            conn,
-            incident_id=article_backed.incident_id,
-            url="https://example.com/recovered",
-            article=ArticleContent(
-                url="https://example.com/recovered",
-                title="Recovered article",
-                content="Recovered article content",
-                fetch_successful=True,
-            ),
-        )
+        _save_sample_article(conn, article_backed.incident_id, "https://example.com/recovered")
 
         serp_exhausted = BaseIncident(
             incident_id="serp_exhausted_incident",
@@ -399,7 +385,6 @@ class TestEnrichmentDatabase:
     def test_checkpoint_clear_removes_fetch_checkpoint(self, temp_db, sample_incident):
         """Fetch checkpoints should clear once an incident reaches a terminal outcome."""
         conn, _ = temp_db
-
         insert_incident(conn, sample_incident)
         checkpoint_mark(conn, sample_incident.incident_id)
         assert sample_incident.incident_id in checkpoint_get_fetched(conn)
@@ -435,214 +420,236 @@ class TestEnrichmentDatabase:
             captured["incident_ids"] = [incident["incident_id"] for incident in unenriched]
             return {"processed": 0, "articles_fetched": 0, "errors": 0}
 
-        with patch.object(phase2_main, "parse_args", return_value=args), \
-             patch.object(phase2_main, "get_connection", side_effect=_test_connection), \
-             patch.object(phase2_main, "init_db", side_effect=init_db), \
-             patch.object(phase2_main, "configure_logging"), \
-             patch.object(phase2_main, "fetch_articles_phase", side_effect=_capture_fetch), \
-             patch.object(
-                 phase2_main,
-                 "enrich_articles_phase",
-                 return_value={"processed": 0, "enriched": 0, "skipped": 0, "errors": 0},
-             ), \
-             patch.object(phase2_main, "OllamaLLMClient", return_value=Mock()), \
-             patch.object(phase2_main, "IncidentEnricher", return_value=Mock()), \
-             patch.object(
-                 phase2_main,
-                 "deduplicate_by_institution",
-                 return_value={"checked": 0, "removed": 0, "remaining": 0},
-             ):
+        with patch.object(phase2_main, "parse_args", return_value=args), patch.object(
+            phase2_main, "get_connection", side_effect=_test_connection
+        ), patch.object(phase2_main, "init_db", side_effect=init_db), patch.object(
+            phase2_main, "configure_logging"
+        ), patch.object(
+            phase2_main, "fetch_articles_phase", side_effect=_capture_fetch
+        ), patch.object(
+            phase2_main,
+            "enrich_articles_phase",
+            return_value={"processed": 0, "enriched": 0, "skipped": 0, "errors": 0},
+        ), patch.object(
+            phase2_main, "OllamaLLMClient", return_value=Mock()
+        ), patch.object(
+            phase2_main, "IncidentEnricher", return_value=Mock()
+        ), patch.object(
+            phase2_main,
+            "deduplicate_by_institution",
+            return_value={"checked": 0, "removed": 0, "remaining": 0},
+        ):
             phase2_main.main()
 
         assert captured["incident_ids"] == [sample_incident.incident_id]
 
+    def test_delete_incident_soft_deletes_and_preserves_row(self, temp_db, sample_incident):
+        """Soft-deleting should preserve the incident row while clearing derived artifacts."""
+        conn, _ = temp_db
+        insert_incident(conn, sample_incident)
+        _save_sample_article(conn, sample_incident.incident_id, sample_incident.all_urls[0])
+        save_enrichment_result(conn, sample_incident.incident_id, _sample_enrichment_result())
+
+        assert delete_incident(conn, sample_incident.incident_id, reason="not_education_related") is True
+
+        incident_row = conn.execute(
+            """
+            SELECT llm_excluded, llm_excluded_reason, llm_enriched
+            FROM incidents WHERE incident_id = ?
+            """,
+            (sample_incident.incident_id,),
+        ).fetchone()
+        articles_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM articles WHERE incident_id = ?",
+            (sample_incident.incident_id,),
+        ).fetchone()["count"]
+        flat_count = conn.execute(
+            "SELECT COUNT(*) AS count FROM incident_enrichments_flat WHERE incident_id = ?",
+            (sample_incident.incident_id,),
+        ).fetchone()["count"]
+
+        assert incident_row["llm_excluded"] == 1
+        assert incident_row["llm_excluded_reason"] == "not_education_related"
+        assert incident_row["llm_enriched"] == 1
+        assert articles_count == 0
+        assert flat_count == 0
+
+    def test_record_serp_failure_soft_excludes_after_max_attempts(self, temp_db, sample_incident):
+        """SERP exhaustion should soft-exclude incidents instead of deleting them."""
+        from src.edu_cti.pipeline.phase2.__main__ import _record_serp_failure
+
+        conn, _ = temp_db
+        insert_incident(conn, sample_incident)
+
+        for _ in range(SERP_MAX_ATTEMPTS - 1):
+            assert _record_serp_failure(conn, sample_incident.incident_id) is False
+
+        assert _record_serp_failure(conn, sample_incident.incident_id) is True
+
+        row = conn.execute(
+            """
+            SELECT serp_attempt_count, llm_excluded, llm_excluded_reason, llm_enriched
+            FROM incidents WHERE incident_id = ?
+            """,
+            (sample_incident.incident_id,),
+        ).fetchone()
+
+        assert row["serp_attempt_count"] == SERP_MAX_ATTEMPTS
+        assert row["llm_excluded"] == 1
+        assert row["llm_excluded_reason"] == "serp_exhausted"
+        assert row["llm_enriched"] == 1
+
 
 class TestIncidentEnricher:
     """Tests for the main enrichment orchestrator."""
-    
-    @patch('src.edu_cti.pipeline.phase2.enrichment.OllamaLLMClient')
-    @patch('src.edu_cti.pipeline.phase2.enrichment.ArticleFetcher')
-    def test_process_incident_education_related(self, mock_fetcher_class, mock_llm_class):
-        """Test processing an education-related incident."""
-        # Setup mocks
-        mock_llm = Mock()
-        mock_llm.extract_structured.return_value = EducationRelevanceCheck(
-            is_education_related=True,
-            confidence=0.9,
-            reasoning="Test university incident",
-            institution_name="Test University",
+
+    def test_process_incident_marks_primary_article_and_cleans_up(self, temp_db, sample_incident):
+        """The chosen primary article should be kept and non-primary articles removed."""
+        conn, _ = temp_db
+        insert_incident(conn, sample_incident)
+        _save_sample_article(conn, sample_incident.incident_id, sample_incident.all_urls[0], "Article 1")
+        _save_sample_article(conn, sample_incident.incident_id, sample_incident.all_urls[1], "Article 2")
+
+        enricher = IncidentEnricher(llm_client=Mock())
+        expected = _sample_enrichment_result(primary_url=sample_incident.all_urls[1])
+
+        with patch.object(
+            enricher,
+            "_process_multiple_articles",
+            return_value=(expected, {"institution_name": "Test University"}),
+        ):
+            result, _ = enricher.process_incident(
+                sample_incident,
+                skip_if_not_education=False,
+                conn=conn,
+            )
+
+        remaining = conn.execute(
+            "SELECT url, is_primary FROM articles WHERE incident_id = ?",
+            (sample_incident.incident_id,),
+        ).fetchall()
+
+        assert result.primary_url == sample_incident.all_urls[1]
+        assert len(remaining) == 1
+        assert remaining[0]["url"] == sample_incident.all_urls[1]
+        assert remaining[0]["is_primary"] == 1
+
+    def test_process_incident_returns_non_education_marker_for_single_article(
+        self, temp_db, sample_incident
+    ):
+        """Non-education incidents should return a marker instead of being retried forever."""
+        conn, _ = temp_db
+        insert_incident(conn, sample_incident)
+        _save_sample_article(conn, sample_incident.incident_id, sample_incident.all_urls[0])
+
+        enricher = IncidentEnricher(llm_client=Mock())
+        non_edu = _sample_enrichment_result(
+            primary_url=sample_incident.all_urls[0],
+            is_education_related=False,
+            institution_name=None,
         )
-        mock_llm_class.return_value = mock_llm
-        
-        mock_article = ArticleContent(
-            url="https://example.com/article",
-            title="Test Article",
-            content="Test content",
-            fetch_successful=True,
-        )
-        mock_fetcher = Mock()
-        mock_fetcher.fetch_article_content.return_value = mock_article
-        mock_fetcher_class.return_value = mock_fetcher
-        
-        # Create enricher
-        enricher = IncidentEnricher(llm_client=mock_llm, article_fetcher=mock_fetcher)
-        
-        # Create sample incident
-        incident = BaseIncident(
-            incident_id=make_incident_id("test", "https://example.com|2025-01-15"),
-            source="test",
-            source_event_id="test_event",
-            victim_raw_name="Test University",
-            institution_type="university",
-            country="United States",
-            region=None,
-            city=None,
-            incident_date="2025-01-15",
-            date_precision="day",
-            source_published_date=None,
-            ingested_at=None,
-            title="Test Incident",
-            subtitle=None,
-            all_urls=["https://example.com/article"],
-            primary_url=None,
-            university_name="Test University",
-        )
-        
-        # Process incident (should skip if not education-related by default)
-        result = enricher.process_incident(incident, skip_if_not_education=False)
-        
-        # Should return None if relevance check fails or enrichment fails
-        # In this case, we'd need to mock the full enrichment flow
-        # For now, just verify the methods are called correctly
-        assert mock_fetcher.fetch_article_content.called
-    
-    def test_enricher_initialization(self):
-        """Test enricher initialization."""
-        enricher = IncidentEnricher()
-        assert enricher.llm_client is not None
-        assert enricher.article_fetcher is not None
-        assert enricher.metadata_extractor is not None
+
+        with patch.object(
+            enricher,
+            "_enrich_article",
+            return_value=(non_edu, {"institution_name": None}),
+        ):
+            result, raw_json = enricher.process_incident(
+                sample_incident,
+                skip_if_not_education=True,
+                conn=conn,
+            )
+
+        assert result is None
+        assert raw_json["_not_education_related"] is True
+
+    def test_enricher_requires_llm_client(self):
+        """IncidentEnricher should require an LLM client."""
+        with pytest.raises(ValueError, match="llm_client is required"):
+            IncidentEnricher()
+
+    def test_parse_json_response_repairs_trailing_commas_and_non_ascii_spam(self):
+        """The JSON repair path should handle lottery-spam lines seen in production."""
+        enricher = IncidentEnricher(llm_client=Mock())
+        raw_response = """
+        {
+          "is_edu_cyber_incident": true,
+          "education_relevance_reasoning": "Valid education incident",
+          "institution_name": "Test University",
+          极 "timeline": [],
+        }
+        """
+
+        parsed = enricher._parse_json_response(raw_response)
+
+        assert parsed["is_edu_cyber_incident"] is True
+        assert parsed["institution_name"] == "Test University"
+        assert parsed["timeline"] == []
 
 
 class TestEnrichmentSchemas:
     """Tests for enrichment Pydantic schemas."""
-    
+
     def test_education_relevance_check(self):
-        """Test EducationRelevanceCheck schema."""
         check = EducationRelevanceCheck(
             is_education_related=True,
-            confidence=0.9,
             reasoning="Test reasoning",
-            institution_name="Test University",
+            institution_identified="Test University",
         )
-        
+
         assert check.is_education_related is True
-        assert check.confidence == 0.9
-        assert check.institution_name == "Test University"
-    
-    def test_url_confidence_score(self):
-        """Test URLConfidenceScore schema."""
-        score = URLConfidenceScore(
-            url="https://example.com/article",
-            confidence_score=0.85,
-            reasoning="Good coverage",
-            article_quality="high",
-            content_completeness="complete",
-            source_reliability="reliable",
-        )
-        
-        assert score.url == "https://example.com/article"
-        assert score.confidence_score == 0.85
-    
+        assert check.reasoning == "Test reasoning"
+        assert check.institution_identified == "Test University"
+
     def test_timeline_event(self):
-        """Test TimelineEvent schema."""
         event = TimelineEvent(
-            event_date="2025-01-15",
-            event_type="attack_discovered",
-            description="Attack was discovered",
-            confidence=0.9,
+            date="2025-01-15",
+            event_type="discovery",
+            event_description="Attack was discovered",
         )
-        
-        assert event.event_date == "2025-01-15"
-        assert event.event_type == "attack_discovered"
-    
+
+        assert event.date == "2025-01-15"
+        assert event.event_type == "discovery"
+
     def test_mitre_attack_technique(self):
-        """Test MITREAttackTechnique schema."""
         technique = MITREAttackTechnique(
             technique_id="T1486",
             technique_name="Data Encrypted for Impact",
             tactic="Impact",
-            confidence=0.85,
         )
-        
+
         assert technique.technique_id == "T1486"
         assert technique.tactic == "Impact"
-    
+
     def test_attack_dynamics(self):
-        """Test AttackDynamics schema."""
         dynamics = AttackDynamics(
-            attack_type="ransomware",
-            attack_family="LockBit",
-            initial_access_vector="phishing",
+            attack_vector="malicious_attachment",
+            ransomware_family="LockBit",
+            data_exfiltration=True,
         )
-        
-        assert dynamics.attack_type == "ransomware"
-        assert dynamics.attack_family == "LockBit"
+
+        assert dynamics.attack_vector == "malicious_attachment"
+        assert dynamics.ransomware_family == "LockBit"
+        assert dynamics.data_exfiltration is True
 
 
 class TestEnrichmentIntegration:
-    """Integration tests for Phase 2 enrichment."""
-    
+    """Integration tests for Phase 2 enrichment persistence."""
+
     def test_full_enrichment_flow(self, temp_db, sample_incident):
-        """Test the full enrichment flow from incident to enriched result."""
+        """An incident should move from unenriched to enriched after save."""
         conn, _ = temp_db
-        
-        # Insert incident
         insert_incident(conn, sample_incident)
-        
-        # Verify incident is unenriched
+
         unenriched = get_unenriched_incidents(conn)
         assert len(unenriched) == 1
-        
-        # Create and save enrichment (simulating what the pipeline would do)
-        enrichment = CTIEnrichmentResult(
-            primary_url=sample_incident.all_urls[0],
-            extraction_confidence=0.85,
-            enriched_summary="Test university was attacked by ransomware",
-            timeline=[
-                TimelineEvent(
-                    event_date="2025-01-15",
-                    event_type="attack_discovered",
-                    description="Ransomware attack detected",
-                    confidence=0.9,
-                )
-            ],
-            mitre_attack_techniques=[
-                MITREAttackTechnique(
-                    technique_id="T1486",
-                    technique_name="Data Encrypted for Impact",
-                    tactic="Impact",
-                    confidence=0.85,
-                )
-            ],
-            attack_dynamics=AttackDynamics(
-                attack_type="ransomware",
-                attack_family="LockBit",
-                initial_access_vector="phishing",
-            ),
-            is_education_related=True,
-            education_relevance_confidence=0.9,
-        )
-        
-        # Save enrichment
+
+        enrichment = _sample_enrichment_result(primary_url=sample_incident.all_urls[0])
         saved = save_enrichment_result(conn, sample_incident.incident_id, enrichment)
+
         assert saved is True
-        
-        # Verify incident is now enriched
-        unenriched_after = get_unenriched_incidents(conn)
-        assert len(unenriched_after) == 0
-        
-        # Verify stats
+        assert get_unenriched_incidents(conn) == []
+
         stats = get_enrichment_stats(conn)
         assert stats["enriched_incidents"] == 1
         assert stats["ready_for_enrichment"] == 0

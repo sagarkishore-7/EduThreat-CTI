@@ -17,6 +17,19 @@ from src.edu_cti.core.config import DB_PATH
 from src.edu_cti.core.db import get_connection
 
 
+def count_education_incidents(conn: sqlite3.Connection) -> int:
+    """Count canonical education incidents backed by a live incident row."""
+    cur = conn.execute(
+        """
+        SELECT COUNT(DISTINCT i.incident_id) as count
+        FROM incidents i
+        JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        WHERE ef.is_education_related = 1
+        """
+    )
+    return cur.fetchone()["count"]
+
+
 def get_api_connection(read_only: bool = True) -> sqlite3.Connection:
     """
     Get a database connection for API use.
@@ -302,12 +315,7 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
     stats["total_incidents"] = cur.fetchone()["count"]
 
     # Education-confirmed incidents (enriched + confirmed by LLM)
-    cur = conn.execute("""
-        SELECT COUNT(*) as count FROM incidents i
-        JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
-        WHERE ef.is_education_related = 1
-    """)
-    stats["education_incidents"] = cur.fetchone()["count"]
+    stats["education_incidents"] = count_education_incidents(conn)
 
     # Enriched incidents (processed by LLM)
     cur = conn.execute("SELECT COUNT(*) as count FROM incidents WHERE llm_enriched = 1")
@@ -2398,4 +2406,3 @@ def get_country_attack_matrix(
             matrix[ai][ci] = row["cnt"]
 
     return {"keys": keys, "matrix": matrix}
-

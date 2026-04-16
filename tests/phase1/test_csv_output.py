@@ -1,10 +1,6 @@
 """Tests for CSV output functionality."""
 
-import pytest
-import tempfile
-import os
 import csv
-from pathlib import Path
 
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.pipeline.phase1.base_io import write_base_csv
@@ -13,7 +9,7 @@ from src.edu_cti.pipeline.phase1.base_io import write_base_csv
 class TestCSVOutput:
     """Test CSV writing functionality."""
     
-    def test_write_base_csv_creates_file(self):
+    def test_write_base_csv_creates_file(self, tmp_path):
         """Test that write_base_csv creates a CSV file."""
         incidents = [
             BaseIncident(
@@ -44,23 +40,23 @@ class TestCSVOutput:
             )
         ]
         
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "test_output.csv"
-            write_base_csv(incidents, output_path)
-            
-            assert output_path.exists()
-            
-            # Read and verify CSV
-            with open(output_path, "r") as f:
-                reader = csv.DictReader(f)
-                rows = list(reader)
-                
-                assert len(rows) == 1
-                assert rows[0]["incident_id"] == "test_csv_1"
-                assert rows[0]["source"] == "test"
-                assert rows[0]["university_name"] == "Test University"
+        output_path = tmp_path / "test_output.csv"
+
+        rows_written = write_base_csv(output_path, incidents)
+
+        assert rows_written == 1
+        assert output_path.exists()
+
+        with output_path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+
+        assert len(rows) == 1
+        assert rows[0]["incident_id"] == "test_csv_1"
+        assert rows[0]["source"] == "test"
+        assert rows[0]["university_name"] == "Test University"
     
-    def test_write_base_csv_handles_multiple_incidents(self):
+    def test_write_base_csv_handles_multiple_incidents(self, tmp_path):
         """Test that write_base_csv handles multiple incidents."""
         incidents = []
         for i in range(5):
@@ -92,29 +88,26 @@ class TestCSVOutput:
             )
             incidents.append(incident)
         
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "test_output.csv"
-            write_base_csv(incidents, output_path)
-            
-            with open(output_path, "r") as f:
-                reader = csv.DictReader(f)
-                rows = list(reader)
-                
-                assert len(rows) == 5
+        output_path = tmp_path / "test_output.csv"
+
+        rows_written = write_base_csv(output_path, incidents)
+
+        assert rows_written == 5
+
+        with output_path.open("r", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            rows = list(reader)
+
+        assert len(rows) == 5
     
-    def test_write_base_csv_empty_list(self):
+    def test_write_base_csv_empty_list(self, tmp_path):
         """Test that write_base_csv handles empty list."""
-        with tempfile.TemporaryDirectory() as tmpdir:
-            output_path = Path(tmpdir) / "test_output.csv"
-            write_base_csv([], output_path)
-            
-            # File should exist but only have headers
-            assert output_path.exists()
-            
-            with open(output_path, "r") as f:
-                reader = csv.DictReader(f)
-                rows = list(reader)
-                assert len(rows) == 0
+        output_path = tmp_path / "test_output.csv"
+
+        rows_written = write_base_csv(output_path, [])
+
+        assert rows_written == 0
+        assert not output_path.exists()
 
 
 class TestIncidentID:

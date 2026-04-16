@@ -1,12 +1,9 @@
 """Tests for cross-source deduplication functionality."""
 
-import pytest
-
-from src.edu_cti.core.models import BaseIncident, make_incident_id
+from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.core.deduplication import (
     normalize_url,
     extract_urls_from_incident,
-    merge_incidents,
     deduplicate_by_urls,
 )
 
@@ -33,10 +30,16 @@ class TestURLNormalization:
         assert "#" not in normalized
     
     def test_normalize_url_lowercase(self):
-        """Test that URLs are lowercased."""
-        url = "https://EXAMPLE.COM/Article"
+        """Test that scheme and hostname are lowercased without rewriting the path."""
+        url = "HTTPS://EXAMPLE.COM/Article"
         normalized = normalize_url(url)
-        assert normalized == normalized.lower()
+        assert normalized == "https://example.com/Article"
+
+    def test_normalize_url_removes_tracking_query_params(self):
+        """Tracking parameters should not affect deduplication identity."""
+        url = "https://example.com/article?utm_source=newsletter&id=42#section"
+        normalized = normalize_url(url)
+        assert normalized == "https://example.com/article?id=42"
 
 
 class TestExtractURLs:
