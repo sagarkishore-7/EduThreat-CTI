@@ -14,8 +14,8 @@ from typing import Callable, Dict, List, Optional, Sequence
 
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.core.sources import (
-    RSS_SOURCE_REGISTRY,
     get_rss_builder,
+    get_rss_sources,
     validate_sources as validate_source_names,
 )
 from .base_io import RAW_RSS_DIR, write_base_csv
@@ -29,6 +29,7 @@ def collect_rss_incidents(
     max_age_days: int = 30,
     save_callback: Optional[Callable[[List[BaseIncident]], None]] = None,
     incremental: bool = True,
+    include_paid: bool = False,
 ) -> Dict[str, List[BaseIncident]]:
     """
     Run RSS feed ingestors and return a mapping of source -> incidents list.
@@ -45,13 +46,13 @@ def collect_rss_incidents(
     """
     # Determine which sources to run
     if sources is None:
-        sources_to_run = list(RSS_SOURCE_REGISTRY.keys())
+        sources_to_run = get_rss_sources(include_paid=include_paid)
     else:
-        sources_to_run = validate_source_names("rss", sources)
+        sources_to_run = validate_source_names("rss", sources, include_paid=include_paid)
     
     results = {}
     for source_name in sources_to_run:
-        builder_func = get_rss_builder(source_name)
+        builder_func = get_rss_builder(source_name, include_paid=include_paid)
         if builder_func is None:
             logger.error(f"Builder function not found for RSS source: {source_name}")
             results[source_name] = []
@@ -102,6 +103,7 @@ def run_rss_pipeline(
     max_age_days: int = 30,
     write_raw: bool = False,
     incremental: bool = True,
+    include_paid: bool = False,
 ) -> List[BaseIncident]:
     """
     Execute the RSS feed pipeline.
@@ -123,6 +125,7 @@ def run_rss_pipeline(
         sources=sources,
         max_age_days=max_age_days,
         incremental=incremental,
+        include_paid=include_paid,
     )
 
     for source, incidents in results.items():

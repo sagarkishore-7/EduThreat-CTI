@@ -244,18 +244,14 @@ def build_googlenews_rss_incidents(
                 pub_date = None
                 date_precision = "unknown"
                 if item["pub_date"]:
-                    pub_date = parse_rss_date(item["pub_date"])
-                    if pub_date:
+                    parsed_pub_date = parse_rss_date(item["pub_date"])
+                    if parsed_pub_date:
                         date_precision = "day"
                         # In incremental mode, skip items older than cutoff
                         if cutoff:
-                            try:
-                                from dateutil.parser import parse as dateutil_parse
-                                dt = dateutil_parse(pub_date)
-                                if dt.replace(tzinfo=None) < cutoff:
-                                    continue
-                            except (ValueError, ImportError, TypeError):
-                                pass
+                            if parsed_pub_date.replace(tzinfo=None) < cutoff:
+                                continue
+                        pub_date = parsed_pub_date.date().isoformat()
 
                 source_event_id = link
                 incident_id = make_incident_id("googlenews_rss", source_event_id)

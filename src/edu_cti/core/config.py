@@ -19,6 +19,11 @@ try:
 except ImportError:
     pass  # python-dotenv not installed, rely on system env vars
 
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    """Parse a boolean-like environment flag."""
+    return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
 # ---- Networking / scraping ----
 
 REQUEST_TIMEOUT_SECONDS = 30
@@ -483,6 +488,8 @@ OTX_API_KEY = os.getenv("OTX_API_KEY", "")
 # Oxylabs API configuration (web scraping and SERP discovery)
 OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
 OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")
+ENABLE_OXYLABS_NEWS_HISTORICAL = _env_flag("ENABLE_OXYLABS_NEWS_HISTORICAL", "1")
+ENABLE_OXYLABS_NEWS_DAILY = _env_flag("ENABLE_OXYLABS_NEWS_DAILY", "0")
 
 # Historical scraping start year (applies to date-paginated sources)
 HISTORICAL_START_YEAR = int(os.getenv("HISTORICAL_START_YEAR", "2000"))

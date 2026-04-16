@@ -134,6 +134,7 @@ def cmd_ingest(args):
             "max_age_days": args.rss_max_age_days if is_rss else None,
             "is_rss": is_rss,
             "incremental": incremental,
+            "include_paid_rss": getattr(args, "include_paid_rss", False) if is_rss else False,
         }
 
         try:
@@ -200,6 +201,7 @@ def cmd_historical(args):
     args.sources = None
     args.max_pages = None
     args.rss_max_age_days = 365  # Get RSS items from last year
+    args.include_paid_rss = True
     new_count = cmd_ingest(args)
 
     # Phase 2: Enrich all unenriched
@@ -355,6 +357,11 @@ Examples:
     ingest_parser.add_argument(
         "--full-historical", action="store_true",
         help="Full historical scrape (all pages)",
+    )
+    ingest_parser.add_argument(
+        "--include-paid-rss",
+        action="store_true",
+        help="Include paid RSS/search sources such as oxylabs_news during RSS ingestion.",
     )
 
     # --- enrich ---

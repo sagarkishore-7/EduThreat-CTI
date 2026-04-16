@@ -28,7 +28,11 @@ from src.edu_cti.pipeline.phase1.curated import collect_curated_incidents
 from src.edu_cti.pipeline.phase1.news import collect_news_incidents, NEWS_SOURCE_BUILDERS
 from src.edu_cti.pipeline.phase1.rss import collect_rss_incidents
 from src.edu_cti.pipeline.phase1.api_sources import collect_api_incidents
-from src.edu_cti.core.sources import RSS_SOURCE_REGISTRY, API_SOURCE_REGISTRY
+from src.edu_cti.core.sources import (
+    RSS_SOURCE_REGISTRY,
+    PAID_RSS_SOURCE_REGISTRY,
+    API_SOURCE_REGISTRY,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,7 +76,8 @@ Examples:
         default=None,
         help="Select specific sources to run. Applies to the group(s) specified in --groups. "
              "For 'news' group, valid sources: " + ", ".join(NEWS_SOURCE_BUILDERS.keys()) + ". "
-             "For 'rss' group, valid sources: " + ", ".join(RSS_SOURCE_REGISTRY.keys()) + ".",
+             "For 'rss' group, valid free sources: " + ", ".join(RSS_SOURCE_REGISTRY.keys()) + ". "
+             "Paid/on-demand sources: " + ", ".join(PAID_RSS_SOURCE_REGISTRY.keys()) + " (requires --include-paid-rss).",
     )
     parser.add_argument(
         "--max-pages",
@@ -93,6 +98,11 @@ Examples:
         action="store_true",
         help="Perform full historical scrape (fetch all pages/incidents). "
              "By default, incremental mode is used which only fetches new incidents.",
+    )
+    parser.add_argument(
+        "--include-paid-rss",
+        action="store_true",
+        help="Allow paid RSS/search sources such as oxylabs_news during RSS ingestion.",
     )
     return parser.parse_args()
 
@@ -263,6 +273,7 @@ def _ingest_group(
     max_age_days: Optional[int] = None,
     is_rss: bool = False,
     incremental: bool = True,
+    include_paid_rss: bool = False,
 ) -> int:
     """
     Ingest a group of sources with incremental saving.
@@ -283,6 +294,8 @@ def _ingest_group(
         collector_kwargs["sources"] = sources
     if max_age_days is not None and is_rss:
         collector_kwargs["max_age_days"] = max_age_days
+    if is_rss:
+        collector_kwargs["include_paid"] = include_paid_rss
     
     # Pass incremental flag
     collector_kwargs["incremental"] = incremental
@@ -366,6 +379,7 @@ def main() -> None:
             max_age_days=args.rss_max_age_days if is_rss else None,
             is_rss=is_rss,
             incremental=incremental,
+            include_paid_rss=args.include_paid_rss if is_rss else False,
         )
 
     print(f"[done] Ingestion finished. Newly inserted incidents this run: {total_new}")

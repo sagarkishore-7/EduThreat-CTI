@@ -121,9 +121,17 @@ def get_news_builder(source_name: str) -> Optional[Callable[..., List[BaseIncide
     return NEWS_SOURCE_REGISTRY.get(source_name)
 
 
-def get_rss_sources() -> List[str]:
-    """Get list of all registered RSS source names."""
-    return list(RSS_SOURCE_REGISTRY.keys())
+def get_rss_sources(include_paid: bool = False) -> List[str]:
+    """Get list of registered RSS source names, optionally including paid sources."""
+    sources = list(RSS_SOURCE_REGISTRY.keys())
+    if include_paid:
+        sources.extend(PAID_RSS_SOURCE_REGISTRY.keys())
+    return sources
+
+
+def get_paid_rss_sources() -> List[str]:
+    """Get list of paid RSS/search source names."""
+    return list(PAID_RSS_SOURCE_REGISTRY.keys())
 
 
 def get_all_source_names() -> List[str]:
@@ -135,9 +143,15 @@ def get_all_source_names() -> List[str]:
     )
 
 
-def get_rss_builder(source_name: str) -> Optional[Callable[..., List[BaseIncident]]]:
-    """Get the builder function for an RSS source."""
-    return RSS_SOURCE_REGISTRY.get(source_name)
+def get_rss_builder(
+    source_name: str,
+    include_paid: bool = False,
+) -> Optional[Callable[..., List[BaseIncident]]]:
+    """Get the builder function for an RSS source, optionally searching paid sources too."""
+    builder = RSS_SOURCE_REGISTRY.get(source_name)
+    if builder is None and include_paid:
+        builder = PAID_RSS_SOURCE_REGISTRY.get(source_name)
+    return builder
 
 
 def get_api_sources() -> List[str]:
@@ -153,6 +167,7 @@ def get_api_builder(source_name: str) -> Optional[Callable[..., List[BaseInciden
 def validate_sources(
     group: str,
     sources: Optional[Sequence[str]] = None,
+    include_paid: bool = False,
 ) -> List[str]:
     """
     Validate source names for a given group.
@@ -175,7 +190,9 @@ def validate_sources(
     elif group == "news":
         registry = NEWS_SOURCE_REGISTRY
     elif group == "rss":
-        registry = RSS_SOURCE_REGISTRY
+        registry = dict(RSS_SOURCE_REGISTRY)
+        if include_paid:
+            registry.update(PAID_RSS_SOURCE_REGISTRY)
     elif group == "api":
         registry = API_SOURCE_REGISTRY
     else:
@@ -189,4 +206,3 @@ def validate_sources(
         )
     
     return list(dict.fromkeys(sources))  # Remove duplicates, preserve order
-

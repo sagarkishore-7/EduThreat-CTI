@@ -302,6 +302,13 @@ class PipelineManager:
             run = PipelineRun(run_id, phase, params or {})
             self._current_run = run
 
+            try:
+                from src.edu_cti.api.cache import cache_invalidate
+
+                cache_invalidate()
+            except Exception:
+                pass
+
             self._thread = threading.Thread(
                 target=self._execute_run,
                 args=(run,),
@@ -345,6 +352,12 @@ class PipelineManager:
             root_logger.removeHandler(log_handler)
             self._history.append(run)
             _persist_run(run)  # Persist final state
+            try:
+                from src.edu_cti.api.cache import cache_invalidate
+
+                cache_invalidate()
+            except Exception:
+                pass
             # Close the default HTTP client to free Playwright/Chromium memory
             try:
                 from src.edu_cti.core.http import _default_client
@@ -400,6 +413,7 @@ class PipelineManager:
         sources = params.get("sources")
         max_pages = params.get("max_pages")
         rss_max_age_days = params.get("rss_max_age_days", 30)
+        include_paid_rss = params.get("include_paid_rss", False)
 
         conn = get_connection()
         init_db(conn)
@@ -425,6 +439,7 @@ class PipelineManager:
                 "max_age_days": rss_max_age_days if is_rss else None,
                 "is_rss": is_rss,
                 "incremental": not full_historical,
+                "include_paid_rss": include_paid_rss if is_rss else False,
             }
             try:
                 count = _ingest_group(conn, label, collector, **kwargs)
@@ -536,12 +551,14 @@ class PipelineManager:
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
         max_pages = params.get("max_pages", 50)  # Default 50 pages per search term (1000 articles)
+        from src.edu_cti.core.config import ENABLE_OXYLABS_NEWS_HISTORICAL
 
         ingest_params = {
             "full_historical": True,
             "groups": ["curated", "news", "rss", "api"],
             "rss_max_age_days": 365,
             "max_pages": max_pages,
+            "include_paid_rss": params.get("include_paid_rss", ENABLE_OXYLABS_NEWS_HISTORICAL),
         }
 
         if skip_enrich:
@@ -686,12 +703,14 @@ class PipelineManager:
         """Run daily incremental pipeline (ingest + enrich in parallel)."""
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
+        from src.edu_cti.core.config import ENABLE_OXYLABS_NEWS_DAILY
 
         ingest_params = {
             "full_historical": False,
             "groups": ["curated", "news", "rss", "api"],
             "rss_max_age_days": 7,
             "max_pages": params.get("max_pages", 20),
+            "include_paid_rss": params.get("include_paid_rss", ENABLE_OXYLABS_NEWS_DAILY),
         }
 
         if skip_enrich:
@@ -808,6 +827,7 @@ class PipelineManager:
             "groups": [group],
             "sources": sources,
             "max_pages": max_pages,
+            "include_paid_rss": params.get("include_paid_rss", False),
         })
 
     def _run_rss(self, run: PipelineRun, params: Dict) -> Dict:
@@ -816,6 +836,7 @@ class PipelineManager:
             "full_historical": False,
             "groups": ["rss"],
             "rss_max_age_days": params.get("max_age_days", 7),
+            "include_paid_rss": params.get("include_paid_rss", False),
         })
 
     def _run_weekly(self, run: PipelineRun, params: Dict) -> Dict:

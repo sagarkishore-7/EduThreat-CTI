@@ -11,6 +11,7 @@ from bs4 import BeautifulSoup
 from src.edu_cti.core import config
 from src.edu_cti.core.http import HttpClient
 from src.edu_cti.core.models import BaseIncident, make_incident_id
+from src.edu_cti.core.oxylabs import OxylabsClient
 from src.edu_cti.core.utils import now_utc_iso
 from .common import (
     default_client,
@@ -25,6 +26,12 @@ from .common import (
 SOURCE_NAME = config.SOURCE_DARKREADING
 BASE_URL = "https://www.darkreading.com"
 logger = logging.getLogger(__name__)
+
+_CLOUDFLARE_MARKERS = (
+    "just a moment",
+    "enable javascript and cookies to continue",
+    "__cf_chl_opt",
+)
 
 
 def _build_search_url(term: str, page: Optional[int] = None) -> str:
@@ -102,6 +109,44 @@ def _extract_articles_from_page(soup: BeautifulSoup) -> List[BeautifulSoup]:
     return articles
 
 
+def _is_cloudflare_challenge_soup(soup: Optional[BeautifulSoup]) -> bool:
+    """Detect Cloudflare challenge pages returned instead of search results."""
+    if soup is None:
+        return False
+
+    title = soup.title.get_text(" ", strip=True).lower() if soup.title else ""
+    body_text = soup.get_text(" ", strip=True).lower()
+    html = str(soup).lower()
+
+    return any(
+        marker in title or marker in body_text or marker in html
+        for marker in _CLOUDFLARE_MARKERS
+    )
+
+
+def _fetch_search_soup(client: HttpClient, url: str) -> Optional[BeautifulSoup]:
+    """
+    Fetch a Dark Reading search page.
+
+    Dark Reading's search pages are frequently blocked by Cloudflare, so when
+    Oxylabs credentials are present we prefer their browser-rendered fetch.
+    """
+    oxylabs = OxylabsClient()
+    if oxylabs._is_configured():
+        html = oxylabs.fetch_url(url, render_js=True)
+        if html:
+            soup = BeautifulSoup(html, "html.parser")
+            if not _is_cloudflare_challenge_soup(soup):
+                logger.debug("Dark Reading: fetched search page via Oxylabs")
+                return soup
+            logger.warning("Dark Reading: Oxylabs returned a challenge page for %s", url)
+
+    soup = client.get_soup(url, wait_selector="div.SearchResult-Content")
+    if _is_cloudflare_challenge_soup(soup):
+        logger.warning("Dark Reading: Cloudflare challenge detected for %s", url)
+    return soup
+
+
 def _iter_pages(
     client: HttpClient,
     term: str,
@@ -114,12 +159,16 @@ def _iter_pages(
     # Fetch first page
     first_url = _build_search_url(term, page=1)
     logger.debug(f"Dark Reading: Fetching first page for term '{term}'")
-    first = client.get_soup(first_url, wait_selector="div.SearchResult-Content")
+    first = _fetch_search_soup(client, first_url)
 
     if first is None:
         logger.warning("Dark Reading failed to fetch initial page for term '%s'", term)
         return
-    
+
+    if _is_cloudflare_challenge_soup(first):
+        logger.warning("Dark Reading: Cloudflare blocked first page for term '%s'", term)
+        return
+
     if not _has_search_results(first):
         logger.warning("Dark Reading: No search results found on first page for term '%s'", term)
         return
@@ -144,9 +193,9 @@ def _iter_pages(
         page_url = _build_search_url(term, page=page)
         logger.debug(f"Dark Reading term '{term}': fetching page {page}")
 
-        soup = client.get_soup(page_url, wait_selector="div.SearchResult-Content")
+        soup = _fetch_search_soup(client, page_url)
 
-        if soup is None or not _has_search_results(soup):
+        if soup is None or _is_cloudflare_challenge_soup(soup) or not _has_search_results(soup):
             logger.warning(f"Dark Reading: Failed to fetch or no results on page {page} for term '{term}'")
             break
         
@@ -294,4 +343,3 @@ def build_darkreading_incidents(
 
     logger.info(f"Dark Reading: Total incidents collected: {len(incidents)}")
     return incidents
-
