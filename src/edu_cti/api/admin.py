@@ -2077,7 +2077,10 @@ async def list_enriched_incidents(
         total = cur.fetchone()[0]
 
         query = f"""
-            SELECT i.incident_id, i.university_name, i.country, i.incident_date,
+            SELECT i.incident_id,
+                   COALESCE(ef.institution_name, i.university_name) AS university_name,
+                   COALESCE(ef.country, i.country) AS country,
+                   i.incident_date,
                    i.attack_type_hint, i.title, i.ingested_at, i.llm_enriched,
                    ef.attack_category, ef.ransomware_family, ef.threat_actor_name,
                    ef.is_education_related,

@@ -1,11 +1,13 @@
 import asyncio
+import sqlite3
 from datetime import datetime
 from unittest.mock import patch
 
 import pytest
 
-from src.edu_cti.api.database import count_education_incidents, get_dashboard_stats
+from src.edu_cti.api.database import count_education_incidents, get_dashboard_stats, get_incident_by_id
 from src.edu_cti.api.main import get_stats
+from src.edu_cti.core.countries import normalize_countries_in_database
 from src.edu_cti.core.db import get_connection, init_db, insert_incident
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.pipeline.phase2.storage.db import init_incident_enrichments_table
@@ -120,3 +122,83 @@ def test_stats_endpoint_bypasses_cache_while_pipeline_is_running():
     assert result.education_incidents == 7
     mock_cache_get.assert_not_called()
     mock_cache_set.assert_not_called()
+
+
+def test_get_incident_by_id_prefers_normalized_enrichment_country(temp_db):
+    conn = temp_db
+    incident = _sample_incident()
+    incident.country = "USA"
+    incident.country_code = None
+    insert_incident(conn, incident)
+
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments_flat
+        (incident_id, is_education_related, country, country_code, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, ?, ?, ?, ?, ?)
+        """,
+        (
+            incident.incident_id,
+            "United States",
+            "US",
+            now,
+            now,
+            "Normalized country from enrichment",
+        ),
+    )
+    conn.commit()
+
+    data = get_incident_by_id(conn, incident.incident_id)
+
+    assert data["country"] == "United States"
+    assert data["country_code"] == "US"
+
+
+def test_normalize_countries_handles_legacy_flat_schema_without_country_code(tmp_path):
+    db_path = tmp_path / "legacy_countries.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE incidents (
+            incident_id TEXT PRIMARY KEY,
+            country TEXT,
+            country_code TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE incident_enrichments_flat (
+            incident_id TEXT PRIMARY KEY,
+            country TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO incidents (incident_id, country, country_code) VALUES (?, ?, ?)",
+        ("incident_1", "USA", None),
+    )
+    conn.execute(
+        "INSERT INTO incident_enrichments_flat (incident_id, country) VALUES (?, ?)",
+        ("incident_1", "US"),
+    )
+    conn.commit()
+
+    updated = normalize_countries_in_database(conn)
+
+    incident_row = conn.execute(
+        "SELECT country, country_code FROM incidents WHERE incident_id = ?",
+        ("incident_1",),
+    ).fetchone()
+    flat_row = conn.execute(
+        "SELECT country FROM incident_enrichments_flat WHERE incident_id = ?",
+        ("incident_1",),
+    ).fetchone()
+    conn.close()
+
+    assert updated >= 2
+    assert incident_row["country"] == "United States"
+    assert incident_row["country_code"] == "US"
+    assert flat_row["country"] == "United States"

@@ -212,6 +212,15 @@ def normalize_countries_in_database(conn) -> int:
         Number of rows updated
     """
     updated_count = 0
+
+    incident_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(incidents)").fetchall()
+    }
+    flat_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(incident_enrichments_flat)").fetchall()
+    }
+    incidents_has_country_code = "country_code" in incident_columns
+    flat_has_country_code = "country_code" in flat_columns
     
     # Update incidents table
     cur = conn.execute("SELECT DISTINCT country FROM incidents WHERE country IS NOT NULL")
@@ -222,7 +231,7 @@ def normalize_countries_in_database(conn) -> int:
         country_code = get_country_code(normalized) if normalized else None
         
         if normalized and normalized != country:
-            if country_code:
+            if country_code and incidents_has_country_code:
                 cur = conn.execute(
                     "UPDATE incidents SET country = ?, country_code = ? WHERE country = ?",
                     (normalized, country_code, country)
@@ -233,7 +242,7 @@ def normalize_countries_in_database(conn) -> int:
                     (normalized, country)
                 )
             updated_count += cur.rowcount
-        elif normalized and country_code:
+        elif normalized and country_code and incidents_has_country_code:
             # Country name is already normalized, but country_code might be missing
             cur = conn.execute(
                 "UPDATE incidents SET country_code = ? WHERE country = ? AND (country_code IS NULL OR country_code = '')",
@@ -252,7 +261,7 @@ def normalize_countries_in_database(conn) -> int:
         country_code = get_country_code(normalized) if normalized else None
         
         if normalized and normalized != country:
-            if country_code:
+            if country_code and flat_has_country_code:
                 cur = conn.execute(
                     "UPDATE incident_enrichments_flat SET country = ?, country_code = ? WHERE country = ?",
                     (normalized, country_code, country)
@@ -263,7 +272,7 @@ def normalize_countries_in_database(conn) -> int:
                     (normalized, country)
                 )
             updated_count += cur.rowcount
-        elif normalized and country_code:
+        elif normalized and country_code and flat_has_country_code:
             # Country name is already normalized, but country_code might be missing
             cur = conn.execute(
                 "UPDATE incident_enrichments_flat SET country_code = ? WHERE country = ? AND (country_code IS NULL OR country_code = '')",

@@ -252,7 +252,7 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
     )
 
     # Add columns to existing tables if they don't exist (migration)
-    for col, col_type in [("enriched_at", "TEXT"), ("skip_reason", "TEXT")]:
+    for col, col_type in [("country_code", "TEXT"), ("enriched_at", "TEXT"), ("skip_reason", "TEXT")]:
         try:
             conn.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:

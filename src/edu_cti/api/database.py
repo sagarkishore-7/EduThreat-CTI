@@ -264,6 +264,11 @@ def get_incident_by_id(
         # Use enrichment institution_name as primary (LLM-extracted name)
         if enrichment.get("institution_name"):
             incident["university_name"] = enrichment["institution_name"]
+
+        # Prefer normalized location/institution fields from enrichment when present.
+        for key in ("institution_type", "country", "country_code", "region", "city"):
+            if enrichment.get(key):
+                incident[key] = enrichment[key]
         
         # Merge enrichment fields
         for key, value in enrichment.items():
