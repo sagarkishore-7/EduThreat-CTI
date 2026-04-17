@@ -844,8 +844,10 @@ def json_to_cti_enrichment(
     
     # Data impact (as Dict)
     data_impact = None
-    if json_data.get("data_breached") or json_data.get("data_types"):
-        data_types_dict = map_data_types(json_data.get("data_types", []))
+    # Schema uses "data_categories"; "data_types" is a legacy fallback
+    _data_cats = json_data.get("data_categories") or json_data.get("data_types") or []
+    if json_data.get("data_breached") or _data_cats:
+        data_types_dict = map_data_types(_data_cats)
         data_impact = {
             "personal_information": data_types_dict.get("personal_information"),
             "student_data": data_types_dict.get("student_data"),
@@ -859,7 +861,7 @@ def json_to_cti_enrichment(
             "records_affected_min": json_data.get("records_affected_min"),
             "records_affected_max": json_data.get("records_affected_max"),
             "records_affected_exact": json_data.get("pii_records_leaked") or json_data.get("records_exfiltrated_estimate") or json_data.get("records_affected_exact"),
-            "data_types_affected": json_data.get("data_types"),
+            "data_types_affected": _data_cats,
             "data_encrypted": json_data.get("encryption_at_rest") == "yes",
             "data_exfiltrated": json_data.get("data_breached") or json_data.get("data_exfiltrated")
         }
@@ -1013,7 +1015,7 @@ def json_to_cti_enrichment(
             "gdpr_breach": gdpr_breach,
             "dpa_notified": dpa_notified,
             "hipaa_breach": hipaa_breach,
-            "ferc_breach": ferpa_breach,  # Note: using ferc_breach key for FERPA (matching existing schema)
+            "ferpa_breach": ferpa_breach,
             "investigation_opened": json_data.get("investigation_opened"),
             "fine_imposed": json_data.get("fine_imposed") if json_data.get("fine_imposed") is not None else (json_data.get("fines_or_penalties") is not None and len(str(json_data.get("fines_or_penalties", ""))) > 0),
             "fine_amount": json_data.get("fine_amount"),

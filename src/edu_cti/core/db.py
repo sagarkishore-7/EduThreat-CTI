@@ -415,6 +415,18 @@ def init_db(conn: sqlite3.Connection) -> None:
         logger = logging.getLogger(__name__)
         logger.debug(f"Migration check for llm_excluded column: {e}")
 
+    # Migration: Add discovery_date column (LLM-extracted date incident was discovered).
+    try:
+        cur = conn.execute("PRAGMA table_info(incidents)")
+        columns = [row[1] for row in cur.fetchall()]
+        if "discovery_date" not in columns:
+            conn.execute("ALTER TABLE incidents ADD COLUMN discovery_date TEXT")
+            conn.commit()
+            import logging
+            logging.getLogger(__name__).info("Added discovery_date column to incidents table (migration)")
+    except Exception:
+        pass
+
     conn.commit()
 
 

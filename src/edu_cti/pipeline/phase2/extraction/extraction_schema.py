@@ -84,7 +84,7 @@ EXTRACTION_SCHEMA = {
             "enum": ["small_under_5k", "medium_5k_20k", "large_20k_50k", "very_large_over_50k", "unknown"]
         },
         "country": {"type": "string"},
-        "country_code": {"type": "string", "pattern": "^[A-Z]{2}$"},
+        "country_code": {"type": "string", "description": "ISO 3166-1 alpha-2 country code, e.g. US, GB, DE"},
         "region": {"type": "string"},
         "city": {"type": "string"},
         
@@ -100,13 +100,13 @@ EXTRACTION_SCHEMA = {
         },
         
         # ========== TIMELINE & DATES ==========
-        "incident_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "incident_date": {"type": "string", "description": "ISO 8601 date of the incident, e.g. 2024-03-15"},
         "incident_date_precision": {
             "type": "string",
             "enum": ["exact", "approximate", "month_only", "year_only", "unknown"]
         },
-        "discovery_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
-        "publication_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "discovery_date": {"type": "string", "description": "ISO 8601 date when the incident was discovered, e.g. 2024-03-20"},
+        "publication_date": {"type": "string", "description": "ISO 8601 date the article/report was published, e.g. 2024-03-22"},
         "dwell_time_days": {
             "type": "number",
             "description": "Days between initial compromise and discovery"
@@ -116,7 +116,7 @@ EXTRACTION_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+                    "date": {"type": "string", "description": "ISO 8601 date of this event, e.g. 2024-03-15"},
                     "date_precision": {
                         "type": "string",
                         "enum": ["day", "month", "year", "approximate"]
@@ -129,9 +129,12 @@ EXTRACTION_SCHEMA = {
                             "reconnaissance",
                             "lateral_movement",
                             "privilege_escalation",
+                            "exploitation",
                             "data_exfiltration",
                             "encryption_started",
                             "ransom_demand",
+                            "impact",
+                            "operational_impact",
                             "discovery",
                             "containment",
                             "eradication",
@@ -140,6 +143,8 @@ EXTRACTION_SCHEMA = {
                             "notification",
                             "investigation",
                             "remediation",
+                            "response_action",
+                            "security_improvement",
                             "law_enforcement_contact",
                             "public_statement",
                             "systems_restored",
@@ -327,7 +332,7 @@ EXTRACTION_SCHEMA = {
             "items": {
                 "type": "object",
                 "properties": {
-                    "cve_id": {"type": "string", "pattern": "^CVE-\\d{4}-\\d+$"},
+                    "cve_id": {"type": "string", "description": "CVE identifier, e.g. CVE-2024-12345"},
                     "vulnerability_name": {"type": "string"},
                     "vulnerability_type": {
                         "type": "string",
@@ -768,8 +773,8 @@ EXTRACTION_SCHEMA = {
         "endpoints_affected_count": {"type": "integer"},
         
         # ========== OPERATIONAL IMPACT ==========
-        "outage_start_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
-        "outage_end_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "outage_start_date": {"type": "string", "description": "ISO 8601 date the outage began"},
+        "outage_end_date": {"type": "string", "description": "ISO 8601 date the outage ended"},
         "outage_duration_hours": {"type": "number"},
         "downtime_days": {"type": "number"},
         "partial_service_days": {"type": "number"},
@@ -855,7 +860,7 @@ EXTRACTION_SCHEMA = {
         },
         "breach_notification_required": {"type": "boolean"},
         "notification_sent": {"type": "boolean"},
-        "notification_sent_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "notification_sent_date": {"type": "string", "description": "ISO 8601 date the breach notification was sent"},
         "regulators_notified": {
             "type": "array",
             "items": {"type": "string"}
@@ -897,8 +902,8 @@ EXTRACTION_SCHEMA = {
                 "unknown"
             ]
         },
-        "recovery_started_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
-        "recovery_completed_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "recovery_started_date": {"type": "string", "description": "ISO 8601 date recovery operations began"},
+        "recovery_completed_date": {"type": "string", "description": "ISO 8601 date recovery was completed"},
         "recovery_duration_days": {"type": "number"},
         "mttd_hours": {"type": "number", "description": "Mean Time To Detect"},
         "mttr_hours": {"type": "number", "description": "Mean Time To Recover"},
@@ -940,7 +945,7 @@ EXTRACTION_SCHEMA = {
         
         # ========== TRANSPARENCY & DISCLOSURE ==========
         "public_disclosure": {"type": "boolean"},
-        "public_disclosure_date": {"type": "string", "pattern": "^\\d{4}-\\d{2}-\\d{2}$"},
+        "public_disclosure_date": {"type": "string", "description": "ISO 8601 date the incident was publicly disclosed"},
         "disclosure_delay_days": {"type": "number"},
         "disclosure_source": {
             "type": "string",

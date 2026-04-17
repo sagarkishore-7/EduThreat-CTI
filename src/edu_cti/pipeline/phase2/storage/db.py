@@ -823,10 +823,12 @@ def save_enrichment_result(
     llm_incident_date = None
     llm_date_precision = None
     
-    # Try to get incident_date from raw JSON data (direct extraction)
+    # Try to get incident_date and discovery_date from raw JSON data (direct extraction)
+    llm_discovery_date = None
     if raw_json_data:
         llm_incident_date = _scalar(raw_json_data.get("incident_date"))
         llm_date_precision = _scalar(raw_json_data.get("incident_date_precision"))
+        llm_discovery_date = _scalar(raw_json_data.get("discovery_date"))
     
     # Fallback: Try to extract from timeline (earliest event)
     if not llm_incident_date and enrichment_result.timeline:
@@ -885,6 +887,9 @@ def save_enrichment_result(
         date_precision = ?
         """
         update_params.extend([llm_incident_date, llm_date_precision or "approximate"])
+    if llm_discovery_date:
+        update_fields += ",\n        discovery_date = ?"
+        update_params.append(llm_discovery_date)
     
     update_params.append(incident_id)
 
