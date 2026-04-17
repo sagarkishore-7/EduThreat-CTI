@@ -42,6 +42,11 @@ EXTRACTION_SCHEMA = {
             "type": "string",
             "description": "Brief explanation (1-2 sentences) of why this is or isn't education-related"
         },
+        # ========== SUMMARY (placed early so token budget is not exhausted) ==========
+        "enriched_summary": {
+            "type": "string",
+            "description": "Comprehensive 2-3 paragraph summary of the incident for threat intelligence. Write in plain English. Include: what happened, who was affected, what data/systems were impacted, and any known response or outcome."
+        },
         "institution_name": {
             "type": "string",
             "description": "Full official name of the affected educational institution"
@@ -984,11 +989,7 @@ EXTRACTION_SCHEMA = {
             "items": {"type": "string"}
         },
         
-        # ========== SUMMARY & NOTES ==========
-        "enriched_summary": {
-            "type": "string",
-            "description": "Comprehensive 2-3 paragraph summary of the incident for threat intelligence"
-        },
+        # ========== NOTES ==========
         "extraction_notes": {
             "type": "string",
             "description": "Notes about data quality, missing information, or extraction challenges"

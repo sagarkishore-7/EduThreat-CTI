@@ -135,7 +135,7 @@ class OllamaLLMClient:
                 stream=stream,
                 options={
                     'temperature': temperature,
-                    'num_predict': 16384,  # Extraction schema needs ~4-6K tokens; 16K covers complex multi-institution articles
+                    'num_predict': 24576,  # Schema JSON output can reach 8-12K tokens; 24K leaves room for enriched_summary
                 }
             )
             return response

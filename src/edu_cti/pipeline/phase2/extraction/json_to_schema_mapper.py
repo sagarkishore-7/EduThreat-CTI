@@ -591,6 +591,45 @@ def _coerce_llm_scalars(json_data: Dict[str, Any]) -> Dict[str, Any]:
     return result
 
 
+def _build_summary(json_data: Dict[str, Any]) -> str:
+    """
+    Return the LLM-generated enriched_summary if it is non-empty.
+    Otherwise construct a minimal factual summary from available fields so
+    the dashboard never shows a blank summary for enriched incidents.
+    """
+    llm_summary = (json_data.get("enriched_summary") or "").strip()
+    if llm_summary:
+        return llm_summary
+
+    # Fallback: build from metadata
+    parts: list[str] = []
+    name = json_data.get("institution_name") or json_data.get("institution_name_en")
+    attack = json_data.get("attack_category") or json_data.get("attack_type_hint")
+    date = json_data.get("incident_date") or json_data.get("source_published_date")
+    country = json_data.get("country")
+    actor = json_data.get("threat_actor_name")
+    ransomware = json_data.get("ransomware_family")
+
+    subj = name or "An educational institution"
+    verb = "was targeted"
+    if attack:
+        verb = f"experienced a {attack.replace('_', ' ')} attack"
+    parts.append(f"{subj} {verb}")
+    if date:
+        parts.append(f"on or around {date}")
+    if country:
+        parts.append(f"({country})")
+    sentence = " ".join(parts).rstrip(",") + "."
+
+    extras: list[str] = []
+    if actor:
+        extras.append(f"The attack was attributed to {actor}.")
+    if ransomware:
+        extras.append(f"Ransomware family: {ransomware}.")
+
+    return " ".join([sentence] + extras)
+
+
 def json_to_cti_enrichment(
     json_data: Dict[str, Any],
     primary_url: str,
@@ -1086,7 +1125,7 @@ def json_to_cti_enrichment(
         recovery_metrics=recovery_metrics,
         transparency_metrics=transparency_metrics,
         research_impact=research_impact,
-        enriched_summary=json_data.get("enriched_summary", ""),
+        enriched_summary=_build_summary(json_data),
         extraction_notes=extraction_notes
     )
 
