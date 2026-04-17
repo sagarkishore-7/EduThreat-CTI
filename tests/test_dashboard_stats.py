@@ -10,7 +10,9 @@ from src.edu_cti.api.database import (
     get_dashboard_stats,
     get_incident_by_id,
     get_incidents_by_ransomware_family,
+    get_attack_vector_by_institution,
     get_ransom_economics,
+    get_threat_actor_categories,
 )
 from src.edu_cti.api.main import get_stats
 from src.edu_cti.core.countries import normalize_countries_in_database
@@ -106,6 +108,82 @@ def test_education_incident_count_excludes_orphan_flat_rows(temp_db):
     assert economics["total_ransomware"] == 1
     assert economics["demanded_count"] == 1
     assert economics["total_demanded"] == 100000
+
+
+def test_threat_actor_and_impact_analytics_exclude_orphan_rows(temp_db):
+    conn = temp_db
+    incident = _sample_incident()
+    insert_incident(conn, incident)
+
+    orphan_source = _sample_incident()
+    orphan_source.incident_id = make_incident_id("test_source", "https://example.com/orphan-actor|2025-01-17")
+    orphan_source.source_event_id = "orphan_actor_event"
+    orphan_source.incident_date = "2025-01-17"
+    orphan_source.title = "Orphan actor incident"
+    insert_incident(conn, orphan_source)
+
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments_flat
+        (incident_id, is_education_related, institution_type, attack_vector, threat_actor_name, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, 'university_public', 'ransomware', 'Vice Society', ?, ?, ?)
+        """,
+        (incident.incident_id, now, now, "Real actor incident"),
+    )
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments
+        (incident_id, enrichment_data, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            incident.incident_id,
+            '{"attack_dynamics":{"threat_actor_category":"ransomware_group"}}',
+            now,
+            now,
+        ),
+    )
+
+    conn.execute("PRAGMA foreign_keys = OFF")
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments_flat
+        (incident_id, is_education_related, institution_type, attack_vector, threat_actor_name, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, 'research_institute', 'ransomware', 'Ghost Actor', ?, ?, ?)
+        """,
+        (orphan_source.incident_id, now, now, "Ghost actor incident"),
+    )
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments
+        (incident_id, enrichment_data, created_at, updated_at)
+        VALUES (?, ?, ?, ?)
+        """,
+        (
+            orphan_source.incident_id,
+            '{"attack_dynamics":{"threat_actor_category":"ghost_group"}}',
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+    conn.execute(
+        "DELETE FROM incidents WHERE incident_id = ?",
+        (orphan_source.incident_id,),
+    )
+    conn.commit()
+    conn.execute("PRAGMA foreign_keys = ON")
+
+    actor_categories = get_threat_actor_categories(conn)
+    assert actor_categories == [{"category": "ransomware_group", "count": 1, "percentage": 100.0}]
+
+    attack_vectors = get_attack_vector_by_institution(conn, limit=10)
+    assert attack_vectors["institution_types"] == ["university_public"]
+    assert attack_vectors["vectors"] == ["ransomware"]
+    assert attack_vectors["data"] == [
+        {"institution_type": "university_public", "attack_vector": "ransomware", "count": 1}
+    ]
 
 
 def test_stats_endpoint_bypasses_cache_while_pipeline_is_running():

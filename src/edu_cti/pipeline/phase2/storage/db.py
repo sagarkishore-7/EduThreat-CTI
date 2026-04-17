@@ -1327,9 +1327,16 @@ def revert_all_enriched_incidents(
         # Get all enriched incident IDs
         cur = conn.execute("SELECT incident_id FROM incidents WHERE llm_enriched = 1")
         incident_ids = [row["incident_id"] for row in cur.fetchall()]
-        
+
         if not incident_ids:
-            logger.info("No enriched incidents to revert")
+            orphan_cleanup = purge_orphaned_incident_rows(conn)
+            conn.commit()
+            if orphan_cleanup["total_deleted"] > 0:
+                logger.info(
+                    f"No enriched incidents to revert, but purged {orphan_cleanup['total_deleted']} orphaned child rows"
+                )
+            else:
+                logger.info("No enriched incidents to revert")
             return 0
         
         # Remove enrichment data from incidents table
@@ -1358,9 +1365,17 @@ def revert_all_enriched_incidents(
         
         # Delete all articles (they can be re-fetched)
         conn.execute("DELETE FROM articles")
+
+        orphan_cleanup = purge_orphaned_incident_rows(conn)
         
         conn.commit()
-        logger.info(f"Reverted enrichment for {len(incident_ids)} incidents")
+        logger.info(
+            f"Reverted enrichment for {len(incident_ids)} incidents"
+            + (
+                f" and purged {orphan_cleanup['total_deleted']} orphaned child rows"
+                if orphan_cleanup["total_deleted"] > 0 else ""
+            )
+        )
         return len(incident_ids)
         
     except Exception as e:
@@ -1396,7 +1411,14 @@ def revert_enrichment_before_date(
         incident_ids = [row["incident_id"] for row in cur.fetchall()]
 
         if not incident_ids:
-            logger.info(f"No enriched incidents found before {before_date}")
+            orphan_cleanup = purge_orphaned_incident_rows(conn)
+            conn.commit()
+            if orphan_cleanup["total_deleted"] > 0:
+                logger.info(
+                    f"No enriched incidents found before {before_date}; purged {orphan_cleanup['total_deleted']} orphaned child rows"
+                )
+            else:
+                logger.info(f"No enriched incidents found before {before_date}")
             return 0
 
         placeholders = ",".join("?" * len(incident_ids))
@@ -1436,14 +1458,60 @@ def revert_enrichment_before_date(
             incident_ids,
         )
 
+        orphan_cleanup = purge_orphaned_incident_rows(conn)
+
         conn.commit()
-        logger.info(f"Reverted enrichment for {len(incident_ids)} incidents enriched before {before_date}")
+        logger.info(
+            f"Reverted enrichment for {len(incident_ids)} incidents enriched before {before_date}"
+            + (
+                f" and purged {orphan_cleanup['total_deleted']} orphaned child rows"
+                if orphan_cleanup["total_deleted"] > 0 else ""
+            )
+        )
         return len(incident_ids)
 
     except Exception as e:
         logger.error(f"Error reverting enrichment before {before_date}: {e}")
         conn.rollback()
         return 0
+
+
+def purge_orphaned_incident_rows(conn: sqlite3.Connection) -> Dict[str, int]:
+    """
+    Delete child-table rows whose incident_id no longer exists in incidents.
+
+    This cleans up stale analytics residue from older runs / schemas where
+    cascades did not fire reliably.
+    """
+    deleted: Dict[str, int] = {}
+    total_deleted = 0
+    tables = [
+        "incident_enrichments_flat",
+        "incident_enrichments",
+        "articles",
+        "incident_sources",
+        "source_events",
+        "pipeline_checkpoint",
+        "incident_iocs",
+        "incident_threat_actors",
+    ]
+
+    for table in tables:
+        try:
+            cur = conn.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE incident_id NOT IN (SELECT incident_id FROM incidents)
+                """
+            )
+            count = cur.rowcount if cur.rowcount and cur.rowcount > 0 else 0
+            deleted[table] = count
+            total_deleted += count
+        except Exception:
+            deleted[table] = 0
+
+    deleted["total_deleted"] = total_deleted
+    return deleted
 
 
 def reset_phantom_enrichments(conn: sqlite3.Connection) -> int:

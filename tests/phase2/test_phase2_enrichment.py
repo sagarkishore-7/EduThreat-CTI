@@ -30,6 +30,7 @@ from src.edu_cti.pipeline.phase2.storage.db import (
     get_enrichment_stats,
     get_unenriched_incidents,
     init_incident_enrichments_table,
+    revert_enrichment_before_date,
     save_enrichment_result,
 )
 
@@ -275,6 +276,42 @@ class TestEnrichmentDatabase:
         assert conn.execute(
             "SELECT 1 FROM articles WHERE incident_id = ?",
             (duplicate.incident_id,),
+        ).fetchone() is None
+
+    def test_revert_enrichment_before_date_purges_orphan_rows(self, temp_db):
+        conn, _ = temp_db
+        now = "2026-01-01T00:00:00"
+
+        conn.execute("PRAGMA foreign_keys = OFF")
+        conn.execute(
+            """
+            INSERT INTO incident_enrichments_flat
+            (incident_id, is_education_related, institution_name, created_at, updated_at, enriched_summary)
+            VALUES (?, 1, ?, ?, ?, ?)
+            """,
+            ("orphan_incident_1", "Ghost University", now, now, "orphan flat"),
+        )
+        conn.execute(
+            """
+            INSERT INTO incident_enrichments
+            (incident_id, enrichment_data, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            ("orphan_incident_1", "{}", now, now),
+        )
+        conn.commit()
+        conn.execute("PRAGMA foreign_keys = ON")
+
+        reverted = revert_enrichment_before_date(conn, "2099-01-01")
+
+        assert reverted == 0
+        assert conn.execute(
+            "SELECT 1 FROM incident_enrichments_flat WHERE incident_id = ?",
+            ("orphan_incident_1",),
+        ).fetchone() is None
+        assert conn.execute(
+            "SELECT 1 FROM incident_enrichments WHERE incident_id = ?",
+            ("orphan_incident_1",),
         ).fetchone() is None
 
     def test_save_enrichment_result_cleans_headline_style_institution_name(self, temp_db, sample_incident):

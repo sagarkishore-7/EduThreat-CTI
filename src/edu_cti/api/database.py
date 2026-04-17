@@ -714,13 +714,14 @@ def get_attack_vectors(
 ) -> List[Dict[str, Any]]:
     """Get attack vector distribution."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
-            COALESCE(attack_vector, 'unknown') as category,
+            COALESCE(ef.attack_vector, 'unknown') as category,
             COUNT(*) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND attack_vector IS NOT NULL AND attack_vector != ''
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.attack_vector IS NOT NULL AND ef.attack_vector != ''
+          AND {_live_incident_exists('ef')}
         GROUP BY category
         ORDER BY count DESC
         LIMIT ?
@@ -896,12 +897,13 @@ def get_mitre_tactics(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Parse mitre_techniques_json and aggregate by tactic."""
     # Try flat table first, then fall back to enrichment JSON
     cur = conn.execute(
-        """
+        f"""
         SELECT ef.mitre_techniques_json, ie.enrichment_data
         FROM incident_enrichments_flat ef
         LEFT JOIN incident_enrichments ie ON ef.incident_id = ie.incident_id
         WHERE ef.is_education_related = 1
           AND (ef.mitre_techniques_count > 0 OR ef.mitre_techniques_json IS NOT NULL)
+          AND {_live_incident_exists('ef')}
         """
     )
     tactic_counts: Dict[str, int] = {}
@@ -980,19 +982,20 @@ def get_initial_access_methods(
 ) -> List[Dict[str, Any]]:
     """Get initial access vector distribution."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             CASE
-                WHEN COALESCE(initial_access_vector, attack_vector) IN ('unknown', 'other', 'Unknown', 'Other')
+                WHEN COALESCE(ef.initial_access_vector, ef.attack_vector) IN ('unknown', 'other', 'Unknown', 'Other')
                     THEN 'Unknown / Other'
-                WHEN initial_access_vector IS NULL AND attack_vector IS NULL
+                WHEN ef.initial_access_vector IS NULL AND ef.attack_vector IS NULL
                     THEN 'Unknown / Other'
-                ELSE COALESCE(initial_access_vector, attack_vector)
+                ELSE COALESCE(ef.initial_access_vector, ef.attack_vector)
             END as category,
             COUNT(*) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND (initial_access_vector IS NOT NULL OR attack_vector IS NOT NULL)
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND (ef.initial_access_vector IS NOT NULL OR ef.attack_vector IS NOT NULL)
+          AND {_live_incident_exists('ef')}
         GROUP BY category
         ORDER BY count DESC
         LIMIT ?
@@ -1024,8 +1027,9 @@ def get_system_impact_stats(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
         cur = conn.execute(
             f"""
             SELECT COUNT(*) as count
-            FROM incident_enrichments_flat
-            WHERE is_education_related = 1 AND {col} = 1
+            FROM incident_enrichments_flat ef
+            WHERE ef.is_education_related = 1 AND ef.{col} = 1
+              AND {_live_incident_exists('ef')}
             """
         )
         count = cur.fetchone()["count"]
@@ -1211,12 +1215,13 @@ def get_ransomware_geo(
 def get_threat_actor_categories(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Get threat actor category distribution from enrichment JSON."""
     cur = conn.execute(
-        """
+        f"""
         SELECT ie.enrichment_data
         FROM incident_enrichments ie
         JOIN incident_enrichments_flat ef ON ie.incident_id = ef.incident_id
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND {_live_incident_exists('ef')}
         """
     )
     category_counts: Dict[str, int] = {}
@@ -1245,12 +1250,13 @@ def get_threat_actor_categories(conn: sqlite3.Connection) -> List[Dict[str, Any]
 def get_threat_actor_motivations(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Get threat actor motivation distribution from enrichment JSON."""
     cur = conn.execute(
-        """
+        f"""
         SELECT ie.enrichment_data
         FROM incident_enrichments ie
         JOIN incident_enrichments_flat ef ON ie.incident_id = ef.incident_id
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND {_live_incident_exists('ef')}
         """
     )
     motivation_counts: Dict[str, int] = {}
@@ -1281,7 +1287,7 @@ def get_threat_actor_timeline(
 ) -> List[Dict[str, Any]]:
     """Monthly activity per threat actor (scatter chart)."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             ef.threat_actor_name as actor,
             strftime('%Y-%m', i.incident_date) as month,
@@ -1292,10 +1298,12 @@ def get_threat_actor_timeline(
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
           AND i.incident_date IS NOT NULL
           AND ef.threat_actor_name IN (
-            SELECT threat_actor_name
-            FROM incident_enrichments_flat
-            WHERE is_education_related = 1 AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
-            GROUP BY threat_actor_name
+            SELECT ef2.threat_actor_name
+            FROM incident_enrichments_flat ef2
+            WHERE ef2.is_education_related = 1
+              AND ef2.threat_actor_name IS NOT NULL AND ef2.threat_actor_name != ''
+              AND {_live_incident_exists('ef2')}
+            GROUP BY ef2.threat_actor_name
             ORDER BY COUNT(*) DESC
             LIMIT ?
           )
@@ -1372,7 +1380,7 @@ def get_actor_targeting(
 ) -> List[Dict[str, Any]]:
     """Per-actor country distribution (stacked horizontal bars)."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             ef.threat_actor_name as actor,
             COALESCE(ef.country, 'Unknown') as country,
@@ -1381,11 +1389,14 @@ def get_actor_targeting(
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
           AND ef.threat_actor_name IN (
-            SELECT threat_actor_name
-            FROM incident_enrichments_flat
-            WHERE is_education_related = 1 AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
-            GROUP BY threat_actor_name ORDER BY COUNT(*) DESC LIMIT ?
+            SELECT ef2.threat_actor_name
+            FROM incident_enrichments_flat ef2
+            WHERE ef2.is_education_related = 1
+              AND ef2.threat_actor_name IS NOT NULL AND ef2.threat_actor_name != ''
+              AND {_live_incident_exists('ef2')}
+            GROUP BY ef2.threat_actor_name ORDER BY COUNT(*) DESC LIMIT ?
           )
+          AND {_live_incident_exists('ef')}
         GROUP BY actor, country
         ORDER BY actor, count DESC
         """,
@@ -1404,12 +1415,13 @@ def get_actor_targeting(
 def get_institution_types(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Institution type distribution."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
-            COALESCE(institution_type, 'unknown') as category,
+            COALESCE(ef.institution_type, 'unknown') as category,
             COUNT(*) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND {_live_incident_exists('ef')}
         GROUP BY category
         ORDER BY count DESC
         """
@@ -1435,13 +1447,23 @@ def get_operational_impact(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
         ("exams_postponed", "Exams Postponed"),
     ]
     # Get total for percentage calc
-    cur = conn.execute("SELECT COUNT(*) as total FROM incident_enrichments_flat WHERE is_education_related = 1")
+    cur = conn.execute(
+        f"""
+        SELECT COUNT(*) as total FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND {_live_incident_exists('ef')}
+        """
+    )
     total = cur.fetchone()["total"]
 
     result = []
     for col, label in ops:
         cur = conn.execute(
-            f"SELECT COUNT(*) as count FROM incident_enrichments_flat WHERE is_education_related = 1 AND {col} = 1"
+            f"""
+            SELECT COUNT(*) as count FROM incident_enrichments_flat ef
+            WHERE ef.is_education_related = 1 AND ef.{col} = 1
+              AND {_live_incident_exists('ef')}
+            """
         )
         count = cur.fetchone()["count"]
         result.append({
@@ -1477,7 +1499,7 @@ def get_financial_impact_by_year(conn: sqlite3.Connection) -> List[Dict[str, Any
 def get_data_impact_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
     """Breach metrics and record ranges."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             COUNT(*) as total,
             SUM(CASE WHEN data_breached = 1 THEN 1 ELSE 0 END) as breached_count,
@@ -1486,8 +1508,9 @@ def get_data_impact_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
             AVG(CASE WHEN records_affected_exact > 0 THEN records_affected_exact END) as avg_records,
             MAX(records_affected_exact) as max_records,
             SUM(pii_records_leaked) as total_pii_leaked
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND {_live_incident_exists('ef')}
         """
     )
     row = dict(cur.fetchone())
@@ -1499,7 +1522,7 @@ def get_data_impact_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
 def get_regulatory_impact_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
     """Regulatory compliance aggregation."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             COUNT(*) as total,
             SUM(CASE WHEN gdpr_breach = 1 THEN 1 ELSE 0 END) as gdpr_count,
@@ -1511,8 +1534,9 @@ def get_regulatory_impact_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
             SUM(fine_amount) as total_fines,
             SUM(CASE WHEN lawsuits_filed = 1 THEN 1 ELSE 0 END) as lawsuits_count,
             SUM(CASE WHEN class_action = 1 THEN 1 ELSE 0 END) as class_action_count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND {_live_incident_exists('ef')}
         """
     )
     return dict(cur.fetchone())
@@ -1521,7 +1545,7 @@ def get_regulatory_impact_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
 def get_recovery_effectiveness(conn: sqlite3.Connection) -> Dict[str, Any]:
     """Recovery effectiveness stats."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             COUNT(*) as total,
             AVG(recovery_timeframe_days) as avg_recovery_days,
@@ -1530,8 +1554,9 @@ def get_recovery_effectiveness(conn: sqlite3.Connection) -> Dict[str, Any]:
             SUM(CASE WHEN incident_response_firm IS NOT NULL AND incident_response_firm != '' THEN 1 ELSE 0 END) as ir_firm_count,
             SUM(CASE WHEN forensics_firm IS NOT NULL AND forensics_firm != '' THEN 1 ELSE 0 END) as forensics_count,
             SUM(CASE WHEN mfa_implemented = 1 THEN 1 ELSE 0 END) as mfa_post_count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND {_live_incident_exists('ef')}
         """
     )
     row = dict(cur.fetchone())
@@ -1546,15 +1571,16 @@ def get_recovery_effectiveness(conn: sqlite3.Connection) -> Dict[str, Any]:
 def get_transparency_metrics(conn: sqlite3.Connection) -> Dict[str, Any]:
     """Disclosure metrics."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             COUNT(*) as total,
             SUM(CASE WHEN public_disclosure = 1 THEN 1 ELSE 0 END) as disclosed_count,
             AVG(CASE WHEN disclosure_delay_days > 0 THEN disclosure_delay_days END) as avg_delay_days,
             transparency_level,
             COUNT(*) as level_count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND {_live_incident_exists('ef')}
         GROUP BY transparency_level
         """
     )
@@ -1584,15 +1610,16 @@ def get_transparency_metrics(conn: sqlite3.Connection) -> Dict[str, Any]:
 def get_user_impact_totals(conn: sqlite3.Connection) -> Dict[str, Any]:
     """User category impact totals."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             SUM(students_affected) as students,
             SUM(staff_affected) as staff,
             SUM(faculty_affected) as faculty,
             SUM(users_affected_exact) as total_individuals,
             COUNT(CASE WHEN students_affected > 0 OR staff_affected > 0 OR faculty_affected > 0 THEN 1 END) as incidents_with_data
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND {_live_incident_exists('ef')}
         """
     )
     return dict(cur.fetchone())
@@ -1605,15 +1632,16 @@ def get_user_impact_totals(conn: sqlite3.Connection) -> Dict[str, Any]:
 def get_institution_risk_matrix(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Cross-tabulation of institution_type × attack_category."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
-            institution_type,
-            attack_category,
+            ef.institution_type,
+            ef.attack_category,
             COUNT(*) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND institution_type IS NOT NULL AND institution_type != '' AND institution_type != 'unknown'
-          AND attack_category IS NOT NULL AND attack_category != ''
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.institution_type IS NOT NULL AND ef.institution_type != '' AND ef.institution_type != 'unknown'
+          AND ef.attack_category IS NOT NULL AND ef.attack_category != ''
+          AND {_live_incident_exists('ef')}
         GROUP BY institution_type, attack_category
         HAVING count >= 2
         ORDER BY count DESC
@@ -1625,16 +1653,17 @@ def get_institution_risk_matrix(conn: sqlite3.Connection) -> List[Dict[str, Any]
 def get_recovery_by_attack_type(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Avg recovery and downtime days by attack category."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
-            attack_category,
+            ef.attack_category,
             ROUND(AVG(recovery_timeframe_days), 1) as avg_recovery_days,
             ROUND(AVG(downtime_days), 1) as avg_downtime_days,
             COUNT(*) as incident_count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND attack_category IS NOT NULL AND attack_category != ''
-          AND (recovery_timeframe_days > 0 OR downtime_days > 0)
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category IS NOT NULL AND ef.attack_category != ''
+          AND (ef.recovery_timeframe_days > 0 OR ef.downtime_days > 0)
+          AND {_live_incident_exists('ef')}
         GROUP BY attack_category
         HAVING incident_count >= 3
         ORDER BY avg_recovery_days DESC
@@ -1650,13 +1679,14 @@ def get_attack_vector_by_institution(
     """Attack vector distribution per institution type (top N institution types)."""
     # Get top institution types
     cur = conn.execute(
-        """
-        SELECT institution_type, COUNT(*) as cnt
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND institution_type IS NOT NULL AND institution_type != '' AND institution_type != 'unknown'
-          AND attack_vector IS NOT NULL AND attack_vector != '' AND attack_vector != 'unknown'
-        GROUP BY institution_type
+        f"""
+        SELECT ef.institution_type, COUNT(*) as cnt
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.institution_type IS NOT NULL AND ef.institution_type != '' AND ef.institution_type != 'unknown'
+          AND ef.attack_vector IS NOT NULL AND ef.attack_vector != '' AND ef.attack_vector != 'unknown'
+          AND {_live_incident_exists('ef')}
+        GROUP BY ef.institution_type
         ORDER BY cnt DESC
         LIMIT ?
         """,
@@ -1670,16 +1700,17 @@ def get_attack_vector_by_institution(
     cur = conn.execute(
         f"""
         SELECT
-            institution_type,
+            ef.institution_type,
             CASE
-                WHEN attack_vector IN ('unknown', 'other', 'Unknown', 'Other') THEN 'Unknown / Other'
-                ELSE attack_vector
+                WHEN ef.attack_vector IN ('unknown', 'other', 'Unknown', 'Other') THEN 'Unknown / Other'
+                ELSE ef.attack_vector
             END as attack_vector,
             COUNT(*) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND institution_type IN ({placeholders})
-          AND attack_vector IS NOT NULL AND attack_vector != ''
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.institution_type IN ({placeholders})
+          AND ef.attack_vector IS NOT NULL AND ef.attack_vector != ''
+          AND {_live_incident_exists('ef')}
         GROUP BY institution_type, attack_vector
         ORDER BY institution_type, count DESC
         """,
@@ -1797,12 +1828,13 @@ def get_actor_institution_targeting(
 ) -> Dict[str, Any]:
     """Top actors × institution type cross-tabulation."""
     cur = conn.execute(
-        """
-        SELECT threat_actor_name, COUNT(*) as cnt
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
-        GROUP BY threat_actor_name
+        f"""
+        SELECT ef.threat_actor_name, COUNT(*) as cnt
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND {_live_incident_exists('ef')}
+        GROUP BY ef.threat_actor_name
         ORDER BY cnt DESC
         LIMIT ?
         """,
@@ -1816,12 +1848,13 @@ def get_actor_institution_targeting(
     cur = conn.execute(
         f"""
         SELECT
-            threat_actor_name as actor,
-            COALESCE(institution_type, 'unknown') as institution_type,
+            ef.threat_actor_name as actor,
+            COALESCE(ef.institution_type, 'unknown') as institution_type,
             COUNT(*) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND threat_actor_name IN ({placeholders})
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IN ({placeholders})
+          AND {_live_incident_exists('ef')}
         GROUP BY actor, institution_type
         ORDER BY count DESC
         """,
@@ -1839,12 +1872,13 @@ def get_actor_ttp_profile(
     """Top actors with their MITRE ATT&CK tactic distribution."""
     # Get top actors that have MITRE data
     cur = conn.execute(
-        """
+        f"""
         SELECT ef.threat_actor_name, COUNT(*) as cnt
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
           AND (ef.mitre_techniques_json IS NOT NULL OR ef.mitre_techniques_count > 0)
+          AND {_live_incident_exists('ef')}
         GROUP BY ef.threat_actor_name
         ORDER BY cnt DESC
         LIMIT ?
@@ -1863,6 +1897,7 @@ def get_actor_ttp_profile(
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IN ({placeholders})
           AND ef.mitre_techniques_json IS NOT NULL
+          AND {_live_incident_exists('ef')}
         """,
         actors
     )
@@ -1929,17 +1964,18 @@ def get_disclosure_timeline(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
 def get_breach_by_institution_type(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     """Breach rate and avg records per institution type."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
-            institution_type,
+            ef.institution_type,
             COUNT(*) as total_incidents,
             SUM(CASE WHEN data_breached = 1 THEN 1 ELSE 0 END) as breach_count,
             ROUND(SUM(CASE WHEN data_breached = 1 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 1) as breach_rate,
             AVG(CASE WHEN records_affected_exact > 0 THEN records_affected_exact END) as avg_records,
             SUM(records_affected_exact) as total_records
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND institution_type IS NOT NULL AND institution_type != '' AND institution_type != 'unknown'
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.institution_type IS NOT NULL AND ef.institution_type != '' AND ef.institution_type != 'unknown'
+          AND {_live_incident_exists('ef')}
         GROUP BY institution_type
         HAVING total_incidents >= 3
         ORDER BY breach_rate DESC
@@ -2058,9 +2094,10 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
     
     # Attack categories
     cur = conn.execute(
-        """
-        SELECT DISTINCT attack_category FROM incident_enrichments_flat 
-        WHERE attack_category IS NOT NULL AND attack_category != ''
+        f"""
+        SELECT DISTINCT ef.attack_category FROM incident_enrichments_flat ef
+        WHERE ef.attack_category IS NOT NULL AND ef.attack_category != ''
+          AND {_live_incident_exists('ef')}
         ORDER BY attack_category
         """
     )
@@ -2086,9 +2123,10 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
     
     # Threat actors
     cur = conn.execute(
-        """
-        SELECT DISTINCT threat_actor_name FROM incident_enrichments_flat 
-        WHERE threat_actor_name IS NOT NULL AND threat_actor_name != ''
+        f"""
+        SELECT DISTINCT ef.threat_actor_name FROM incident_enrichments_flat ef
+        WHERE ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND {_live_incident_exists('ef')}
         ORDER BY threat_actor_name
         """
     )
@@ -2096,12 +2134,13 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
     
     # Institution types
     cur = conn.execute(
-        """
+        f"""
         SELECT DISTINCT institution_type FROM incidents 
         WHERE institution_type IS NOT NULL AND institution_type != ''
         UNION
-        SELECT DISTINCT institution_type FROM incident_enrichments_flat 
-        WHERE institution_type IS NOT NULL AND institution_type != ''
+        SELECT DISTINCT ef.institution_type FROM incident_enrichments_flat ef
+        WHERE ef.institution_type IS NOT NULL AND ef.institution_type != ''
+          AND {_live_incident_exists('ef')}
         ORDER BY institution_type
         """
     )
@@ -2128,23 +2167,24 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
 def get_attack_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
     """3-column Sankey: Attack Vector → Attack Category → Impact Outcome."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             COALESCE(
-                NULLIF(initial_access_vector, ''),
-                NULLIF(attack_vector, ''),
+                NULLIF(ef.initial_access_vector, ''),
+                NULLIF(ef.attack_vector, ''),
                 'Unknown'
             ) as vector,
-            COALESCE(NULLIF(attack_category, ''), 'Unknown') as category,
+            COALESCE(NULLIF(ef.attack_category, ''), 'Unknown') as category,
             CASE
-                WHEN data_exfiltrated = 1 AND was_ransom_demanded = 1 THEN 'Breach + Ransom'
-                WHEN data_exfiltrated = 1 THEN 'Data Breach'
-                WHEN was_ransom_demanded = 1 THEN 'Ransom Only'
+                WHEN ef.data_exfiltrated = 1 AND ef.was_ransom_demanded = 1 THEN 'Breach + Ransom'
+                WHEN ef.data_exfiltrated = 1 THEN 'Data Breach'
+                WHEN ef.was_ransom_demanded = 1 THEN 'Ransom Only'
                 ELSE 'Other Impact'
             END as outcome,
             COUNT(*) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND {_live_incident_exists('ef')}
         GROUP BY vector, category, outcome
         HAVING count >= 1
         ORDER BY count DESC
@@ -2184,13 +2224,14 @@ def get_attack_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
 def get_mitre_sunburst(conn: sqlite3.Connection) -> Dict[str, Any]:
     """Hierarchical MITRE: Tactic → Technique tree for sunburst."""
     cur = conn.execute(
-        """
-        SELECT mitre_techniques_json
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND mitre_techniques_json IS NOT NULL
-          AND mitre_techniques_json != '[]'
-          AND mitre_techniques_json != ''
+        f"""
+        SELECT ef.mitre_techniques_json
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.mitre_techniques_json IS NOT NULL
+          AND ef.mitre_techniques_json != '[]'
+          AND ef.mitre_techniques_json != ''
+          AND {_live_incident_exists('ef')}
         """
     )
 
@@ -2384,10 +2425,11 @@ def get_country_attack_matrix(
     """Country × Attack Category matrix for chord diagram."""
     # Top countries
     cur = conn.execute(
-        """
-        SELECT country, COUNT(*) as cnt
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1 AND country IS NOT NULL AND country != ''
+        f"""
+        SELECT ef.country, COUNT(*) as cnt
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1 AND ef.country IS NOT NULL AND ef.country != ''
+          AND {_live_incident_exists('ef')}
         GROUP BY country ORDER BY cnt DESC LIMIT ?
         """,
         (limit_countries,)
@@ -2396,10 +2438,11 @@ def get_country_attack_matrix(
 
     # Top attack categories
     cur = conn.execute(
-        """
-        SELECT attack_category, COUNT(*) as cnt
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1 AND attack_category IS NOT NULL AND attack_category != ''
+        f"""
+        SELECT ef.attack_category, COUNT(*) as cnt
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1 AND ef.attack_category IS NOT NULL AND ef.attack_category != ''
+          AND {_live_incident_exists('ef')}
         GROUP BY attack_category ORDER BY cnt DESC LIMIT ?
         """,
         (limit_categories,)
@@ -2419,12 +2462,13 @@ def get_country_attack_matrix(
 
     cur = conn.execute(
         f"""
-        SELECT country, attack_category, COUNT(*) as cnt
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND country IN ({country_ph})
-          AND attack_category IN ({category_ph})
-        GROUP BY country, attack_category
+        SELECT ef.country, ef.attack_category, COUNT(*) as cnt
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.country IN ({country_ph})
+          AND ef.attack_category IN ({category_ph})
+          AND {_live_incident_exists('ef')}
+        GROUP BY ef.country, ef.attack_category
         """,
         countries + categories
     )
