@@ -42,11 +42,6 @@ EXTRACTION_SCHEMA = {
             "type": "string",
             "description": "Brief explanation (1-2 sentences) of why this is or isn't education-related"
         },
-        # ========== SUMMARY (placed early so token budget is not exhausted) ==========
-        "enriched_summary": {
-            "type": "string",
-            "description": "Comprehensive 2-3 paragraph summary of the incident for threat intelligence. Write in plain English. Include: what happened, who was affected, what data/systems were impacted, and any known response or outcome."
-        },
         "institution_name": {
             "type": "string",
             "description": "Full official name of the affected educational institution"
@@ -989,7 +984,15 @@ EXTRACTION_SCHEMA = {
             "items": {"type": "string"}
         },
         
-        # ========== NOTES ==========
+        # ========== SUMMARY & NOTES ==========
+        # enriched_summary is intentionally last: all structured intelligence fields
+        # are higher priority and must be generated first with full token budget.
+        # The _build_summary() fallback in json_to_schema_mapper handles empty values
+        # for incidents where only a headline snippet (not a full article) was fetched.
+        "enriched_summary": {
+            "type": "string",
+            "description": "2-3 paragraph plain-English summary of the incident for threat intelligence. Include: what happened, who was affected, what data/systems were impacted, and any known response or outcome. Leave empty string if article content is insufficient."
+        },
         "extraction_notes": {
             "type": "string",
             "description": "Notes about data quality, missing information, or extraction challenges"
