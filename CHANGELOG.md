@@ -5,6 +5,50 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.0] - 2026-04-17
+
+### Phase 2 Extraction Pipeline — Critical Bug Fixes
+
+Eight classes of silent data-loss bugs in the LLM extraction pipeline were diagnosed and fixed. These bugs caused MITRE ATT&CK data, breach records, regulatory fields, and discovery dates to never appear in enriched incidents, even when the LLM generated correct JSON.
+
+#### Fixed
+
+- **MITRE ATT&CK never extracted** — `technique_id` carried a regex `pattern` constraint (`^T\d{4}(\.\d{3})?$`) that Ollama's JSON-schema-to-GBNF compiler does not support. Ollama silently output an empty array for any field with a regex pattern. Removed the pattern; replaced with a plain description hint. MITRE techniques now populate correctly.
+
+- **MITRE mapper discarded all fields except technique_id** — `json_to_schema_mapper.py` hardcoded `tactic`, `description`, and `sub_techniques` as `None` regardless of LLM output. Rewrote the mapper to read all five MITRE fields (`technique_id`, `technique_name`, `tactic`, `description`, `sub_techniques`) and handle both string and dict representations.
+
+- **Twelve regex pattern constraints blocked GBNF generation** — The extraction schema applied `pattern` constraints to all date fields (`incident_date`, `discovery_date`, `publication_date`, `outage_start_date`, `outage_end_date`, `notification_sent_date`, `recovery_started_date`, `recovery_completed_date`, `public_disclosure_date`, `timeline[].date`), CVE IDs (`cve_id`), and country codes (`country_code`). All twelve patterns removed and replaced with description-level hints.
+
+- **`enriched_summary` never generated** — Field was last in the ~1,000-line schema; `num_predict=16384` was exhausted before the LLM reached it. Increased `num_predict` to 24,576. Added `_build_summary()` fallback that constructs a factual sentence from structured intelligence fields when the LLM returns an empty summary (e.g. for headline-only articles).
+
+- **`data_categories` vs `data_types` key mismatch** — Extraction schema emitted `data_categories` but the mapper read `data_types`. Data breach records were silently dropped for all incidents. Mapper updated to check both keys with fallback.
+
+- **`ferpa_breach` stored under wrong key** — Regulatory impact dict used key `ferc_breach` (energy regulator) instead of `ferpa_breach`. Fixed key name in mapper.
+
+- **`discovery_date` never persisted** — LLM correctly extracted `discovery_date` but `storage/db.py` never read or stored it. Added extraction and conditional `UPDATE` so the field now reaches the database and the dashboard timeline.
+
+- **Five `event_type` enum values caused validation failures** — Timeline entries using `exploitation`, `impact`, `operational_impact`, `response_action`, or `security_improvement` were rejected by Pydantic because those values were missing from the extraction schema enum. All five values added.
+
+#### Added
+
+- **`_build_summary()` function** (`json_to_schema_mapper.py`) — generates a minimal factual summary from structured fields when `enriched_summary` is absent, ensuring every enriched incident has readable summary text.
+
+- **Comprehensive test suite** (`tests/phase2/test_extraction_pipeline_fixes.py`) — 8 test classes covering all fixed bug classes:
+  - `TestExtractionSchemaPatterns` — asserts zero `pattern` constraints in the schema
+  - `TestTimelineEventTypeEnum` — verifies all required `event_type` values are present
+  - `TestMITREMapper` — 9 tests for MITRE field extraction (dict, string, mixed, empty)
+  - `TestDataCategoriesMapping` — 4 tests for `data_categories`/`data_types` fallback
+  - `TestFerpaBreach` — 3 tests verifying correct `ferpa_breach` key
+  - `TestBuildSummary` — 8 tests for fallback summary with and without LLM output
+  - `TestDiscoveryDatePersistence` — 3 DB integration tests with isolated SQLite
+  - `TestEndToEndPhishingIncident` — full round-trip test: phishing JSON → mapper → DB → verify
+
+#### Changed
+
+- **`num_predict` increased** from 16,384 to 24,576 tokens (`llm_client.py`) — schema JSON output reaches 8–12K tokens; 24K leaves room for the summary and trailing fields.
+
+---
+
 ## [2.6.0] - 2026-03-19
 
 ### Interactive Nivo Visualization Endpoints

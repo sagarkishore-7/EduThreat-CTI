@@ -28,7 +28,7 @@ OSINT Sources → Phase 1 (Ingestion) → Phase 2 (LLM Enrichment) → REST API 
 ## Features
 
 - **Multi-source ingestion** — ransomware leak sites, cybersecurity news feeds, breach notification databases, curated education registers
-- **LLM-powered enrichment** — DeepSeek V3 extracts 192+ structured CTI fields per incident: MITRE ATT&CK, attack dynamics, data/financial/regulatory impact, recovery timeline
+- **LLM-powered enrichment** — Ollama Cloud (deepseek-v3.1:671b / qwen2.5:72b) extracts 192+ structured CTI fields per incident: MITRE ATT&CK, attack dynamics, data/financial/regulatory impact, recovery timeline
 - **Real-time pipeline** — scheduled ingestion + enrichment on Railway with automatic deduplication
 - **REST API** — FastAPI with 40+ endpoints for filtering, analytics, and CTI report generation
 - **Interactive dashboard** — Next.js frontend with charts, filtering, threat actor tracking, geographic analysis
@@ -77,7 +77,7 @@ src/edu_cti/
 
 - Python 3.9+
 - An [Oxylabs](https://oxylabs.io) Web Scraper API account (for article fetching)
-- A [DeepSeek](https://platform.deepseek.com) API key (for LLM enrichment)
+- An [Ollama Cloud](https://ollama.com) API key (for LLM enrichment)
 
 ### Installation
 
@@ -99,7 +99,8 @@ cp .env.example .env
 
 | Variable | Required | Description |
 |---|---|---|
-| `DEEPSEEK_API_KEY` | Yes | DeepSeek API key for LLM enrichment |
+| `OLLAMA_API_KEY` | Yes | Ollama Cloud API key for LLM enrichment |
+| `OLLAMA_MODEL` | No | Model override (default: `deepseek-v3.1:671b-cloud`) |
 | `OXYLABS_USERNAME` | Yes | Oxylabs username for article fetching |
 | `OXYLABS_PASSWORD` | Yes | Oxylabs password |
 | `EDUTHREAT_ADMIN_PASSWORD_HASH` | For production | SHA-256 hash of admin password |
@@ -137,7 +138,7 @@ Scrapes 15+ sources, normalizes all incidents into a unified schema, and stores 
 
 ### Phase 2 — LLM Enrichment
 
-For each incident, fetches the source article (via Oxylabs with JS rendering), then runs DeepSeek V3 to extract 192+ structured CTI fields:
+For each incident, fetches the source article (via Oxylabs with JS rendering), then runs Ollama Cloud (deepseek-v3.1:671b by default) to extract 192+ structured CTI fields:
 
 - **Attack details** — vector, category, MITRE ATT&CK techniques, ransomware family, threat actor
 - **Impact** — data categories exfiltrated, records affected, operational disruption, financial cost
@@ -232,7 +233,7 @@ The pipeline and API run on [Railway](https://railway.app) with a persistent vol
 railway up
 
 # Environment variables are set in the Railway dashboard
-# Required: DEEPSEEK_API_KEY, OXYLABS_USERNAME, OXYLABS_PASSWORD
+# Required: OLLAMA_API_KEY, OXYLABS_USERNAME, OXYLABS_PASSWORD
 # Required: EDUTHREAT_ADMIN_PASSWORD_HASH
 ```
 
