@@ -29,7 +29,7 @@ from src.edu_cti.pipeline.phase2.storage.db import (
     checkpoint_get_fetched,
     checkpoint_clear,
 )
-from src.edu_cti.pipeline.phase2.utils.deduplication import deduplicate_by_institution
+from src.edu_cti.pipeline.phase2.utils.deduplication import deduplicate_by_institution, dedup_incident_after_save
 from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
 from src.edu_cti.core.config import (
     DB_PATH,
@@ -1072,6 +1072,15 @@ def enrich_articles_phase(
                             f"✓ ENRICHED  {incident_id} | {primary[:80]}"
                         )
 
+                        # Inline dedup: check immediately whether this incident duplicates
+                        # an existing enriched incident and merge on the spot.
+                        try:
+                            survivor = dedup_incident_after_save(conn, incident_id)
+                            if survivor and survivor != incident_id:
+                                logger.info(f"  ↳ inline dedup: {incident_id} merged into {survivor}")
+                        except Exception as _dedup_err:
+                            logger.warning(f"Inline dedup error for {incident_id}: {_dedup_err}")
+
                         # --- Secondary incidents from roundup articles ---
                         # If the LLM detected other edu victims in the same article
                         # (e.g. "week in breach" digest), create stub incidents for each.
@@ -1322,21 +1331,6 @@ def main() -> None:
         if not unenriched:
             logger.info("No incidents ready for processing")
             return
-
-        # Pre-enrichment dedup: merge incidents that share the same institution name
-        # and date window BEFORE spending LLM calls on both copies.  This catches the
-        # common case of two Oxylabs articles about the same event ingested in one run.
-        logger.info("Running pre-enrichment deduplication pass...")
-        try:
-            pre_dedup = deduplicate_by_institution(conn, window_days=14)
-            if pre_dedup["removed"] > 0:
-                logger.info(
-                    f"Pre-enrichment dedup merged {pre_dedup['removed']} duplicate(s)"
-                )
-                # Reload unenriched list since some incidents were just merged away
-                unenriched = get_unenriched_incidents(conn, limit=args.limit)
-        except Exception as e:
-            logger.error(f"Pre-enrichment dedup error: {e}", exc_info=True)
 
         # PHASE 1 & 2: Concurrent producer-consumer pattern
         already_e = stats.get("enriched_incidents", 0)

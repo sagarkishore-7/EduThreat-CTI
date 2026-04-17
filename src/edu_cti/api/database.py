@@ -168,7 +168,6 @@ def get_incidents_paginated(
         SELECT DISTINCT
             i.incident_id,
             COALESCE(ef.institution_name, i.university_name, 'Unknown') as university_name,
-            i.victim_raw_name,
             COALESCE(ef.institution_type, i.institution_type) as institution_type,
             COALESCE(ef.country, i.country) as country,
             COALESCE(ef.region, i.region) as region,

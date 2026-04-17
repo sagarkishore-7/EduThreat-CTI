@@ -752,3 +752,112 @@ def deduplicate_by_institution(
         f"{stats['removed']} removed, {stats['remaining']} remaining"
     )
     return stats
+
+
+def dedup_incident_after_save(
+    conn: sqlite3.Connection,
+    incident_id: str,
+    window_days: int = 14,
+    name_threshold: int = 85,
+) -> Optional[str]:
+    """
+    Check whether a just-enriched incident duplicates an existing enriched incident
+    and merge them if so.  Called inline after each save_enrichment_result() so
+    duplicates are resolved immediately rather than waiting for an end-of-batch pass.
+
+    Returns the surviving incident_id if a merge happened (may differ from incident_id
+    if the new incident was the weaker one), or None if no duplicate found.
+    """
+    row = conn.execute(
+        """
+        SELECT i.incident_id,
+               COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
+               NULLIF(i.victim_raw_name, '') AS raw_victim_name,
+               i.incident_date,
+               COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
+               (SELECT COUNT(*) FROM incident_sources s WHERE s.incident_id = i.incident_id) AS source_count,
+               i.ingested_at
+        FROM incidents i
+        LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        WHERE i.incident_id = ?
+        """,
+        (incident_id,),
+    ).fetchone()
+
+    if not row or not row["institution_name"]:
+        return None
+
+    primary_norm = normalize_institution_name(row["institution_name"])
+    primary_tokens = _core_tokens(row["institution_name"])
+    victim_norm = normalize_institution_name(row["raw_victim_name"] or "") if row["raw_victim_name"] != row["institution_name"] else ""
+    victim_tokens = _core_tokens(row["raw_victim_name"] or "") if victim_norm else set()
+
+    candidates_new = [(primary_norm, primary_tokens)]
+    if victim_norm:
+        candidates_new.append((victim_norm, victim_tokens))
+
+    incident_dt = parse_incident_date(row["incident_date"])
+    window = timedelta(days=window_days)
+
+    # Scan all other enriched incidents for a match
+    existing = conn.execute(
+        """
+        SELECT i.incident_id,
+               COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
+               NULLIF(i.victim_raw_name, '') AS raw_victim_name,
+               i.incident_date,
+               COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
+               (SELECT COUNT(*) FROM incident_sources s WHERE s.incident_id = i.incident_id) AS source_count,
+               i.ingested_at
+        FROM incidents i
+        LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
+        WHERE i.incident_id != ?
+          AND (i.llm_excluded IS NULL OR i.llm_excluded = 0)
+          AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
+        """,
+        (incident_id,),
+    ).fetchall()
+
+    for other in existing:
+        other_name = other["institution_name"] or ""
+        if not other_name:
+            continue
+
+        # Date window check
+        other_dt = parse_incident_date(other["incident_date"])
+        if incident_dt and other_dt and abs((incident_dt - other_dt).days) > window_days:
+            continue
+
+        # Name match: check cross-product of primary + victim_raw candidates
+        other_norm = normalize_institution_name(other_name)
+        other_tokens = _core_tokens(other_name)
+        other_victim_norm = normalize_institution_name(other["raw_victim_name"] or "") if other["raw_victim_name"] != other["institution_name"] else ""
+        other_victim_tokens = _core_tokens(other["raw_victim_name"] or "") if other_victim_norm else set()
+
+        candidates_other = [(other_norm, other_tokens)]
+        if other_victim_norm:
+            candidates_other.append((other_victim_norm, other_victim_tokens))
+
+        matched = any(
+            _names_match_pair(n1, t1, n2, t2)
+            for n1, t1 in candidates_new
+            for n2, t2 in candidates_other
+        )
+        if not matched:
+            continue
+
+        # Found a duplicate — decide which to keep (higher score wins)
+        new_score = _row_score(row)
+        other_score = _row_score(other)
+
+        if new_score >= other_score:
+            keep_id, dup_id = incident_id, other["incident_id"]
+        else:
+            keep_id, dup_id = other["incident_id"], incident_id
+
+        logger.info(f"Inline dedup: merging {dup_id} → {keep_id} (same institution, {window_days}-day window)")
+        _merge_duplicate_into_keeper(conn, keep_id, dup_id)
+        conn.commit()
+        return keep_id
+
+    return None
