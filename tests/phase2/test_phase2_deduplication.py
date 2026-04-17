@@ -284,9 +284,8 @@ class TestDeduplication:
         ).fetchone()[0]
         assert surviving_name == "Alamo Heights Independent School District"
 
-    def test_deduplicate_merges_unenriched_incidents_with_same_institution_name(self, temp_db):
-        """Two unenriched articles about the same institution on the same date must be merged
-        before enrichment runs, not kept as separate dashboard entries."""
+    def test_deduplicate_skips_unenriched_incidents_with_same_institution_name(self, temp_db):
+        """Unenriched incidents should remain separate until each has Phase 2 output."""
         conn, _ = temp_db
 
         incident1 = _incident("oxylabs_news", "https://example.com/ucf-breach-1", "2016-01-01", "University of Central Florida")
@@ -298,21 +297,11 @@ class TestDeduplication:
         add_incident_source(conn, incident1.incident_id, incident1.source, incident1.source_event_id, "2026-04-17T00:00:00", "medium")
         add_incident_source(conn, incident2.incident_id, incident2.source, incident2.source_event_id, "2026-04-17T01:00:00", "medium")
 
-        # Neither incident has been enriched yet — dedup must still merge them
         stats = deduplicate_by_institution(conn, window_days=14)
 
-        assert stats["removed"] == 1
-        assert stats["remaining"] == 1
-
-        # Surviving incident must have both URLs merged into its all_urls
-        remaining_id = conn.execute(
-            "SELECT incident_id FROM incidents WHERE institution_name = 'University of Central Florida'"
-        ).fetchone()[0]
-        all_urls = conn.execute(
-            "SELECT all_urls FROM incidents WHERE incident_id = ?", (remaining_id,)
-        ).fetchone()[0]
-        assert "ucf-breach-1" in all_urls
-        assert "ucf-breach-2" in all_urls
+        assert stats["removed"] == 0
+        assert stats["remaining"] == 0
+        assert conn.execute("SELECT COUNT(*) FROM incidents").fetchone()[0] == 2
 
     def test_deduplicate_matches_abbreviation_against_raw_institution_name(self, temp_db):
         """If LLM stores 'UCF' for one incident and 'University of Central Florida' for another,
@@ -371,8 +360,8 @@ class TestDeduplication:
             (incident2.incident_id,),
         ).fetchone() is None
 
-    def test_inline_dedup_prefers_enriched_survivor_over_unenriched_stub(self, temp_db):
-        """A freshly enriched incident must not be merged into an unenriched comparitech stub."""
+    def test_inline_dedup_skips_unenriched_stub(self, temp_db):
+        """Inline dedup should ignore unenriched stubs until they have their own enrichment."""
         conn, _ = temp_db
 
         comparitech_stub = _incident(
@@ -403,19 +392,19 @@ class TestDeduplication:
 
         survivor = dedup_incident_after_save(conn, darkreading_incident.incident_id, window_days=14)
 
-        assert survivor == darkreading_incident.incident_id
+        assert survivor is None
         assert conn.execute(
             "SELECT llm_enriched FROM incidents WHERE incident_id = ?",
             (darkreading_incident.incident_id,),
         ).fetchone()[0] == 1
         assert conn.execute(
-            "SELECT 1 FROM incidents WHERE incident_id = ?",
+            "SELECT llm_enriched FROM incidents WHERE incident_id = ?",
             (comparitech_stub.incident_id,),
-        ).fetchone() is None
+        ).fetchone()[0] == 0
         assert get_enrichment_result(conn, darkreading_incident.incident_id) is not None
 
-    def test_batch_dedup_prefers_enriched_survivor_over_unenriched_stub(self, temp_db):
-        """Admin/batch dedup should keep the enriched incident when paired with an unenriched stub."""
+    def test_batch_dedup_skips_unenriched_stub(self, temp_db):
+        """Admin/batch dedup should ignore unenriched stubs until both sides are enriched."""
         conn, _ = temp_db
 
         comparitech_stub = _incident(
@@ -446,7 +435,7 @@ class TestDeduplication:
 
         stats = deduplicate_by_institution(conn, window_days=14)
 
-        assert stats["removed"] == 1
+        assert stats["removed"] == 0
         assert conn.execute(
             "SELECT llm_enriched FROM incidents WHERE incident_id = ?",
             (oxylabs_incident.incident_id,),
@@ -454,5 +443,69 @@ class TestDeduplication:
         assert conn.execute(
             "SELECT 1 FROM incidents WHERE incident_id = ?",
             (comparitech_stub.incident_id,),
-        ).fetchone() is None
+        ).fetchone() is not None
         assert get_enrichment_result(conn, oxylabs_incident.incident_id) is not None
+
+    def test_batch_dedup_prefers_richer_enriched_incident(self, temp_db):
+        """When both incidents are enriched, the richer CTI record should survive."""
+        conn, _ = temp_db
+
+        incident1 = _incident("darkreading", "https://example.com/detail-1", "2024-09-01", "Test University")
+        incident2 = _incident("oxylabs_news", "https://example.com/detail-2", "2024-09-01", "Test University")
+
+        insert_incident(conn, incident1)
+        insert_incident(conn, incident2)
+
+        sparse = _enrichment("This summary is much longer but sparse.", incident1.all_urls[0], institution_name="Test University")
+        save_enrichment_result(conn, incident1.incident_id, sparse)
+        save_enrichment_result(
+            conn,
+            incident2.incident_id,
+            CTIEnrichmentResult(
+                education_relevance=EducationRelevanceCheck(
+                    is_education_related=True,
+                    reasoning="Education-sector incident",
+                    institution_identified="Test University",
+                ),
+                primary_url=incident2.all_urls[0],
+                enriched_summary="Brief summary.",
+                timeline=[],
+                mitre_attack_techniques=[],
+            ),
+            raw_json_data={
+                "institution_name": "Test University",
+                "country": "United States",
+                "attack_category": "ransomware",
+                "threat_actor_name": "LockBit",
+                "data_breached": True,
+                "records_affected_exact": 1000,
+            },
+        )
+
+        # Manually add richer counts that the survivor score uses.
+        conn.execute(
+            """
+            UPDATE incident_enrichments_flat
+            SET timeline_events_count = 3,
+                mitre_techniques_count = 2,
+                attack_category = 'ransomware',
+                threat_actor_name = 'LockBit',
+                data_breached = 1,
+                records_affected_exact = 1000
+            WHERE incident_id = ?
+            """,
+            (incident2.incident_id,),
+        )
+        conn.commit()
+
+        stats = deduplicate_by_institution(conn, window_days=14)
+
+        assert stats["removed"] == 1
+        assert conn.execute(
+            "SELECT 1 FROM incidents WHERE incident_id = ?",
+            (incident2.incident_id,),
+        ).fetchone() is not None
+        assert conn.execute(
+            "SELECT 1 FROM incidents WHERE incident_id = ?",
+            (incident1.incident_id,),
+        ).fetchone() is None

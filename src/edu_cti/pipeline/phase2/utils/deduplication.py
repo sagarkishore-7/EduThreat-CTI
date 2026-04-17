@@ -27,6 +27,24 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+_DETAIL_SCORE_SQL = """
+(
+    COALESCE(ef.timeline_events_count, 0) * 5 +
+    COALESCE(ef.mitre_techniques_count, 0) * 3 +
+    CASE WHEN i.primary_url IS NOT NULL AND i.primary_url != '' THEN 2 ELSE 0 END +
+    CASE WHEN COALESCE(ef.enriched_summary, i.llm_summary) IS NOT NULL
+              AND LENGTH(COALESCE(ef.enriched_summary, i.llm_summary)) > 0 THEN 2 ELSE 0 END +
+    CASE WHEN ef.attack_category IS NOT NULL AND ef.attack_category != '' THEN 1 ELSE 0 END +
+    CASE WHEN ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != '' THEN 1 ELSE 0 END +
+    CASE WHEN ef.ransomware_family IS NOT NULL AND ef.ransomware_family != '' THEN 1 ELSE 0 END +
+    CASE WHEN ef.data_breached IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN ef.data_exfiltrated IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN ef.records_affected_exact IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN ef.users_affected_exact IS NOT NULL THEN 1 ELSE 0 END +
+    CASE WHEN ef.ransom_amount IS NOT NULL THEN 1 ELSE 0 END
+)
+"""
+
 _HEADLINE_AFTER_RE = re.compile(
     r"\b(?:targets?|targeted|hits?|attacks?|attacked|breach(?:es)?|breached|"
     r"compromises?|compromised|victimizes?|victimized|affects?|affected|"
@@ -376,9 +394,10 @@ def find_duplicate_institutions(
     return duplicates
 
 
-def _row_score(row: sqlite3.Row) -> tuple[int, int, str]:
+def _row_score(row: sqlite3.Row) -> tuple[int, int, int, str]:
     return (
         int(row["llm_enriched"] or 0),
+        int(row["detail_score"] or 0),
         int(row["summary_length"] or 0),
         int(row["source_count"] or 0),
         row["ingested_at"] or "",
@@ -573,27 +592,27 @@ def deduplicate_by_institution(
     """
     Deduplicate incidents by institution name within a date window.
 
-    Covers both enriched incidents (using the LLM-resolved institution_name
-    from incident_enrichments_flat) and unenriched incidents that already have a
-    known institution_name / victim_raw_name from ingestion — so two articles about
-    the same institution ingested before enrichment are merged rather than becoming
-    duplicate entries that waste LLM calls.
+    Only enriched incidents participate. This keeps distinct source records alive
+    until Phase 2 has extracted their article-specific CTI, then chooses the best
+    enriched survivor and merges source attribution afterward.
     """
     logger.info("Starting deduplication by institution name...")
 
     cur = conn.execute(
-        """
+        f"""
         SELECT i.incident_id,
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
                i.ingested_at,
                COALESCE(i.llm_enriched, 0) AS llm_enriched,
+               {_DETAIL_SCORE_SQL} AS detail_score,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
                (SELECT COUNT(*) FROM incident_sources s WHERE s.incident_id = i.incident_id) AS source_count
         FROM incidents i
         LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
-        WHERE (i.llm_excluded IS NULL OR i.llm_excluded = 0)
+        WHERE i.llm_enriched = 1
+          AND (i.llm_excluded IS NULL OR i.llm_excluded = 0)
           AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
           AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) != ''
         ORDER BY i.llm_enriched DESC, i.ingested_at DESC
@@ -778,18 +797,20 @@ def dedup_incident_after_save(
     if the new incident was the weaker one), or None if no duplicate found.
     """
     row = conn.execute(
-        """
+        f"""
         SELECT i.incident_id,
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
                COALESCE(i.llm_enriched, 0) AS llm_enriched,
+               {_DETAIL_SCORE_SQL} AS detail_score,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
                (SELECT COUNT(*) FROM incident_sources s WHERE s.incident_id = i.incident_id) AS source_count,
                i.ingested_at
         FROM incidents i
         LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE i.incident_id = ?
+          AND i.llm_enriched = 1
         """,
         (incident_id,),
     ).fetchone()
@@ -811,18 +832,20 @@ def dedup_incident_after_save(
 
     # Scan all other enriched incidents for a match
     existing = conn.execute(
-        """
+        f"""
         SELECT i.incident_id,
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
                COALESCE(i.llm_enriched, 0) AS llm_enriched,
+               {_DETAIL_SCORE_SQL} AS detail_score,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
                (SELECT COUNT(*) FROM incident_sources s WHERE s.incident_id = i.incident_id) AS source_count,
                i.ingested_at
         FROM incidents i
         LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE i.incident_id != ?
+          AND i.llm_enriched = 1
           AND (i.llm_excluded IS NULL OR i.llm_excluded = 0)
           AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
         """,
