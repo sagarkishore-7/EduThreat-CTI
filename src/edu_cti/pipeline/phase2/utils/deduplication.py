@@ -578,6 +578,39 @@ def deduplicate_by_institution(
         else:
             parent[ra] = rb
 
+    # Pre-compute normalized names and token sets once to avoid redundant regex
+    # work inside the O(N²) comparison loops.
+    norm_cache: List[str] = []
+    token_cache: List[set] = []
+    for row in rows:
+        norm_cache.append(normalize_institution_name(row["institution_name"] or ""))
+        token_cache.append(_core_tokens(row["institution_name"] or ""))
+
+    def _fast_match(idx_a: int, idx_b: int) -> bool:
+        n1, n2 = norm_cache[idx_a], norm_cache[idx_b]
+        if not n1 or not n2:
+            return False
+        if n1 == n2:
+            return True
+        t1, t2 = token_cache[idx_a], token_cache[idx_b]
+        if t1 and t2:
+            if t1 == t2:
+                return True
+            smaller, larger = sorted((t1, t2), key=len)
+            if len(smaller) >= 2 and smaller.issubset(larger) and len(smaller) / len(larger) >= 0.7:
+                return True
+        if fuzz is not None:
+            s1 = " ".join(sorted(t1 or n1.split()))
+            s2 = " ".join(sorted(t2 or n2.split()))
+            return max(fuzz.token_sort_ratio(n1, n2), fuzz.token_sort_ratio(s1, s2)) >= name_threshold
+        seq = SequenceMatcher(None, n1, n2).ratio() * 100
+        tok = SequenceMatcher(
+            None,
+            " ".join(sorted(t1 or n1.split())),
+            " ".join(sorted(t2 or n2.split())),
+        ).ratio() * 100
+        return max(seq, tok) >= name_threshold
+
     dated: List[tuple[int, datetime]] = []
     undated: List[int] = []
     for idx, row in enumerate(rows):
@@ -591,17 +624,15 @@ def deduplicate_by_institution(
     window = timedelta(days=window_days)
 
     for pos, (idx_i, date_i) in enumerate(dated):
-        name_i = rows[idx_i]["institution_name"]
         for idx_j, date_j in dated[pos + 1:]:
             if date_j - date_i > window:
                 break
-            if institution_names_match(name_i, rows[idx_j]["institution_name"], threshold=name_threshold):
+            if _fast_match(idx_i, idx_j):
                 union(idx_i, idx_j)
 
     for pos, idx_i in enumerate(undated):
-        name_i = rows[idx_i]["institution_name"]
         for idx_j in undated[pos + 1:]:
-            if institution_names_match(name_i, rows[idx_j]["institution_name"], threshold=name_threshold):
+            if _fast_match(idx_i, idx_j):
                 union(idx_i, idx_j)
 
     groups: Dict[int, List[int]] = {}
