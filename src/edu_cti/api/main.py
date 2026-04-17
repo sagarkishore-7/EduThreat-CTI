@@ -596,11 +596,11 @@ async def get_incident(incident_id: str):
         # Build response model
         timeline = None
         if incident_data.get("timeline"):
-            timeline = [TimelineEvent(**e) for e in incident_data["timeline"]]
+            timeline = [TimelineEvent(**e) for e in incident_data["timeline"] if isinstance(e, dict)]
         
         mitre_techniques = None
         if incident_data.get("mitre_attack_techniques"):
-            mitre_techniques = [MITRETechnique(**t) for t in incident_data["mitre_attack_techniques"]]
+            mitre_techniques = [MITRETechnique(**t) for t in incident_data["mitre_attack_techniques"] if isinstance(t, dict)]
         
         attack_dynamics = None
         if incident_data.get("attack_dynamics"):
