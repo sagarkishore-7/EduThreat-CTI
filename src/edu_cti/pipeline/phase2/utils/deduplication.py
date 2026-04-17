@@ -378,6 +378,7 @@ def find_duplicate_institutions(
 
 def _row_score(row: sqlite3.Row) -> tuple[int, int, str]:
     return (
+        int(row["llm_enriched"] or 0),
         int(row["summary_length"] or 0),
         int(row["source_count"] or 0),
         row["ingested_at"] or "",
@@ -587,6 +588,7 @@ def deduplicate_by_institution(
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
                i.ingested_at,
+               COALESCE(i.llm_enriched, 0) AS llm_enriched,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
                (SELECT COUNT(*) FROM incident_sources s WHERE s.incident_id = i.incident_id) AS source_count
         FROM incidents i
@@ -781,6 +783,7 @@ def dedup_incident_after_save(
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
+               COALESCE(i.llm_enriched, 0) AS llm_enriched,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
                (SELECT COUNT(*) FROM incident_sources s WHERE s.incident_id = i.incident_id) AS source_count,
                i.ingested_at
@@ -813,6 +816,7 @@ def dedup_incident_after_save(
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
+               COALESCE(i.llm_enriched, 0) AS llm_enriched,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
                (SELECT COUNT(*) FROM incident_sources s WHERE s.incident_id = i.incident_id) AS source_count,
                i.ingested_at

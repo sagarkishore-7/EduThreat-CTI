@@ -370,3 +370,89 @@ class TestDeduplication:
             "SELECT 1 FROM incidents WHERE incident_id = ?",
             (incident2.incident_id,),
         ).fetchone() is None
+
+    def test_inline_dedup_prefers_enriched_survivor_over_unenriched_stub(self, temp_db):
+        """A freshly enriched incident must not be merged into an unenriched comparitech stub."""
+        conn, _ = temp_db
+
+        comparitech_stub = _incident(
+            "comparitech",
+            "https://example.com/utah-comparitech",
+            "2020-07-19",
+            "University of Utah Pays in Cyber-Extortion Scheme",
+        )
+        darkreading_incident = _incident(
+            "darkreading",
+            "https://example.com/utah-darkreading",
+            "2020-07-19",
+            "University of Utah Pays in Cyber-Extortion Scheme",
+        )
+
+        insert_incident(conn, comparitech_stub)
+        insert_incident(conn, darkreading_incident)
+
+        save_enrichment_result(
+            conn,
+            darkreading_incident.incident_id,
+            _enrichment(
+                "Detailed enriched summary from the fetched article.",
+                darkreading_incident.all_urls[0],
+                institution_name="University of Utah",
+            ),
+        )
+
+        survivor = dedup_incident_after_save(conn, darkreading_incident.incident_id, window_days=14)
+
+        assert survivor == darkreading_incident.incident_id
+        assert conn.execute(
+            "SELECT llm_enriched FROM incidents WHERE incident_id = ?",
+            (darkreading_incident.incident_id,),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT 1 FROM incidents WHERE incident_id = ?",
+            (comparitech_stub.incident_id,),
+        ).fetchone() is None
+        assert get_enrichment_result(conn, darkreading_incident.incident_id) is not None
+
+    def test_batch_dedup_prefers_enriched_survivor_over_unenriched_stub(self, temp_db):
+        """Admin/batch dedup should keep the enriched incident when paired with an unenriched stub."""
+        conn, _ = temp_db
+
+        comparitech_stub = _incident(
+            "comparitech",
+            "https://example.com/allen-comparitech",
+            "2020-07-19",
+            "University of Utah Pays in Cyber-Extortion Scheme",
+        )
+        oxylabs_incident = _incident(
+            "oxylabs_news",
+            "https://example.com/allen-oxylabs",
+            "2020-07-19",
+            "University of Utah Pays in Cyber-Extortion Scheme",
+        )
+
+        insert_incident(conn, comparitech_stub)
+        insert_incident(conn, oxylabs_incident)
+
+        save_enrichment_result(
+            conn,
+            oxylabs_incident.incident_id,
+            _enrichment(
+                "Longer enriched summary that should win batch dedup.",
+                oxylabs_incident.all_urls[0],
+                institution_name="University of Utah",
+            ),
+        )
+
+        stats = deduplicate_by_institution(conn, window_days=14)
+
+        assert stats["removed"] == 1
+        assert conn.execute(
+            "SELECT llm_enriched FROM incidents WHERE incident_id = ?",
+            (oxylabs_incident.incident_id,),
+        ).fetchone()[0] == 1
+        assert conn.execute(
+            "SELECT 1 FROM incidents WHERE incident_id = ?",
+            (comparitech_stub.incident_id,),
+        ).fetchone() is None
+        assert get_enrichment_result(conn, oxylabs_incident.incident_id) is not None
