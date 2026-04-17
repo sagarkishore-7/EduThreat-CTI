@@ -83,20 +83,6 @@ _STOP_TOKENS = {
     "at",
     "for",
     "and",
-    "district",
-    "school",
-    "schools",
-    "independent",
-    "university",
-    "college",
-    "academy",
-    "institute",
-    "community",
-    "system",
-    "board",
-    "education",
-    "department",
-    "polytechnic",
 }
 
 
@@ -227,7 +213,9 @@ def institution_names_match(name1: str, name2: str, threshold: int = 85) -> bool
         if tokens1 == tokens2:
             return True
         smaller, larger = sorted((tokens1, tokens2), key=len)
-        if len(smaller) >= 2 and smaller.issubset(larger):
+        # Subset match: require >=2 tokens AND coverage ratio >=0.7 to avoid
+        # false positives like "Los Angeles" matching "Los Angeles Unified School District"
+        if len(smaller) >= 2 and smaller.issubset(larger) and len(smaller) / len(larger) >= 0.7:
             return True
 
     if fuzz is not None:
@@ -555,6 +543,7 @@ def deduplicate_by_institution(
         FROM incidents i
         LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE i.llm_enriched = 1
+          AND (i.llm_excluded IS NULL OR i.llm_excluded = 0)
           AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
           AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) != ''
         ORDER BY i.ingested_at DESC

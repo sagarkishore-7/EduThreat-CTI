@@ -2076,26 +2076,3 @@ async def clear_all_incidents(
         conn.close()
 
 
-@router.post("/deduplicate")
-async def run_deduplication(
-    window_days: int = Query(default=14, ge=1, le=365, description="Date window in days"),
-    _: bool = Depends(authenticate),
-):
-    """
-    Run post-enrichment deduplication across all enriched incidents.
-
-    Merges incidents with the same normalized institution name within the date window.
-    Incidents with no date are treated as within the window (no-date = unknown timing).
-    Keeps the incident with the longest llm_summary (most detailed enrichment).
-    """
-    conn = get_api_connection(read_only=False)
-    try:
-        stats = deduplicate_by_institution(conn, window_days=window_days)
-        cache_invalidate()
-        logger.info(f"Deduplication via admin API: {stats}")
-        return {"success": True, "window_days": window_days, **stats}
-    except Exception as e:
-        logger.error(f"Deduplication failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Deduplication failed: {str(e)}")
-    finally:
-        conn.close()
