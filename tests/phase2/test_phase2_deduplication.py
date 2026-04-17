@@ -13,7 +13,7 @@ from src.edu_cti.core.db import (
 )
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult, EducationRelevanceCheck
-from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_result, save_enrichment_result
+from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_result, init_incident_enrichments_table, save_enrichment_result
 from src.edu_cti.pipeline.phase2.utils.deduplication import (
     dates_within_window,
     deduplicate_by_institution,
@@ -282,3 +282,33 @@ class TestDeduplication:
             (incident2.incident_id,),
         ).fetchone()[0]
         assert surviving_name == "Alamo Heights Independent School District"
+
+    def test_deduplicate_merges_unenriched_incidents_with_same_university_name(self, temp_db):
+        """Two unenriched articles about the same institution on the same date must be merged
+        before enrichment runs, not kept as separate dashboard entries."""
+        conn, _ = temp_db
+
+        incident1 = _incident("oxylabs_news", "https://example.com/ucf-breach-1", "2016-01-01", "University of Central Florida")
+        incident2 = _incident("oxylabs_news", "https://example.com/ucf-breach-2", "2016-01-01", "University of Central Florida")
+
+        insert_incident(conn, incident1)
+        insert_incident(conn, incident2)
+        init_incident_enrichments_table(conn)
+        add_incident_source(conn, incident1.incident_id, incident1.source, incident1.source_event_id, "2026-04-17T00:00:00", "medium")
+        add_incident_source(conn, incident2.incident_id, incident2.source, incident2.source_event_id, "2026-04-17T01:00:00", "medium")
+
+        # Neither incident has been enriched yet — dedup must still merge them
+        stats = deduplicate_by_institution(conn, window_days=14)
+
+        assert stats["removed"] == 1
+        assert stats["remaining"] == 1
+
+        # Surviving incident must have both URLs merged into its all_urls
+        remaining_id = conn.execute(
+            "SELECT incident_id FROM incidents WHERE university_name = 'University of Central Florida'"
+        ).fetchone()[0]
+        all_urls = conn.execute(
+            "SELECT all_urls FROM incidents WHERE incident_id = ?", (remaining_id,)
+        ).fetchone()[0]
+        assert "ucf-breach-1" in all_urls
+        assert "ucf-breach-2" in all_urls

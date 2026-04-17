@@ -539,12 +539,15 @@ def deduplicate_by_institution(
     dry_run: bool = False,
 ) -> Dict[str, Any]:
     """
-    Deduplicate enriched incidents by institution name within a date window.
+    Deduplicate incidents by institution name within a date window.
 
-    This is the runtime equivalent of the admin 14-day dedup logic and is used
-    after enrichment rounds so duplicates are merged while the pipeline runs.
+    Covers both enriched incidents (using the LLM-resolved institution_name
+    from incident_enrichments_flat) and unenriched incidents that already have a
+    known university_name / victim_raw_name from ingestion — so two articles about
+    the same institution ingested before enrichment are merged rather than becoming
+    duplicate entries that waste LLM calls.
     """
-    logger.info("Starting post-enrichment deduplication by institution name...")
+    logger.info("Starting deduplication by institution name...")
 
     cur = conn.execute(
         """
@@ -556,16 +559,15 @@ def deduplicate_by_institution(
                (SELECT COUNT(*) FROM incident_sources s WHERE s.incident_id = i.incident_id) AS source_count
         FROM incidents i
         LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
-        WHERE i.llm_enriched = 1
-          AND (i.llm_excluded IS NULL OR i.llm_excluded = 0)
+        WHERE (i.llm_excluded IS NULL OR i.llm_excluded = 0)
           AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
           AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) != ''
-        ORDER BY i.ingested_at DESC
+        ORDER BY i.llm_enriched DESC, i.ingested_at DESC
         """
     )
     rows = cur.fetchall()
-    total_enriched = len(rows)
-    if total_enriched == 0:
+    total_candidates = len(rows)
+    if total_candidates == 0:
         return {
             "success": True,
             "total_enriched": 0,
@@ -575,7 +577,7 @@ def deduplicate_by_institution(
             "groups_merged": 0,
         }
 
-    parent: Dict[int, int] = {i: i for i in range(len(rows))}
+    parent: Dict[int, int] = {i: i for i in range(total_candidates)}
 
     def find(idx: int) -> int:
         while parent[idx] != idx:
@@ -695,18 +697,18 @@ def deduplicate_by_institution(
 
     stats = {
         "success": True,
-        "total_enriched": total_enriched,
+        "total_enriched": total_candidates,
         "checked": len(merge_groups),
         "removed": removed_count,
-        "remaining": total_enriched - removed_count,
+        "remaining": total_candidates - removed_count,
         "groups_merged": len(merge_groups),
         "window_days": window_days,
         "name_threshold": name_threshold,
     }
 
     logger.info(
-        "Post-enrichment deduplication complete: "
-        f"{stats['total_enriched']} total, {stats['checked']} groups, "
+        "Deduplication complete: "
+        f"{total_candidates} total, {stats['checked']} groups, "
         f"{stats['removed']} removed, {stats['remaining']} remaining"
     )
     return stats

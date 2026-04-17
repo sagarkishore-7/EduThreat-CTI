@@ -1322,7 +1322,22 @@ def main() -> None:
         if not unenriched:
             logger.info("No incidents ready for processing")
             return
-    
+
+        # Pre-enrichment dedup: merge incidents that share the same institution name
+        # and date window BEFORE spending LLM calls on both copies.  This catches the
+        # common case of two Oxylabs articles about the same event ingested in one run.
+        logger.info("Running pre-enrichment deduplication pass...")
+        try:
+            pre_dedup = deduplicate_by_institution(conn, window_days=14)
+            if pre_dedup["removed"] > 0:
+                logger.info(
+                    f"Pre-enrichment dedup merged {pre_dedup['removed']} duplicate(s)"
+                )
+                # Reload unenriched list since some incidents were just merged away
+                unenriched = get_unenriched_incidents(conn, limit=args.limit)
+        except Exception as e:
+            logger.error(f"Pre-enrichment dedup error: {e}", exc_info=True)
+
         # PHASE 1 & 2: Concurrent producer-consumer pattern
         already_e = stats.get("enriched_incidents", 0)
         total_db  = stats.get("total_incidents", 0)
