@@ -655,6 +655,40 @@ class TestFetchingStrategy:
         assert flat_row["country"] == "United States"
         assert flat_row["country_code"] == "US"
 
+    def test_save_enrichment_result_backfills_curated_ransom_fields_from_notes(
+        self, temp_db, sample_incident
+    ):
+        conn, _ = temp_db
+        sample_incident.source = "comparitech"
+        sample_incident.notes = (
+            "Ransomware: Qilin | Ransom paid: Yes | "
+            "Ransom amount: $457,059 | Records affected: 12,345"
+        )
+        insert_incident(conn, sample_incident)
+
+        enrichment = _sample_enrichment_result()
+        enrichment.attack_dynamics.ransomware_family = None
+
+        assert save_enrichment_result(conn, sample_incident.incident_id, enrichment) is True
+
+        row = conn.execute(
+            """
+            SELECT ransomware_family, was_ransom_demanded, ransom_amount, ransom_currency,
+                   ransom_paid, ransom_paid_amount, records_affected_exact
+            FROM incident_enrichments_flat
+            WHERE incident_id = ?
+            """,
+            (sample_incident.incident_id,),
+        ).fetchone()
+
+        assert row["ransomware_family"] == "Qilin"
+        assert row["was_ransom_demanded"] == 1
+        assert row["ransom_amount"] == 457059
+        assert row["ransom_currency"] == "USD"
+        assert row["ransom_paid"] == 1
+        assert row["ransom_paid_amount"] == 457059
+        assert row["records_affected_exact"] == 12345
+
     def test_get_enrichment_stats(self, temp_db, sample_incident):
         """Enrichment stats should move incidents from unenriched to enriched."""
         conn, _ = temp_db
@@ -1016,6 +1050,53 @@ class TestIncidentEnricher:
         assert parsed["is_edu_cyber_incident"] is True
         assert parsed["institution_name"] == "Test University"
         assert parsed["timeline"] == []
+
+    def test_enrich_article_strips_cti_fields_when_llm_marks_non_education(self, sample_incident):
+        llm_client = Mock()
+        llm_client.extract_json.return_value = """
+        {
+          "is_edu_cyber_incident": false,
+          "education_relevance_reasoning": "This article is about a non-education cyber incident.",
+          "institution_name": "SolarWinds",
+          "attack_category": "espionage",
+          "ransom_paid": true,
+          "ransom_amount": 12345,
+          "timeline": [
+            {
+              "date": "2021-04-16",
+              "date_precision": "day",
+              "event_description": "Attack disclosed",
+              "event_type": "disclosure"
+            }
+          ]
+        }
+        """
+
+        enricher = IncidentEnricher(llm_client=llm_client)
+        article = ArticleContent(
+            url="https://example.com/non-edu",
+            title="Non-education cyber incident",
+            content="This article covers a cyber incident unrelated to the education sector.",
+            fetch_successful=True,
+            content_length=72,
+        )
+
+        result, raw_json = enricher._enrich_article(
+            sample_incident,
+            {"https://example.com/non-edu": article},
+        )
+
+        assert result is not None
+        assert result.education_relevance.is_education_related is False
+        assert result.attack_dynamics is None
+        assert result.timeline is None
+        assert raw_json["is_edu_cyber_incident"] is False
+        assert raw_json["education_relevance_reasoning"] == (
+            "This article is about a non-education cyber incident."
+        )
+        assert "institution_name" not in raw_json
+        assert "attack_category" not in raw_json
+        assert "timeline" not in raw_json
 
 
 class TestEnrichmentSchemas:

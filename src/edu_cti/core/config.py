@@ -458,7 +458,7 @@ except Exception:
 # Ollama Cloud configuration
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://ollama.com")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:72b")  # Stable on Ollama Cloud; override via env var
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud")  # Best current Ollama Cloud default for Phase 2 extraction
 
 # Enrichment processing configuration
 ENRICHMENT_BATCH_SIZE = int(os.getenv("ENRICHMENT_BATCH_SIZE", "10"))  # Process N incidents per batch

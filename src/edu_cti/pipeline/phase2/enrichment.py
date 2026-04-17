@@ -21,6 +21,51 @@ from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import json_to
 logger = logging.getLogger(__name__)
 
 
+_NON_EDU_ALLOWED_KEYS = {
+    "is_edu_cyber_incident",
+    "education_relevance_reasoning",
+    "_salvaged_from_truncated",
+    "_not_education_related",
+    "_enrichment_failed",
+    "_reason",
+}
+
+
+def _coerce_bool_like(value: Any) -> Optional[bool]:
+    """Convert common LLM boolean representations to bool while preserving None."""
+    if value is None or isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "yes", "1"}:
+            return True
+        if normalized in {"false", "no", "0"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
+
+
+def _strip_non_education_cti_fields(json_data: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Keep only education-review fields when the LLM decides the article is not an
+    education cyber incident.
+
+    Some models still emit attack/timeline/impact structure even with
+    is_edu_cyber_incident=false. Stripping those fields here prevents non-education
+    rows from leaking into downstream analytics or incident detail views.
+    """
+    sanitized = {
+        key: value for key, value in json_data.items() if key in _NON_EDU_ALLOWED_KEYS
+    }
+    sanitized["is_edu_cyber_incident"] = False
+    sanitized["education_relevance_reasoning"] = (
+        sanitized.get("education_relevance_reasoning")
+        or "LLM determined the article is not an education cyber incident."
+    )
+    return sanitized
+
+
 def count_filled_fields(enrichment_result: CTIEnrichmentResult) -> int:
     """
     Count how many schema fields are filled (not None) in the enrichment result.
@@ -450,6 +495,14 @@ class IncidentEnricher:
             # returned to save_enrichment_result see consistent scalar types.
             from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import _coerce_llm_scalars
             json_data = _coerce_llm_scalars(json_data)
+
+            # Some models still emit structured CTI fields even after concluding the
+            # article is not education-related. Strip those fields before mapping so
+            # non-education incidents cannot pollute analytics when skip_if_not_education
+            # is disabled.
+            coerced_edu = _coerce_bool_like(json_data.get("is_edu_cyber_incident"))
+            if coerced_edu is False:
+                json_data = _strip_non_education_cti_fields(json_data)
 
             # Map to CTIEnrichmentResult
             result = json_to_cti_enrichment(json_data, primary_url, incident)

@@ -578,7 +578,7 @@ def _coerce_llm_scalars(json_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     _KNOWN_ARRAYS = {
         "timeline", "mitre_attack_techniques", "systems_affected_codes",
-        "data_categories_affected", "data_types", "operational_impacts",
+        "data_categories", "data_categories_affected", "data_types", "operational_impacts",
         "security_improvements", "third_parties_involved", "other_edu_incidents",
         "iocs", "target_demographics", "attack_chain",
     }
@@ -1147,4 +1147,3 @@ def json_to_cti_enrichment(
         enriched_summary=_build_summary(json_data),
         extraction_notes=extraction_notes
     )
-

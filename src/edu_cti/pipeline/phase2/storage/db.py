@@ -54,6 +54,95 @@ _REASONING_INSTITUTION_PATTERNS = (
     ),
 )
 
+_CURATED_NOTE_PATTERNS = {
+    "ransomware_family": re.compile(r"\bRansomware:\s*(?P<value>[^|\n]+)", re.IGNORECASE),
+    "ransom_paid": re.compile(r"\bRansom paid:\s*(?P<value>[^|\n]+)", re.IGNORECASE),
+    "ransom_amount": re.compile(r"\bRansom amount:\s*(?P<value>[^|\n]+)", re.IGNORECASE),
+    "records_affected_exact": re.compile(r"\bRecords affected:\s*(?P<value>[^|\n]+)", re.IGNORECASE),
+}
+
+
+def _parse_curated_bool(value: Optional[str]) -> Optional[bool]:
+    if not value:
+        return None
+    normalized = value.strip().lower()
+    if normalized in {"yes", "true", "1", "paid"}:
+        return True
+    if normalized in {"no", "false", "0", "refused", "declined"}:
+        return False
+    return None
+
+
+def _parse_curated_number(value: Optional[str]) -> Optional[float]:
+    if not value:
+        return None
+    match = re.search(r"([0-9][0-9,]*(?:\.[0-9]+)?)", value)
+    if not match:
+        return None
+    try:
+        return float(match.group(1).replace(",", ""))
+    except ValueError:
+        return None
+
+
+def _parse_curated_integer(value: Optional[str]) -> Optional[int]:
+    parsed = _parse_curated_number(value)
+    return int(parsed) if parsed is not None else None
+
+
+def _extract_curated_fields_from_notes(notes: Optional[str]) -> Dict[str, Any]:
+    """
+    Parse trusted, structured note fragments written by curated ingestion sources
+    such as Comparitech.
+    """
+    if not notes:
+        return {}
+
+    extracted: Dict[str, Any] = {}
+
+    family_match = _CURATED_NOTE_PATTERNS["ransomware_family"].search(notes)
+    if family_match:
+        family = family_match.group("value").strip()
+        if family and family.lower() not in {"unknown", "none", "n/a"}:
+            extracted["ransomware_family"] = family
+
+    paid_match = _CURATED_NOTE_PATTERNS["ransom_paid"].search(notes)
+    ransom_paid = _parse_curated_bool(paid_match.group("value")) if paid_match else None
+    if ransom_paid is not None:
+        extracted["ransom_paid"] = 1 if ransom_paid else 0
+        extracted["was_ransom_demanded"] = 1
+
+    amount_match = _CURATED_NOTE_PATTERNS["ransom_amount"].search(notes)
+    ransom_amount = _parse_curated_number(amount_match.group("value")) if amount_match else None
+    if ransom_amount is not None:
+        extracted["ransom_amount"] = ransom_amount
+        extracted["ransom_currency"] = "USD"
+        extracted["was_ransom_demanded"] = 1
+        if extracted.get("ransom_paid") == 1:
+            extracted["ransom_paid_amount"] = ransom_amount
+
+    records_match = _CURATED_NOTE_PATTERNS["records_affected_exact"].search(notes)
+    records_affected = _parse_curated_integer(records_match.group("value")) if records_match else None
+    if records_affected is not None:
+        extracted["records_affected_exact"] = records_affected
+
+    return extracted
+
+
+def _apply_curated_note_fallbacks(flat_data: Dict[str, Any], notes: Optional[str]) -> None:
+    """Backfill missing structured fields from trusted curated-source note fragments."""
+    # Do not populate structured CTI for rows already marked as non-education.
+    if flat_data.get("is_education_related") in {0, False}:
+        return
+
+    curated = _extract_curated_fields_from_notes(notes)
+    if not curated:
+        return
+
+    for key, value in curated.items():
+        if flat_data.get(key) in (None, "", [], {}):
+            flat_data[key] = value
+
 
 def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
     """
@@ -732,7 +821,7 @@ def save_enrichment_result(
     cur = conn.execute(
         """
         SELECT institution_name, victim_raw_name, institution_type, country, region, city,
-               title, subtitle, source_published_date
+               title, subtitle, source_published_date, notes
         FROM incidents
         WHERE incident_id = ?
         """,
@@ -746,6 +835,7 @@ def save_enrichment_result(
     region_fallback = incident_row["region"] if incident_row else None
     city_fallback = incident_row["city"] if incident_row else None
     source_published_date_fallback = incident_row["source_published_date"] if incident_row else None
+    notes_fallback = incident_row["notes"] if incident_row else None
     
     def _scalar(v):
         """Coerce list → first element; return other values unchanged."""
@@ -757,6 +847,8 @@ def save_enrichment_result(
     country_raw = _scalar(raw_json_data.get("country")) if raw_json_data else country_fallback
     if not country_raw:
         country_raw = _derive_country_from_context(conn, incident_id, incident_row)
+        if isinstance(country_raw, tuple):
+            country_raw = next((value for value in country_raw if value), None)
     country = normalize_country(country_raw) if country_raw else None
     country_code = get_country_code(country) if country else None
 
@@ -1000,6 +1092,7 @@ def save_enrichment_result(
         flat_data['region'] = region
     if not flat_data.get('city'):
         flat_data['city'] = city
+    _apply_curated_note_fallbacks(flat_data, notes_fallback)
     flat_data['created_at'] = now
     flat_data['updated_at'] = now
     

@@ -25,10 +25,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Model selection: qwen2.5:72b for structured CTI extraction.
-# Confirmed working on Ollama Cloud; strong instruction-following for JSON schema compliance.
-# Override via OLLAMA_MODEL env var (e.g. qwen3.5:cloud when it stabilises on Ollama Cloud).
-DEFAULT_MODEL = "qwen2.5:72b"
+# Model selection: DeepSeek v3.1 is the current best Ollama Cloud default for this
+# schema-heavy extraction workload. It is materially faster and more stable than
+# deepseek-v3.2:cloud in our benchmark harness while matching the top-line accuracy.
+DEFAULT_MODEL = "deepseek-v3.1:671b-cloud"
 
 
 class OllamaLLMClient:
