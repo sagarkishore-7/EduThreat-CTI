@@ -25,9 +25,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Model selection: deepseek-v3.1:671b-cloud is chosen for complex structured extraction
-# It's one of the largest and most capable models, ideal for CTI enrichment tasks
-DEFAULT_MODEL = "deepseek-v3.1:671b-cloud"
+# Model selection: qwen2.5:72b is used for structured CTI extraction.
+# Strong instruction following, clean JSON output, no Chinese spam injection issue.
+DEFAULT_MODEL = "qwen2.5:72b"
 
 
 class OllamaLLMClient:
