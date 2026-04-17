@@ -11,7 +11,7 @@ class BaseIncident:
     source_event_id: Optional[str]   # source-native ID (e.g. ransomware.live slug)
 
     # Victim naming
-    university_name: str             # best normalized label (for now = raw victim name)
+    institution_name: str             # best normalized label (for now = raw victim name)
     victim_raw_name: Optional[str]   # untouched original label from source
 
     # Location / type

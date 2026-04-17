@@ -159,8 +159,8 @@ def merge_incidents(incidents: List[BaseIncident]) -> BaseIncident:
         source_event_id=primary.source_event_id,
         
         # Victim naming: prefer non-empty
-        university_name=primary.university_name or next(
-            (inc.university_name for inc in sorted_incidents if inc.university_name),
+        institution_name=primary.institution_name or next(
+            (inc.institution_name for inc in sorted_incidents if inc.institution_name),
             ""
         ),
         victim_raw_name=primary.victim_raw_name or next(

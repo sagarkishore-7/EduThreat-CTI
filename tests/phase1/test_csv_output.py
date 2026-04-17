@@ -16,7 +16,7 @@ class TestCSVOutput:
                 incident_id="test_csv_1",
                 source="test",
                 source_event_id="event_1",
-                university_name="Test University",
+                institution_name="Test University",
                 victim_raw_name="Test University",
                 institution_type="University",
                 country="US",
@@ -54,7 +54,7 @@ class TestCSVOutput:
         assert len(rows) == 1
         assert rows[0]["incident_id"] == "test_csv_1"
         assert rows[0]["source"] == "test"
-        assert rows[0]["university_name"] == "Test University"
+        assert rows[0]["institution_name"] == "Test University"
     
     def test_write_base_csv_handles_multiple_incidents(self, tmp_path):
         """Test that write_base_csv handles multiple incidents."""
@@ -64,7 +64,7 @@ class TestCSVOutput:
                 incident_id=f"test_csv_{i}",
                 source="test",
                 source_event_id=f"event_{i}",
-                university_name=f"University {i}",
+                institution_name=f"University {i}",
                 victim_raw_name=f"University {i}",
                 institution_type="University",
                 country="US",

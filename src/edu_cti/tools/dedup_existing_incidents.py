@@ -105,7 +105,7 @@ def pass1_url_dedup(
     rows = conn.execute(
         """
         SELECT incident_id, primary_url, incident_date, llm_enriched,
-               llm_summary, university_name
+               llm_summary, institution_name
         FROM incidents
         WHERE primary_url IS NOT NULL AND primary_url != ''
         """
@@ -128,7 +128,7 @@ def pass1_url_dedup(
         dupes = group[1:]
         logger.info(
             f"URL match ({len(group)} incidents) → keep {keeper['incident_id']} "
-            f"({keeper['university_name']})"
+            f"({keeper['institution_name']})"
         )
         for dupe in dupes:
             delete_incident(conn, dupe["incident_id"], dry_run)
@@ -153,10 +153,10 @@ def pass2_name_dedup(
     """
     rows = conn.execute(
         """
-        SELECT incident_id, university_name, victim_raw_name,
+        SELECT incident_id, institution_name, victim_raw_name,
                incident_date, llm_enriched, llm_summary
         FROM incidents
-        WHERE university_name IS NOT NULL
+        WHERE institution_name IS NOT NULL
         ORDER BY incident_date
         """
     ).fetchall()
@@ -164,7 +164,7 @@ def pass2_name_dedup(
     # Build normalised-name → list of rows
     name_groups: Dict[str, List[sqlite3.Row]] = defaultdict(list)
     for row in rows:
-        name = row["university_name"] or row["victim_raw_name"] or ""
+        name = row["institution_name"] or row["victim_raw_name"] or ""
         key = normalize_name(name)
         if len(key) >= 4:  # skip very short keys
             name_groups[key].append(row)

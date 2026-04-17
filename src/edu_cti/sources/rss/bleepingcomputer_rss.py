@@ -252,7 +252,7 @@ def build_bleepingcomputer_rss_incidents(
                 incident_id=incident_id,
                 source=SOURCE_NAME,
                 source_event_id=guid,
-                university_name="",
+                institution_name="",
                 victim_raw_name="",
                 institution_type=None,
                 country=None,

@@ -23,11 +23,11 @@ def main():
 
     rows = conn.execute(
         """
-        SELECT incident_id, source, university_name, victim_raw_name,
+        SELECT incident_id, source, institution_name, victim_raw_name,
                incident_date, date_precision, primary_url, all_urls,
                attack_type, country, llm_enriched, ingested_at
         FROM incidents
-        WHERE university_name LIKE ? OR victim_raw_name LIKE ?
+        WHERE institution_name LIKE ? OR victim_raw_name LIKE ?
         ORDER BY incident_date, ingested_at
         """,
         (f"%{args.name}%", f"%{args.name}%"),
@@ -38,7 +38,7 @@ def main():
         print(f"{'='*70}")
         print(f"ID:           {r['incident_id']}")
         print(f"Source:       {r['source']}")
-        print(f"Name:         {r['university_name']}")
+        print(f"Name:         {r['institution_name']}")
         print(f"Victim raw:   {r['victim_raw_name']}")
         print(f"Date:         {r['incident_date']} ({r['date_precision']})")
         print(f"Attack type:  {r['attack_type']}")

@@ -244,7 +244,7 @@ def _create_secondary_incidents(
         stub = BaseIncident(
             incident_id="",  # temp — assigned below
             source=parent_source,
-            university_name=victim_name,
+            institution_name=victim_name,
             victim_raw_name=victim_name,
             incident_date=incident_date,
             attack_type_hint=attack_type,
@@ -304,7 +304,7 @@ def dict_to_incident(incident_dict: Dict, conn) -> BaseIncident:
         source_event_id=primary_source_event_id,
         title=incident_dict.get("title"),
         subtitle=incident_dict.get("subtitle"),
-        university_name=incident_dict.get("university_name") or incident_dict.get("victim_raw_name") or "Unknown",
+        institution_name=incident_dict.get("institution_name") or incident_dict.get("victim_raw_name") or "Unknown",
         victim_raw_name=incident_dict.get("victim_raw_name"),
         institution_type=incident_dict.get("institution_type"),
         country=incident_dict.get("country"),
@@ -446,7 +446,7 @@ def fetch_articles_phase(
         for fp_incident in fast_path:
             incident_queue.put({
                 "incident_id": fp_incident["incident_id"],
-                "university_name": fp_incident.get("university_name") or "Unknown",
+                "institution_name": fp_incident.get("institution_name") or "Unknown",
                 "victim_raw_name": fp_incident.get("victim_raw_name"),
                 "institution_type": None,
                 "country": fp_incident.get("country"),
@@ -505,7 +505,7 @@ def fetch_articles_phase(
                 "unnamed", "unnamed school", "undisclosed", "n/a", "none",
                 "redacted", "unidentified",
             }
-            incident_name = (incident.get("university_name") or incident.get("victim_raw_name") or "").strip()
+            incident_name = (incident.get("institution_name") or incident.get("victim_raw_name") or "").strip()
             incident_urls = incident.get("all_urls") or []
             if not incident_urls and incident_name.lower() in _UNENRICHABLE_NAMES:
                 logger.info(f"Skipping unenrichable stub {incident_id} (name={incident_name!r}, no URLs) — marking skipped")
@@ -687,7 +687,7 @@ def fetch_articles_phase(
                         if source == "comparitech":
                             from src.edu_cti.pipeline.phase2.storage.article_storage import save_article
                             from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
-                            inc_name = incident.get("university_name") or incident.get("victim_raw_name") or "an educational institution"
+                            inc_name = incident.get("institution_name") or incident.get("victim_raw_name") or "an educational institution"
                             inc_date = incident.get("incident_date") or ""
                             inc_city = incident.get("city") or ""
                             inc_region = incident.get("region") or ""
@@ -733,7 +733,7 @@ def fetch_articles_phase(
                     # This allows enrichment to start processing while we continue fetching
                     incident_dict = {
                         "incident_id": incident_id,
-                        "university_name": incident.get("university_name") or incident.get("victim_raw_name") or "Unknown",
+                        "institution_name": incident.get("institution_name") or incident.get("victim_raw_name") or "Unknown",
                         "victim_raw_name": incident.get("victim_raw_name"),
                         "institution_type": None,  # Will be read from DB
                         "country": None,  # Will be read from DB
@@ -934,7 +934,7 @@ def enrich_articles_phase(
                 all_urls = [url.strip() for url in all_urls_str.split(";") if url.strip()]
                 full_incident_dict = {
                     "incident_id": row["incident_id"],
-                    "university_name": row["university_name"] or row["victim_raw_name"] or "Unknown",
+                    "institution_name": row["institution_name"] or row["victim_raw_name"] or "Unknown",
                     "victim_raw_name": row["victim_raw_name"],
                     "institution_type": row["institution_type"],
                     "country": row["country"],
@@ -1040,7 +1040,7 @@ def enrich_articles_phase(
                         # Also check the original incident name (may have been set by ingestor).
                         # incident can be a dict OR a BaseIncident Pydantic object.
                         _ig = (lambda f: incident.get(f) if isinstance(incident, dict) else getattr(incident, f, None))
-                        original_name = (_ig("university_name") or _ig("victim_raw_name") or "").strip()
+                        original_name = (_ig("institution_name") or _ig("victim_raw_name") or "").strip()
                         effective_name = resolved_name or original_name
 
                         if effective_name.lower() in _UNKNOWN_INSTITUTION_NAMES:

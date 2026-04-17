@@ -437,7 +437,7 @@ def run_llm_test() -> Optional[Dict[str, Any]]:
             source="test",
             source_event_id="llm_001",
             ingested_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-            university_name="Pacific Northwest State University",
+            institution_name="Pacific Northwest State University",
             victim_raw_name="Pacific Northwest State University",
             country="United States",
             region="Washington",
@@ -518,7 +518,7 @@ def run_e2e_test() -> Dict[str, Any]:
         source="test_e2e",
         source_event_id="e2e_001",
         ingested_at=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
-        university_name="Pacific Northwest State University",
+        institution_name="Pacific Northwest State University",
         victim_raw_name="Pacific Northwest State University",
         institution_type="University",
         country="United States",
@@ -546,7 +546,7 @@ def run_e2e_test() -> Dict[str, Any]:
     # Create tables
     conn.execute("""
         CREATE TABLE incidents (
-            incident_id TEXT PRIMARY KEY, university_name TEXT, victim_raw_name TEXT,
+            incident_id TEXT PRIMARY KEY, institution_name TEXT, victim_raw_name TEXT,
             institution_type TEXT, country TEXT, region TEXT, city TEXT, incident_date TEXT,
             date_precision TEXT, source_published_date TEXT, ingested_at TEXT, title TEXT,
             subtitle TEXT, primary_url TEXT, all_urls TEXT, attack_type_hint TEXT,
@@ -557,10 +557,10 @@ def run_e2e_test() -> Dict[str, Any]:
     """)
     conn.execute("CREATE TABLE incident_sources (incident_id TEXT, source TEXT, PRIMARY KEY (incident_id, source))")
     conn.execute("""
-        INSERT INTO incidents (incident_id, university_name, victim_raw_name, country, region, city,
+        INSERT INTO incidents (incident_id, institution_name, victim_raw_name, country, region, city,
             incident_date, ingested_at, title, primary_url, all_urls)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (incident.incident_id, incident.university_name, incident.victim_raw_name, incident.country,
+    """, (incident.incident_id, incident.institution_name, incident.victim_raw_name, incident.country,
           incident.region, incident.city, incident.incident_date, incident.ingested_at,
           incident.title, incident.primary_url, ";".join(incident.all_urls)))
     conn.execute("INSERT INTO incident_sources VALUES (?, ?)", (incident.incident_id, "test_e2e"))

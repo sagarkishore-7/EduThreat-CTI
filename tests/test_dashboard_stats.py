@@ -36,7 +36,7 @@ def _sample_incident() -> BaseIncident:
         incident_id=make_incident_id("test_source", "https://example.com/dashboard|2025-01-15"),
         source="test_source",
         source_event_id="dashboard_event",
-        university_name="Test University",
+        institution_name="Test University",
         victim_raw_name="Test University",
         institution_type="university",
         country="United States",

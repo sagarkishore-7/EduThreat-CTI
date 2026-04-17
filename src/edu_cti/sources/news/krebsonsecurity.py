@@ -167,7 +167,7 @@ def build_krebsonsecurity_incidents(
                     incident_id=make_incident_id(SOURCE_NAME, article_url),
                     source=SOURCE_NAME,
                     source_event_id=article_url.rstrip("/"),
-                    university_name="",
+                    institution_name="",
                     victim_raw_name="",
                     institution_type=None,
                     country=None,

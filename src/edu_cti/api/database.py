@@ -128,7 +128,7 @@ def get_incidents_paginated(
     if search:
         search_pattern = f"%{search}%"
         conditions.append("""
-            (i.university_name LIKE ? 
+            (i.institution_name LIKE ? 
              OR i.victim_raw_name LIKE ? 
              OR i.title LIKE ?
              OR ef.institution_name LIKE ?
@@ -143,7 +143,7 @@ def get_incidents_paginated(
     valid_sort_columns = {
         "incident_date": "i.incident_date",
         "ingested_at": "i.ingested_at",
-        "university_name": "i.university_name",
+        "institution_name": "i.institution_name",
         "country": "i.country",
     }
     sort_column = valid_sort_columns.get(sort_by, "i.incident_date")
@@ -167,7 +167,7 @@ def get_incidents_paginated(
     query = f"""
         SELECT DISTINCT
             i.incident_id,
-            COALESCE(ef.institution_name, i.university_name, 'Unknown') as university_name,
+            COALESCE(ef.institution_name, i.institution_name, 'Unknown') as institution_name,
             COALESCE(ef.institution_type, i.institution_type) as institution_type,
             COALESCE(ef.country, i.country) as country,
             COALESCE(ef.region, i.region) as region,
@@ -267,7 +267,7 @@ def get_incident_by_id(
         
         # Use enrichment institution_name as primary (LLM-extracted name)
         if enrichment.get("institution_name"):
-            incident["university_name"] = enrichment["institution_name"]
+            incident["institution_name"] = enrichment["institution_name"]
 
         # Prefer normalized location/institution fields from enrichment when present.
         for key in ("institution_type", "country", "country_code", "region", "city"):
@@ -620,7 +620,7 @@ def get_recent_incidents(
         """
         SELECT 
             i.incident_id,
-            COALESCE(ef.institution_name, i.university_name, 'Unknown') as university_name,
+            COALESCE(ef.institution_name, i.institution_name, 'Unknown') as institution_name,
             COALESCE(ef.country, i.country) as country,
             ef.attack_category,
             ef.ransomware_family,

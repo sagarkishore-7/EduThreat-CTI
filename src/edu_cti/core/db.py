@@ -130,7 +130,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             incident_id          TEXT PRIMARY KEY,
             -- Note: 'source' field removed - use incident_sources table instead
 
-            university_name      TEXT,
+            institution_name      TEXT,
             victim_raw_name      TEXT,
             institution_type     TEXT,
             country              TEXT,  -- Full country name (normalized)
@@ -331,6 +331,19 @@ def init_db(conn: sqlite3.Connection) -> None:
         """
     )
     
+    # Migration: Rename university_name → institution_name (SQLite 3.25+)
+    try:
+        cur = conn.execute("PRAGMA table_info(incidents)")
+        columns = [row[1] for row in cur.fetchall()]
+        if "university_name" in columns and "institution_name" not in columns:
+            conn.execute("ALTER TABLE incidents RENAME COLUMN university_name TO institution_name")
+            conn.commit()
+            import logging
+            logging.getLogger(__name__).info("Renamed incidents.university_name → institution_name (migration)")
+    except sqlite3.Error as e:
+        import logging
+        logging.getLogger(__name__).debug(f"Migration rename university_name: {e}")
+
     # Migration: Add broken_urls column if it doesn't exist (for existing databases)
     try:
         cur = conn.execute("PRAGMA table_info(incidents)")
@@ -471,7 +484,7 @@ def insert_incident(conn: sqlite3.Connection, incident: BaseIncident, preserve_e
     # Ensure all keys exist (even if None)
     fields = [
         "incident_id",
-        "university_name",
+        "institution_name",
         "victim_raw_name",
         "institution_type",
         "country",
@@ -651,7 +664,7 @@ def find_duplicate_by_name_and_date(
     """
     from src.edu_cti.sources.future_work.fuzzy_dedup import are_likely_same_incident
 
-    candidate_name = incident.university_name or incident.victim_raw_name or ""
+    candidate_name = incident.institution_name or incident.victim_raw_name or ""
     candidate_date = incident.incident_date
     if not candidate_name:
         return None
@@ -669,16 +682,16 @@ def find_duplicate_by_name_and_date(
             pass
 
     query = f"""
-        SELECT incident_id, university_name, victim_raw_name, incident_date
+        SELECT incident_id, institution_name, victim_raw_name, incident_date
         FROM incidents
-        WHERE (university_name IS NOT NULL AND university_name != '')
+        WHERE (institution_name IS NOT NULL AND institution_name != '')
           OR  (victim_raw_name  IS NOT NULL AND victim_raw_name  != '')
         {year_filter}
     """
     rows = conn.execute(query, year_params).fetchall()
 
     for row in rows:
-        existing_name = row["university_name"] or row["victim_raw_name"] or ""
+        existing_name = row["institution_name"] or row["victim_raw_name"] or ""
         existing_date = row["incident_date"]
         if not existing_name:
             continue
@@ -811,9 +824,9 @@ def _row_to_incident(row) -> BaseIncident:
     all_urls = [url.strip() for url in all_urls_str.split(";") if url.strip()]
     
     # Handle required fields that might be None in database
-    university_name = row["university_name"]
-    if not university_name:
-        university_name = row["victim_raw_name"] or "Unknown"
+    institution_name = row["institution_name"]
+    if not institution_name:
+        institution_name = row["victim_raw_name"] or "Unknown"
     
     # Get primary source from incident_sources (BaseIncident requires source field)
     # Source is not stored in incidents table - use incident_sources table for attribution
@@ -823,7 +836,7 @@ def _row_to_incident(row) -> BaseIncident:
         incident_id=row["incident_id"],
         source=source,  # Placeholder - will be set when loading with sources
         source_event_id=None,  # Not stored in incidents table anymore
-        university_name=university_name,
+        institution_name=institution_name,
         victim_raw_name=row["victim_raw_name"],
         institution_type=row["institution_type"],
         country=row["country"],

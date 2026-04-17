@@ -261,7 +261,7 @@ def build_konbriefing_base_incidents(
             source=SOURCE_NAME,
             source_event_id=source_event_id,
 
-            university_name=institution,
+            institution_name=institution,
             victim_raw_name=institution,
 
             # For this page we can safely default to "University"

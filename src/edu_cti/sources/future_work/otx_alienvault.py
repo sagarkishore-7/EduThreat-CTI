@@ -183,7 +183,7 @@ def build_otx_incidents(
                     incident_id=incident_id,
                     source=SOURCE_NAME,
                     source_event_id=source_event_id,
-                    university_name=name[:200] if name else "Unknown",
+                    institution_name=name[:200] if name else "Unknown",
                     victim_raw_name=None,
                     institution_type=None,
                     country=None,  # OTX pulses are global

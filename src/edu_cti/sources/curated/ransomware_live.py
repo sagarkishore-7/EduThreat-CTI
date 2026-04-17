@@ -334,7 +334,7 @@ def build_ransomwarelive_incidents(
             source_event_id=source_event_id or None,
 
             # naming
-            university_name=victim_name,
+            institution_name=victim_name,
             victim_raw_name=victim_name,
 
             # location

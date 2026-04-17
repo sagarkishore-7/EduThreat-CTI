@@ -311,14 +311,14 @@ def find_duplicate_institutions(
     cur = conn.execute(
         """
         SELECT i.incident_id,
-               COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
+               COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                i.incident_date,
                i.llm_summary
         FROM incidents i
         LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE i.incident_id != ?
           AND i.llm_enriched = 1
-          AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
+          AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
         """,
         (incident_id,),
     )
@@ -336,7 +336,7 @@ def find_duplicate_institutions(
         duplicates.append(
             {
                 "incident_id": row["incident_id"],
-                "university_name": other_name,
+                "institution_name": other_name,
                 "incident_date": row["incident_date"],
                 "confidence": len(row["llm_summary"] or ""),
             }
@@ -394,8 +394,8 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
     best_name = choose_best_institution_name(
         keep_row["flat_institution_name"],
         dup_row["flat_institution_name"],
-        keep_row["university_name"],
-        dup_row["university_name"],
+        keep_row["institution_name"],
+        dup_row["institution_name"],
         keep_row["victim_raw_name"],
         dup_row["victim_raw_name"],
         keep_row["title"],
@@ -414,7 +414,7 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
         "city": keep_row["city"] or dup_row["city"],
         "incident_date": keep_row["incident_date"] or dup_row["incident_date"],
         "date_precision": keep_row["date_precision"] or dup_row["date_precision"],
-        "university_name": best_name or keep_row["university_name"] or dup_row["university_name"],
+        "institution_name": best_name or keep_row["institution_name"] or dup_row["institution_name"],
         "victim_raw_name": keep_row["victim_raw_name"] or dup_row["victim_raw_name"] or best_name,
         "notes": _merge_notes(keep_row["notes"], dup_row["notes"]),
     }
@@ -433,7 +433,7 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
             city = ?,
             incident_date = ?,
             date_precision = ?,
-            university_name = ?,
+            institution_name = ?,
             victim_raw_name = ?,
             notes = ?,
             last_updated_at = ?
@@ -451,7 +451,7 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
             keep_fields["city"],
             keep_fields["incident_date"],
             keep_fields["date_precision"],
-            keep_fields["university_name"],
+            keep_fields["institution_name"],
             keep_fields["victim_raw_name"],
             keep_fields["notes"],
             datetime.utcnow().isoformat(),
@@ -543,7 +543,7 @@ def deduplicate_by_institution(
 
     Covers both enriched incidents (using the LLM-resolved institution_name
     from incident_enrichments_flat) and unenriched incidents that already have a
-    known university_name / victim_raw_name from ingestion — so two articles about
+    known institution_name / victim_raw_name from ingestion — so two articles about
     the same institution ingested before enrichment are merged rather than becoming
     duplicate entries that waste LLM calls.
     """
@@ -552,7 +552,7 @@ def deduplicate_by_institution(
     cur = conn.execute(
         """
         SELECT i.incident_id,
-               COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
+               COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
                i.ingested_at,
@@ -561,8 +561,8 @@ def deduplicate_by_institution(
         FROM incidents i
         LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE (i.llm_excluded IS NULL OR i.llm_excluded = 0)
-          AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
-          AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) != ''
+          AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
+          AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) != ''
         ORDER BY i.llm_enriched DESC, i.ingested_at DESC
         """
     )
@@ -597,11 +597,11 @@ def deduplicate_by_institution(
 
     # Pre-compute normalized names and token sets once to avoid redundant regex
     # work inside the O(N²) comparison loops.
-    # Each slot stores a primary name (ef.institution_name → university_name → victim_raw_name)
+    # Each slot stores a primary name (ef.institution_name → institution_name → victim_raw_name)
     # and an optional secondary name from victim_raw_name.
     #
-    # Why victim_raw_name and not university_name?
-    # save_enrichment_result() overwrites incidents.university_name with the LLM result
+    # Why victim_raw_name and not institution_name?
+    # save_enrichment_result() overwrites incidents.institution_name with the LLM result
     # (e.g. "UCF"), but leaves victim_raw_name untouched when it already had a value.
     # So victim_raw_name preserves the original ingestion name ("University of Central
     # Florida") even after the LLM stores an abbreviation.  Using it as a second matching
@@ -649,7 +649,7 @@ def deduplicate_by_institution(
         victim_raw_name on each side.
 
         victim_raw_name holds the original ingestion name even after the LLM
-        overwrites university_name with an abbreviation.  For example:
+        overwrites institution_name with an abbreviation.  For example:
           - Incident A: ef.institution_name="UCF", victim_raw_name="University of Central Florida"
           - Incident B: ef.institution_name="University of Central Florida"
         Primary-vs-primary fails ("ucf" ≠ "central florida"), but
@@ -771,7 +771,7 @@ def dedup_incident_after_save(
     row = conn.execute(
         """
         SELECT i.incident_id,
-               COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
+               COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
@@ -803,7 +803,7 @@ def dedup_incident_after_save(
     existing = conn.execute(
         """
         SELECT i.incident_id,
-               COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
+               COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
@@ -813,7 +813,7 @@ def dedup_incident_after_save(
         LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE i.incident_id != ?
           AND (i.llm_excluded IS NULL OR i.llm_excluded = 0)
-          AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
+          AND COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) IS NOT NULL
         """,
         (incident_id,),
     ).fetchall()

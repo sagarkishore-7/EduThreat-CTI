@@ -542,7 +542,7 @@ def load_enriched_incidents_from_db(conn: sqlite3.Connection, use_flat_table: bo
             "incident_id": safe_get(row, "incident_id", ""),
             "source": primary_source,
             "sources": ";".join(sources) if sources else "",
-            "university_name": victim_raw_name or safe_get(row, "university_name") or None,
+            "institution_name": victim_raw_name or safe_get(row, "institution_name") or None,
             "victim_raw_name": victim_raw_name,
             "victim_raw_name_normalized": victim_raw_name_normalized,
             "institution_type": safe_get(row, "institution_type"),
@@ -565,7 +565,7 @@ def load_enriched_incidents_from_db(conn: sqlite3.Connection, use_flat_table: bo
         }
         
         # Add flattened enrichment data (but remove fields we handle separately)
-        keys_to_remove = ['institution_identified', 'victim_raw_name', 'university_name', 'victim_raw_name_normalized']
+        keys_to_remove = ['institution_identified', 'victim_raw_name', 'institution_name', 'victim_raw_name_normalized']
         for key in keys_to_remove:
             if key in flattened:
                 del flattened[key]
@@ -574,7 +574,7 @@ def load_enriched_incidents_from_db(conn: sqlite3.Connection, use_flat_table: bo
         # Re-set victim fields AFTER update to ensure enrichment data takes precedence
         if victim_raw_name:
             incident_dict['victim_raw_name'] = victim_raw_name
-            incident_dict['university_name'] = victim_raw_name
+            incident_dict['institution_name'] = victim_raw_name
             incident_dict['victim_raw_name_normalized'] = victim_raw_name_normalized
         
         incidents.append(incident_dict)
@@ -600,7 +600,7 @@ def write_enriched_csv(output_path: Path, incidents: List[Dict]) -> None:
         "incident_id",
         "source",
         "sources",
-        "university_name",
+        "institution_name",
         "victim_raw_name",
         "victim_raw_name_normalized",
         "institution_type",

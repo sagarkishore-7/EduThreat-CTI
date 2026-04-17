@@ -586,7 +586,7 @@ def get_unenriched_incidents(
             (
               COALESCE(i.serp_attempt_count, 0) < 3
               AND (
-                (i.university_name IS NOT NULL AND i.university_name != '')
+                (i.institution_name IS NOT NULL AND i.institution_name != '')
                 OR (i.victim_raw_name IS NOT NULL AND i.victim_raw_name != '')
               )
             )
@@ -611,7 +611,7 @@ def get_unenriched_incidents(
         
         incident_dict = {
             "incident_id": row["incident_id"],
-            "university_name": row["university_name"] or row["victim_raw_name"] or "Unknown",
+            "institution_name": row["institution_name"] or row["victim_raw_name"] or "Unknown",
             "victim_raw_name": row["victim_raw_name"],
             "institution_type": row["institution_type"],
             "country": row["country"],
@@ -700,14 +700,14 @@ def save_enrichment_result(
     # Get incident data for flattened table (fallback values)
     cur = conn.execute(
         """
-        SELECT university_name, victim_raw_name, institution_type, country, region, city, title, subtitle
+        SELECT institution_name, victim_raw_name, institution_type, country, region, city, title, subtitle
         FROM incidents
         WHERE incident_id = ?
         """,
         (incident_id,)
     )
     incident_row = cur.fetchone()
-    university_name_fallback = incident_row["university_name"] if incident_row else None
+    institution_name_fallback = incident_row["institution_name"] if incident_row else None
     victim_name_fallback = incident_row["victim_raw_name"] if incident_row else None
     institution_type_fallback = incident_row["institution_type"] if incident_row else None
     country_fallback = incident_row["country"] if incident_row else None
@@ -754,7 +754,7 @@ def save_enrichment_result(
     else:
         # LLM returned null — use best available name from ingestion-time data.
         resolved_institution_name = choose_best_institution_name(
-            university_name_fallback,
+            institution_name_fallback,
             victim_name_fallback,
             incident_row["title"] if incident_row else None,
             incident_row["subtitle"] if incident_row else None,
@@ -828,7 +828,7 @@ def save_enrichment_result(
         update_fields += ",\n        country_code = ?"
         update_params.append(country_code)
     if resolved_institution_name:
-        update_fields += ",\n        university_name = ?"
+        update_fields += ",\n        institution_name = ?"
         update_params.append(resolved_institution_name)
         if not victim_name_fallback:
             update_fields += ",\n        victim_raw_name = ?"
@@ -1719,7 +1719,7 @@ def get_enrichment_stats(conn: sqlite3.Connection) -> Dict[str, int]:
             OR (
               COALESCE(i.serp_attempt_count, 0) < ?
               AND (
-                (i.university_name IS NOT NULL AND i.university_name != '')
+                (i.institution_name IS NOT NULL AND i.institution_name != '')
                 OR (i.victim_raw_name IS NOT NULL AND i.victim_raw_name != '')
               )
             )

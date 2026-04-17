@@ -16,7 +16,7 @@ class TestBaseIncident:
             incident_id="test_123",
             source="test_source",
             source_event_id=None,
-            university_name="Test University",
+            institution_name="Test University",
             victim_raw_name="Test University",
             institution_type=None,
             country=None,
@@ -41,7 +41,7 @@ class TestBaseIncident:
         
         assert incident.incident_id == "test_123"
         assert incident.source == "test_source"
-        assert incident.university_name == "Test University"
+        assert incident.institution_name == "Test University"
         assert incident.all_urls == []
         assert incident.primary_url is None
     
@@ -51,7 +51,7 @@ class TestBaseIncident:
             incident_id="test_456",
             source="test_source",
             source_event_id="event_123",
-            university_name="Harvard University",
+            institution_name="Harvard University",
             victim_raw_name="Harvard University",
             institution_type="University",
             country="US",
@@ -87,7 +87,7 @@ class TestBaseIncident:
             incident_id="test_789",
             source="test_source",
             source_event_id=None,
-            university_name="Test University",
+            institution_name="Test University",
             victim_raw_name="Test University",
             institution_type=None,
             country=None,
@@ -115,7 +115,7 @@ class TestBaseIncident:
         # Check that all expected fields are present
         assert "incident_id" in d
         assert "source" in d
-        assert "university_name" in d
+        assert "institution_name" in d
         assert "all_urls" in d
         
         # Check that all_urls is serialized as semicolon-separated string
@@ -130,7 +130,7 @@ class TestBaseIncident:
             incident_id="test_empty",
             source="test_source",
             source_event_id=None,
-            university_name="Test University",
+            institution_name="Test University",
             victim_raw_name="Test University",
             institution_type=None,
             country=None,
@@ -163,7 +163,7 @@ class TestBaseIncident:
             incident_id="test_none",
             source="test_source",
             source_event_id=None,
-            university_name="Test University",
+            institution_name="Test University",
             victim_raw_name="Test University",
             institution_type=None,
             country=None,
@@ -195,7 +195,7 @@ class TestBaseIncident:
             incident_id="test_phase1",
             source="test_source",
             source_event_id=None,
-            university_name="Test University",
+            institution_name="Test University",
             victim_raw_name="Test University",
             institution_type=None,
             country=None,
@@ -268,7 +268,7 @@ class TestSchemaCompliance:
             incident_id="test",
             source="test",
             source_event_id=None,
-            university_name="Test",
+            institution_name="Test",
             victim_raw_name="Test",
             institution_type=None,
             country=None,
@@ -294,7 +294,7 @@ class TestSchemaCompliance:
         # All fields should be accessible
         assert hasattr(incident, "incident_id")
         assert hasattr(incident, "source")
-        assert hasattr(incident, "university_name")
+        assert hasattr(incident, "institution_name")
         assert hasattr(incident, "all_urls")
         assert hasattr(incident, "primary_url")
         assert hasattr(incident, "to_dict")
@@ -308,7 +308,7 @@ class TestSchemaCompliance:
                 incident_id="test",
                 source="test",
                 source_event_id=None,
-                university_name="Test",
+                institution_name="Test",
                 victim_raw_name="Test",
                 institution_type=None,
                 country=None,
@@ -341,7 +341,7 @@ class TestSchemaCompliance:
                 incident_id="test",
                 source="test",
                 source_event_id=None,
-                university_name="Test",
+                institution_name="Test",
                 victim_raw_name="Test",
                 institution_type=None,
                 country=None,
@@ -374,7 +374,7 @@ class TestSchemaCompliance:
                 incident_id="test",
                 source="test",
                 source_event_id=None,
-                university_name="Test",
+                institution_name="Test",
                 victim_raw_name="Test",
                 institution_type=None,
                 country=None,

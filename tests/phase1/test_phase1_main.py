@@ -11,7 +11,7 @@ def _incident(source: str, event_key: str) -> BaseIncident:
         incident_id=make_incident_id(source, event_key),
         source=source,
         source_event_id=event_key,
-        university_name="",
+        institution_name="",
         victim_raw_name="",
         institution_type=None,
         country=None,

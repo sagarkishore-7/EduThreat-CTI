@@ -385,7 +385,7 @@ class IncidentEnricher:
         # to a potentially-wrong DB name would reduce accuracy.
         notes_text = (incident.notes or "").strip()
         is_roundup_stub = notes_text.startswith("Extracted from roundup:")
-        known_name = (incident.university_name or "").strip()
+        known_name = (incident.institution_name or "").strip()
         _UNKNOWN_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
         if is_roundup_stub and known_name and known_name.lower() not in _UNKNOWN_NAMES:
             target_institution_line = (

@@ -497,7 +497,7 @@ async def list_incidents(
         incidents = [
             IncidentSummary(
                 incident_id=i["incident_id"],
-                university_name=i["university_name"] or "Unknown",
+                institution_name=i["institution_name"] or "Unknown",
                 institution_type=i.get("institution_type"),
                 country=i.get("country"),
                 region=i.get("region"),
@@ -666,7 +666,7 @@ async def get_incident(incident_id: str):
         
         return IncidentDetail(
             incident_id=incident_data["incident_id"],
-            university_name=incident_data.get("university_name") or "Unknown",
+            institution_name=incident_data.get("institution_name") or "Unknown",
             institution_type=incident_data.get("institution_type"),
             country=incident_data.get("country"),
             country_code=incident_data.get("country_code"),

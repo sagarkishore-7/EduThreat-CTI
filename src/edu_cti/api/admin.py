@@ -339,7 +339,7 @@ async def export_full_csv(
             incident_dict = {
                 "incident_id": incident_id,
                 "sources": safe_get(row, "sources"),
-                "university_name": safe_get(row, "university_name"),
+                "institution_name": safe_get(row, "institution_name"),
                 "victim_raw_name": safe_get(row, "victim_raw_name"),
                 "institution_type": safe_get(row, "institution_type"),
                 "country": safe_get(row, "country"),
@@ -384,7 +384,7 @@ async def export_full_csv(
         
         # Sort fieldnames: basic fields first, then enrichment fields
         basic_fields = [
-            "incident_id", "sources", "university_name", "victim_raw_name", "victim_raw_name_normalized",
+            "incident_id", "sources", "institution_name", "victim_raw_name", "victim_raw_name_normalized",
             "institution_type", "country", "region", "city", "incident_date", "date_precision",
             "source_published_date", "ingested_at", "title", "subtitle", "primary_url", "all_urls",
             "broken_urls", "attack_type_hint", "status", "source_confidence", "notes",
@@ -742,7 +742,7 @@ async def cleanup_unknown_institutions_endpoint(
             """
             SELECT i.incident_id, i.title,
                    ef.institution_name,
-                   i.university_name,
+                   i.institution_name,
                    i.victim_raw_name
             FROM incidents i
             JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
@@ -755,8 +755,8 @@ async def cleanup_unknown_institutions_endpoint(
                 )
             )
             AND (
-                i.university_name IS NULL
-                OR LOWER(TRIM(i.university_name)) IN (
+                i.institution_name IS NULL
+                OR LOWER(TRIM(i.institution_name)) IN (
                     '', 'unknown', 'unknown institution', 'unknown school',
                     'unknown university', 'unnamed', 'unidentified',
                     'undisclosed', 'n/a', 'none', 'redacted'
@@ -1733,7 +1733,7 @@ async def normalize_countries_endpoint(
 
 class IncidentBrief(BaseModel):
     incident_id: str
-    university_name: Optional[str] = None
+    institution_name: Optional[str] = None
     country: Optional[str] = None
     incident_date: Optional[str] = None
     attack_type_hint: Optional[str] = None
@@ -1756,7 +1756,7 @@ async def list_unenriched_incidents(
         where = "WHERE i.llm_enriched = 0 OR i.llm_enriched IS NULL"
         params: list = []
         if search:
-            where += " AND (i.university_name LIKE ? OR i.title LIKE ? OR i.country LIKE ?)"
+            where += " AND (i.institution_name LIKE ? OR i.title LIKE ? OR i.country LIKE ?)"
             params.extend([f"%{search}%"] * 3)
 
         count_q = f"SELECT COUNT(*) FROM incidents i {where}"
@@ -1764,7 +1764,7 @@ async def list_unenriched_incidents(
         total = cur.fetchone()[0]
 
         query = f"""
-            SELECT i.incident_id, i.university_name, i.country, i.incident_date,
+            SELECT i.incident_id, i.institution_name, i.country, i.incident_date,
                    i.attack_type_hint, i.title, i.ingested_at, i.llm_enriched,
                    GROUP_CONCAT(DISTINCT isrc.source) as sources
             FROM incidents i
@@ -1781,7 +1781,7 @@ async def list_unenriched_incidents(
         incidents = [
             {
                 "incident_id": r["incident_id"],
-                "university_name": r["university_name"],
+                "institution_name": r["institution_name"],
                 "country": r["country"],
                 "incident_date": r["incident_date"],
                 "attack_type_hint": r["attack_type_hint"],
@@ -1817,7 +1817,7 @@ async def list_enriched_incidents(
         where = "WHERE i.llm_enriched = 1"
         params: list = []
         if search:
-            where += " AND (i.university_name LIKE ? OR i.title LIKE ? OR i.country LIKE ?)"
+            where += " AND (i.institution_name LIKE ? OR i.title LIKE ? OR i.country LIKE ?)"
             params.extend([f"%{search}%"] * 3)
 
         count_q = f"SELECT COUNT(*) FROM incidents i {where}"
@@ -1826,7 +1826,7 @@ async def list_enriched_incidents(
 
         query = f"""
             SELECT i.incident_id,
-                   COALESCE(ef.institution_name, i.university_name) AS university_name,
+                   COALESCE(ef.institution_name, i.institution_name) AS institution_name,
                    COALESCE(ef.country, i.country) AS country,
                    i.incident_date,
                    i.attack_type_hint, i.title, i.ingested_at, i.llm_enriched,
@@ -1848,7 +1848,7 @@ async def list_enriched_incidents(
         incidents = [
             {
                 "incident_id": r["incident_id"],
-                "university_name": r["university_name"],
+                "institution_name": r["institution_name"],
                 "country": r["country"],
                 "incident_date": r["incident_date"],
                 "attack_type_hint": r["attack_type_hint"],
@@ -1953,7 +1953,7 @@ async def list_soft_deleted_incidents(
     try:
         rows = conn.execute(
             """
-            SELECT incident_id, university_name, victim_raw_name, incident_date,
+            SELECT incident_id, institution_name, victim_raw_name, incident_date,
                    llm_excluded_reason, llm_enriched_at, ingested_at
             FROM incidents
             WHERE llm_excluded = 1

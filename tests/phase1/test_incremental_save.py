@@ -11,7 +11,7 @@ def _make_incident(index: int) -> BaseIncident:
         incident_id=f"test_{index}",
         source="test",
         source_event_id=f"event_{index}",
-        university_name="Test University",
+        institution_name="Test University",
         victim_raw_name="Test University",
         institution_type="University",
         country="US",

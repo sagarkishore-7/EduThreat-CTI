@@ -390,7 +390,7 @@ class TestPhase2Readiness:
                 stats["has_urls"] += 1
             if incident.incident_date:
                 stats["has_date"] += 1
-            if incident.university_name or incident.victim_raw_name:
+            if incident.institution_name or incident.victim_raw_name:
                 stats["has_institution"] += 1
             if incident.country:
                 stats["has_country"] += 1

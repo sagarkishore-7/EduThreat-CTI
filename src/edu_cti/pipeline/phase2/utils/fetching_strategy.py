@@ -37,20 +37,20 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
     Use Oxylabs Google News SERP to find article URLs for an incident.
 
     Two modes:
-    1. Named institution (university_name is set): query = '"Name" attack_hint year'
-    2. Title-based fallback (university_name blank): query = title (quoted)
+    1. Named institution (institution_name is set): query = '"Name" attack_hint year'
+    2. Title-based fallback (institution_name blank): query = title (quoted)
        Used for paywalled sources (securityweek) where we have a headline but
        no accessible article text — finds the same story on an open source.
 
     Args:
-        incident: Incident dict with university_name, attack_type_hint, incident_date, title
+        incident: Incident dict with institution_name, attack_type_hint, incident_date, title
 
     Returns:
         List of discovered article URLs (may be empty if Oxylabs not configured or no results)
     """
     INVALID_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
 
-    name = (incident.get("university_name") or incident.get("victim_raw_name") or "").strip()
+    name = (incident.get("institution_name") or incident.get("victim_raw_name") or "").strip()
     title = (incident.get("title") or "").strip()
 
     if name and name.lower() not in INVALID_NAMES:
@@ -299,7 +299,7 @@ class SmartArticleFetchingStrategy:
             SELECT
                 i.incident_id,
                 i.all_urls,
-                i.university_name,
+                i.institution_name,
                 i.victim_raw_name,
                 i.title,
                 i.source_published_date,
@@ -321,7 +321,7 @@ class SmartArticleFetchingStrategy:
                 OR (
                     COALESCE(i.serp_attempt_count, 0) < ?
                     AND (
-                        (i.university_name IS NOT NULL AND i.university_name != '')
+                        (i.institution_name IS NOT NULL AND i.institution_name != '')
                         OR (i.victim_raw_name IS NOT NULL AND i.victim_raw_name != '')
                     )
                 )
@@ -352,7 +352,7 @@ class SmartArticleFetchingStrategy:
             incident_dict = {
                 "incident_id": incident_id,
                 "all_urls": all_urls,
-                "university_name": row["university_name"] or row["victim_raw_name"] or "",
+                "institution_name": row["institution_name"] or row["victim_raw_name"] or "",
                 "victim_raw_name": row["victim_raw_name"],
                 "title": row["title"],
                 "source_published_date": row["source_published_date"],
@@ -368,7 +368,7 @@ class SmartArticleFetchingStrategy:
             if not all_urls and not has_articles:
                 # URL-less but has metadata — will use SERP discovery
                 has_metadata = bool(row["attack_type_hint"] or row["notes"]
-                                    or row["university_name"] or row["victim_raw_name"])
+                                    or row["institution_name"] or row["victim_raw_name"])
                 if has_metadata:
                     no_domain_incidents.append(incident_dict)
                 continue

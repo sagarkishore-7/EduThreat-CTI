@@ -51,7 +51,7 @@ def generate_cti_report(incident: Dict[str, Any]) -> str:
     # Executive Summary
     report_lines.append("## EXECUTIVE SUMMARY")
     report_lines.append("")
-    institution_name = incident.get('university_name') or incident.get('victim_raw_name') or 'Unknown Institution'
+    institution_name = incident.get('institution_name') or incident.get('victim_raw_name') or 'Unknown Institution'
     country = incident.get('country', 'Unknown')
     country_code = incident.get('country_code', '')
     incident_date = incident.get('incident_date', 'Unknown')

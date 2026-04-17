@@ -21,7 +21,7 @@ class TestCuratedPipeline:
                 incident_id="curated_test_1",
                 source="konbriefing",
                 source_event_id="event_123",
-                university_name="Test University",
+                institution_name="Test University",
                 victim_raw_name="Test University",
                 institution_type="University",
                 country="US",

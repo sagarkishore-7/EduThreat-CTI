@@ -38,7 +38,7 @@ class IncidentSource(BaseModel):
 class IncidentSummary(BaseModel):
     """Summary view of an incident for list endpoints."""
     incident_id: str
-    university_name: str
+    institution_name: str
     institution_type: Optional[str] = None
     country: Optional[str] = None
     country_code: Optional[str] = None
@@ -165,7 +165,7 @@ class IncidentDetail(BaseModel):
     """Full incident detail with all enrichment data."""
     # Core identification
     incident_id: str
-    university_name: str
+    institution_name: str
     institution_type: Optional[str] = None
     institution_size: Optional[str] = None
     
@@ -320,7 +320,7 @@ class ThreatActorsResponse(BaseModel):
 class RecentIncident(BaseModel):
     """A recent incident for the dashboard feed."""
     incident_id: str
-    university_name: str
+    institution_name: str
     country: Optional[str] = None
     attack_category: Optional[str] = None
     ransomware_family: Optional[str] = None

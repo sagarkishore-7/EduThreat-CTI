@@ -306,7 +306,7 @@ def build_international_rss_incidents(
                 incident_id=incident_id,
                 source=f"intl_{feed_name}",
                 source_event_id=source_event_id,
-                university_name=title[:200],
+                institution_name=title[:200],
                 victim_raw_name=None,
                 institution_type=None,
                 country=country_normalized,

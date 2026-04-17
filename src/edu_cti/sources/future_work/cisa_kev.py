@@ -131,7 +131,7 @@ def build_cisa_kev_incidents(
             incident_id=incident_id,
             source=SOURCE_NAME,
             source_event_id=source_event_id,
-            university_name=f"{vendor} {product} - {cve_id}",
+            institution_name=f"{vendor} {product} - {cve_id}",
             victim_raw_name=None,
             institution_type=None,
             country="United States",  # CISA is US-focused

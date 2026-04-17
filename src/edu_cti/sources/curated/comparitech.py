@@ -200,7 +200,7 @@ def build_comparitech_incidents(
             incident_id=incident_id,
             source=SOURCE_NAME,
             source_event_id=dedup_key,
-            university_name=name,
+            institution_name=name,
             victim_raw_name=name,
             institution_type=_guess_institution_type(name),
             country="US",

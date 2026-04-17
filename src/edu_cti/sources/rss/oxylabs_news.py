@@ -150,7 +150,7 @@ def build_oxylabs_news_incidents(
                     incident_id=incident_id,
                     source=SOURCE_NAME,
                     source_event_id=url,
-                    university_name=title[:200],
+                    institution_name=title[:200],
                     victim_raw_name=None,
                     institution_type=None,
                     country=None,

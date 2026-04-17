@@ -57,7 +57,7 @@ def sample_incident():
         victim_raw_name="Test University",
         title="Test University Cyber Attack",
         subtitle="Ransomware attack on university systems",
-        university_name="Test University",
+        institution_name="Test University",
         institution_type="university",
         country="United States",
         city=None,
@@ -316,7 +316,7 @@ class TestEnrichmentDatabase:
 
     def test_save_enrichment_result_cleans_headline_style_institution_name(self, temp_db, sample_incident):
         conn, _ = temp_db
-        sample_incident.university_name = "Qilin Ransomware Targets Alamo Heights School District"
+        sample_incident.institution_name = "Qilin Ransomware Targets Alamo Heights School District"
         sample_incident.victim_raw_name = None
         sample_incident.title = "Qilin Ransomware Targets Alamo Heights School District"
         insert_incident(conn, sample_incident)
@@ -328,7 +328,7 @@ class TestEnrichmentDatabase:
         assert save_enrichment_result(conn, sample_incident.incident_id, enrichment) is True
 
         incident_row = conn.execute(
-            "SELECT university_name FROM incidents WHERE incident_id = ?",
+            "SELECT institution_name FROM incidents WHERE incident_id = ?",
             (sample_incident.incident_id,),
         ).fetchone()
         flat_row = conn.execute(
@@ -336,12 +336,12 @@ class TestEnrichmentDatabase:
             (sample_incident.incident_id,),
         ).fetchone()
 
-        assert incident_row["university_name"] == "Alamo Heights School District"
+        assert incident_row["institution_name"] == "Alamo Heights School District"
         assert flat_row["institution_name"] == "Alamo Heights School District"
 
     def test_save_enrichment_result_uses_reasoning_when_structured_name_is_missing(self, temp_db, sample_incident):
         conn, _ = temp_db
-        sample_incident.university_name = "Hackers expose Victorian student details in data breach"
+        sample_incident.institution_name = "Hackers expose Victorian student details in data breach"
         sample_incident.victim_raw_name = None
         sample_incident.title = "Hackers expose Victorian student details in data breach"
         sample_incident.subtitle = (
@@ -357,7 +357,7 @@ class TestEnrichmentDatabase:
         assert save_enrichment_result(conn, sample_incident.incident_id, enrichment) is True
 
         incident_row = conn.execute(
-            "SELECT university_name FROM incidents WHERE incident_id = ?",
+            "SELECT institution_name FROM incidents WHERE incident_id = ?",
             (sample_incident.incident_id,),
         ).fetchone()
         flat_row = conn.execute(
@@ -365,7 +365,7 @@ class TestEnrichmentDatabase:
             (sample_incident.incident_id,),
         ).fetchone()
 
-        assert incident_row["university_name"] == "Victorian Department of Education"
+        assert incident_row["institution_name"] == "Victorian Department of Education"
         assert flat_row["institution_name"] == "Victorian Department of Education"
 
     def test_save_enrichment_result_coerces_list_scalar_raw_json_fields(self, temp_db, sample_incident):
@@ -415,7 +415,7 @@ class TestEnrichmentDatabase:
             victim_raw_name=None,
             title="Georgia Tech Security Breach Exposes 1.3 Million Records",
             subtitle="Georgia Tech Security Breach Exposes 1.3 Million Records Security Magazine",
-            university_name="Georgia Tech",
+            institution_name="Georgia Tech",
             institution_type=None,
             country=None,
             city=None,
@@ -506,7 +506,7 @@ class TestEnrichmentDatabase:
             ingested_at=None,
             title="SERP-ready incident",
             subtitle=None,
-            university_name="Searchable College",
+            institution_name="Searchable College",
             incident_date="2025-01-16",
             primary_url=None,
             all_urls=[],
@@ -527,7 +527,7 @@ class TestEnrichmentDatabase:
             ingested_at=None,
             title="Article-backed incident",
             subtitle=None,
-            university_name="Recovered College",
+            institution_name="Recovered College",
             incident_date="2025-01-17",
             primary_url=None,
             all_urls=[],
@@ -549,7 +549,7 @@ class TestEnrichmentDatabase:
             ingested_at=None,
             title="SERP exhausted incident",
             subtitle=None,
-            university_name="Exhausted College",
+            institution_name="Exhausted College",
             incident_date="2025-01-18",
             primary_url=None,
             all_urls=[],
@@ -573,7 +573,7 @@ class TestEnrichmentDatabase:
             ingested_at=None,
             title="Nameless incident",
             subtitle=None,
-            university_name="",
+            institution_name="",
             victim_raw_name=None,
             incident_date="2025-01-19",
             primary_url=None,

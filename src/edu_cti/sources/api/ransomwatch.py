@@ -148,7 +148,7 @@ def build_ransomlook_incidents(
             incident_id=incident_id,
             source=SOURCE_NAME,
             source_event_id=source_event_id,
-            university_name=victim_name,
+            institution_name=victim_name,
             victim_raw_name=victim_name,
             institution_type=None,  # Will be classified by LLM
             country=country_normalized,

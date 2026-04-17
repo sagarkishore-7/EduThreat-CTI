@@ -33,14 +33,14 @@ def temp_db(tmp_path):
     conn.close()
 
 
-def _incident(source: str, url: str, incident_date: str, university_name: str) -> BaseIncident:
+def _incident(source: str, url: str, incident_date: str, institution_name: str) -> BaseIncident:
     return BaseIncident(
         incident_id=make_incident_id(source, f"{url}|{incident_date}"),
         source=source,
         source_event_id=f"{source}_{incident_date}",
-        title=f"{university_name} attack",
-        university_name=university_name,
-        victim_raw_name=university_name,
+        title=f"{institution_name} attack",
+        institution_name=institution_name,
+        victim_raw_name=institution_name,
         institution_type="university",
         country="United States",
         region=None,
@@ -72,7 +72,7 @@ def _enrichment(summary: str, primary_url: str, institution_name: str = "Test Un
 class TestInstitutionNameNormalization:
     """Tests for institution name normalization."""
 
-    def test_normalize_university_name(self):
+    def test_normalize_institution_name(self):
         assert normalize_institution_name("University of California, Berkeley") == "california berkeley"
         assert normalize_institution_name("UC Berkeley") == "uc berkeley"
         assert normalize_institution_name("The University of Texas at Austin") == "texas at austin"
@@ -179,7 +179,7 @@ class TestDeduplication:
         duplicates = find_duplicate_institutions(
             conn,
             incident1.incident_id,
-            incident1.university_name,
+            incident1.institution_name,
             incident1.incident_date,
             window_days=14,
         )
@@ -283,7 +283,7 @@ class TestDeduplication:
         ).fetchone()[0]
         assert surviving_name == "Alamo Heights Independent School District"
 
-    def test_deduplicate_merges_unenriched_incidents_with_same_university_name(self, temp_db):
+    def test_deduplicate_merges_unenriched_incidents_with_same_institution_name(self, temp_db):
         """Two unenriched articles about the same institution on the same date must be merged
         before enrichment runs, not kept as separate dashboard entries."""
         conn, _ = temp_db
@@ -305,7 +305,7 @@ class TestDeduplication:
 
         # Surviving incident must have both URLs merged into its all_urls
         remaining_id = conn.execute(
-            "SELECT incident_id FROM incidents WHERE university_name = 'University of Central Florida'"
+            "SELECT incident_id FROM incidents WHERE institution_name = 'University of Central Florida'"
         ).fetchone()[0]
         all_urls = conn.execute(
             "SELECT all_urls FROM incidents WHERE incident_id = ?", (remaining_id,)
@@ -313,9 +313,9 @@ class TestDeduplication:
         assert "ucf-breach-1" in all_urls
         assert "ucf-breach-2" in all_urls
 
-    def test_deduplicate_matches_abbreviation_against_raw_university_name(self, temp_db):
+    def test_deduplicate_matches_abbreviation_against_raw_institution_name(self, temp_db):
         """If LLM stores 'UCF' for one incident and 'University of Central Florida' for another,
-        the dedup must still merge them using the raw university_name as a fallback key."""
+        the dedup must still merge them using the raw institution_name as a fallback key."""
         conn, _ = temp_db
 
         incident1 = _incident("oxylabs_news", "https://example.com/ucf-1", "2016-01-01", "University of Central Florida")
