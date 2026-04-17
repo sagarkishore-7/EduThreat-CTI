@@ -413,17 +413,12 @@ def _flatten_enrichment_for_db(
     country_normalized = normalize_country(country_raw) if country_raw else None
     country_code = get_country_code(country_normalized) if country_normalized else None
     
-    reasoning_institution = _extract_institution_from_reasoning(
-        enrichment.education_relevance.reasoning if enrichment.education_relevance else raw_get("education_relevance_reasoning")
-    )
-
     flat = {
         'incident_id': None,  # Will be set by caller
         'is_education_related': enrichment.education_relevance.is_education_related if enrichment.education_relevance else raw_get("is_edu_cyber_incident"),
-        'institution_name': choose_best_institution_name(
-            enrichment.education_relevance.institution_identified if enrichment.education_relevance else raw_get("institution_name"),
-            reasoning_institution,
-        ),
+        # institution_name is always overridden by save_enrichment_result() with the
+        # resolved_institution_name it computed — set None here as a placeholder.
+        'institution_name': None,
         'institution_type': raw_get("institution_type"),
         'country': country_normalized,
         'country_code': country_code,
