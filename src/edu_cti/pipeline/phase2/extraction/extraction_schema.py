@@ -357,10 +357,14 @@ EXTRACTION_SCHEMA = {
         # ========== MITRE ATT&CK (EXTENSIVE) ==========
         "mitre_attack_techniques": {
             "type": "array",
+            "description": "MITRE ATT&CK techniques observed in this incident. Use standard technique IDs (e.g. T1566, T1486, T1078).",
             "items": {
                 "type": "object",
                 "properties": {
-                    "technique_id": {"type": "string", "pattern": "^T\\d{4}(\\.\\d{3})?$"},
+                    "technique_id": {
+                        "type": "string",
+                        "description": "MITRE ATT&CK technique ID, e.g. T1566 or T1566.001"
+                    },
                     "technique_name": {"type": "string"},
                     "tactic": {
                         "type": "string",
@@ -383,10 +387,11 @@ EXTRACTION_SCHEMA = {
                     },
                     "description": {"type": "string"},
                     "sub_techniques": {
-            "type": "array",
-            "items": {"type": "string"}
+                        "type": "array",
+                        "items": {"type": "string"}
                     }
-                }
+                },
+                "required": ["technique_id", "technique_name", "tactic"]
             }
         },
         

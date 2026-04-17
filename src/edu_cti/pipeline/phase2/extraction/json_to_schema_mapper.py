@@ -696,17 +696,34 @@ def json_to_cti_enrichment(
     
     # MITRE ATT&CK techniques
     mitre_techniques = None
-    if json_data.get("mitre_attack_techniques"):
-        mitre_techniques = [
-            MITREAttackTechnique(
-                technique_id=tech if isinstance(tech, str) else tech.get("technique_id"),
-                technique_name=tech.get("technique_name") if isinstance(tech, dict) else None,
-                tactic=None,
-                description=None,
-                sub_techniques=None
-            )
-            for tech in json_data["mitre_attack_techniques"]
-        ]
+    raw_mitre = json_data.get("mitre_attack_techniques")
+    if raw_mitre:
+        parsed = []
+        for tech in raw_mitre:
+            if isinstance(tech, str):
+                # LLM returned a bare string ID instead of an object
+                parsed.append(MITREAttackTechnique(
+                    technique_id=tech,
+                    technique_name=None,
+                    tactic=None,
+                    description=None,
+                    sub_techniques=None,
+                ))
+            elif isinstance(tech, dict):
+                tid = tech.get("technique_id") or tech.get("id") or tech.get("technique")
+                if not tid:
+                    continue  # skip malformed entries
+                sub = tech.get("sub_techniques")
+                if isinstance(sub, str):
+                    sub = [sub] if sub else None
+                parsed.append(MITREAttackTechnique(
+                    technique_id=tid,
+                    technique_name=tech.get("technique_name") or tech.get("name"),
+                    tactic=tech.get("tactic"),
+                    description=tech.get("description"),
+                    sub_techniques=sub or None,
+                ))
+        mitre_techniques = parsed if parsed else None
     
     # Attack dynamics - capture all attack-related fields
     attack_dynamics = None
