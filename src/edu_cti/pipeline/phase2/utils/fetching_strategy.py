@@ -32,6 +32,33 @@ from src.edu_cti.pipeline.phase2.storage.article_storage import (
 logger = logging.getLogger(__name__)
 
 
+def is_internal_placeholder_url(url: str) -> bool:
+    """
+    Return True for internal/non-fetchable placeholder URLs.
+
+    These URLs are useful as metadata carriers inside the pipeline, but they
+    should never be sent through fetch tiers like newspaper3k, Playwright, or
+    Oxylabs. Comparitech synthetic URLs are the main current example.
+    """
+    if not url:
+        return False
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+
+    if parsed.scheme in {"http", "https"}:
+        return False
+
+    return bool(parsed.scheme)
+
+
+def filter_fetchable_urls(urls: List[str]) -> List[str]:
+    """Drop internal placeholder URLs and keep only externally fetchable ones."""
+    return [url for url in urls if not is_internal_placeholder_url(url)]
+
+
 def discover_articles_via_serp(incident: Dict) -> List[str]:
     """
     Use Oxylabs Google News SERP to find article URLs for an incident.
@@ -346,7 +373,8 @@ class SmartArticleFetchingStrategy:
         for row in rows:
             incident_id = row["incident_id"]
             all_urls_str = row["all_urls"] or ""
-            all_urls = [url.strip() for url in all_urls_str.split(";") if url.strip()]
+            raw_all_urls = [url.strip() for url in all_urls_str.split(";") if url.strip()]
+            all_urls = filter_fetchable_urls(raw_all_urls)
 
             has_articles = bool(row["has_articles"])
             incident_dict = {
@@ -364,6 +392,12 @@ class SmartArticleFetchingStrategy:
                 "country": row["country"],
                 "has_articles": has_articles,
             }
+
+            placeholder_count = len(raw_all_urls) - len(all_urls)
+            if placeholder_count > 0:
+                logger.info(
+                    f"Skipping {placeholder_count} internal placeholder URL(s) for {incident_id}"
+                )
 
             if not all_urls and not has_articles:
                 # URL-less but has metadata — will use SERP discovery
@@ -504,7 +538,15 @@ class SmartArticleFetchingStrategy:
         # Process incidents one by one with domain-based rate limiting
         for i, incident in enumerate(incidents, 1):
             incident_id = incident["incident_id"]
-            all_urls = incident["all_urls"]
+            raw_all_urls = incident["all_urls"]
+            all_urls = filter_fetchable_urls(raw_all_urls)
+
+            placeholder_count = len(raw_all_urls) - len(all_urls)
+            if placeholder_count > 0:
+                logger.info(
+                    f"[{i}/{len(incidents)}] Ignoring {placeholder_count} internal placeholder URL(s) "
+                    f"for {incident_id}"
+                )
 
             # For URL-less incidents (e.g. Comparitech), discover articles via Oxylabs SERP
             if not all_urls:
@@ -674,4 +716,3 @@ class SmartArticleFetchingStrategy:
     def get_processing_incident_ids(self) -> Set[str]:
         """Get set of incident IDs currently being processed."""
         return self.processing_incident_ids.copy()
-

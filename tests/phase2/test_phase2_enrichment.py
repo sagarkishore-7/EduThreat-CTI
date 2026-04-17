@@ -34,6 +34,7 @@ from src.edu_cti.pipeline.phase2.storage.db import (
     revert_enrichment_before_date,
     save_enrichment_result,
 )
+from src.edu_cti.pipeline.phase2.utils.fetching_strategy import SmartArticleFetchingStrategy
 
 
 @pytest.fixture
@@ -260,11 +261,112 @@ class TestEnrichmentDatabase:
         saved = save_enrichment_result(conn, sample_incident.incident_id, enrichment)
 
         assert saved is True
-
         saved_enrichment = get_enrichment_result(conn, sample_incident.incident_id)
         assert saved_enrichment is not None
         assert saved_enrichment.primary_url == "https://example.com/article1"
         assert saved_enrichment.enriched_summary == "Test university was hit by ransomware."
+
+
+class TestFetchingStrategy:
+    def test_get_random_incidents_strips_internal_placeholder_urls(self, temp_db):
+        conn, _ = temp_db
+        incident = BaseIncident(
+            incident_id="comparitech_placeholder_case",
+            source="comparitech",
+            source_event_id="comparitech_placeholder_case",
+            victim_raw_name="Penncrest School District",
+            title="Ransomware attack on Penncrest School District (2023)",
+            subtitle=None,
+            institution_name="Penncrest School District",
+            institution_type="School",
+            country="US",
+            city=None,
+            region="PA",
+            incident_date="2023",
+            date_precision="year",
+            source_published_date=None,
+            ingested_at=None,
+            primary_url=None,
+            all_urls=["comparitech://synthetic/comparitech_placeholder_case"],
+            attack_type_hint="ransomware",
+            status="confirmed",
+            source_confidence="high",
+            notes="Ransomware: Qilin",
+        )
+        insert_incident(conn, incident)
+
+        strategy = SmartArticleFetchingStrategy(conn)
+        selected = strategy.get_random_incidents_for_enrichment(limit=5)
+
+        assert len(selected) == 1
+        assert selected[0]["incident_id"] == incident.incident_id
+        assert selected[0]["all_urls"] == []
+
+    def test_fetch_articles_skips_internal_placeholder_and_goes_straight_to_serp(self, temp_db):
+        conn, _ = temp_db
+        insert_incident(
+            conn,
+            BaseIncident(
+                incident_id="comparitech_5569601cfc8fe0b9",
+                source="comparitech",
+                source_event_id="comparitech_5569601cfc8fe0b9",
+                victim_raw_name="Penncrest School District",
+                title="Ransomware attack on Penncrest School District (2023)",
+                subtitle=None,
+                institution_name="Penncrest School District",
+                institution_type="School",
+                country="US",
+                city=None,
+                region="PA",
+                incident_date="2023",
+                date_precision="year",
+                source_published_date=None,
+                ingested_at=None,
+                primary_url=None,
+                all_urls=["comparitech://synthetic/comparitech_5569601cfc8fe0b9"],
+                attack_type_hint="ransomware",
+                status="confirmed",
+                source_confidence="high",
+                notes="Ransomware: Qilin",
+            ),
+        )
+        fetcher = Mock()
+        fetcher.fetch_article.return_value = ArticleContent(
+            url="https://therecord.media/penncrest-ransomware",
+            title="Penncrest ransomware story",
+            content="Detailed coverage of the Penncrest School District ransomware incident.",
+            fetch_successful=True,
+            content_length=72,
+        )
+        strategy = SmartArticleFetchingStrategy(conn, article_fetcher=fetcher)
+        strategy.rate_limiter.wait_if_needed = Mock()
+
+        incident = {
+            "incident_id": "comparitech_5569601cfc8fe0b9",
+            "all_urls": ["comparitech://synthetic/comparitech_5569601cfc8fe0b9"],
+            "institution_name": "Penncrest School District",
+            "victim_raw_name": "Penncrest School District",
+            "title": "Ransomware attack on Penncrest School District (2023)",
+            "source_published_date": None,
+            "attack_type_hint": "ransomware",
+            "notes": "Ransomware: Qilin",
+            "incident_date": "2023",
+            "city": None,
+            "region": "PA",
+            "country": "US",
+            "has_articles": False,
+        }
+
+        with patch(
+            "src.edu_cti.pipeline.phase2.utils.fetching_strategy.discover_articles_via_serp",
+            return_value=["https://therecord.media/penncrest-ransomware"],
+        ) as discover_mock:
+            results = strategy.fetch_articles_for_incidents([incident])
+
+        discover_mock.assert_called_once()
+        fetcher.fetch_article.assert_called_once_with("https://therecord.media/penncrest-ransomware")
+        assert results[incident["incident_id"]]
+        assert results[incident["incident_id"]][0].url == "https://therecord.media/penncrest-ransomware"
 
     def test_save_enrichment_result_replaces_existing_entry(self, temp_db, sample_incident):
         """Later saves should replace the existing enrichment snapshot."""
