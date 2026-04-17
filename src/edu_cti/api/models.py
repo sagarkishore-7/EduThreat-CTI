@@ -47,6 +47,8 @@ class IncidentSummary(BaseModel):
     incident_date: Optional[str] = None
     date_precision: Optional[str] = None
     title: Optional[str] = None
+    subtitle: Optional[str] = None
+    enriched_summary: Optional[str] = None
     attack_type_hint: Optional[str] = None
     attack_category: Optional[str] = None
     ransomware_family: Optional[str] = None
@@ -326,6 +328,7 @@ class RecentIncident(BaseModel):
     ransomware_family: Optional[str] = None
     incident_date: Optional[str] = None
     title: Optional[str] = None
+    enriched_summary: Optional[str] = None
     threat_actor_name: Optional[str] = None
 
 
@@ -677,4 +680,3 @@ class FilterOptions(BaseModel):
     threat_actors: List[str]
     institution_types: List[str]
     years: List[int]
-

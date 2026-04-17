@@ -10,7 +10,9 @@ from src.edu_cti.api.database import (
     get_dashboard_stats,
     get_incident_by_id,
     get_incidents_by_country,
+    get_incidents_paginated,
     get_incidents_by_ransomware_family,
+    get_recent_incidents,
     get_attack_vector_by_institution,
     get_ransom_economics,
     get_threat_actor_categories,
@@ -250,6 +252,40 @@ def test_get_incident_by_id_prefers_normalized_enrichment_country(temp_db):
 
     assert data["country"] == "United States"
     assert data["country_code"] == "US"
+
+
+def test_incident_summaries_expose_ai_descriptions(temp_db):
+    conn = temp_db
+    incident = _sample_incident()
+    incident.subtitle = '<a href="https://news.google.com/rss/articles/example">RSS item</a>'
+    insert_incident(conn, incident)
+
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments_flat
+        (incident_id, is_education_related, country, country_code, enriched_summary, created_at, updated_at)
+        VALUES (?, 1, ?, ?, ?, ?, ?)
+        """,
+        (
+            incident.incident_id,
+            "United States",
+            "US",
+            "AI summary for the incident.",
+            now,
+            now,
+        ),
+    )
+    conn.commit()
+
+    incidents, total = get_incidents_paginated(conn, per_page=10)
+    assert total == 1
+    assert incidents[0]["country_code"] == "US"
+    assert incidents[0]["subtitle"] == incident.subtitle
+    assert incidents[0]["enriched_summary"] == "AI summary for the incident."
+
+    recent = get_recent_incidents(conn, limit=5)
+    assert recent[0]["enriched_summary"] == "AI summary for the incident."
 
 
 def test_normalize_countries_handles_legacy_flat_schema_without_country_code(tmp_path):

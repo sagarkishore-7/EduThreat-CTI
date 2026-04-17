@@ -170,11 +170,14 @@ def get_incidents_paginated(
             COALESCE(ef.institution_name, i.institution_name, 'Unknown') as institution_name,
             COALESCE(ef.institution_type, i.institution_type) as institution_type,
             COALESCE(ef.country, i.country) as country,
+            COALESCE(ef.country_code, i.country_code) as country_code,
             COALESCE(ef.region, i.region) as region,
             COALESCE(ef.city, i.city) as city,
             i.incident_date,
             i.date_precision,
             i.title,
+            i.subtitle,
+            ef.enriched_summary,
             i.attack_type_hint,
             ef.attack_category,
             ef.ransomware_family,
@@ -626,6 +629,7 @@ def get_recent_incidents(
             ef.ransomware_family,
             i.incident_date,
             i.title,
+            ef.enriched_summary,
             ef.threat_actor_name
         FROM incidents i
         JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
