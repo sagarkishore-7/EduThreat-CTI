@@ -28,7 +28,7 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 _HEADLINE_AFTER_RE = re.compile(
-    r"\b(?:targets?|targeted|hits?|attacks?|attacked|breaches?|breached|"
+    r"\b(?:targets?|targeted|hits?|attacks?|attacked|breach(?:es)?|breached|"
     r"compromises?|compromised|victimizes?|victimized|affects?|affected|"
     r"impacts?|impacted|strikes?|struck|hacks?|hacked)\s+(?P<victim>.+)$",
     re.IGNORECASE,
@@ -51,13 +51,22 @@ _ATTACK_TERM_RE = re.compile(
     re.IGNORECASE,
 )
 _ENTITY_PATTERNS = (
+    # "Name Type" pattern — e.g. "Alamo Heights School District", "Los Angeles Community College".
+    # Intentionally NOT re.IGNORECASE so that the leading [A-Z] anchor rejects attack
+    # verbs like "hits", "ransomware", "attack" (which start with lowercase letters).
     re.compile(
-        r"[A-Z0-9][A-Za-z0-9&'.,-]*(?:\s+[A-Z0-9][A-Za-z0-9&'.,-]*)*\s+"
-        r"(?:Independent\s+School\s+District|School\s+District|Community\s+College|"
-        r"University(?:\s+System)?|College|School|Academy|Seminary|ISD|"
-        r"Board\s+of\s+Education|Education\s+Department|Polytechnic|"
-        r"Institute(?:\s+of(?:\s+[A-Z0-9][A-Za-z0-9&'.,-]*)+)?)",
-        re.IGNORECASE,
+        r"[A-Z][A-Za-z0-9&'.,-]*(?:\s+[A-Z][A-Za-z0-9&'.,-]*)*\s+"
+        r"(?:Independent\s+School\s+Districts?|School\s+Districts?|Community\s+Colleges?|"
+        r"Public\s+Schools?|"
+        r"University(?:\s+System)?|Colleges?|Schools?|Academy|Seminary|ISD|"
+        r"Boards?\s+of\s+Education|Education\s+Departments?|Polytechnics?|"
+        r"Institutes?(?:\s+of(?:\s+[A-Z][A-Za-z0-9&'.,-]*)+)?)"
+        r"\b",
+    ),
+    # "University/College of Name" pattern — e.g. "University of Kentucky", "College of William and Mary"
+    re.compile(
+        r"\b(?:University|College|Institute|School)\s+of\s+"
+        r"[A-Z][A-Za-z0-9&'.,-]*(?:\s+[A-Za-z][A-Za-z0-9&'.,-]*)*",
     ),
 )
 _PREFIX_PATTERNS = [
@@ -112,9 +121,13 @@ def clean_institution_name(name: Optional[str]) -> str:
             if value:
                 candidates.append(value)
 
-    after_match = _HEADLINE_AFTER_RE.search(text)
-    if after_match:
-        candidates.append(after_match.group("victim").strip(" -,:;"))
+    # Use the LAST match so "attack hits Victim" picks "Victim" (via "hits"), not "hits Victim"
+    after_matches = list(_HEADLINE_AFTER_RE.finditer(text))
+    if after_matches:
+        victim = after_matches[-1].group("victim")
+        # Strip leading prepositions: "on Baltimore City..." → "Baltimore City..."
+        victim = re.sub(r"^(?:on|at|in|for|from|of|against|the)\s+", "", victim, flags=re.IGNORECASE)
+        candidates.append(victim.strip(" -,:;"))
 
     before_match = _HEADLINE_BEFORE_RE.search(text)
     if before_match:
@@ -131,7 +144,8 @@ def clean_institution_name(name: Optional[str]) -> str:
             score += 25
         if len(candidate) < len(text):
             score += 10
-        return (score, len(candidate))
+        # Negate length so max() prefers shorter strings on equal score (more specific name wins)
+        return (score, -len(candidate))
 
     best = max(candidates, key=_score)
     return best or text
