@@ -249,6 +249,37 @@ def institution_names_match(name1: str, name2: str, threshold: int = 85) -> bool
     return max(seq_score, token_score) >= threshold
 
 
+def _names_match_pair(
+    n1: str,
+    t1: set,
+    n2: str,
+    t2: set,
+    threshold: int = 85,
+) -> bool:
+    """Return True if a single normalized-name/token pair matches another."""
+    if not n1 or not n2:
+        return False
+    if n1 == n2:
+        return True
+    if t1 and t2:
+        if t1 == t2:
+            return True
+        smaller, larger = sorted((t1, t2), key=len)
+        if len(smaller) >= 2 and smaller.issubset(larger) and len(smaller) / len(larger) >= 0.7:
+            return True
+    if fuzz is not None:
+        s1 = " ".join(sorted(t1 or n1.split()))
+        s2 = " ".join(sorted(t2 or n2.split()))
+        return max(fuzz.token_sort_ratio(n1, n2), fuzz.token_sort_ratio(s1, s2)) >= threshold
+    seq = SequenceMatcher(None, n1, n2).ratio() * 100
+    tok = SequenceMatcher(
+        None,
+        " ".join(sorted(t1 or n1.split())),
+        " ".join(sorted(t2 or n2.split())),
+    ).ratio() * 100
+    return max(seq, tok) >= threshold
+
+
 def parse_incident_date(date_str: Optional[str]) -> Optional[datetime]:
     """
     Parse incident date string to datetime object.
@@ -619,30 +650,6 @@ def deduplicate_by_institution(
         norm_victim_cache.append(normalize_institution_name(victim) if victim != primary else "")
         token_victim_cache.append(_core_tokens(victim) if victim != primary else set())
 
-    def _names_match_pair(n1: str, t1: set, n2: str, t2: set) -> bool:
-        """Return True if a single (norm, tokens) pair matches another."""
-        if not n1 or not n2:
-            return False
-        if n1 == n2:
-            return True
-        if t1 and t2:
-            if t1 == t2:
-                return True
-            smaller, larger = sorted((t1, t2), key=len)
-            if len(smaller) >= 2 and smaller.issubset(larger) and len(smaller) / len(larger) >= 0.7:
-                return True
-        if fuzz is not None:
-            s1 = " ".join(sorted(t1 or n1.split()))
-            s2 = " ".join(sorted(t2 or n2.split()))
-            return max(fuzz.token_sort_ratio(n1, n2), fuzz.token_sort_ratio(s1, s2)) >= name_threshold
-        seq = SequenceMatcher(None, n1, n2).ratio() * 100
-        tok = SequenceMatcher(
-            None,
-            " ".join(sorted(t1 or n1.split())),
-            " ".join(sorted(t2 or n2.split())),
-        ).ratio() * 100
-        return max(seq, tok) >= name_threshold
-
     def _fast_match(idx_a: int, idx_b: int) -> bool:
         """
         Match on primary institution_name first, then cross-check against
@@ -662,7 +669,7 @@ def deduplicate_by_institution(
         if norm_victim_cache[idx_b]:
             candidates_b.append((norm_victim_cache[idx_b], token_victim_cache[idx_b]))
         return any(
-            _names_match_pair(n1, t1, n2, t2)
+            _names_match_pair(n1, t1, n2, t2, threshold=name_threshold)
             for n1, t1 in candidates_a
             for n2, t2 in candidates_b
         )
@@ -839,7 +846,7 @@ def dedup_incident_after_save(
             candidates_other.append((other_victim_norm, other_victim_tokens))
 
         matched = any(
-            _names_match_pair(n1, t1, n2, t2)
+            _names_match_pair(n1, t1, n2, t2, threshold=name_threshold)
             for n1, t1 in candidates_new
             for n2, t2 in candidates_other
         )

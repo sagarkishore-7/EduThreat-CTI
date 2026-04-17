@@ -16,6 +16,7 @@ from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult, EducationRe
 from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_result, init_incident_enrichments_table, save_enrichment_result
 from src.edu_cti.pipeline.phase2.utils.deduplication import (
     dates_within_window,
+    dedup_incident_after_save,
     deduplicate_by_institution,
     find_duplicate_institutions,
     normalize_institution_name,
@@ -332,3 +333,40 @@ class TestDeduplication:
 
         assert stats["removed"] == 1
         assert stats["remaining"] == 1
+
+    def test_inline_dedup_after_save_handles_abbreviation_without_nameerror(self, temp_db):
+        """The inline post-save dedup path should share the same matcher as batch dedup."""
+        conn, _ = temp_db
+
+        incident1 = _incident("oxylabs_news", "https://example.com/ucf-inline-1", "2016-01-01", "University of Central Florida")
+        incident2 = _incident("googlenews_rss", "https://example.com/ucf-inline-2", "2016-01-01", "University of Central Florida")
+
+        insert_incident(conn, incident1)
+        insert_incident(conn, incident2)
+
+        save_enrichment_result(
+            conn,
+            incident1.incident_id,
+            _enrichment(
+                "This is the longer summary that should survive inline dedup.",
+                incident1.all_urls[0],
+                institution_name="University of Central Florida",
+            ),
+        )
+        save_enrichment_result(
+            conn,
+            incident2.incident_id,
+            _enrichment(
+                "short",
+                incident2.all_urls[0],
+                institution_name="UCF",
+            ),
+        )
+
+        survivor = dedup_incident_after_save(conn, incident2.incident_id, window_days=14)
+
+        assert survivor == incident1.incident_id
+        assert conn.execute(
+            "SELECT 1 FROM incidents WHERE incident_id = ?",
+            (incident2.incident_id,),
+        ).fetchone() is None
