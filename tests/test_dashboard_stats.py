@@ -9,6 +9,7 @@ from src.edu_cti.api.database import (
     count_education_incidents,
     get_dashboard_stats,
     get_incident_by_id,
+    get_incidents_by_country,
     get_incidents_by_ransomware_family,
     get_attack_vector_by_institution,
     get_ransom_economics,
@@ -298,3 +299,88 @@ def test_normalize_countries_handles_legacy_flat_schema_without_country_code(tmp
     assert incident_row["country"] == "United States"
     assert incident_row["country_code"] == "US"
     assert flat_row["country"] == "United States"
+
+
+def test_normalize_countries_fills_missing_codes_for_supported_non_us_countries(tmp_path):
+    db_path = tmp_path / "legacy_missing_codes.db"
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE incidents (
+            incident_id TEXT PRIMARY KEY,
+            country TEXT,
+            country_code TEXT
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE incident_enrichments_flat (
+            incident_id TEXT PRIMARY KEY,
+            country TEXT,
+            country_code TEXT
+        )
+        """
+    )
+    conn.execute(
+        "INSERT INTO incidents (incident_id, country, country_code) VALUES (?, ?, ?)",
+        ("incident_ly", "Libya", None),
+    )
+    conn.execute(
+        "INSERT INTO incident_enrichments_flat (incident_id, country, country_code) VALUES (?, ?, ?)",
+        ("incident_ly", "LY", None),
+    )
+    conn.commit()
+
+    updated = normalize_countries_in_database(conn)
+
+    incident_row = conn.execute(
+        "SELECT country, country_code FROM incidents WHERE incident_id = ?",
+        ("incident_ly",),
+    ).fetchone()
+    flat_row = conn.execute(
+        "SELECT country, country_code FROM incident_enrichments_flat WHERE incident_id = ?",
+        ("incident_ly",),
+    ).fetchone()
+    conn.close()
+
+    assert updated >= 2
+    assert incident_row["country"] == "Libya"
+    assert incident_row["country_code"] == "LY"
+    assert flat_row["country"] == "Libya"
+    assert flat_row["country_code"] == "LY"
+
+
+def test_get_incidents_by_country_returns_flag_for_libya(temp_db):
+    conn = temp_db
+    incident = _sample_incident()
+    incident.incident_id = make_incident_id("test_source", "https://example.com/libya|2025-01-15")
+    incident.source_event_id = "libya_event"
+    incident.country = "Libya"
+    incident.country_code = "LY"
+    insert_incident(conn, incident)
+
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments_flat
+        (incident_id, is_education_related, country, country_code, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, ?, ?, ?, ?, ?)
+        """,
+        (
+            incident.incident_id,
+            "Libya",
+            "LY",
+            now,
+            now,
+            "Libya incident",
+        ),
+    )
+    conn.commit()
+
+    data = get_incidents_by_country(conn, limit=10)
+    libya = next(item for item in data if item["category"] == "Libya")
+
+    assert libya["country_code"] == "LY"
+    assert libya["flag_emoji"] == "🇱🇾"
