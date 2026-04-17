@@ -5,7 +5,13 @@ from unittest.mock import patch
 
 import pytest
 
-from src.edu_cti.api.database import count_education_incidents, get_dashboard_stats, get_incident_by_id
+from src.edu_cti.api.database import (
+    count_education_incidents,
+    get_dashboard_stats,
+    get_incident_by_id,
+    get_incidents_by_ransomware_family,
+    get_ransom_economics,
+)
 from src.edu_cti.api.main import get_stats
 from src.edu_cti.core.countries import normalize_countries_in_database
 from src.edu_cti.core.db import get_connection, init_db, insert_incident
@@ -63,8 +69,8 @@ def test_education_incident_count_excludes_orphan_flat_rows(temp_db):
     conn.execute(
         """
         INSERT INTO incident_enrichments_flat
-        (incident_id, is_education_related, created_at, updated_at, enriched_summary)
-        VALUES (?, 1, ?, ?, ?)
+        (incident_id, is_education_related, attack_category, threat_actor_name, was_ransom_demanded, ransom_amount, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, 'ransomware_double_extortion', 'Vice Society', 1, 100000, ?, ?, ?)
         """,
         (incident.incident_id, now, now, "Real incident"),
     )
@@ -72,8 +78,8 @@ def test_education_incident_count_excludes_orphan_flat_rows(temp_db):
     conn.execute(
         """
         INSERT INTO incident_enrichments_flat
-        (incident_id, is_education_related, created_at, updated_at, enriched_summary)
-        VALUES (?, 1, ?, ?, ?)
+        (incident_id, is_education_related, attack_category, threat_actor_name, was_ransom_demanded, ransom_amount, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, 'ransomware_double_extortion', 'Ghost Family', 1, 200000, ?, ?, ?)
         """,
         (orphan_source.incident_id, now, now, "Will become orphaned"),
     )
@@ -87,7 +93,19 @@ def test_education_incident_count_excludes_orphan_flat_rows(temp_db):
     conn.execute("PRAGMA foreign_keys = ON")
 
     assert count_education_incidents(conn) == 1
-    assert get_dashboard_stats(conn)["education_incidents"] == 1
+
+    stats = get_dashboard_stats(conn)
+    assert stats["education_incidents"] == 1
+    assert stats["incidents_with_ransomware"] == 1
+    assert stats["unique_ransomware_families"] == 1
+
+    ransomware = get_incidents_by_ransomware_family(conn, limit=10)
+    assert ransomware == [{"category": "Vice Society", "count": 1, "percentage": 100.0}]
+
+    economics = get_ransom_economics(conn)
+    assert economics["total_ransomware"] == 1
+    assert economics["demanded_count"] == 1
+    assert economics["total_demanded"] == 100000
 
 
 def test_stats_endpoint_bypasses_cache_while_pipeline_is_running():

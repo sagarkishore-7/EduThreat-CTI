@@ -841,9 +841,9 @@ def save_enrichment_result(
             survivor_id = existing[0]
             logger.warning(
                 f"POST-ENRICH DEDUP: '{incident_id}' shares primary_url+date with "
-                f"'{survivor_id}' — deleting duplicate (CASCADE cleans related tables)"
+                f"'{survivor_id}' — deleting duplicate with explicit related-row cleanup"
             )
-            conn.execute("DELETE FROM incidents WHERE incident_id = ?", (incident_id,))
+            hard_delete_incident(conn, incident_id)
             conn.commit()
             return  # Nothing more to do for this incident
 
@@ -1169,6 +1169,31 @@ def delete_incident(
         logger.error(f"Failed to soft-delete incident {incident_id}: {e}")
         conn.rollback()
         return False
+
+
+def hard_delete_incident(conn: sqlite3.Connection, incident_id: str) -> None:
+    """
+    Fully delete an incident and all directly linked incident-scoped rows.
+
+    This is a defensive fallback for older databases where FK cascades were not
+    reliably enforced, preventing orphaned enrichment rows from surviving.
+    The caller owns the surrounding transaction/commit.
+    """
+    for table in [
+        "incident_enrichments_flat",
+        "incident_enrichments",
+        "articles",
+        "incident_sources",
+        "source_events",
+        "pipeline_checkpoint",
+        "incident_iocs",
+        "incident_threat_actors",
+    ]:
+        try:
+            conn.execute(f"DELETE FROM {table} WHERE incident_id = ?", (incident_id,))
+        except Exception:
+            pass
+    conn.execute("DELETE FROM incidents WHERE incident_id = ?", (incident_id,))
 
 
 def revert_enrichment_for_incident(

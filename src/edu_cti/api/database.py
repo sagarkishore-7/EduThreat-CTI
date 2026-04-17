@@ -30,6 +30,11 @@ def count_education_incidents(conn: sqlite3.Connection) -> int:
     return cur.fetchone()["count"]
 
 
+def _live_incident_exists(alias: str = "ef") -> str:
+    """Return an EXISTS clause that filters out orphan enrichment rows."""
+    return f"EXISTS (SELECT 1 FROM incidents i_live WHERE i_live.incident_id = {alias}.incident_id)"
+
+
 def get_api_connection(read_only: bool = True) -> sqlite3.Connection:
     """
     Get a database connection for API use.
@@ -332,55 +337,61 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
 
     # Ransomware incidents
     cur = conn.execute(
-        """
-        SELECT COUNT(*) as count FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND attack_category LIKE '%ransomware%'
+        f"""
+        SELECT COUNT(*) as count FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category LIKE '%ransomware%'
+          AND {_live_incident_exists('ef')}
         """
     )
     stats["incidents_with_ransomware"] = cur.fetchone()["count"]
 
     # Data breach incidents
     cur = conn.execute(
-        """
-        SELECT COUNT(*) as count FROM incident_enrichments_flat
-        WHERE is_education_related = 1 AND data_breached = 1
+        f"""
+        SELECT COUNT(*) as count FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.data_breached = 1
+          AND {_live_incident_exists('ef')}
         """
     )
     stats["incidents_with_data_breach"] = cur.fetchone()["count"]
 
     # Countries affected (education-related only)
     cur = conn.execute(
-        """
+        f"""
         SELECT COUNT(DISTINCT ef.country) as count
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1 AND ef.country IS NOT NULL AND ef.country != ''
+          AND {_live_incident_exists('ef')}
         """
     )
     stats["countries_affected"] = cur.fetchone()["count"]
 
     # Unique threat actors
     cur = conn.execute(
-        """
-        SELECT COUNT(DISTINCT threat_actor_name) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
+        f"""
+        SELECT COUNT(DISTINCT ef.threat_actor_name) as count
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND {_live_incident_exists('ef')}
         """
     )
     stats["unique_threat_actors"] = cur.fetchone()["count"]
 
     # Unique ransomware families
     cur = conn.execute(
-        """
-        SELECT COUNT(DISTINCT COALESCE(ransomware_family, threat_actor_name)) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND attack_category LIKE '%ransomware%'
+        f"""
+        SELECT COUNT(DISTINCT COALESCE(ef.ransomware_family, ef.threat_actor_name)) as count
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category LIKE '%ransomware%'
           AND (
-            (ransomware_family IS NOT NULL AND ransomware_family != '')
-            OR (threat_actor_name IS NOT NULL AND threat_actor_name != '')
+            (ef.ransomware_family IS NOT NULL AND ef.ransomware_family != '')
+            OR (ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != '')
           )
+          AND {_live_incident_exists('ef')}
         """
     )
     stats["unique_ransomware_families"] = cur.fetchone()["count"]
@@ -393,12 +404,13 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
 
     # Average recovery time (days) for education incidents
     cur = conn.execute(
-        """
-        SELECT AVG(recovery_timeframe_days) as avg_days
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND recovery_timeframe_days IS NOT NULL
-          AND recovery_timeframe_days > 0
+        f"""
+        SELECT AVG(ef.recovery_timeframe_days) as avg_days
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.recovery_timeframe_days IS NOT NULL
+          AND ef.recovery_timeframe_days > 0
+          AND {_live_incident_exists('ef')}
         """
     )
     row = cur.fetchone()
@@ -406,11 +418,12 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
 
     # Total financial impact (sum of estimated costs)
     cur = conn.execute(
-        """
-        SELECT SUM(recovery_costs_max) as total
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND recovery_costs_max IS NOT NULL AND recovery_costs_max > 0
+        f"""
+        SELECT SUM(ef.recovery_costs_max) as total
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.recovery_costs_max IS NOT NULL AND ef.recovery_costs_max > 0
+          AND {_live_incident_exists('ef')}
         """
     )
     row = cur.fetchone()
@@ -418,10 +431,11 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
 
     # MITRE techniques count
     cur = conn.execute(
-        """
+        f"""
         SELECT COUNT(*) as count FROM incident_enrichments_flat
         WHERE is_education_related = 1
           AND mitre_techniques_count IS NOT NULL AND mitre_techniques_count > 0
+          AND {_live_incident_exists('incident_enrichments_flat')}
         """
     )
     stats["incidents_with_mitre"] = cur.fetchone()["count"]
@@ -539,17 +553,18 @@ def get_incidents_by_ransomware_family(
     ransomware family names there for ransomware incidents.
     """
     cur = conn.execute(
-        """
+        f"""
         SELECT 
-            COALESCE(ransomware_family, threat_actor_name) as category,
+            COALESCE(ef.ransomware_family, ef.threat_actor_name) as category,
             COUNT(*) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND attack_category LIKE '%ransomware%'
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category LIKE '%ransomware%'
           AND (
-            (ransomware_family IS NOT NULL AND ransomware_family != '')
-            OR (threat_actor_name IS NOT NULL AND threat_actor_name != '')
+            (ef.ransomware_family IS NOT NULL AND ef.ransomware_family != '')
+            OR (ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != '')
           )
+          AND {_live_incident_exists('ef')}
         GROUP BY category
         ORDER BY count DESC
         LIMIT ?
@@ -1090,7 +1105,7 @@ def get_ransomware_families_detail(
 def get_ransom_economics(conn: sqlite3.Connection) -> Dict[str, Any]:
     """Aggregate ransom demand/payment economics."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             COUNT(*) as total_ransomware,
             SUM(CASE WHEN was_ransom_demanded = 1 THEN 1 ELSE 0 END) as demanded_count,
@@ -1100,9 +1115,10 @@ def get_ransom_economics(conn: sqlite3.Connection) -> Dict[str, Any]:
             MAX(ransom_amount) as max_demanded,
             SUM(ransom_paid_amount) as total_paid,
             AVG(CASE WHEN ransom_paid_amount > 0 THEN ransom_paid_amount END) as avg_paid
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND attack_category LIKE '%ransomware%'
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category LIKE '%ransomware%'
+          AND {_live_incident_exists('ef')}
         """
     )
     row = dict(cur.fetchone())
@@ -1117,7 +1133,7 @@ def get_ransom_economics(conn: sqlite3.Connection) -> Dict[str, Any]:
 def get_ransomware_recovery_comparison(conn: sqlite3.Connection) -> Dict[str, Any]:
     """Compare recovery metrics: ransomware vs non-ransomware."""
     result = {}
-    for label, condition in [("ransomware", "attack_category LIKE '%ransomware%'"), ("other", "attack_category NOT LIKE '%ransomware%'")]:
+    for label, condition in [("ransomware", "ef.attack_category LIKE '%ransomware%'"), ("other", "ef.attack_category NOT LIKE '%ransomware%'")]:
         cur = conn.execute(
             f"""
             SELECT
@@ -1127,8 +1143,9 @@ def get_ransomware_recovery_comparison(conn: sqlite3.Connection) -> Dict[str, An
                 SUM(CASE WHEN incident_response_firm IS NOT NULL AND incident_response_firm != '' THEN 1 ELSE 0 END) * 100.0 / MAX(COUNT(*), 1) as ir_firm_rate,
                 SUM(CASE WHEN forensics_firm IS NOT NULL AND forensics_firm != '' THEN 1 ELSE 0 END) * 100.0 / MAX(COUNT(*), 1) as forensics_rate,
                 COUNT(*) as total
-            FROM incident_enrichments_flat
-            WHERE is_education_related = 1 AND {condition}
+            FROM incident_enrichments_flat ef
+            WHERE ef.is_education_related = 1 AND {condition}
+              AND {_live_incident_exists('ef')}
             """
         )
         row = cur.fetchone()
@@ -1151,15 +1168,16 @@ def get_ransomware_geo(
     """Per-family geographic targeting (small multiples)."""
     # Get top families first
     cur = conn.execute(
-        """
-        SELECT COALESCE(ransomware_family, threat_actor_name) as family
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND attack_category LIKE '%ransomware%'
+        f"""
+        SELECT COALESCE(ef.ransomware_family, ef.threat_actor_name) as family
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category LIKE '%ransomware%'
           AND (
-            (ransomware_family IS NOT NULL AND ransomware_family != '')
-            OR (threat_actor_name IS NOT NULL AND threat_actor_name != '')
+            (ef.ransomware_family IS NOT NULL AND ef.ransomware_family != '')
+            OR (ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != '')
           )
+          AND {_live_incident_exists('ef')}
         GROUP BY family
         ORDER BY COUNT(*) DESC
         LIMIT ?
@@ -1171,13 +1189,14 @@ def get_ransomware_geo(
     result = []
     for family in families:
         cur = conn.execute(
-            """
+            f"""
             SELECT
-                COALESCE(country, 'Unknown') as country,
+                COALESCE(ef.country, 'Unknown') as country,
                 COUNT(*) as count
-            FROM incident_enrichments_flat
-            WHERE is_education_related = 1
-              AND (ransomware_family = ? OR threat_actor_name = ?)
+            FROM incident_enrichments_flat ef
+            WHERE ef.is_education_related = 1
+              AND (ef.ransomware_family = ? OR ef.threat_actor_name = ?)
+              AND {_live_incident_exists('ef')}
             GROUP BY country
             ORDER BY count DESC
             LIMIT ?
@@ -1296,11 +1315,13 @@ def get_actor_ransomware_matrix(
     """Actor-to-ransomware-family cross-tabulation."""
     # Get top actors
     cur = conn.execute(
-        """
-        SELECT threat_actor_name
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1 AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
-        GROUP BY threat_actor_name ORDER BY COUNT(*) DESC LIMIT ?
+        f"""
+        SELECT ef.threat_actor_name
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND {_live_incident_exists('ef')}
+        GROUP BY ef.threat_actor_name ORDER BY COUNT(*) DESC LIMIT ?
         """,
         (limit_actors,)
     )
@@ -1308,11 +1329,12 @@ def get_actor_ransomware_matrix(
 
     # Get top families
     cur = conn.execute(
-        """
-        SELECT COALESCE(ransomware_family, 'unknown') as family
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1 AND attack_category LIKE '%ransomware%'
-          AND ransomware_family IS NOT NULL AND ransomware_family != ''
+        f"""
+        SELECT COALESCE(ef.ransomware_family, 'unknown') as family
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1 AND ef.attack_category LIKE '%ransomware%'
+          AND ef.ransomware_family IS NOT NULL AND ef.ransomware_family != ''
+          AND {_live_incident_exists('ef')}
         GROUP BY family ORDER BY COUNT(*) DESC LIMIT ?
         """,
         (limit_families,)
@@ -1328,13 +1350,14 @@ def get_actor_ransomware_matrix(
     cur = conn.execute(
         f"""
         SELECT
-            threat_actor_name as actor,
-            COALESCE(ransomware_family, 'unknown') as family,
+            ef.threat_actor_name as actor,
+            COALESCE(ef.ransomware_family, 'unknown') as family,
             COUNT(*) as count
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND threat_actor_name IN ({actor_placeholders})
-          AND COALESCE(ransomware_family, 'unknown') IN ({family_placeholders})
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IN ({actor_placeholders})
+          AND COALESCE(ef.ransomware_family, 'unknown') IN ({family_placeholders})
+          AND {_live_incident_exists('ef')}
         GROUP BY actor, family
         """,
         actors + families
@@ -1727,15 +1750,16 @@ def get_ransomware_family_trend(
 ) -> Dict[str, Any]:
     """Top N ransomware families by month (stacked area chart)."""
     cur = conn.execute(
-        """
-        SELECT COALESCE(ransomware_family, threat_actor_name) as family, COUNT(*) as cnt
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND attack_category LIKE '%ransomware%'
+        f"""
+        SELECT COALESCE(ef.ransomware_family, ef.threat_actor_name) as family, COUNT(*) as cnt
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category LIKE '%ransomware%'
           AND (
-            (ransomware_family IS NOT NULL AND ransomware_family != '')
-            OR (threat_actor_name IS NOT NULL AND threat_actor_name != '')
+            (ef.ransomware_family IS NOT NULL AND ef.ransomware_family != '')
+            OR (ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != '')
           )
+          AND {_live_incident_exists('ef')}
         GROUP BY family
         ORDER BY cnt DESC
         LIMIT ?
@@ -2045,15 +2069,16 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
     # Ransomware families
     # Ransomware families (use threat_actor_name as fallback for ransomware incidents)
     cur = conn.execute(
-        """
-        SELECT DISTINCT COALESCE(ransomware_family, threat_actor_name) as family
-        FROM incident_enrichments_flat 
-        WHERE is_education_related = 1
-          AND attack_category LIKE '%ransomware%'
+        f"""
+        SELECT DISTINCT COALESCE(ef.ransomware_family, ef.threat_actor_name) as family
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category LIKE '%ransomware%'
           AND (
-            (ransomware_family IS NOT NULL AND ransomware_family != '')
-            OR (threat_actor_name IS NOT NULL AND threat_actor_name != '')
+            (ef.ransomware_family IS NOT NULL AND ef.ransomware_family != '')
+            OR (ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != '')
           )
+          AND {_live_incident_exists('ef')}
         ORDER BY family
         """
     )
@@ -2212,12 +2237,13 @@ def get_actor_network(conn: sqlite3.Connection, min_incidents: int = 2) -> Dict[
     """Network graph: actors linked by shared ransomware families."""
     # Get actors with their ransomware families
     cur = conn.execute(
-        """
-        SELECT threat_actor_name as actor, ransomware_family as family, COUNT(*) as cnt
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND threat_actor_name IS NOT NULL AND threat_actor_name != ''
-          AND ransomware_family IS NOT NULL AND ransomware_family != ''
+        f"""
+        SELECT ef.threat_actor_name as actor, ef.ransomware_family as family, COUNT(*) as cnt
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND ef.ransomware_family IS NOT NULL AND ef.ransomware_family != ''
+          AND {_live_incident_exists('ef')}
         GROUP BY actor, family
         HAVING cnt >= 1
         """
@@ -2282,20 +2308,21 @@ def get_actor_network(conn: sqlite3.Connection, min_incidents: int = 2) -> Dict[
 def get_ransom_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
     """Sankey: Institution Type → Ransomware Family → Payment Outcome."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
-            COALESCE(NULLIF(institution_type, ''), 'Unknown') as inst_type,
-            COALESCE(NULLIF(ransomware_family, ''), 'Unknown Family') as family,
+            COALESCE(NULLIF(ef.institution_type, ''), 'Unknown') as inst_type,
+            COALESCE(NULLIF(ef.ransomware_family, ''), 'Unknown Family') as family,
             CASE
-                WHEN ransom_paid = 1 THEN 'Paid'
-                WHEN was_ransom_demanded = 1 AND (ransom_paid = 0 OR ransom_paid IS NULL) THEN 'Refused'
+                WHEN ef.ransom_paid = 1 THEN 'Paid'
+                WHEN ef.was_ransom_demanded = 1 AND (ef.ransom_paid = 0 OR ef.ransom_paid IS NULL) THEN 'Refused'
                 ELSE 'Unknown Outcome'
             END as outcome,
             COUNT(*) as count,
-            COALESCE(SUM(ransom_amount), 0) as total_amount
-        FROM incident_enrichments_flat
-        WHERE is_education_related = 1
-          AND attack_category LIKE '%ransomware%'
+            COALESCE(SUM(ef.ransom_amount), 0) as total_amount
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.attack_category LIKE '%ransomware%'
+          AND {_live_incident_exists('ef')}
         GROUP BY inst_type, family, outcome
         HAVING count >= 1
         ORDER BY count DESC

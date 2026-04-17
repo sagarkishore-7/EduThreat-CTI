@@ -1,6 +1,7 @@
 """Tests for Phase 2 enrichment, storage, and recovery behavior."""
 
 import importlib
+from dataclasses import replace
 from types import SimpleNamespace
 from typing import Optional
 from unittest.mock import Mock, patch
@@ -227,6 +228,54 @@ class TestEnrichmentDatabase:
         final = get_enrichment_result(conn, sample_incident.incident_id)
         assert final.primary_url == "https://example.com/article2"
         assert final.enriched_summary == "Second summary"
+
+    def test_save_enrichment_result_duplicate_cleanup_removes_old_related_rows(self, temp_db, sample_incident):
+        conn, _ = temp_db
+
+        survivor = replace(sample_incident)
+        survivor.incident_id = make_incident_id("test_source", "https://example.com/survivor|2025-01-15")
+        survivor.source_event_id = "survivor_event"
+        insert_incident(conn, survivor)
+        assert save_enrichment_result(
+            conn,
+            survivor.incident_id,
+            _sample_enrichment_result(primary_url="https://example.com/shared"),
+        ) is True
+
+        duplicate = replace(sample_incident)
+        duplicate.incident_id = make_incident_id("test_source", "https://example.com/duplicate|2025-01-15")
+        duplicate.source_event_id = "duplicate_event"
+        insert_incident(conn, duplicate)
+
+        assert save_enrichment_result(
+            conn,
+            duplicate.incident_id,
+            _sample_enrichment_result(primary_url="https://example.com/old"),
+        ) is True
+        _save_sample_article(conn, duplicate.incident_id, "https://example.com/old")
+
+        save_enrichment_result(
+            conn,
+            duplicate.incident_id,
+            _sample_enrichment_result(primary_url="https://example.com/shared"),
+        )
+
+        assert conn.execute(
+            "SELECT 1 FROM incidents WHERE incident_id = ?",
+            (duplicate.incident_id,),
+        ).fetchone() is None
+        assert conn.execute(
+            "SELECT 1 FROM incident_enrichments WHERE incident_id = ?",
+            (duplicate.incident_id,),
+        ).fetchone() is None
+        assert conn.execute(
+            "SELECT 1 FROM incident_enrichments_flat WHERE incident_id = ?",
+            (duplicate.incident_id,),
+        ).fetchone() is None
+        assert conn.execute(
+            "SELECT 1 FROM articles WHERE incident_id = ?",
+            (duplicate.incident_id,),
+        ).fetchone() is None
 
     def test_save_enrichment_result_cleans_headline_style_institution_name(self, temp_db, sample_incident):
         conn, _ = temp_db
