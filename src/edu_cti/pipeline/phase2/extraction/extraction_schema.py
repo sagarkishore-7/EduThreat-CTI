@@ -121,7 +121,17 @@ EXTRACTION_SCHEMA = {
                         "type": "string",
                         "enum": ["day", "month", "year", "approximate"]
                     },
-                    "event_description": {"type": "string"},
+                    "event_description": {
+                        "type": "string",
+                        "description": (
+                            "One sentence from or based on the article that explains WHY this date is classified "
+                            "as this event type. Quote or paraphrase the specific evidence. "
+                            "Examples: 'Administrators became aware of unauthorized grade changes on this date.' "
+                            "/ 'Superintendent sent letter to parents notifying them of the breach.' "
+                            "/ 'School district publicly disclosed the incident via Facebook post.' "
+                            "Keep it under 25 words."
+                        )
+                    },
                     "event_type": {
                         "type": "string",
                         "enum": [
