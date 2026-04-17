@@ -553,6 +553,7 @@ def deduplicate_by_institution(
         """
         SELECT i.incident_id,
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.university_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
+               NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
                i.ingested_at,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
@@ -596,19 +597,34 @@ def deduplicate_by_institution(
 
     # Pre-compute normalized names and token sets once to avoid redundant regex
     # work inside the O(N²) comparison loops.
+    # Each slot stores a primary name (ef.institution_name → university_name → victim_raw_name)
+    # and an optional secondary name from victim_raw_name.
+    #
+    # Why victim_raw_name and not university_name?
+    # save_enrichment_result() overwrites incidents.university_name with the LLM result
+    # (e.g. "UCF"), but leaves victim_raw_name untouched when it already had a value.
+    # So victim_raw_name preserves the original ingestion name ("University of Central
+    # Florida") even after the LLM stores an abbreviation.  Using it as a second matching
+    # candidate catches the LLM-abbreviation ↔ full-name mismatch.
     norm_cache: List[str] = []
     token_cache: List[set] = []
+    norm_victim_cache: List[str] = []
+    token_victim_cache: List[set] = []
     for row in rows:
-        norm_cache.append(normalize_institution_name(row["institution_name"] or ""))
-        token_cache.append(_core_tokens(row["institution_name"] or ""))
+        primary = row["institution_name"] or ""
+        victim = row["raw_victim_name"] or ""
+        norm_cache.append(normalize_institution_name(primary))
+        token_cache.append(_core_tokens(primary))
+        # Only add as secondary candidate if it differs from the primary (avoids redundant checks)
+        norm_victim_cache.append(normalize_institution_name(victim) if victim != primary else "")
+        token_victim_cache.append(_core_tokens(victim) if victim != primary else set())
 
-    def _fast_match(idx_a: int, idx_b: int) -> bool:
-        n1, n2 = norm_cache[idx_a], norm_cache[idx_b]
+    def _names_match_pair(n1: str, t1: set, n2: str, t2: set) -> bool:
+        """Return True if a single (norm, tokens) pair matches another."""
         if not n1 or not n2:
             return False
         if n1 == n2:
             return True
-        t1, t2 = token_cache[idx_a], token_cache[idx_b]
         if t1 and t2:
             if t1 == t2:
                 return True
@@ -626,6 +642,30 @@ def deduplicate_by_institution(
             " ".join(sorted(t2 or n2.split())),
         ).ratio() * 100
         return max(seq, tok) >= name_threshold
+
+    def _fast_match(idx_a: int, idx_b: int) -> bool:
+        """
+        Match on primary institution_name first, then cross-check against
+        victim_raw_name on each side.
+
+        victim_raw_name holds the original ingestion name even after the LLM
+        overwrites university_name with an abbreviation.  For example:
+          - Incident A: ef.institution_name="UCF", victim_raw_name="University of Central Florida"
+          - Incident B: ef.institution_name="University of Central Florida"
+        Primary-vs-primary fails ("ucf" ≠ "central florida"), but
+        victim_raw_name_A-vs-primary_B succeeds.
+        """
+        candidates_a = [(norm_cache[idx_a], token_cache[idx_a])]
+        candidates_b = [(norm_cache[idx_b], token_cache[idx_b])]
+        if norm_victim_cache[idx_a]:
+            candidates_a.append((norm_victim_cache[idx_a], token_victim_cache[idx_a]))
+        if norm_victim_cache[idx_b]:
+            candidates_b.append((norm_victim_cache[idx_b], token_victim_cache[idx_b]))
+        return any(
+            _names_match_pair(n1, t1, n2, t2)
+            for n1, t1 in candidates_a
+            for n2, t2 in candidates_b
+        )
 
     dated: List[tuple[int, datetime]] = []
     undated: List[int] = []

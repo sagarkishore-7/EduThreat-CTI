@@ -312,3 +312,23 @@ class TestDeduplication:
         ).fetchone()[0]
         assert "ucf-breach-1" in all_urls
         assert "ucf-breach-2" in all_urls
+
+    def test_deduplicate_matches_abbreviation_against_raw_university_name(self, temp_db):
+        """If LLM stores 'UCF' for one incident and 'University of Central Florida' for another,
+        the dedup must still merge them using the raw university_name as a fallback key."""
+        conn, _ = temp_db
+
+        incident1 = _incident("oxylabs_news", "https://example.com/ucf-1", "2016-01-01", "University of Central Florida")
+        incident2 = _incident("oxylabs_news", "https://example.com/ucf-2", "2016-01-01", "University of Central Florida")
+
+        insert_incident(conn, incident1)
+        insert_incident(conn, incident2)
+
+        # Simulate LLM extracting an abbreviation for incident1 and the full name for incident2
+        save_enrichment_result(conn, incident1.incident_id, _enrichment("short summary", incident1.all_urls[0], institution_name="UCF"))
+        save_enrichment_result(conn, incident2.incident_id, _enrichment("longer and more detailed summary that should win", incident2.all_urls[0], institution_name="University of Central Florida"))
+
+        stats = deduplicate_by_institution(conn, window_days=14)
+
+        assert stats["removed"] == 1
+        assert stats["remaining"] == 1
