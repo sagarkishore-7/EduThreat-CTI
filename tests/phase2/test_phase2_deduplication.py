@@ -105,6 +105,18 @@ class TestDateParsing:
         assert result.year == 2025
         assert result.month == 1
         assert result.day == 15
+        assert result.tzinfo is None
+
+    def test_parse_timezone_aware_date_normalizes_to_naive_utc(self):
+        result = parse_incident_date("2025-01-15T12:34:56Z")
+        assert result is not None
+        assert result.year == 2025
+        assert result.month == 1
+        assert result.day == 15
+        assert result.hour == 12
+        assert result.minute == 34
+        assert result.second == 56
+        assert result.tzinfo is None
 
     def test_parse_invalid_date(self):
         result = parse_incident_date("invalid-date")

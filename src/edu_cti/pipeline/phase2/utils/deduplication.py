@@ -11,7 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
@@ -256,7 +256,10 @@ def parse_incident_date(date_str: Optional[str]) -> Optional[datetime]:
 
     try:
         if date_parser:
-            return date_parser.parse(date_str)
+            parsed = date_parser.parse(date_str)
+            if parsed.tzinfo is not None:
+                return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+            return parsed.replace(tzinfo=None)
     except (ValueError, TypeError):
         pass
 
