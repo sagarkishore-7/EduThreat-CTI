@@ -36,11 +36,21 @@ EXTRACTION_SCHEMA = {
         # ========== EDUCATION RELEVANCE ==========
         "is_edu_cyber_incident": {
             "type": "boolean",
-            "description": "Whether this incident is related to the education sector"
+            "description": (
+                "True ONLY if the article reports a specific, discrete cyber incident affecting one or more "
+                "identified education institutions (school, university, district, edtech vendor, etc.). "
+                "Set to FALSE for: annual/periodic threat reports (e.g. Malwarebytes report, Verizon DBIR), "
+                "aggregate statistics articles ('ransomware attacks rose X%'), trend analysis pieces, "
+                "best-practice or advice articles, or any article that discusses many incidents in aggregate "
+                "without reporting a single specific event against a named victim."
+            )
         },
         "education_relevance_reasoning": {
             "type": "string",
-            "description": "Brief explanation (1-2 sentences) of why this is or isn't education-related"
+            "description": (
+                "Brief explanation (1-2 sentences) of why this is or isn't a specific education sector incident. "
+                "If false, state whether it is a report, trend article, or other non-incident content."
+            )
         },
         "institution_name": {
             "type": "string",
