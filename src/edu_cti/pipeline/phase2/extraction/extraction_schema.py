@@ -54,7 +54,11 @@ EXTRACTION_SCHEMA = {
         },
         "institution_name": {
             "type": "string",
-            "description": "Full official name of the affected educational institution"
+            "description": (
+                "Full official name of the affected educational institution, extracted from the article body only. "
+                "Do NOT use the article headline, URL, or subtitle as the institution name. "
+                "Set to null if the victim institution is not explicitly named in the article text."
+            )
         },
         "institution_aliases": {
             "type": "array",
@@ -119,7 +123,11 @@ EXTRACTION_SCHEMA = {
         "publication_date": {"type": "string", "description": "ISO 8601 date the article/report was published, e.g. 2024-03-22"},
         "dwell_time_days": {
             "type": "number",
-            "description": "Days between initial compromise and discovery"
+            "description": (
+                "Days between initial compromise and discovery. "
+                "Only populate if BOTH the compromise date and discovery date are explicitly stated in the article. "
+                "Do NOT estimate or calculate from approximate dates."
+            )
         },
         "timeline": {
             "type": "array",
@@ -381,7 +389,7 @@ EXTRACTION_SCHEMA = {
                         ]
                     },
                     "affected_product": {"type": "string"},
-                    "cvss_score": {"type": "number", "minimum": 0, "maximum": 10}
+                    "cvss_score": {"type": "number", "minimum": 0, "maximum": 10, "description": "CVSS score — only if explicitly stated in the article. Do NOT use your knowledge of the CVE's published score."}
                 }
             }
         },
@@ -389,7 +397,13 @@ EXTRACTION_SCHEMA = {
         # ========== MITRE ATT&CK (EXTENSIVE) ==========
         "mitre_attack_techniques": {
             "type": "array",
-            "description": "MITRE ATT&CK techniques observed in this incident. Use standard technique IDs (e.g. T1566, T1486, T1078).",
+            "description": (
+                "MITRE ATT&CK techniques directly evidenced by the article's description of the attack. "
+                "Each technique must map to something explicitly stated in the article — do NOT add techniques "
+                "based on what is typical for this attack type. "
+                "If the article provides no technical detail about how the attack occurred, set to null. "
+                "Use standard technique IDs (e.g. T1566 for phishing, T1486 for encryption, T1078 for valid accounts)."
+            ),
             "items": {
                 "type": "object",
                 "properties": {
@@ -429,7 +443,10 @@ EXTRACTION_SCHEMA = {
         
         # ========== THREAT ACTOR (EXTENSIVE) ==========
         "threat_actor_claimed": {"type": "boolean"},
-        "threat_actor_name": {"type": "string"},
+        "threat_actor_name": {
+            "type": "string",
+            "description": "Name of the threat actor or group as explicitly stated in the article. Set to null if not named — do NOT infer from ransomware family or attack type."
+        },
         "threat_actor_aliases": {
             "type": "array",
             "items": {"type": "string"}
@@ -465,12 +482,16 @@ EXTRACTION_SCHEMA = {
                 "unknown"
             ]
         },
-        "threat_actor_origin_country": {"type": "string"},
+        "threat_actor_origin_country": {
+            "type": "string",
+            "description": "Country of origin as explicitly stated in the article. Do NOT infer from the actor's known attribution — set to null unless the article says so."
+        },
         "threat_actor_claim_url": {"type": "string"},
         
         # ========== RANSOMWARE/MALWARE (EXTENSIVE) ==========
         "ransomware_family": {
             "type": "string",
+            "description": "Ransomware family as explicitly named in the article. Set to null if not named — do NOT infer from ransom note style or attack pattern.",
             "enum": [
                 # Major ransomware families
                 "lockbit",
@@ -583,10 +604,10 @@ EXTRACTION_SCHEMA = {
         
         # ========== RANSOM DETAILS ==========
         "was_ransom_demanded": {"type": "boolean"},
-        "ransom_amount": {"type": "number", "description": "Standardized to USD"},
-        "ransom_amount_min": {"type": "number"},
-        "ransom_amount_max": {"type": "number"},
-        "ransom_amount_exact": {"type": "number"},
+        "ransom_amount": {"type": "number", "description": "Ransom amount in USD — only from an explicitly stated figure. Do NOT estimate. Null if not stated."},
+        "ransom_amount_min": {"type": "number", "description": "Minimum ransom amount in USD — only from an explicitly stated figure. Null if not stated."},
+        "ransom_amount_max": {"type": "number", "description": "Maximum ransom amount in USD — only from an explicitly stated figure. Null if not stated."},
+        "ransom_amount_exact": {"type": "number", "description": "Exact ransom amount in USD — only from an explicitly stated figure. Null if not stated."},
         "ransom_currency": {"type": "string"},
         "ransom_cryptocurrency": {
             "type": "string",
@@ -712,10 +733,10 @@ EXTRACTION_SCHEMA = {
                 ]
             }
         },
-        "records_affected_min": {"type": "integer"},
-        "records_affected_max": {"type": "integer"},
-        "records_affected_exact": {"type": "integer"},
-        "data_volume_gb": {"type": "number"},
+        "records_affected_min": {"type": "integer", "description": "Minimum records affected — only from an explicitly stated number in the article. Null if not stated."},
+        "records_affected_max": {"type": "integer", "description": "Maximum records affected — only from an explicitly stated number in the article. Null if not stated."},
+        "records_affected_exact": {"type": "integer", "description": "Exact records affected — only from an explicitly stated number in the article. Null if not stated."},
+        "data_volume_gb": {"type": "number", "description": "Data volume in GB — only if explicitly stated in the article. Null if not stated."},
         
         # ========== SYSTEM IMPACT (EXTENSIVE) ==========
         "infrastructure_type": {

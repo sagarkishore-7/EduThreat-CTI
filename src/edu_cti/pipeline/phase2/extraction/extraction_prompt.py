@@ -16,21 +16,24 @@ Extract detailed CTI information for cross-incident analysis, threat actor track
 CRITICAL OUTPUT REQUIREMENTS:
 
 1. EDUCATION RELEVANCE (MANDATORY FIRST ANALYSIS):
-   - is_edu_cyber_incident: Set to true if the incident involves an educational institution
-     (university, college, school, school district, research institute, theological seminary, etc.)
-   - CRITICAL: Pay special attention to:
+   - is_edu_cyber_incident: Set to true ONLY if the article reports a SPECIFIC, DISCRETE cyber
+     incident affecting one or more identified education institutions.
+     Set to FALSE for:
+     * Annual or periodic threat reports (Malwarebytes, Verizon DBIR, CrowdStrike, IBM X-Force, etc.)
+     * Aggregate statistics articles ("ransomware attacks rose X% in 2023")
+     * Trend analysis or "state of cybersecurity" pieces
+     * Best-practice, advice, or how-to articles
+     * Any article discussing many incidents in aggregate without reporting a single named victim
+   - CRITICAL for TRUE cases — pay special attention to:
      * Data breach notifications and formal regulatory filings (e.g., Maine Attorney General filings)
      * Organizations explicitly marked as "Type of Organization: Education" in breach notifications
      * Theological seminaries, religious educational institutions, Bible colleges
      * Any institution with "seminary", "academy", "institute", "college", "university", "school" in the name
      * Educational service providers, student information systems, learning management systems
    - education_relevance_reasoning: Provide a 1-2 sentence explanation WHY this is or isn't
-     education-related, citing specific evidence from the article
-   - Examples of education-related:
-     * "University of X", "XYZ School District", "College of ABC"
-     * "Asbury Theological Seminary" (theological seminary = educational institution)
-     * "Type of Organization: Education" in data breach notifications
-   - Examples of NOT education-related: general companies, government agencies (unless education dept)
+     a specific education sector incident, citing direct evidence from the article.
+   - Examples of TRUE: "University of X suffered ransomware attack", "XYZ School District breach"
+   - Examples of FALSE: "Malwarebytes report: higher ed ransomware up 70%", "How schools can improve security"
 
 2. NORMALISATION RULES (MANDATORY — apply to ALL text fields):
    - INSTITUTION NAMES: Always translate and romanise to standard English.
@@ -56,6 +59,48 @@ CRITICAL OUTPUT REQUIREMENTS:
    - Boolean fields: Use null if not mentioned (NOT false)
    - Array fields: Use null if no items found (NOT empty array [])
    - Number fields: Use null if not mentioned (NOT 0)
+
+3a. STRICT EVIDENCE REQUIREMENTS — NEVER HALLUCINATE:
+   Every value you output must be directly traceable to a specific quote, sentence, or
+   clear implication in the article. When in doubt, output null.
+
+   INSTITUTION NAME:
+   - Extract from the article body only. Do NOT derive from the article title, URL slug,
+     subtitle, or metadata. If the victim is not explicitly named in the body, set to null.
+
+   THREAT ACTOR / RANSOMWARE:
+   - threat_actor_name: Only if the article explicitly names the actor or group. Do NOT
+     infer from the ransomware family (e.g., "LockBit attacked" → actor is LockBit; but
+     "ransomware attack occurred" → actor is null).
+   - ransomware_family: Only if explicitly named in the article. Do NOT guess the family
+     from the attack description alone.
+   - threat_actor_origin_country: Only if explicitly stated. Do NOT infer from known
+     actor attribution even if you know it (e.g., LockBit linked to Russia → still null
+     unless the article says so).
+
+   MITRE ATT&CK:
+   - Only include techniques you can directly justify from how the article describes the
+     attack. Each technique must map to something the article explicitly states happened.
+   - Do NOT add plausible techniques based on attack type norms (e.g., do not add
+     T1070 "Indicator Removal" just because ransomware typically does this).
+   - If the article only says "ransomware attack" with no technical detail, output null
+     for mitre_attack_techniques rather than guessing T1486.
+
+   NUMERIC / FINANCIAL FIELDS:
+   - records_affected_exact/min/max: Only from explicitly stated numbers. Do NOT estimate
+     from context (e.g., "students affected" without a number → null).
+   - data_volume_gb: Only if explicitly stated in the article.
+   - All financial fields (ransom_amount, recovery_cost, etc.): Only from explicitly
+     stated figures. Do NOT estimate costs.
+   - cvss_score: Only if the article explicitly states a CVSS score. Do NOT use your
+     knowledge of the CVE's standard score.
+   - dwell_time_days: Only calculate if BOTH the compromise date AND discovery date are
+     explicitly stated in the article. Do NOT estimate.
+
+   DATES:
+   - Only include timeline entries and date fields for events explicitly mentioned in the
+     article. Do NOT interpolate intermediate dates across a multi-year narrative.
+   - Do NOT add "monthly checkpoint" dates that are not specifically referenced.
 
 4. ATTACK CATEGORY — choose the most specific tag that applies:
    RANSOMWARE:
