@@ -228,6 +228,31 @@ class TestEnrichmentDatabase:
         assert final.primary_url == "https://example.com/article2"
         assert final.enriched_summary == "Second summary"
 
+    def test_save_enrichment_result_cleans_headline_style_institution_name(self, temp_db, sample_incident):
+        conn, _ = temp_db
+        sample_incident.university_name = "Qilin Ransomware Targets Alamo Heights School District"
+        sample_incident.victim_raw_name = None
+        sample_incident.title = "Qilin Ransomware Targets Alamo Heights School District"
+        insert_incident(conn, sample_incident)
+
+        enrichment = _sample_enrichment_result(
+            institution_name="Qilin Ransomware Targets Alamo Heights School District",
+        )
+
+        assert save_enrichment_result(conn, sample_incident.incident_id, enrichment) is True
+
+        incident_row = conn.execute(
+            "SELECT university_name FROM incidents WHERE incident_id = ?",
+            (sample_incident.incident_id,),
+        ).fetchone()
+        flat_row = conn.execute(
+            "SELECT institution_name FROM incident_enrichments_flat WHERE incident_id = ?",
+            (sample_incident.incident_id,),
+        ).fetchone()
+
+        assert incident_row["university_name"] == "Alamo Heights School District"
+        assert flat_row["institution_name"] == "Alamo Heights School District"
+
     def test_save_enrichment_result_coerces_list_scalar_raw_json_fields(self, temp_db, sample_incident):
         """List-typed scalar LLM fields should be flattened before writing to SQLite."""
         conn, _ = temp_db

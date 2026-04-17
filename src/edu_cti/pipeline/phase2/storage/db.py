@@ -21,6 +21,7 @@ from src.edu_cti.core.countries import (
 )
 from src.edu_cti.core.db import get_connection
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
+from src.edu_cti.pipeline.phase2.utils.deduplication import choose_best_institution_name
 from src.edu_cti.core.config import DB_PATH, SERP_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
@@ -378,7 +379,9 @@ def _flatten_enrichment_for_db(
     flat = {
         'incident_id': None,  # Will be set by caller
         'is_education_related': enrichment.education_relevance.is_education_related if enrichment.education_relevance else raw_get("is_edu_cyber_incident"),
-        'institution_name': enrichment.education_relevance.institution_identified if enrichment.education_relevance else raw_get("institution_name"),
+        'institution_name': choose_best_institution_name(
+            enrichment.education_relevance.institution_identified if enrichment.education_relevance else raw_get("institution_name")
+        ),
         'institution_type': raw_get("institution_type"),
         'country': country_normalized,
         'country_code': country_code,
@@ -660,13 +663,15 @@ def save_enrichment_result(
     # Get incident data for flattened table (fallback values)
     cur = conn.execute(
         """
-        SELECT institution_type, country, region, city, title, subtitle
+        SELECT university_name, victim_raw_name, institution_type, country, region, city, title, subtitle
         FROM incidents
         WHERE incident_id = ?
         """,
         (incident_id,)
     )
     incident_row = cur.fetchone()
+    university_name_fallback = incident_row["university_name"] if incident_row else None
+    victim_name_fallback = incident_row["victim_raw_name"] if incident_row else None
     institution_type_fallback = incident_row["institution_type"] if incident_row else None
     country_fallback = incident_row["country"] if incident_row else None
     region_fallback = incident_row["region"] if incident_row else None
@@ -687,6 +692,14 @@ def save_enrichment_result(
 
     region = _scalar(raw_json_data.get("region")) if raw_json_data else region_fallback
     city = _scalar(raw_json_data.get("city")) if raw_json_data else city_fallback
+    resolved_institution_name = choose_best_institution_name(
+        _scalar(raw_json_data.get("institution_name")) if raw_json_data else None,
+        enrichment_result.education_relevance.institution_identified if enrichment_result.education_relevance else None,
+        university_name_fallback,
+        victim_name_fallback,
+        incident_row["title"] if incident_row else None,
+        incident_row["subtitle"] if incident_row else None,
+    )
     
     # Update incident with enrichment data
     primary_url = enrichment_result.primary_url
@@ -755,6 +768,12 @@ def save_enrichment_result(
     if country_code:
         update_fields += ",\n        country_code = ?"
         update_params.append(country_code)
+    if resolved_institution_name:
+        update_fields += ",\n        university_name = ?"
+        update_params.append(resolved_institution_name)
+        if not victim_name_fallback:
+            update_fields += ",\n        victim_raw_name = ?"
+            update_params.append(resolved_institution_name)
     
     # Update incident_date if LLM extracted it
     # Always use LLM-extracted date (it's more accurate than source_published_date)
@@ -861,6 +880,8 @@ def save_enrichment_result(
         }
     flat_data = _flatten_enrichment_for_db(enrichment_result, raw_json_data)
     flat_data['incident_id'] = incident_id
+    if resolved_institution_name:
+        flat_data['institution_name'] = resolved_institution_name
     # Override with incident table fallbacks only if not already set from raw_json_data
     if not flat_data.get('institution_type'):
         flat_data['institution_type'] = institution_type

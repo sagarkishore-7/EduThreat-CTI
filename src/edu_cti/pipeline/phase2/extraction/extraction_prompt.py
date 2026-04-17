@@ -39,6 +39,9 @@ CRITICAL OUTPUT REQUIREMENTS:
      * Arabic, Korean, Cyrillic, or any other non-Latin script → translate to English
      * Use the internationally recognised English name where one exists
      * If no English name exists, romanise (transliterate) to Latin characters
+     * institution_name must be ONLY the victim institution label, not a headline.
+       Remove threat actor names, attack verbs, and wrappers like
+       "Qilin Ransomware Targets ..." or "... suffers cyberattack"
    - ALL TEXT FIELDS (institution_name, city, region, threat_actor_name, etc.):
      Output in English only. No non-Latin characters anywhere in the JSON.
    - CURRENCY: Convert ALL monetary values to USD integers before storing.

@@ -4,7 +4,13 @@ from datetime import datetime
 
 import pytest
 
-from src.edu_cti.core.db import get_connection, init_db, insert_incident
+from src.edu_cti.core.db import (
+    add_incident_source,
+    get_connection,
+    init_db,
+    insert_incident,
+    register_source_event,
+)
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult, EducationRelevanceCheck
 from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_result, save_enrichment_result
@@ -82,6 +88,12 @@ class TestInstitutionNameNormalization:
     def test_normalize_handles_punctuation(self):
         assert normalize_institution_name("University of California, Los Angeles") == "california los angeles"
         assert normalize_institution_name("UCLA") == "ucla"
+
+    def test_normalize_cleans_attack_headline_wrappers(self):
+        assert (
+            normalize_institution_name("Qilin Ransomware Targets Alamo Heights School District")
+            == "alamo heights school district"
+        )
 
 
 class TestDateParsing:
@@ -193,3 +205,68 @@ class TestDeduplication:
         assert get_enrichment_result(conn, incident2.incident_id) is not None
         assert get_enrichment_result(conn, incident1.incident_id) is None
         assert get_enrichment_result(conn, incident3.incident_id) is None
+
+    def test_deduplicate_by_institution_merges_source_attribution_for_headline_style_name(self, temp_db):
+        conn, _ = temp_db
+
+        incident1 = _incident(
+            "oxylabs_news",
+            "https://example.com/dexpose",
+            "2026-04-09",
+            "Qilin Ransomware Targets Alamo Heights School District",
+        )
+        incident2 = _incident(
+            "ransomlook",
+            "https://example.com/news",
+            "2026-04-09",
+            "Alamo Heights Independent School District",
+        )
+
+        insert_incident(conn, incident1)
+        insert_incident(conn, incident2)
+        add_incident_source(conn, incident1.incident_id, incident1.source, incident1.source_event_id, "2026-04-10T00:00:00", "medium")
+        add_incident_source(conn, incident2.incident_id, incident2.source, incident2.source_event_id, "2026-04-10T01:00:00", "high")
+        register_source_event(conn, incident1.source, incident1.source_event_id, incident1.incident_id, "2026-04-10T00:00:00")
+        register_source_event(conn, incident2.source, incident2.source_event_id, incident2.incident_id, "2026-04-10T01:00:00")
+
+        save_enrichment_result(
+            conn,
+            incident1.incident_id,
+            CTIEnrichmentResult(
+                education_relevance=EducationRelevanceCheck(
+                    is_education_related=True,
+                    reasoning="Education-sector incident",
+                    institution_identified="Qilin Ransomware Targets Alamo Heights School District",
+                ),
+                primary_url=incident1.all_urls[0],
+                enriched_summary="short",
+            ),
+        )
+        save_enrichment_result(
+            conn,
+            incident2.incident_id,
+            CTIEnrichmentResult(
+                education_relevance=EducationRelevanceCheck(
+                    is_education_related=True,
+                    reasoning="Education-sector incident",
+                    institution_identified="Alamo Heights Independent School District",
+                ),
+                primary_url=incident2.all_urls[0],
+                enriched_summary="This summary is longer and should win the merge.",
+            ),
+        )
+
+        stats = deduplicate_by_institution(conn, window_days=14)
+
+        assert stats["removed"] == 1
+        source_count = conn.execute(
+            "SELECT COUNT(*) FROM incident_sources WHERE incident_id = ?",
+            (incident2.incident_id,),
+        ).fetchone()[0]
+        assert source_count == 2
+
+        surviving_name = conn.execute(
+            "SELECT institution_name FROM incident_enrichments_flat WHERE incident_id = ?",
+            (incident2.incident_id,),
+        ).fetchone()[0]
+        assert surviving_name == "Alamo Heights Independent School District"
