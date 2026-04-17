@@ -550,6 +550,7 @@ class PipelineManager:
         """
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
+        export_csv = params.get("export_csv", False)
         max_pages = params.get("max_pages", 50)  # Default 50 pages per search term (1000 articles)
         from src.edu_cti.core.config import ENABLE_OXYLABS_NEWS_HISTORICAL
 
@@ -681,8 +682,8 @@ class PipelineManager:
         if ingest_error_box[0]:
             logger.error(f"Ingestion had an error: {ingest_error_box[0]}")
 
-        # Final CSV export
-        if not run._cancel_requested:
+        # Export is opt-in so routine historical runs do not write CSVs implicitly.
+        if export_csv and not run._cancel_requested:
             try:
                 from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
                 export_enriched_dataset()
@@ -703,6 +704,7 @@ class PipelineManager:
         """Run daily incremental pipeline (ingest + enrich in parallel)."""
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
+        export_csv = params.get("export_csv", False)
         from src.edu_cti.core.config import ENABLE_OXYLABS_NEWS_DAILY
 
         ingest_params = {
@@ -799,8 +801,8 @@ class PipelineManager:
 
         ingest_thread.join(timeout=10)
 
-        # Final CSV export
-        if not run._cancel_requested:
+        # Export is opt-in so daily/scheduled runs stay lightweight by default.
+        if export_csv and not run._cancel_requested:
             try:
                 from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
                 export_enriched_dataset()
@@ -1013,7 +1015,7 @@ class PipelineManager:
         # Run enrichment
         self._scheduler_run_job("enrich", {
             "rate_limit_delay": 2.0,
-            "export_csv": True,
+            "export_csv": False,
         })
         self._scheduler_last_runs["enrich"] = datetime.utcnow().isoformat()
 

@@ -99,7 +99,7 @@ def test_run_historical_stops_when_only_unactionable_incidents_remain():
     assert result["enrich_rounds"] == 0
     assert result["cancelled"] is False
     assert run.progress["percent"] == 100
-    mock_export.assert_called_once()
+    mock_export.assert_not_called()
 
 
 def test_run_historical_enables_paid_rss_collection_by_default():
@@ -140,8 +140,63 @@ def test_run_daily_stops_when_only_unactionable_incidents_remain():
         return_value={"unenriched_incidents": 4, "ready_for_enrichment": 0},
     ), patch(
         "src.edu_cti.pipeline.phase2.csv_export.export_enriched_dataset"
-    ):
+    ) as mock_export:
         result = manager._run_daily(run, {})
 
     assert result["enrich_rounds"] == 0
     assert run.progress["percent"] == 100
+    mock_export.assert_not_called()
+
+
+def test_run_historical_exports_only_when_explicitly_requested():
+    manager = PipelineManager()
+    run = PipelineRun("historical-run", "historical", {})
+
+    with patch.object(
+        manager, "_run_ingest", return_value={"new_incidents": 0}
+    ), patch.object(
+        manager, "_run_enrich", side_effect=AssertionError("enrichment should not run")
+    ), patch(
+        "src.edu_cti.pipeline.manager._load_enrichment_stats",
+        return_value={"unenriched_incidents": 0, "ready_for_enrichment": 0},
+    ), patch(
+        "src.edu_cti.pipeline.phase2.csv_export.export_enriched_dataset"
+    ) as mock_export:
+        manager._run_historical(run, {"export_csv": True})
+
+    mock_export.assert_called_once()
+
+
+def test_run_daily_exports_only_when_explicitly_requested():
+    manager = PipelineManager()
+    run = PipelineRun("daily-run", "daily", {})
+
+    with patch.object(
+        manager, "_run_ingest", return_value={"new_incidents": 0}
+    ), patch.object(
+        manager, "_run_enrich", side_effect=AssertionError("enrichment should not run")
+    ), patch(
+        "src.edu_cti.pipeline.manager._load_enrichment_stats",
+        return_value={"unenriched_incidents": 0, "ready_for_enrichment": 0},
+    ), patch(
+        "src.edu_cti.pipeline.phase2.csv_export.export_enriched_dataset"
+    ) as mock_export:
+        manager._run_daily(run, {"export_csv": True})
+
+    mock_export.assert_called_once()
+
+
+def test_scheduler_enrichment_does_not_request_csv_export():
+    manager = PipelineManager()
+    manager._scheduler_running = True
+
+    with patch(
+        "src.edu_cti.pipeline.manager._load_enrichment_stats",
+        return_value={"unenriched_incidents": 2, "ready_for_enrichment": 1},
+    ), patch.object(manager, "_scheduler_run_job") as mock_run_job:
+        manager._scheduler_run_enrich_if_needed()
+
+    mock_run_job.assert_called_once_with(
+        "enrich",
+        {"rate_limit_delay": 2.0, "export_csv": False},
+    )

@@ -6,7 +6,7 @@ Manages the complete pipeline lifecycle:
   1. Historical collection (2019+ full scrape, run once)
   2. Incremental daily collection (new incidents only)
   3. LLM enrichment (article fetching + CTI extraction)
-  4. CSV export of enriched data
+  4. Optional CSV export of enriched data
 
 Usage:
     # First-time setup: collect all historical data from 2019+
@@ -160,7 +160,7 @@ def cmd_enrich(args):
         phase2_argv.extend(["--limit", str(args.limit)])
     if args.rate_limit_delay:
         phase2_argv.extend(["--rate-limit-delay", str(args.rate_limit_delay)])
-    if args.export_csv:
+    if getattr(args, "export_csv", False):
         phase2_argv.append("--export-csv")
     phase2_argv.extend(["--log-level", args.log_level])
 
@@ -179,6 +179,7 @@ def cmd_historical(args):
 
     1. Full historical scrape of all sources (2019+)
     2. LLM enrichment of all collected incidents
+    3. Optional CSV export when explicitly requested
     """
     from src.edu_cti.core.config import HISTORICAL_START_YEAR
 
@@ -211,7 +212,6 @@ def cmd_historical(args):
         print("=" * 60)
         args.limit = args.enrich_limit
         args.rate_limit_delay = args.rate_limit_delay or 2.0
-        args.export_csv = True
         cmd_enrich(args)
 
     elapsed = time.time() - start_time
@@ -231,7 +231,7 @@ def cmd_daily(args):
 
     1. Incremental ingestion (only new incidents)
     2. LLM enrichment of unenriched incidents
-    3. CSV export
+    3. Optional CSV export when explicitly requested
     """
     print("\n" + "=" * 60)
     print(f"  Daily Incremental Pipeline")
@@ -255,7 +255,6 @@ def cmd_daily(args):
         print("=" * 60)
         args.limit = args.enrich_limit
         args.rate_limit_delay = args.rate_limit_delay or 2.0
-        args.export_csv = True
         cmd_enrich(args)
 
     elapsed = time.time() - start_time
@@ -396,6 +395,10 @@ Examples:
         "--rate-limit-delay", type=float, default=2.0,
         help="Delay between LLM calls (default: 2.0)",
     )
+    hist_parser.add_argument(
+        "--export-csv", action="store_true",
+        help="Export enriched dataset to CSV after completion",
+    )
 
     # --- daily ---
     daily_parser = subparsers.add_parser(
@@ -413,6 +416,10 @@ Examples:
     daily_parser.add_argument(
         "--rate-limit-delay", type=float, default=2.0,
         help="Delay between LLM calls (default: 2.0)",
+    )
+    daily_parser.add_argument(
+        "--export-csv", action="store_true",
+        help="Export enriched dataset to CSV after completion",
     )
 
     # --- serve ---
