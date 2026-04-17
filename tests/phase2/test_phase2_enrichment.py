@@ -7,6 +7,7 @@ from typing import Optional
 from unittest.mock import Mock, patch
 
 import pytest
+from bs4 import BeautifulSoup
 
 from src.edu_cti.core.config import SERP_MAX_ATTEMPTS
 from src.edu_cti.core.db import get_connection, init_db, insert_incident
@@ -110,7 +111,15 @@ def _sample_enrichment_result(
     )
 
 
-def _save_sample_article(conn, incident_id: str, url: str, title: str = "Test Article") -> None:
+def _save_sample_article(
+    conn,
+    incident_id: str,
+    url: str,
+    title: str = "Test Article",
+    *,
+    author: Optional[str] = None,
+    publish_date: Optional[str] = None,
+) -> None:
     content = (
         "This is a detailed article about an education-sector cyber incident. "
         "It contains enough text to satisfy the Phase 2 content-length filter."
@@ -123,6 +132,8 @@ def _save_sample_article(conn, incident_id: str, url: str, title: str = "Test Ar
             url=url,
             title=title,
             content=content,
+            author=author,
+            publish_date=publish_date,
             fetch_successful=True,
             content_length=len(content),
         ),
@@ -131,6 +142,52 @@ def _save_sample_article(conn, incident_id: str, url: str, title: str = "Test Ar
 
 class TestArticleFetcher:
     """Tests for article fetching functionality."""
+
+    def test_extracts_structured_metadata_from_json_ld(self):
+        fetcher = ArticleFetcher(http_client=Mock())
+        soup = BeautifulSoup(
+            """
+            <html><head>
+            <script type="application/ld+json">
+            {
+              "@context": "https://schema.org",
+              "@type": "ReportageNewsArticle",
+              "datePublished": "2018-09-14T00:09:33.000Z",
+              "author": [{"@type": "Person", "name": "By Sean Coughlan"}]
+            }
+            </script>
+            </head><body></body></html>
+            """,
+            "html.parser",
+        )
+
+        assert fetcher._extract_publish_date(soup) == "2018-09-14"
+        assert fetcher._extract_author(soup) == "Sean Coughlan"
+
+    def test_extracts_structured_metadata_from_next_data(self):
+        fetcher = ArticleFetcher(http_client=Mock())
+        soup = BeautifulSoup(
+            """
+            <html><head>
+            <script id="__NEXT_DATA__" type="application/json">
+            {
+              "props": {
+                "pageProps": {
+                  "metadata": {
+                    "firstPublished": 1731672000000,
+                    "contributor": "Jane Doe"
+                  }
+                }
+              }
+            }
+            </script>
+            </head><body></body></html>
+            """,
+            "html.parser",
+        )
+
+        assert fetcher._extract_publish_date(soup) == "2024-11-15"
+        assert fetcher._extract_author(soup) == "Jane Doe"
 
     def test_fetch_article_success(self):
         """Fetcher should return the first successful article from the fallback chain."""
@@ -404,6 +461,33 @@ class TestEnrichmentDatabase:
         assert row["attack_category"] == "ransomware"
         assert row["attack_vector"] == "phishing"
         assert row["ransomware_family"] == "LockBit"
+
+    def test_save_enrichment_result_backfills_source_published_date_from_article_metadata(
+        self, temp_db, sample_incident
+    ):
+        conn, _ = temp_db
+        sample_incident.source_published_date = None
+        insert_incident(conn, sample_incident)
+        _save_sample_article(
+            conn,
+            sample_incident.incident_id,
+            "https://example.com/article1",
+            publish_date="2025-01-20",
+        )
+
+        assert save_enrichment_result(
+            conn,
+            sample_incident.incident_id,
+            _sample_enrichment_result(primary_url="https://example.com/article1"),
+            raw_json_data={"institution_name": "Test University"},
+        ) is True
+
+        row = conn.execute(
+            "SELECT source_published_date FROM incidents WHERE incident_id = ?",
+            (sample_incident.incident_id,),
+        ).fetchone()
+
+        assert row["source_published_date"] == "2025-01-20"
 
     def test_save_enrichment_result_derives_country_from_article_context(self, temp_db):
         """Explicit country evidence in the fetched article should backfill missing LLM output."""
@@ -706,6 +790,47 @@ class TestEnrichmentDatabase:
 
 class TestIncidentEnricher:
     """Tests for the main enrichment orchestrator."""
+
+    def test_enrich_article_prompt_includes_article_metadata(self, sample_incident):
+        llm_client = Mock()
+        llm_client.extract_json.return_value = """
+        {
+          "is_edu_cyber_incident": true,
+          "education_relevance_reasoning": "Education-targeted incident",
+          "institution_name": "Test University",
+          "publication_date": "2025-01-20",
+          "timeline": [
+            {
+              "date": "2025-01-15",
+              "date_precision": "day",
+              "event_description": "Attack discovered",
+              "event_type": "discovery"
+            }
+          ]
+        }
+        """
+
+        enricher = IncidentEnricher(llm_client=llm_client)
+        article = ArticleContent(
+            url="https://example.com/article1",
+            title="Test Article",
+            content="This is a detailed article about a university cyber incident.",
+            author="Alex Reporter",
+            publish_date="2025-01-20",
+            fetch_successful=True,
+            content_length=64,
+        )
+
+        result, raw_json = enricher._enrich_article(
+            sample_incident,
+            {"https://example.com/article1": article},
+        )
+
+        assert result is not None
+        assert raw_json["publication_date"] == "2025-01-20"
+        user_prompt = llm_client.extract_json.call_args.kwargs["user_prompt"]
+        assert "Article Publish Date: 2025-01-20" in user_prompt
+        assert "Article Author: Alex Reporter" in user_prompt
 
     def test_process_incident_marks_primary_article_and_cleans_up(self, temp_db, sample_incident):
         """The chosen primary article should be kept and non-primary articles removed."""

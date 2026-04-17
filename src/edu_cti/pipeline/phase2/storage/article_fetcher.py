@@ -10,6 +10,7 @@ import json
 import logging
 import time
 import random
+import re
 import requests
 from typing import List, Optional, Dict
 from dataclasses import dataclass
@@ -28,6 +29,35 @@ except ImportError:
     NEWSPAPER_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
+
+
+_STRUCTURED_AUTHOR_KEYS = {
+    "author",
+    "authors",
+    "creator",
+    "creators",
+    "contributor",
+    "contributors",
+    "byline",
+}
+
+_STRUCTURED_PUBLISH_DATE_KEYS = {
+    "datePublished",
+    "date_published",
+    "publicationDate",
+    "publishDate",
+    "publish_date",
+    "publishedAt",
+    "published_at",
+    "publishTime",
+    "publish_time",
+    "pubDate",
+    "pub_date",
+    "firstPublished",
+    "first_published",
+    "dateCreated",
+    "date_created",
+}
 
 
 def _resolve_google_news_url(url: str) -> str:
@@ -950,16 +980,157 @@ class ArticleFetcher:
                     content_parts.append(text[:10000])  # Limit to first 10k chars
         
         return ' '.join(content_parts)
+
+    def _load_structured_metadata_payloads(self, soup: BeautifulSoup) -> List[Dict]:
+        """Parse JSON-LD and common hydration blobs that may contain article metadata."""
+        payloads: List[Dict] = []
+
+        for script in soup.find_all("script"):
+            raw = script.string or script.get_text()
+            if not raw:
+                continue
+
+            script_type = (script.get("type") or "").lower()
+            script_id = (script.get("id") or "").lower()
+            parsed = None
+
+            if "ld+json" in script_type or script_id == "__next_data__":
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+            elif "application/json" in script_type and any(
+                token in raw for token in ("datePublished", "publicationDate", "firstPublished", "author", "contributor")
+            ):
+                try:
+                    parsed = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+            elif any(token in raw for token in ("__INITIAL_STATE__", "__PRELOADED_STATE__", "__NUXT__")) and any(
+                token in raw for token in ("datePublished", "publicationDate", "firstPublished", "author", "contributor")
+            ):
+                match = re.search(
+                    r"window\.(?:__INITIAL_STATE__|__PRELOADED_STATE__|__NUXT__)\s*=\s*(\{.*\})\s*;?\s*$",
+                    raw,
+                    re.DOTALL,
+                )
+                if match:
+                    try:
+                        parsed = json.loads(match.group(1))
+                    except json.JSONDecodeError:
+                        parsed = None
+
+            if parsed is not None:
+                payloads.append(parsed)
+
+        return payloads
+
+    def _collect_structured_key_matches(
+        self,
+        node,
+        target_keys: set[str],
+        matches: List,
+    ) -> None:
+        """Recursively collect values for matching keys from structured metadata."""
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if key in target_keys and value not in (None, "", [], {}):
+                    matches.append(value)
+                self._collect_structured_key_matches(value, target_keys, matches)
+        elif isinstance(node, list):
+            for item in node:
+                self._collect_structured_key_matches(item, target_keys, matches)
+
+    def _extract_structured_metadata_values(self, soup: BeautifulSoup, target_keys: set[str]) -> List:
+        """Return candidate metadata values from JSON-LD / hydration payloads."""
+        matches: List = []
+        for payload in self._load_structured_metadata_payloads(soup):
+            self._collect_structured_key_matches(payload, target_keys, matches)
+        return matches
+
+    def _normalize_author_value(self, value) -> Optional[str]:
+        """Normalize structured author values into a clean display string."""
+        if value is None:
+            return None
+
+        if isinstance(value, list):
+            authors = []
+            for item in value:
+                normalized = self._normalize_author_value(item)
+                if normalized and normalized not in authors:
+                    authors.append(normalized)
+            return ", ".join(authors) if authors else None
+
+        if isinstance(value, dict):
+            for key in ("name", "title", "label", "text", "value"):
+                if value.get(key):
+                    return self._normalize_author_value(value.get(key))
+            return None
+
+        if not isinstance(value, str):
+            return None
+
+        cleaned = BeautifulSoup(value, "html.parser").get_text(" ", strip=True)
+        cleaned = re.sub(r"^\s*by\s+", "", cleaned, flags=re.IGNORECASE)
+        cleaned = re.sub(r"\s+", " ", cleaned).strip(" ,;|-")
+        return cleaned or None
+
+    def _normalize_structured_date_value(self, value) -> Optional[str]:
+        """Normalize date strings or timestamps from structured metadata to ISO dates."""
+        if value is None:
+            return None
+
+        if isinstance(value, dict):
+            for key in ("content", "value", "@value", "text"):
+                if value.get(key):
+                    return self._normalize_structured_date_value(value.get(key))
+            return None
+
+        if isinstance(value, list):
+            for item in value:
+                normalized = self._normalize_structured_date_value(item)
+                if normalized:
+                    return normalized
+            return None
+
+        if isinstance(value, (int, float)):
+            try:
+                timestamp = float(value)
+                if timestamp > 1_000_000_000_000:
+                    timestamp /= 1000.0
+                from datetime import datetime, timezone
+                return datetime.fromtimestamp(timestamp, tz=timezone.utc).date().isoformat()
+            except (OverflowError, OSError, ValueError):
+                return None
+
+        if isinstance(value, str):
+            return self._normalize_date_to_iso(value)
+
+        return None
     
     def _extract_author(self, soup: BeautifulSoup) -> Optional[str]:
         """Extract article author from soup."""
+        for value in self._extract_structured_metadata_values(soup, _STRUCTURED_AUTHOR_KEYS):
+            author = self._normalize_author_value(value)
+            if author:
+                return author
+
         author_selectors = [
             '[rel="author"]',
             '.author',
             '[class*="author"]',
             '[itemprop="author"]',
             'meta[property="article:author"]',
-            'meta[name="author"]'
+            'meta[name="article:author"]',
+            'meta[name="author"]',
+            'meta[property="author"]',
+            'meta[name="parsely-author"]',
+            'meta[name="dc.creator"]',
+            'meta[name="dcterms.creator"]',
+            'meta[name="twitter:creator"]',
+            'meta[property="cXenseParse:author"]',
+            'meta[name="cXenseParse:author"]',
+            'meta[name="byl"]',
         ]
         
         for selector in author_selectors:
@@ -971,7 +1142,9 @@ class ArticleFetcher:
                     author = element.get_text(strip=True)
                 
                 if author:
-                    return author
+                    normalized = self._normalize_author_value(author)
+                    if normalized:
+                        return normalized
         
         return None
     
@@ -982,16 +1155,29 @@ class ArticleFetcher:
         Returns:
             Date string in ISO format (YYYY-MM-DD) when possible, or original format if parsing fails
         """
+        for value in self._extract_structured_metadata_values(soup, _STRUCTURED_PUBLISH_DATE_KEYS):
+            normalized = self._normalize_structured_date_value(value)
+            if normalized:
+                return normalized
+
         date_selectors = [
             'time[datetime]',
             '[class*="date"]',
             '[class*="published"]',
             '[itemprop="datePublished"]',
             'meta[property="article:published_time"]',
+            'meta[name="article:published_time"]',
             'meta[name="date"]',
             'meta[property="og:published_time"]',
+            'meta[name="og:published_time"]',
             'meta[name="publish-date"]',
             'meta[name="pubdate"]',
+            'meta[name="publish_date"]',
+            'meta[name="pub_date"]',
+            'meta[name="parsely-pub-date"]',
+            'meta[name="cXenseParse:publishtime"]',
+            'meta[name="dc.date"]',
+            'meta[name="dcterms.created"]',
         ]
         
         raw_date = None
@@ -1130,4 +1316,3 @@ class ArticleFetcher:
             results[url] = self.fetch_article(url)
         
         return results
-

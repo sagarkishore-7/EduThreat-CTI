@@ -177,7 +177,7 @@ CRITICAL OUTPUT REQUIREMENTS:
 ARTICLE INFORMATION:
 
 - URL: {url}
-- Title: {title}{target_institution_line}
+- Title: {title}{target_institution_line}{article_metadata_block}
 
 ARTICLE CONTENT:
 

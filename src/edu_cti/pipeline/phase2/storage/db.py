@@ -386,6 +386,37 @@ def _extract_institution_from_reasoning(reasoning: Optional[str]) -> Optional[st
     return None
 
 
+def _get_primary_article_metadata(
+    conn: sqlite3.Connection,
+    incident_id: str,
+    primary_url: Optional[str] = None,
+) -> Dict[str, Optional[str]]:
+    """Return stored metadata for the selected primary article when available."""
+    if not primary_url:
+        return {"author": None, "publish_date": None}
+
+    try:
+        row = conn.execute(
+            """
+            SELECT author, publish_date
+            FROM articles
+            WHERE incident_id = ? AND url = ?
+            LIMIT 1
+            """,
+            (incident_id, primary_url),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        return {"author": None, "publish_date": None}
+
+    if not row:
+        return {"author": None, "publish_date": None}
+
+    return {
+        "author": row["author"],
+        "publish_date": row["publish_date"],
+    }
+
+
 def _flatten_enrichment_for_db(
     enrichment: CTIEnrichmentResult,
     raw_json_data: Optional[Dict[str, Any]] = None
@@ -700,7 +731,8 @@ def save_enrichment_result(
     # Get incident data for flattened table (fallback values)
     cur = conn.execute(
         """
-        SELECT institution_name, victim_raw_name, institution_type, country, region, city, title, subtitle
+        SELECT institution_name, victim_raw_name, institution_type, country, region, city,
+               title, subtitle, source_published_date
         FROM incidents
         WHERE incident_id = ?
         """,
@@ -713,6 +745,7 @@ def save_enrichment_result(
     country_fallback = incident_row["country"] if incident_row else None
     region_fallback = incident_row["region"] if incident_row else None
     city_fallback = incident_row["city"] if incident_row else None
+    source_published_date_fallback = incident_row["source_published_date"] if incident_row else None
     
     def _scalar(v):
         """Coerce list → first element; return other values unchanged."""
@@ -760,8 +793,15 @@ def save_enrichment_result(
             incident_row["subtitle"] if incident_row else None,
         )
     
-    # Update incident with enrichment data
     primary_url = enrichment_result.primary_url
+    article_metadata = _get_primary_article_metadata(conn, incident_id, primary_url)
+    article_publish_date = article_metadata.get("publish_date")
+
+    publication_date = _scalar(raw_json_data.get("publication_date")) if raw_json_data else None
+    if not publication_date:
+        publication_date = article_publish_date
+
+    # Update incident with enrichment data
     summary = enrichment_result.enriched_summary
     
     # Build timeline JSON (handle None/empty)
@@ -833,6 +873,9 @@ def save_enrichment_result(
         if not victim_name_fallback:
             update_fields += ",\n        victim_raw_name = ?"
             update_params.append(resolved_institution_name)
+    if publication_date and not source_published_date_fallback:
+        update_fields += ",\n        source_published_date = ?"
+        update_params.append(publication_date)
     
     # Update incident_date if LLM extracted it
     # Always use LLM-extracted date (it's more accurate than source_published_date)

@@ -347,6 +347,10 @@ class IncidentEnricher:
             all_text.append(f"[URL: {url}]")
             if article.title:
                 all_text.append(f"Title: {article.title}")
+            if article.publish_date:
+                all_text.append(f"Published: {article.publish_date}")
+            if article.author:
+                all_text.append(f"Author: {article.author}")
             all_text.append(f"\n{article.content}\n")
         
         combined_text = "\n".join(all_text)
@@ -396,10 +400,20 @@ class IncidentEnricher:
         else:
             target_institution_line = ""
 
+        article_metadata_lines = []
+        if incident.source_published_date:
+            article_metadata_lines.append(f"- Source Published Date: {incident.source_published_date}")
+        if primary_article.publish_date:
+            article_metadata_lines.append(f"- Article Publish Date: {primary_article.publish_date}")
+        if primary_article.author:
+            article_metadata_lines.append(f"- Article Author: {primary_article.author}")
+        article_metadata_block = ("\n" + "\n".join(article_metadata_lines)) if article_metadata_lines else "\n- Article Metadata: unknown"
+
         user_prompt = PROMPT_TEMPLATE.format(
             url=primary_url,
             title=title,
             target_institution_line=target_institution_line,
+            article_metadata_block=article_metadata_block,
             text=combined_text
         )
 
