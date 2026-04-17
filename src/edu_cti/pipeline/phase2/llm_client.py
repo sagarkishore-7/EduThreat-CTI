@@ -25,9 +25,10 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Model selection: qwen3.5:cloud for structured CTI extraction.
-# 256K context, specifically tuned for JSON schema compliance and structured output.
-DEFAULT_MODEL = "qwen3.5:cloud"
+# Model selection: qwen2.5:72b for structured CTI extraction.
+# Confirmed working on Ollama Cloud; strong instruction-following for JSON schema compliance.
+# Override via OLLAMA_MODEL env var (e.g. qwen3.5:cloud when it stabilises on Ollama Cloud).
+DEFAULT_MODEL = "qwen2.5:72b"
 
 
 class OllamaLLMClient:
@@ -253,7 +254,10 @@ class OllamaLLMClient:
             except Exception as e:
                 last_error = e
                 if attempt < max_retries:
-                    wait = 0.1 * (2 ** attempt)  # exponential: 0.1s, 0.2s — much less blocking than linear 1s/2s
+                    error_str = str(e).lower()
+                    # Server errors (500) need longer backoff — the model endpoint may be restarting
+                    is_server_error = "500" in error_str or "internal server error" in error_str
+                    wait = 30.0 if is_server_error else (2.0 * (2 ** attempt))  # 30s for 500, else 2s/4s
                     logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait:.1f}s...")
                     import time
                     time.sleep(wait)

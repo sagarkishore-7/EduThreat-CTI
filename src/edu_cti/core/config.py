@@ -458,7 +458,7 @@ except Exception:
 # Ollama Cloud configuration
 OLLAMA_API_KEY = os.getenv("OLLAMA_API_KEY")
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "https://ollama.com")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen3.5:cloud")  # Best for structured CTI extraction
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:72b")  # Stable on Ollama Cloud; override via env var
 
 # Enrichment processing configuration
 ENRICHMENT_BATCH_SIZE = int(os.getenv("ENRICHMENT_BATCH_SIZE", "10"))  # Process N incidents per batch
