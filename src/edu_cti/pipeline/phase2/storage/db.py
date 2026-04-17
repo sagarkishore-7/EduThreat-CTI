@@ -39,6 +39,21 @@ _COUNTRY_TEXT_PATTERNS = tuple(
     if label and not (len(label) == 2 and label.isalpha())
 )
 
+_REASONING_INSTITUTION_PATTERNS = (
+    re.compile(
+        r"\bVictim is (?P<name>[^.]+?)(?:,| which| who| that| managing| making| serving|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\b(?:This incident|The incident) involves (?P<name>[^.]+?)(?:,| which| who| that|$)",
+        re.IGNORECASE,
+    ),
+    re.compile(
+        r"\binvolves (?P<name>[A-Z][^.]+?)(?:,| which| who| that|$)",
+        re.IGNORECASE,
+    ),
+)
+
 
 def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
     """
@@ -349,6 +364,28 @@ def _derive_country_from_context(
     return None
 
 
+def _extract_institution_from_reasoning(reasoning: Optional[str]) -> Optional[str]:
+    """Recover an institution label from the LLM's education-relevance reasoning."""
+    if not reasoning:
+        return None
+
+    text = re.sub(r"\s+", " ", str(reasoning)).strip()
+    if not text:
+        return None
+
+    for pattern in _REASONING_INSTITUTION_PATTERNS:
+        match = pattern.search(text)
+        if not match:
+            continue
+        candidate = match.group("name").strip(" \"'“”.,;:-")
+        cleaned = clean_institution_name(candidate)
+        if cleaned:
+            return cleaned
+        if candidate:
+            return candidate
+    return None
+
+
 def _flatten_enrichment_for_db(
     enrichment: CTIEnrichmentResult,
     raw_json_data: Optional[Dict[str, Any]] = None
@@ -376,11 +413,16 @@ def _flatten_enrichment_for_db(
     country_normalized = normalize_country(country_raw) if country_raw else None
     country_code = get_country_code(country_normalized) if country_normalized else None
     
+    reasoning_institution = _extract_institution_from_reasoning(
+        enrichment.education_relevance.reasoning if enrichment.education_relevance else raw_get("education_relevance_reasoning")
+    )
+
     flat = {
         'incident_id': None,  # Will be set by caller
         'is_education_related': enrichment.education_relevance.is_education_related if enrichment.education_relevance else raw_get("is_edu_cyber_incident"),
         'institution_name': choose_best_institution_name(
-            enrichment.education_relevance.institution_identified if enrichment.education_relevance else raw_get("institution_name")
+            enrichment.education_relevance.institution_identified if enrichment.education_relevance else raw_get("institution_name"),
+            reasoning_institution,
         ),
         'institution_type': raw_get("institution_type"),
         'country': country_normalized,
@@ -697,12 +739,18 @@ def save_enrichment_result(
     # Only fall back to multi-candidate scoring when the LLM returned null, because
     # the scoring function (tokens × 5) rewards length, letting a 15-word headline
     # beat a 2-letter LLM abbreviation like "OU".
+    _reasoning_name = _extract_institution_from_reasoning(
+        enrichment_result.education_relevance.reasoning
+        if enrichment_result.education_relevance else (
+            _scalar(raw_json_data.get("education_relevance_reasoning")) if raw_json_data else None
+        )
+    )
     _llm_name = (
         _scalar(raw_json_data.get("institution_name")) if raw_json_data else None
     ) or (
         enrichment_result.education_relevance.institution_identified
         if enrichment_result.education_relevance else None
-    )
+    ) or _reasoning_name
     if _llm_name and str(_llm_name).strip():
         # Clean the LLM output (handles the rare case where the LLM still returned
         # a headline despite the instruction), then use it directly.

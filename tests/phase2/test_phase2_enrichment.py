@@ -302,6 +302,35 @@ class TestEnrichmentDatabase:
         assert incident_row["university_name"] == "Alamo Heights School District"
         assert flat_row["institution_name"] == "Alamo Heights School District"
 
+    def test_save_enrichment_result_uses_reasoning_when_structured_name_is_missing(self, temp_db, sample_incident):
+        conn, _ = temp_db
+        sample_incident.university_name = "Hackers expose Victorian student details in data breach"
+        sample_incident.victim_raw_name = None
+        sample_incident.title = "Hackers expose Victorian student details in data breach"
+        sample_incident.subtitle = (
+            "Victorian Department of Education data breach affects hundreds of thousands of students."
+        )
+        insert_incident(conn, sample_incident)
+
+        enrichment = _sample_enrichment_result(institution_name=None)
+        enrichment.education_relevance.reasoning = (
+            "Victim is Victorian Department of Education, which manages government schools and student data."
+        )
+
+        assert save_enrichment_result(conn, sample_incident.incident_id, enrichment) is True
+
+        incident_row = conn.execute(
+            "SELECT university_name FROM incidents WHERE incident_id = ?",
+            (sample_incident.incident_id,),
+        ).fetchone()
+        flat_row = conn.execute(
+            "SELECT institution_name FROM incident_enrichments_flat WHERE incident_id = ?",
+            (sample_incident.incident_id,),
+        ).fetchone()
+
+        assert incident_row["university_name"] == "Victorian Department of Education"
+        assert flat_row["institution_name"] == "Victorian Department of Education"
+
     def test_save_enrichment_result_coerces_list_scalar_raw_json_fields(self, temp_db, sample_incident):
         """List-typed scalar LLM fields should be flattened before writing to SQLite."""
         conn, _ = temp_db
