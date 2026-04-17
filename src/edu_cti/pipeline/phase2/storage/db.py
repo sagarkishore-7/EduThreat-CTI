@@ -21,7 +21,7 @@ from src.edu_cti.core.countries import (
 )
 from src.edu_cti.core.db import get_connection
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
-from src.edu_cti.pipeline.phase2.utils.deduplication import choose_best_institution_name
+from src.edu_cti.pipeline.phase2.utils.deduplication import choose_best_institution_name, clean_institution_name
 from src.edu_cti.core.config import DB_PATH, SERP_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
@@ -692,14 +692,30 @@ def save_enrichment_result(
 
     region = _scalar(raw_json_data.get("region")) if raw_json_data else region_fallback
     city = _scalar(raw_json_data.get("city")) if raw_json_data else city_fallback
-    resolved_institution_name = choose_best_institution_name(
-        _scalar(raw_json_data.get("institution_name")) if raw_json_data else None,
-        enrichment_result.education_relevance.institution_identified if enrichment_result.education_relevance else None,
-        university_name_fallback,
-        victim_name_fallback,
-        incident_row["title"] if incident_row else None,
-        incident_row["subtitle"] if incident_row else None,
+    # Prefer the LLM's extracted name directly — it followed the prompt instruction
+    # "institution_name must be ONLY the victim institution label, not a headline".
+    # Only fall back to multi-candidate scoring when the LLM returned null, because
+    # the scoring function (tokens × 5) rewards length, letting a 15-word headline
+    # beat a 2-letter LLM abbreviation like "OU".
+    _llm_name = (
+        _scalar(raw_json_data.get("institution_name")) if raw_json_data else None
+    ) or (
+        enrichment_result.education_relevance.institution_identified
+        if enrichment_result.education_relevance else None
     )
+    if _llm_name and str(_llm_name).strip():
+        # Clean the LLM output (handles the rare case where the LLM still returned
+        # a headline despite the instruction), then use it directly.
+        _cleaned = clean_institution_name(str(_llm_name).strip())
+        resolved_institution_name = _cleaned if _cleaned else str(_llm_name).strip()
+    else:
+        # LLM returned null — use best available name from ingestion-time data.
+        resolved_institution_name = choose_best_institution_name(
+            university_name_fallback,
+            victim_name_fallback,
+            incident_row["title"] if incident_row else None,
+            incident_row["subtitle"] if incident_row else None,
+        )
     
     # Update incident with enrichment data
     primary_url = enrichment_result.primary_url

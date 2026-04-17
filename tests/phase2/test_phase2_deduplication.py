@@ -57,12 +57,12 @@ def _incident(source: str, url: str, incident_date: str, university_name: str) -
     )
 
 
-def _enrichment(summary: str, primary_url: str) -> CTIEnrichmentResult:
+def _enrichment(summary: str, primary_url: str, institution_name: str = "Test University") -> CTIEnrichmentResult:
     return CTIEnrichmentResult(
         education_relevance=EducationRelevanceCheck(
             is_education_related=True,
             reasoning="Education-sector incident",
-            institution_identified="Test University",
+            institution_identified=institution_name,
         ),
         primary_url=primary_url,
         enriched_summary=summary,
@@ -168,12 +168,12 @@ class TestDeduplication:
         save_enrichment_result(
             conn,
             incident1.incident_id,
-            _enrichment("Short summary", incident1.all_urls[0]),
+            _enrichment("Short summary", incident1.all_urls[0], institution_name="University of California, Berkeley"),
         )
         save_enrichment_result(
             conn,
             incident2.incident_id,
-            _enrichment("A much longer and more detailed summary for confidence proxy", incident2.all_urls[0]),
+            _enrichment("A much longer and more detailed summary for confidence proxy", incident2.all_urls[0], institution_name="University of California, Berkeley"),
         )
 
         duplicates = find_duplicate_institutions(
