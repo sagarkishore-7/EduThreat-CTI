@@ -25,9 +25,9 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Model selection: qwen2.5:72b is used for structured CTI extraction.
-# Strong instruction following, clean JSON output, no Chinese spam injection issue.
-DEFAULT_MODEL = "qwen2.5:72b"
+# Model selection: qwen3.5:122b-cloud for structured CTI extraction.
+# 256K context, specifically tuned for JSON schema compliance and structured output.
+DEFAULT_MODEL = "qwen3.5:122b-cloud"
 
 
 class OllamaLLMClient:
