@@ -113,6 +113,13 @@ EXTRACTION_SCHEMA = {
         },
         "timeline": {
             "type": "array",
+            "description": (
+                "Chronological list of ONLY the events explicitly stated or directly implied by the article. "
+                "Do NOT infer, fabricate, or interpolate dates that are not specifically mentioned. "
+                "If the article says 'three years ago' without a specific date, use date_precision='approximate' and "
+                "estimate the year only — do not add monthly checkpoints. "
+                "Omit any date you cannot cite a direct quote or clear implication from the article for."
+            ),
             "items": {
                 "type": "object",
                 "properties": {
