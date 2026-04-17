@@ -93,6 +93,7 @@ COUNTRY_CODE_TO_NAME = {
     "PS": "Palestine",
     "QA": "Qatar",
     "SA": "Saudi Arabia",
+    "LK": "Sri Lanka",
     "TR": "Turkey",
     "RU": "Russia",
     "UA": "Ukraine",
