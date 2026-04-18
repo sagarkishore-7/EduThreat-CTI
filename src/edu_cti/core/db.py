@@ -427,6 +427,39 @@ def init_db(conn: sqlite3.Connection) -> None:
     except Exception:
         pass
 
+    # Migration: Backfill data_breached=1 for enriched incidents where the LLM omitted
+    # the boolean but attack_category or data signals clearly imply a breach.
+    # Safe to run on every startup — only touches rows where data_breached IS NULL.
+    try:
+        _breach_cats = (
+            "'data_breach_external'", "'data_breach_internal'",
+            "'data_exposure_misconfiguration'", "'data_leak_accidental'",
+            "'ransomware_double_extortion'", "'ransomware_triple_extortion'",
+            "'ransomware_data_leak_only'",
+        )
+        _breach_cats_sql = ", ".join(_breach_cats)
+        # Check if incident_enrichments_flat table exists before running
+        cur = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='incident_enrichments_flat'"
+        )
+        if cur.fetchone():
+            conn.execute(f"""
+                UPDATE incident_enrichments_flat
+                SET data_breached = 1
+                WHERE data_breached IS NULL
+                  AND is_education_related = 1
+                  AND (
+                    attack_category IN ({_breach_cats_sql})
+                    OR data_exfiltrated = 1
+                    OR data_categories IS NOT NULL
+                    OR records_affected_exact IS NOT NULL
+                    OR records_affected_min IS NOT NULL
+                  )
+            """)
+            conn.commit()
+    except Exception:
+        pass
+
     conn.commit()
 
 
