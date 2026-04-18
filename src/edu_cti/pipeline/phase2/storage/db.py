@@ -532,7 +532,28 @@ def _flatten_enrichment_for_db(
     country_raw = raw_get("country")
     country_normalized = normalize_country(country_raw) if country_raw else None
     country_code = get_country_code(country_normalized) if country_normalized else None
-    
+
+    # Derive data_breached: use explicit LLM field first, then infer from attack_category / data signals.
+    # The LLM often classifies attack_category correctly but omits the boolean.
+    _DATA_BREACH_CATS = {
+        "data_breach_external", "data_breach_internal", "data_exposure_misconfiguration",
+        "data_leak_accidental", "ransomware_double_extortion", "ransomware_triple_extortion",
+        "ransomware_data_leak_only",
+    }
+    _llm_data_breached = raw_get("data_breached")
+    if _llm_data_breached is not None:
+        _derived_data_breached = _llm_data_breached
+    elif (raw_get("attack_category") or "").lower() in _DATA_BREACH_CATS:
+        _derived_data_breached = True
+    elif raw_get("data_exfiltrated"):
+        _derived_data_breached = True
+    elif raw_get("data_categories"):
+        _derived_data_breached = True
+    elif raw_get("records_affected_exact") or raw_get("records_affected_min"):
+        _derived_data_breached = True
+    else:
+        _derived_data_breached = None
+
     flat = {
         'incident_id': None,  # Will be set by caller
         'is_education_related': enrichment.education_relevance.is_education_related if enrichment.education_relevance else raw_get("is_edu_cyber_incident"),
@@ -563,8 +584,8 @@ def _flatten_enrichment_for_db(
         'ransom_paid': raw_get("ransom_paid") if raw_get("ransom_paid") is not None else (enrichment.attack_dynamics.ransom_paid if enrichment.attack_dynamics else None),
         'ransom_paid_amount': raw_get("ransom_paid_amount"),
         
-        # Data impact - use raw JSON data for direct fields
-        'data_breached': raw_get("data_breached"),
+        # Data impact
+        'data_breached': _derived_data_breached,
         'data_exfiltrated': raw_get("data_exfiltrated") if raw_get("data_exfiltrated") is not None else (enrichment.attack_dynamics.data_exfiltration if enrichment.attack_dynamics else (enrichment.data_impact.get("data_exfiltrated") if enrichment.data_impact else None)),
         'records_affected_exact': raw_get("records_affected_exact") or raw_get("pii_records_leaked") or (enrichment.data_impact.get("records_affected_exact") if enrichment.data_impact else None),
         'records_affected_min': raw_get("records_affected_min") or (enrichment.data_impact.get("records_affected_min") if enrichment.data_impact else None),
