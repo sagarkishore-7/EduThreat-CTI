@@ -1727,7 +1727,7 @@ def reset_phantom_enrichments(conn: sqlite3.Connection) -> int:
             incident_ids,
         )
 
-        # Delete failed articles so they can be re-fetched (e.g. with Zyte)
+        # Delete failed articles so they can be re-fetched
         conn.execute(
             f"DELETE FROM articles WHERE incident_id IN ({placeholders})",
             incident_ids,

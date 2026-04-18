@@ -485,11 +485,6 @@ FETCH_IMPOSSIBLE_SOURCES: set = {
     "securityweek",
 }
 
-# ---- Phase 2.1: IOC Enrichment (External APIs) ----
-
-# AlienVault OTX (free, register at https://otx.alienvault.com)
-OTX_API_KEY = os.getenv("OTX_API_KEY", "")
-
 # Oxylabs API configuration (web scraping and SERP discovery)
 OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
 OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")

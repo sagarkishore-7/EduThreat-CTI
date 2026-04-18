@@ -1126,24 +1126,3 @@ SUMMARY_PROMPT = (
     "Attack type: {attack_category}\n\n"
     "Article:\n{text}"
 )
-
-# Mapping of ransomware families to their known aliases
-RANSOMWARE_ALIASES = {
-    "lockbit": ["lockbit", "lockbit 2.0", "lockbit 3.0", "lockbit black", "lockbit green"],
-    "blackcat_alphv": ["blackcat", "alphv", "alpha", "noberus"],
-    "cl0p_clop": ["cl0p", "clop", "ta505"],
-    "revil_sodinokibi": ["revil", "sodinokibi", "sodin"],
-    "conti": ["conti", "ryuk successor"],
-    "vice_society": ["vice society", "vs"],
-    "royal": ["royal", "blacksuit"],
-    "black_basta": ["black basta", "blackbasta"],
-}
-
-# Attack category mapping for normalization
-ATTACK_CATEGORY_MAPPING = {
-    "ransomware": "ransomware_encryption",
-    "phishing": "phishing_credential_harvest",
-    "data_breach": "data_breach_external",
-    "ddos": "ddos_volumetric",
-    "malware": "malware_trojan",
-}
