@@ -1728,6 +1728,83 @@ async def normalize_countries_endpoint(
 
 
 # ============================================================
+# Data Breach Backfill
+# ============================================================
+
+@router.post("/backfill-data-breached")
+async def backfill_data_breached(
+    _: bool = Depends(authenticate),
+):
+    """
+    Backfill data_breached=1 for enriched incidents where the LLM omitted the boolean
+    but the attack_category clearly implies a data breach.
+    """
+    from src.edu_cti.core.db import get_connection
+    conn = None
+    try:
+        conn = get_connection()
+        breach_cats = (
+            "data_breach_external", "data_breach_internal",
+            "data_exposure_misconfiguration", "data_leak_accidental",
+            "ransomware_double_extortion", "ransomware_triple_extortion",
+            "ransomware_data_leak_only",
+        )
+        placeholders = ",".join(f"'{c}'" for c in breach_cats)
+
+        cur = conn.execute(f"""
+            SELECT COUNT(*) as c FROM incident_enrichments_flat
+            WHERE data_breached IS NULL AND is_education_related = 1
+              AND attack_category IN ({placeholders})
+        """)
+        to_fix = cur.fetchone()["c"]
+
+        conn.execute(f"""
+            UPDATE incident_enrichments_flat
+            SET data_breached = 1
+            WHERE data_breached IS NULL AND is_education_related = 1
+              AND attack_category IN ({placeholders})
+        """)
+
+        # Also derive from data_exfiltrated or data_categories being set
+        cur2 = conn.execute("""
+            SELECT COUNT(*) as c FROM incident_enrichments_flat
+            WHERE data_breached IS NULL AND is_education_related = 1
+              AND (data_exfiltrated = 1 OR data_categories IS NOT NULL
+                   OR records_affected_exact IS NOT NULL OR records_affected_min IS NOT NULL)
+        """)
+        to_fix2 = cur2.fetchone()["c"]
+
+        conn.execute("""
+            UPDATE incident_enrichments_flat
+            SET data_breached = 1
+            WHERE data_breached IS NULL AND is_education_related = 1
+              AND (data_exfiltrated = 1 OR data_categories IS NOT NULL
+                   OR records_affected_exact IS NOT NULL OR records_affected_min IS NOT NULL)
+        """)
+
+        conn.commit()
+
+        cur3 = conn.execute("""
+            SELECT COUNT(*) as c FROM incident_enrichments_flat
+            WHERE data_breached = 1 AND is_education_related = 1
+        """)
+        total_after = cur3.fetchone()["c"]
+
+        return {
+            "success": True,
+            "fixed_from_attack_category": to_fix,
+            "fixed_from_data_signals": to_fix2,
+            "total_data_breached_now": total_after,
+        }
+    except Exception as e:
+        logger.error(f"data_breached backfill failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if conn:
+            conn.close()
+
+
+# ============================================================
 # Incident Management Endpoints
 # ============================================================
 
