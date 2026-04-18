@@ -14,7 +14,7 @@ from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
 from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
-from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA
+from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA, SUMMARY_SCHEMA, SUMMARY_PROMPT
 from src.edu_cti.pipeline.phase2.extraction.extraction_prompt import PROMPT_TEMPLATE
 from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import json_to_cti_enrichment
 
@@ -504,10 +504,40 @@ class IncidentEnricher:
             if coerced_edu is False:
                 json_data = _strip_non_education_cti_fields(json_data)
 
+            # ── Second LLM call: generate enriched_summary ───────────────────
+            # Dedicated small call so the full token budget for the main call
+            # goes to intelligence fields. Only run for education-related incidents.
+            if coerced_edu is not False and combined_text:
+                try:
+                    _institution = (
+                        json_data.get("institution_name")
+                        or (incident.university_name if hasattr(incident, "university_name") else None)
+                        or "Unknown institution"
+                    )
+                    _attack_cat = json_data.get("attack_category") or "unknown"
+                    _summary_prompt = SUMMARY_PROMPT.format(
+                        institution=_institution,
+                        attack_category=_attack_cat,
+                        text=combined_text[:8000],  # cap to keep latency low
+                    )
+                    _summary_response = self.llm_client.extract_json(
+                        system_prompt="You are a Cyber Threat Intelligence analyst. Output only valid JSON.",
+                        user_prompt=_summary_prompt,
+                        schema=SUMMARY_SCHEMA,
+                        max_retries=1,
+                    )
+                    _summary_json = self._parse_json_response(_summary_response)
+                    if _summary_json and isinstance(_summary_json.get("enriched_summary"), str):
+                        json_data["enriched_summary"] = _summary_json["enriched_summary"]
+                        logger.debug(f"Summary call succeeded ({len(json_data['enriched_summary'])} chars)")
+                except Exception as _e:
+                    logger.warning(f"Summary LLM call failed (non-fatal): {_e}")
+            # ─────────────────────────────────────────────────────────────────
+
             # Map to CTIEnrichmentResult
             result = json_to_cti_enrichment(json_data, primary_url, incident)
             return result, json_data
-            
+
         except Exception as e:
             logger.error(f"Error during enrichment: {e}", exc_info=True)
             return None, None

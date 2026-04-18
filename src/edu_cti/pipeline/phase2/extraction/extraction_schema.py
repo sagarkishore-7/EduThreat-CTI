@@ -1042,15 +1042,9 @@ EXTRACTION_SCHEMA = {
             "items": {"type": "string"}
         },
         
-        # ========== SUMMARY & NOTES ==========
-        # enriched_summary is intentionally last: all structured intelligence fields
-        # are higher priority and must be generated first with full token budget.
-        # The _build_summary() fallback in json_to_schema_mapper handles empty values
-        # for incidents where only a headline snippet (not a full article) was fetched.
-        "enriched_summary": {
-            "type": "string",
-            "description": "2-3 paragraph plain-English summary of the incident for threat intelligence. Include: what happened, who was affected, what data/systems were impacted, and any known response or outcome. Leave empty string if article content is insufficient."
-        },
+        # ========== NOTES ==========
+        # enriched_summary has been moved to a dedicated second LLM call so the full
+        # token budget here is spent exclusively on structured intelligence fields.
         "extraction_notes": {
             "type": "string",
             "description": "Notes about data quality, missing information, or extraction challenges"
@@ -1100,9 +1094,38 @@ EXTRACTION_SCHEMA = {
     },
     "required": [
         "is_edu_cyber_incident",
-        "enriched_summary"
     ]
 }
+
+# ── Second LLM call: summary-only schema ──────────────────────────────────────
+SUMMARY_SCHEMA = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "enriched_summary": {
+            "type": "string",
+            "description": (
+                "2-3 sentence plain-English summary of this specific cyber incident. "
+                "State: who was attacked, what type of attack, what was impacted, "
+                "and any known outcome or response. Be factual and concise. "
+                "If the article has insufficient content to summarise, return an empty string."
+            )
+        }
+    },
+    "required": ["enriched_summary"]
+}
+
+SUMMARY_PROMPT = (
+    "You are a Cyber Threat Intelligence analyst. Based on the article below, write a "
+    "2-3 sentence plain-English summary of this specific cyber incident. "
+    "State who was attacked, what type of attack occurred, what data or systems were "
+    "impacted, and any known response or outcome. Be factual — only include what the "
+    "article explicitly states. Output only the JSON object.\n\n"
+    "Institution: {institution}\n"
+    "Attack type: {attack_category}\n\n"
+    "Article:\n{text}"
+)
 
 # Mapping of ransomware families to their known aliases
 RANSOMWARE_ALIASES = {
