@@ -7,13 +7,12 @@ Contains JSON schema-based extraction components:
 - json_to_schema_mapper: Maps JSON response to CTIEnrichmentResult
 """
 
-from .extraction_schema import EXTRACTION_SCHEMA, SUMMARY_SCHEMA, SUMMARY_PROMPT
+from .extraction_schema import EXTRACTION_SCHEMA, SUMMARY_PROMPT
 from .extraction_prompt import PROMPT_TEMPLATE
 from .json_to_schema_mapper import json_to_cti_enrichment
 
 __all__ = [
     'EXTRACTION_SCHEMA',
-    'SUMMARY_SCHEMA',
     'SUMMARY_PROMPT',
     'PROMPT_TEMPLATE',
     'json_to_cti_enrichment',

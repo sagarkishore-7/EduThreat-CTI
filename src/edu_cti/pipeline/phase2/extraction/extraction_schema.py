@@ -678,6 +678,37 @@ EXTRACTION_SCHEMA = {
         "data_sold": {"type": "boolean"},
         "data_categories": {
             "type": "array",
+            "description": (
+                "Categories of data exposed or stolen. Map article text to enum values using this guide: "
+                "student_pii — student names, IDs, contact info, dates of birth, addresses; "
+                "student_ssn — student social security numbers; "
+                "student_grades/student_transcripts — academic records, GPA, course grades, transcripts; "
+                "student_financial_aid — FAFSA, student loans, scholarships, financial aid; "
+                "student_health_records — student medical or health data; "
+                "student_disciplinary — disciplinary records; "
+                "student_immigration — visa or immigration documents; "
+                "student_housing — housing or dormitory records; "
+                "employee_pii — staff or faculty names, dates of birth, phone numbers, home addresses, job titles, employment dates; "
+                "employee_ssn — staff or faculty social security numbers; "
+                "employee_payroll — salary, payroll, compensation, direct deposit info; "
+                "employee_benefits — benefits enrollment, insurance elections; "
+                "employee_background_checks — background check results; "
+                "alumni_pii — alumni names, contact information; "
+                "alumni_donation_history — donor or giving history; "
+                "research_data — general research data or datasets; "
+                "research_grants — grant applications or award data; "
+                "research_ip — intellectual property from research; "
+                "research_unpublished — unpublished manuscripts or findings; "
+                "financial_records — billing records, invoices, financial statements, health billing; "
+                "bank_accounts — bank account numbers or ACH data; "
+                "credit_cards — payment card data, PAN, CVV; "
+                "tax_records — W-2, tax filings, IRS data; "
+                "medical_records — patient health records, EHR, clinical data; "
+                "health_insurance — health insurance policy or claims data; "
+                "usernames_passwords — login credentials, password hashes; "
+                "other — any other sensitive data mentioned that does not fit above. "
+                "Set to [] only if the article contains no mention of specific data types."
+            ),
             "items": {
                 "type": "string",
                 "enum": [
@@ -1108,8 +1139,7 @@ SUMMARY_SCHEMA = {
             "description": (
                 "2-3 sentence plain-English summary of this specific cyber incident. "
                 "State: who was attacked, what type of attack, what was impacted, "
-                "and any known outcome or response. Be factual and concise. "
-                "If the article has insufficient content to summarise, return an empty string."
+                "and any known outcome or response. Be factual and concise."
             )
         }
     },
