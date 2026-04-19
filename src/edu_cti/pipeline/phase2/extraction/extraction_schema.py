@@ -780,6 +780,40 @@ EXTRACTION_SCHEMA = {
         },
         "systems_affected": {
             "type": "array",
+            "description": (
+                "IT systems impacted by the attack. Map article text to enum values using this guide: "
+                "email_system — email, Microsoft Exchange, Outlook, Gmail, mail servers; "
+                "active_directory — Active Directory, AD, domain controller, LDAP; "
+                "identity_management — SSO, identity provider, IAM, MFA systems; "
+                "vpn — VPN, remote access, Cisco AnyConnect; "
+                "firewall — firewall, perimeter security, gateway; "
+                "file_servers — file servers, network shares, NAS, shared drives, storage servers; "
+                "backup_systems — backups, backup servers, DR systems, Veeam, Acronis; "
+                "virtualization — virtual machines, VMware, Hyper-V, hypervisor; "
+                "core_network — network, LAN, campus network, switches, routers, internet access; "
+                "wifi_network — WiFi, wireless network, wireless access points; "
+                "data_center — data center, server room, on-premises infrastructure; "
+                "public_website — website, web server, public-facing site, homepage; "
+                "student_portal — student portal, student information system (SIS), student records; "
+                "staff_portal — staff portal, employee self-service; "
+                "lms_learning_management — LMS, Canvas, Blackboard, Moodle, online learning platform; "
+                "sis_student_information — student information system, Banner, PeopleSoft, enrollment system; "
+                "registration_system — registration, course enrollment, admissions portal; "
+                "grade_system — grading system, gradebook, academic records system; "
+                "library_system — library system, catalog, OPAC; "
+                "erp_system — ERP, enterprise resource planning, SAP, Oracle; "
+                "hr_system — HR system, human resources, HRIS, PeopleSoft HR; "
+                "payroll_system — payroll system, payroll processing; "
+                "financial_system — financial system, accounting, finance, billing; "
+                "research_computing_hpc — HPC, research computing, supercomputer, high-performance compute; "
+                "ehr_emr — EHR, EMR, electronic health records, patient records, clinical systems; "
+                "hospital_systems — hospital systems, clinical operations, health system; "
+                "medical_devices — medical devices, IoT medical, connected devices; "
+                "printing_system — print services, printers; "
+                "physical_access — badge access, door locks, building security; "
+                "cctv_security — CCTV, cameras, surveillance. "
+                "Set to [] if the article does not specify which systems were affected."
+            ),
             "items": {
                 "type": "string",
                 "enum": [

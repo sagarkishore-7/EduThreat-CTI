@@ -826,7 +826,8 @@ def json_to_cti_enrichment(
     
     # System impact (as Dict)
     system_impact = None
-    systems_affected_codes = json_data.get("systems_affected_codes", [])
+    # Schema field is "systems_affected"; "systems_affected_codes" is a legacy fallback
+    systems_affected_codes = json_data.get("systems_affected") or json_data.get("systems_affected_codes") or []
     if systems_affected_codes:
         mapped_systems = map_systems_affected_codes(systems_affected_codes)
         system_impact = {
