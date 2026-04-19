@@ -346,6 +346,15 @@ EDUCATION_KEYWORDS: List[str] = [
     "department of education",
     "ministry of education",
     "public schools",
+    # Latin-script multilingual equivalents (Spanish, French, German, Portuguese,
+    # Italian, Dutch, Turkish, Polish) — enables the filter to pass native-language
+    # articles from targeted multilingual Oxylabs queries
+    "universidad", "universitat", "université", "universidade",   # university
+    "università", "universiteit", "üniversite", "uniwersytet",
+    "hochschule", "lycée", "lycee", "escuela", "escola",         # school/college
+    "faculdade", "scuola", "hogeschool", "okul", "szkoła",
+    "studenten", "estudiantes", "étudiants", "studenti",          # students
+    "alunos", "studenten", "öğrenci", "studenci",
 ]
 
 # Default page-walk limits (None = fetch all pages, can be overridden per source/CLI)

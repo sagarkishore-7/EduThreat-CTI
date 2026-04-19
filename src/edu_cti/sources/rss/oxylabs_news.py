@@ -125,6 +125,12 @@ def build_oxylabs_news_incidents(
             )
             total_results += len(results)
 
+            # Non-ASCII queries (Russian, Chinese, Japanese, Arabic, Korean, etc.)
+            # are already highly targeted education+cyber queries — trust the SERP
+            # result and skip the English keyword filter which would drop native-
+            # language articles that use no English terms.
+            query_is_native_language = any(ord(c) > 127 for c in query)
+
             for item in results:
                 url = item.get("url", "")
                 if not url or url in seen_urls:
@@ -135,11 +141,13 @@ def build_oxylabs_news_incidents(
                 source_name = item.get("source", "")
                 combined = f"{title} {description}"
 
-                # Both filters must pass — must mention both cyber and edu terms
-                if not _is_cyber_relevant(combined):
-                    continue
-                if not _is_edu_relevant(combined):
-                    continue
+                # Apply English keyword filters only for ASCII (English) queries.
+                # For native-language queries the query itself is the relevance filter.
+                if not query_is_native_language:
+                    if not _is_cyber_relevant(combined):
+                        continue
+                    if not _is_edu_relevant(combined):
+                        continue
 
                 seen_urls.add(url)
                 total_matched += 1

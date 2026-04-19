@@ -8,7 +8,7 @@ keeping all semantic guidance the model needs to make the right choices within t
 Version: 3.0.0 (Token-optimised — schema moved to format= parameter)
 """
 
-PROMPT_TEMPLATE = """You are a Senior Cyber Threat Intelligence (CTI) Analyst specialising in education sector cyber incidents. Analyse the article below and extract comprehensive threat intelligence, outputting a valid JSON object matching the schema.
+PROMPT_TEMPLATE = """You are a Senior Cyber Threat Intelligence (CTI) Analyst specialising in education sector cyber incidents. The article may be written in any language — read it in its original language and extract all fields in English as per the normalisation rules below. Output a valid JSON object matching the schema.
 
 YOUR TASK:
 Extract detailed CTI information for cross-incident analysis, threat actor tracking, attack pattern analysis, regulatory assessment, and financial impact analysis.
