@@ -285,8 +285,12 @@ def get_incident_by_id(
             if enrichment.get(key):
                 incident[key] = enrichment[key]
         
-        # Merge enrichment fields
+        # Merge enrichment fields — skip keys already parsed above to prevent
+        # the raw DB string from overwriting a deliberately-parsed None.
+        _SKIP_MERGE = {"data_categories", "systems_affected_codes", "timeline_json", "mitre_techniques_json"}
         for key, value in enrichment.items():
+            if key in _SKIP_MERGE:
+                continue
             if key not in incident or incident[key] is None:
                 incident[key] = value
     

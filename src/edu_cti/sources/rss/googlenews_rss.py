@@ -149,21 +149,6 @@ def _fetch_google_news_rss(url: str) -> List[dict]:
     return items
 
 
-def _resolve_google_news_link(url: str) -> Optional[str]:
-    """Decode a Google News redirect URL to the actual article URL."""
-    if "news.google.com" not in url:
-        return url
-    try:
-        from googlenewsdecoder import new_decoderv1
-        result = new_decoderv1(url)
-        if result and result.get("status") and result.get("decoded_url"):
-            return result["decoded_url"]
-    except ImportError:
-        logger.debug("googlenewsdecoder not installed — returning None")
-    except Exception as e:
-        logger.debug(f"Failed to decode Google News URL: {e}")
-    return None
-
 
 def build_googlenews_rss_incidents(
     *,
@@ -227,12 +212,9 @@ def build_googlenews_rss_incidents(
             for item in items:
                 raw_link = item["link"]
 
-                # Resolve Google News redirect URL to actual article URL
-                link = _resolve_google_news_link(raw_link)
-                if not link:
-                    continue
+                link = raw_link
 
-                # Dedup by resolved URL
+                # Dedup by URL
                 if link in seen_urls:
                     continue
                 seen_urls.add(link)
