@@ -1485,39 +1485,58 @@ def get_actor_ransomware_matrix(
     # Get top families
     cur = conn.execute(
         f"""
-        SELECT COALESCE(ef.ransomware_family, 'unknown') as family
+        SELECT ef.ransomware_family as family
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1 AND ef.attack_category LIKE '%ransomware%'
           AND ef.ransomware_family IS NOT NULL AND ef.ransomware_family != ''
           AND {_live_incident_exists('ef')}
         GROUP BY family ORDER BY COUNT(*) DESC LIMIT ?
         """,
-        (limit_families,)
+        (limit_families * 3,)  # fetch extra to account for normalization merges
     )
-    families = [row["family"] for row in cur.fetchall()]
+    seen_fam: set[str] = set()
+    families: list[str] = []
+    raw_family_map: dict[str, str] = {}
+    for row in cur.fetchall():
+        canonical = _normalize_ransomware_family(row["family"])
+        if canonical and canonical not in seen_fam:
+            seen_fam.add(canonical)
+            families.append(canonical)
+            if len(families) >= limit_families:
+                break
+        if canonical:
+            raw_family_map[row["family"]] = canonical
 
     if not actors or not families:
         return {"actors": actors, "families": families, "matrix": []}
 
-    # Build matrix
+    # Build matrix — query raw variants, normalize in Python
     actor_placeholders = ",".join("?" * len(actors))
-    family_placeholders = ",".join("?" * len(families))
+    raw_variants = list(raw_family_map.keys()) or families
+    family_placeholders = ",".join("?" * len(raw_variants))
     cur = conn.execute(
         f"""
         SELECT
             ef.threat_actor_name as actor,
-            COALESCE(ef.ransomware_family, 'unknown') as family,
+            ef.ransomware_family as family,
             COUNT(*) as count
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IN ({actor_placeholders})
-          AND COALESCE(ef.ransomware_family, 'unknown') IN ({family_placeholders})
+          AND ef.ransomware_family IN ({family_placeholders})
           AND {_live_incident_exists('ef')}
         GROUP BY actor, family
         """,
-        actors + families
+        actors + raw_variants,
     )
-    matrix = [dict(row) for row in cur.fetchall()]
+    # Merge rows whose raw family normalizes to the same canonical name
+    merged_matrix: dict[tuple, int] = {}
+    for row in cur.fetchall():
+        canonical = raw_family_map.get(row["family"]) or _normalize_ransomware_family(row["family"])
+        if canonical and canonical in families:
+            key = (row["actor"], canonical)
+            merged_matrix[key] = merged_matrix.get(key, 0) + row["count"]
+    matrix = [{"actor": k[0], "family": k[1], "count": v} for k, v in merged_matrix.items()]
     return {"actors": actors, "families": families, "matrix": matrix}
 
 
@@ -2526,7 +2545,7 @@ def get_ransom_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
         f"""
         SELECT
             COALESCE(NULLIF(ef.institution_type, ''), 'Unknown') as inst_type,
-            COALESCE(NULLIF(ef.ransomware_family, ''), 'Unknown Family') as family,
+            ef.ransomware_family as family,
             CASE
                 WHEN ef.ransom_paid = 1 THEN 'Paid'
                 WHEN ef.was_ransom_demanded = 1 AND (ef.ransom_paid = 0 OR ef.ransom_paid IS NULL) THEN 'Refused'
@@ -2550,7 +2569,10 @@ def get_ransom_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
     fam_out: Dict[tuple, Dict] = {}
 
     for r in rows:
-        it, fam, out = r["inst_type"], r["family"], r["outcome"]
+        it, out = r["inst_type"], r["outcome"]
+        fam = _normalize_ransomware_family(r["family"])
+        if fam is None:
+            continue  # skip unknown/unidentified families
         cnt, amt = r["count"], r["total_amount"]
         nodes_set.update([it, fam, out])
 
