@@ -586,16 +586,24 @@ def get_incidents_by_ransomware_family(
         (limit,)
     )
     rows = cur.fetchall()
-    
-    total = sum(r["count"] for r in rows)
-    result = []
+
+    # Normalize names and merge duplicates (e.g. "clop" + "cl0p_clop" → "Cl0p")
+    merged: dict[str, int] = {}
     for row in rows:
-        result.append({
-            "category": row["category"],
-            "count": row["count"],
-            "percentage": round(row["count"] / total * 100, 1) if total > 0 else 0
-        })
-    
+        canonical = _normalize_ransomware_family(row["category"])
+        if canonical is None:
+            continue
+        merged[canonical] = merged.get(canonical, 0) + row["count"]
+
+    total = sum(merged.values())
+    result = [
+        {
+            "category": name,
+            "count": count,
+            "percentage": round(count / total * 100, 1) if total > 0 else 0,
+        }
+        for name, count in sorted(merged.items(), key=lambda x: -x[1])
+    ]
     return result
 
 
@@ -859,6 +867,74 @@ def _resolve_tactic_from_technique_id(tech_id: str) -> Optional[str]:
     return _TECHNIQUE_TO_TACTIC.get(base_id)
 
 
+_UNKNOWN_FAMILY_VALUES = {
+    "unknown", "not known", "not_known", "unidentified", "n/a",
+    "not applicable", "not_applicable", "unspecified", "undetermined", "",
+}
+
+_RANSOMWARE_CANONICAL: dict[str, str] = {
+    # Cl0p
+    "cl0p": "Cl0p", "clop": "Cl0p", "cl0p_clop": "Cl0p", "cl0p/clop": "Cl0p",
+    "cl0p clop": "Cl0p",
+    # LockBit
+    "lockbit": "LockBit", "lock_bit": "LockBit", "lockbit 2.0": "LockBit",
+    "lockbit 3.0": "LockBit", "lockbit2": "LockBit", "lockbit3": "LockBit",
+    "lockbit_2": "LockBit", "lockbit_3": "LockBit",
+    # BlackCat / ALPHV
+    "blackcat": "BlackCat/ALPHV", "alphv": "BlackCat/ALPHV",
+    "blackcat_alphv": "BlackCat/ALPHV", "alphv_blackcat": "BlackCat/ALPHV",
+    "blackcat/alphv": "BlackCat/ALPHV",
+    # Black Basta
+    "blackbasta": "Black Basta", "black_basta": "Black Basta",
+    "black basta": "Black Basta",
+    # Vice Society
+    "vice_society": "Vice Society", "vice society": "Vice Society",
+    # DoppelPaymer
+    "doppelpaymer": "DoppelPaymer", "dopplepaymer": "DoppelPaymer",
+    "doppel_paymer": "DoppelPaymer",
+    # BabLock / Rorschach
+    "bablock_rorschach": "BabLock/Rorschach", "bablock": "BabLock/Rorschach",
+    "rorschach": "BabLock/Rorschach",
+    # REvil / Sodinokibi
+    "revil": "REvil", "sodinokibi": "REvil", "r_evil": "REvil",
+    # NetWalker
+    "netwalker": "NetWalker", "net_walker": "NetWalker",
+    # TrickBot
+    "trickbot": "TrickBot", "trick_bot": "TrickBot",
+    # RansomHub
+    "ransomhub": "RansomHub", "ransom_hub": "RansomHub",
+    # AvosLocker
+    "avoslocker": "AvosLocker", "avos_locker": "AvosLocker",
+    # INC Ransom
+    "inc": "INC Ransom", "inc_ransom": "INC Ransom", "inc ransom": "INC Ransom",
+    # GandCrab
+    "gandcrab": "GandCrab", "gand_crab": "GandCrab",
+    # Straight capitalisation (single canonical form)
+    "medusa": "Medusa", "ryuk": "Ryuk", "rhysida": "Rhysida", "akira": "Akira",
+    "conti": "Conti", "hive": "Hive", "royal": "Royal", "fog": "Fog",
+    "qilin": "Qilin", "snatch": "Snatch", "maze": "Maze", "monti": "Monti",
+    "interlock": "Interlock", "funksec": "FunkSec", "avaddon": "Avaddon",
+    "blacksuit": "BlackSuit", "black_suit": "BlackSuit",
+    "sinobi": "Sinobi", "ako": "AKO", "cuba": "Cuba",
+}
+
+
+def _normalize_ransomware_family(name: str | None) -> str | None:
+    """Return the canonical display name for a ransomware family, or None if unknown/excluded."""
+    if not name:
+        return None
+    normalized_key = name.strip().lower().replace(" ", "_").replace("/", "_").replace("-", "_")
+    # Also try without underscores for slash-joined variants stored literally
+    alt_key = name.strip().lower()
+    if alt_key in _UNKNOWN_FAMILY_VALUES or normalized_key in _UNKNOWN_FAMILY_VALUES:
+        return None
+    return (
+        _RANSOMWARE_CANONICAL.get(alt_key)
+        or _RANSOMWARE_CANONICAL.get(normalized_key)
+        or name.strip()  # keep raw value if not in map (preserves new families)
+    )
+
+
 def _normalize_mitre_tactic(raw: str) -> str:
     """Normalize a MITRE tactic value to the canonical display name.
 
@@ -1080,7 +1156,22 @@ def get_ransomware_timeline(
         """,
         (limit,)
     )
-    return [dict(row) for row in cur.fetchall()]
+    merged: dict[str, dict] = {}
+    for row in cur.fetchall():
+        r = dict(row)
+        canonical = _normalize_ransomware_family(r["family"])
+        if canonical is None:
+            continue
+        if canonical not in merged:
+            merged[canonical] = {"family": canonical, "incident_count": 0,
+                                 "first_seen": r["first_seen"], "last_seen": r["last_seen"]}
+        m = merged[canonical]
+        m["incident_count"] += r["incident_count"]
+        if r["first_seen"] and (not m["first_seen"] or r["first_seen"] < m["first_seen"]):
+            m["first_seen"] = r["first_seen"]
+        if r["last_seen"] and (not m["last_seen"] or r["last_seen"] > m["last_seen"]):
+            m["last_seen"] = r["last_seen"]
+    return sorted(merged.values(), key=lambda x: -x["incident_count"])[:limit]
 
 
 def get_ransomware_families_detail(
@@ -1112,12 +1203,37 @@ def get_ransomware_families_detail(
         """,
         (limit,)
     )
-    result = []
+    merged: dict[str, dict] = {}
     for row in cur.fetchall():
         r = dict(row)
-        r["countries"] = [c for c in (r["countries"] or "").split(",") if c]
-        r["exfiltration_rate"] = round(r["exfiltration_count"] / r["incident_count"] * 100, 1) if r["incident_count"] > 0 else 0
-        result.append(r)
+        canonical = _normalize_ransomware_family(r["family"])
+        if canonical is None:
+            continue
+        if canonical not in merged:
+            merged[canonical] = {
+                "family": canonical,
+                "incident_count": 0,
+                "exfiltration_count": 0,
+                "avg_ransom": None,
+                "countries": set(),
+                "first_seen": r["first_seen"],
+                "last_seen": r["last_seen"],
+            }
+        m = merged[canonical]
+        m["incident_count"] += r["incident_count"]
+        m["exfiltration_count"] += r["exfiltration_count"] or 0
+        if r["countries"]:
+            m["countries"].update(c for c in r["countries"].split(",") if c)
+        if r["first_seen"] and (not m["first_seen"] or r["first_seen"] < m["first_seen"]):
+            m["first_seen"] = r["first_seen"]
+        if r["last_seen"] and (not m["last_seen"] or r["last_seen"] > m["last_seen"]):
+            m["last_seen"] = r["last_seen"]
+
+    result = []
+    for m in sorted(merged.values(), key=lambda x: -x["incident_count"]):
+        m["countries"] = sorted(m["countries"])
+        m["exfiltration_rate"] = round(m["exfiltration_count"] / m["incident_count"] * 100, 1) if m["incident_count"] > 0 else 0
+        result.append(m)
     return result
 
 
@@ -1203,10 +1319,26 @@ def get_ransomware_geo(
         """,
         (limit_families,)
     )
-    families = [row["family"] for row in cur.fetchall()]
+    raw_families = [row["family"] for row in cur.fetchall()]
+    # Normalize and deduplicate family names
+    seen: set[str] = set()
+    families: list[str] = []
+    raw_to_canonical: dict[str, str] = {}
+    for f in raw_families:
+        canonical = _normalize_ransomware_family(f)
+        if canonical and canonical not in seen:
+            seen.add(canonical)
+            families.append(canonical)
+        if canonical:
+            raw_to_canonical[f] = canonical
 
     result = []
-    for family in families:
+    for canonical in families:
+        # Collect all raw variants that map to this canonical name
+        raw_variants = [r for r, c in raw_to_canonical.items() if c == canonical]
+        if not raw_variants:
+            raw_variants = [canonical]
+        placeholders = ",".join("?" * len(raw_variants))
         cur = conn.execute(
             f"""
             SELECT
@@ -1214,16 +1346,16 @@ def get_ransomware_geo(
                 COUNT(*) as count
             FROM incident_enrichments_flat ef
             WHERE ef.is_education_related = 1
-              AND (ef.ransomware_family = ? OR ef.threat_actor_name = ?)
+              AND (ef.ransomware_family IN ({placeholders}) OR ef.threat_actor_name IN ({placeholders}))
               AND {_live_incident_exists('ef')}
             GROUP BY country
             ORDER BY count DESC
             LIMIT ?
             """,
-            (family, family, limit_countries)
+            raw_variants + raw_variants + [limit_countries]
         )
         countries = [dict(row) for row in cur.fetchall()]
-        result.append({"family": family, "countries": countries})
+        result.append({"family": canonical, "countries": countries})
     return result
 
 
@@ -1812,11 +1944,25 @@ def get_ransomware_family_trend(
         """,
         (limit,)
     )
-    top_families = [row["family"] for row in cur.fetchall()]
+    raw_top = [row["family"] for row in cur.fetchall()]
+    # Normalize and keep unique canonical names
+    seen_fam: set[str] = set()
+    top_families: list[str] = []
+    raw_to_can: dict[str, str] = {}
+    for f in raw_top:
+        c = _normalize_ransomware_family(f)
+        if c:
+            raw_to_can[f] = c
+            if c not in seen_fam:
+                seen_fam.add(c)
+                top_families.append(c)
+
     if not top_families:
         return {"families": [], "data": []}
 
-    placeholders = ",".join("?" * len(top_families))
+    # Fetch time-series for all raw variants at once
+    all_raw = list(raw_to_can.keys())
+    placeholders = ",".join("?" * len(all_raw))
     cur = conn.execute(
         f"""
         SELECT
@@ -1831,9 +1977,15 @@ def get_ransomware_family_trend(
         GROUP BY month, family
         ORDER BY month ASC
         """,
-        top_families
+        all_raw,
     )
-    data = [dict(row) for row in cur.fetchall()]
+    # Re-key rows by canonical name
+    merged_data: dict[tuple, int] = {}
+    for row in cur.fetchall():
+        canonical = raw_to_can.get(row["family"], row["family"])
+        key = (row["month"], canonical)
+        merged_data[key] = merged_data.get(key, 0) + row["count"]
+    data = [{"month": k[0], "family": k[1], "count": v} for k, v in sorted(merged_data.items())]
     return {"families": top_families, "data": data}
 
 
@@ -2134,7 +2286,10 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
         ORDER BY family
         """
     )
-    options["ransomware_families"] = [row["family"] for row in cur.fetchall()]
+    options["ransomware_families"] = sorted({
+        c for row in cur.fetchall()
+        if (c := _normalize_ransomware_family(row["family"])) is not None
+    })
     
     # Threat actors
     cur = conn.execute(
