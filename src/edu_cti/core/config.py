@@ -318,43 +318,92 @@ CYBER_KEYWORDS: List[str] = [
 # Focused on terms that specifically identify educational institutions in cyber attack news
 # Kept minimal to avoid false positives while catching relevant incidents
 EDUCATION_KEYWORDS: List[str] = [
-    # Core institution types (most common in breach headlines)
+    # --- Broad terms that appear in almost every education breach headline ---
+    "school",           # catches "public school", "school cyberattack", etc.
+    "education",        # "education sector", "education department"
+    "student",          # "student data", "student records", "students affected"
+    "academic",         # "academic institution", "academic records"
+    # --- Core institution types ---
     "university",
     "college",
     "school district",
     "school board",
-    # Specific education terms rarely used outside education context
-    "student data",
-    "student records",
-    "student information",
-    "faculty",
-    "alumni",
-    # K-12 specific
+    "school system",
+    "unified school",   # "Unified School District" (US K-12)
+    "community college",
+    "state college",
+    # --- Specific institution types ---
+    "academy",
+    "polytechnic",
+    "seminary",
+    "conservatory",
+    "vocational school",
+    "technical college",
+    "boarding school",
+    "charter school",
+    "magnet school",
+    # --- Early education ---
+    "kindergarten",
+    "preschool",
+    # --- K-12 labels ---
     "k-12",
     "k12",
     "high school",
     "elementary school",
     "middle school",
-    # Higher education specific
+    "primary school",
+    "secondary school",
+    # --- People / roles (appear in breach descriptions) ---
+    "teacher",
+    "faculty",
+    "alumni",
+    "enrollment",
+    # --- Specific education data terms ---
+    "student data",
+    "student records",
+    "student information",
+    "student portal",
+    "transcript",
+    # --- Higher education ---
     "campus",
     "higher education",
-    # Research institutions
+    # --- Research institutions ---
     "research institute",
     "research university",
     "academic research",
-    # Government education bodies
+    # --- EdTech platforms — breaches here always affect students ---
+    "edtech",
+    "powerschool",                  # Major K-12 SIS — affected 60M+ records
+    "schoology",                    # LMS used by thousands of districts
+    "infinite campus",              # K-12 SIS
+    "student information system",
+    "learning management system",
+    "learning management",
+    # --- Education finance ---
+    "student loan",
+    "fafsa",                        # US federal student aid — education-specific
+    "student aid",
+    # --- Government / regulatory education bodies ---
     "department of education",
     "ministry of education",
+    "office of education",
     "public schools",
-    # Latin-script multilingual equivalents (Spanish, French, German, Portuguese,
-    # Italian, Dutch, Turkish, Polish) — enables the filter to pass native-language
-    # articles from targeted multilingual Oxylabs queries
-    "universidad", "universitat", "université", "universidade",   # university
+    "board of education",
+    # --- Latin-script multilingual equivalents ---
+    # (Spanish, French, German, Portuguese, Italian, Dutch, Turkish, Polish)
+    "universidad", "universitat", "université", "universidade",
     "università", "universiteit", "üniversite", "uniwersytet",
-    "hochschule", "lycée", "lycee", "escuela", "escola",         # school/college
+    "hochschule", "lycée", "lycee", "escuela", "escola",
     "faculdade", "scuola", "hogeschool", "okul", "szkoła",
-    "studenten", "estudiantes", "étudiants", "studenti",          # students
-    "alunos", "studenten", "öğrenci", "studenci",
+    "studenten", "estudiantes", "étudiants", "studenti",
+    "alunos", "öğrenci", "studenci",
+    "gymnasium",                    # European secondary school (not sports)
+    "gesamtschule",                 # German comprehensive school
+    "realschule",                   # German secondary school
+    "grundschule",                  # German primary school
+    "berufsschule",                 # German vocational school
+    "colegio",                      # Spanish school/college
+    "instituto",                    # Spanish/Portuguese educational institute
 ]
 
 # Default page-walk limits (None = fetch all pages, can be overridden per source/CLI)

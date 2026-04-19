@@ -165,13 +165,6 @@ def _resolve_google_news_link(url: str) -> Optional[str]:
     return None
 
 
-def _is_cyber_relevant(text: str) -> bool:
-    """Quick check if text contains cybersecurity-related terms."""
-    from src.edu_cti.core.config import CYBER_KEYWORDS
-    lowered = text.lower()
-    return any(k.lower() in lowered for k in CYBER_KEYWORDS)
-
-
 def build_googlenews_rss_incidents(
     *,
     max_pages: Optional[int] = None,
@@ -246,11 +239,6 @@ def build_googlenews_rss_incidents(
 
                 title = item["title"]
                 description = item.get("description", "")
-                combined = f"{title} {description}"
-
-                # Cyber relevance filter — title/description must mention cyber terms
-                if not _is_cyber_relevant(combined):
-                    continue
 
                 total_matched += 1
 
