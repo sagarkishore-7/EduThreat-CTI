@@ -1985,7 +1985,11 @@ def get_ransomware_family_trend(
         canonical = raw_to_can.get(row["family"], row["family"])
         key = (row["month"], canonical)
         merged_data[key] = merged_data.get(key, 0) + row["count"]
-    data = [{"month": k[0], "family": k[1], "count": v} for k, v in sorted(merged_data.items())]
+    data = [
+        {"month": k[0], "family": k[1], "count": v}
+        for k, v in sorted(merged_data.items(), key=lambda x: (x[0][0] or "", x[0][1] or ""))
+        if k[0] is not None
+    ]
     return {"families": top_families, "data": data}
 
 
