@@ -35,20 +35,6 @@ OXYLABS_QUERIES = NEWS_SEARCH_QUERIES_ALL
 REQUEST_DELAY = 0.5
 
 
-def _is_cyber_relevant(text: str) -> bool:
-    """Quick check if text contains cybersecurity-related terms."""
-    from src.edu_cti.core.config import CYBER_KEYWORDS
-    lowered = text.lower()
-    return any(k.lower() in lowered for k in CYBER_KEYWORDS)
-
-
-def _is_edu_relevant(text: str) -> bool:
-    """Quick check if text contains education-related terms."""
-    from src.edu_cti.core.config import EDUCATION_KEYWORDS
-    lowered = text.lower()
-    return any(k.lower() in lowered for k in EDUCATION_KEYWORDS)
-
-
 def _generate_yearly_windows(start_year: int) -> List[tuple]:
     """Generate yearly date windows from start_year to present."""
     windows = []
@@ -125,12 +111,6 @@ def build_oxylabs_news_incidents(
             )
             total_results += len(results)
 
-            # Non-ASCII queries (Russian, Chinese, Japanese, Arabic, Korean, etc.)
-            # are already highly targeted education+cyber queries — trust the SERP
-            # result and skip the English keyword filter which would drop native-
-            # language articles that use no English terms.
-            query_is_native_language = any(ord(c) > 127 for c in query)
-
             for item in results:
                 url = item.get("url", "")
                 if not url or url in seen_urls:
@@ -139,15 +119,6 @@ def build_oxylabs_news_incidents(
                 title = item.get("title", "")
                 description = item.get("description", "")
                 source_name = item.get("source", "")
-                combined = f"{title} {description}"
-
-                # Apply English keyword filters only for ASCII (English) queries.
-                # For native-language queries the query itself is the relevance filter.
-                if not query_is_native_language:
-                    if not _is_cyber_relevant(combined):
-                        continue
-                    if not _is_edu_relevant(combined):
-                        continue
 
                 seen_urls.add(url)
                 total_matched += 1
