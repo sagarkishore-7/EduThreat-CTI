@@ -14,7 +14,7 @@ from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
 from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
-from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA, SUMMARY_SCHEMA, SUMMARY_PROMPT
+from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA, SUMMARY_PROMPT
 from src.edu_cti.pipeline.phase2.extraction.extraction_prompt import PROMPT_TEMPLATE
 from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import json_to_cti_enrichment
 
@@ -520,20 +520,47 @@ class IncidentEnricher:
                         attack_category=_attack_cat,
                         text=combined_text[:8000],  # cap to keep latency low
                     )
-                    _summary_response = self.llm_client.extract_json(
-                        system_prompt=(
-                            "You are a Cyber Threat Intelligence analyst. "
-                            "Always write a complete, informative, non-empty summary. "
-                            'Output only the JSON object with key "enriched_summary".'
-                        ),
-                        user_prompt=_summary_prompt,
-                        schema=SUMMARY_SCHEMA,  # GBNF ensures complete JSON; few-shot prompt conditions model toward real content
-                        max_retries=1,
+                    # Use plain-text chat (format=None) — GBNF forces empty string,
+                    # format="json" truncates mid-string on Ollama Cloud. Plain text
+                    # returns a complete paragraph that we store directly.
+                    _chat_resp = self.llm_client.chat(
+                        messages=[
+                            {
+                                "role": "system",
+                                "content": (
+                                    "You are a Cyber Threat Intelligence analyst. "
+                                    "Write a concise 2-3 sentence summary of the cyber incident."
+                                ),
+                            },
+                            {"role": "user", "content": _summary_prompt},
+                        ],
+                        format=None,
+                        stream=False,
+                        temperature=0.1,
                     )
-                    _summary_json = self._parse_json_response(_summary_response)
-                    if _summary_json and isinstance(_summary_json.get("enriched_summary"), str):
-                        json_data["enriched_summary"] = _summary_json["enriched_summary"]
-                        logger.debug(f"Summary call succeeded ({len(json_data['enriched_summary'])} chars)")
+                    # Extract plain-text content from Ollama response
+                    _summary_text: Optional[str] = None
+                    if hasattr(_chat_resp, "message") and hasattr(_chat_resp.message, "content"):
+                        _summary_text = _chat_resp.message.content
+                    elif isinstance(_chat_resp, dict):
+                        _msg = _chat_resp.get("message", {})
+                        _summary_text = (
+                            _msg.get("content", "") if isinstance(_msg, dict)
+                            else getattr(_msg, "content", None)
+                        )
+
+                    if _summary_text:
+                        _summary_text = _summary_text.strip()
+                        # Strip any JSON wrapper if the model added one anyway
+                        if _summary_text.startswith("{"):
+                            try:
+                                _parsed = json.loads(_summary_text)
+                                _summary_text = _parsed.get("enriched_summary", _summary_text)
+                            except Exception:
+                                pass
+                        if len(_summary_text) > 20:
+                            json_data["enriched_summary"] = _summary_text
+                            logger.debug(f"Summary call succeeded ({len(_summary_text)} chars)")
                 except Exception as _e:
                     logger.warning(f"Summary LLM call failed (non-fatal): {_e}")
             # ─────────────────────────────────────────────────────────────────
