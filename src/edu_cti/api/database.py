@@ -531,30 +531,35 @@ def get_incidents_by_attack_type(
     """Get incident counts by attack category - only education-related."""
     cur = conn.execute(
         """
-        SELECT 
-            COALESCE(ef.attack_category, i.attack_type_hint, 'unknown') as category,
+        SELECT
+            COALESCE(ef.attack_category, i.attack_type_hint) as category,
             COUNT(*) as count
         FROM incidents i
         JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE ef.is_education_related = 1
+          AND COALESCE(ef.attack_category, i.attack_type_hint) IS NOT NULL
+          AND COALESCE(ef.attack_category, i.attack_type_hint) != ''
         GROUP BY category
         ORDER BY count DESC
         LIMIT ?
         """,
-        (limit,)
+        (limit * 3,)
     )
     rows = cur.fetchall()
-    
-    total = sum(r["count"] for r in rows)
-    result = []
+
+    merged: dict[str, int] = {}
     for row in rows:
-        result.append({
-            "category": row["category"],
-            "count": row["count"],
-            "percentage": round(row["count"] / total * 100, 1) if total > 0 else 0
-        })
-    
-    return result
+        canonical = _normalize_attack_category(row["category"])
+        if canonical is None:
+            continue
+        merged[canonical] = merged.get(canonical, 0) + row["count"]
+
+    total = sum(merged.values())
+    return [
+        {"category": name, "count": count,
+         "percentage": round(count / total * 100, 1) if total > 0 else 0}
+        for name, count in sorted(merged.items(), key=lambda x: -x[1])
+    ][:limit]
 
 
 def get_incidents_by_ransomware_family(
@@ -739,25 +744,32 @@ def get_attack_vectors(
     cur = conn.execute(
         f"""
         SELECT
-            COALESCE(ef.attack_vector, 'unknown') as category,
+            COALESCE(ef.initial_access_vector, ef.attack_vector) as category,
             COUNT(*) as count
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
-          AND ef.attack_vector IS NOT NULL AND ef.attack_vector != ''
+          AND COALESCE(ef.initial_access_vector, ef.attack_vector) IS NOT NULL
+          AND COALESCE(ef.initial_access_vector, ef.attack_vector) != ''
           AND {_live_incident_exists('ef')}
         GROUP BY category
         ORDER BY count DESC
         LIMIT ?
         """,
-        (limit,)
+        (limit * 3,)
     )
     rows = cur.fetchall()
-    total = sum(r["count"] for r in rows)
+    merged: dict[str, int] = {}
+    for row in rows:
+        canonical = _normalize_attack_vector(row["category"])
+        if canonical is None:
+            continue
+        merged[canonical] = merged.get(canonical, 0) + row["count"]
+    total = sum(merged.values())
     return [
-        {"category": r["category"], "count": r["count"],
-         "percentage": round(r["count"] / total * 100, 1) if total > 0 else 0}
-        for r in rows
-    ]
+        {"category": name, "count": count,
+         "percentage": round(count / total * 100, 1) if total > 0 else 0}
+        for name, count in sorted(merged.items(), key=lambda x: -x[1])
+    ][:limit]
 
 
 # MITRE ATT&CK technique ID → tactic mapping (covers the most common techniques)
@@ -933,6 +945,124 @@ def _normalize_ransomware_family(name: str | None) -> str | None:
         or _RANSOMWARE_CANONICAL.get(normalized_key)
         or name.strip()  # keep raw value if not in map (preserves new families)
     )
+
+
+_ATTACK_CATEGORY_CANONICAL: dict[str, str] = {
+    "ransomware": "Ransomware",
+    "ransomware_encryption": "Ransomware",
+    "ransomware_double_extortion": "Ransomware (Double Extortion)",
+    "ransomware_triple_extortion": "Ransomware (Triple Extortion)",
+    "ransomware_data_leak_only": "Ransomware (Data Leak Only)",
+    "data_breach": "Data Breach",
+    "data breach": "Data Breach",
+    "data_breach_external": "Data Breach",
+    "data_breach_internal": "Data Breach (Insider)",
+    "data_exposure_misconfiguration": "Data Exposure",
+    "data_leak_accidental": "Data Exposure",
+    "phishing": "Phishing",
+    "spear_phishing": "Spear Phishing",
+    "ddos": "DDoS",
+    "denial_of_service": "DDoS",
+    "dos": "DDoS",
+    "malware": "Malware",
+    "unauthorized_access": "Unauthorized Access",
+    "account_takeover": "Account Takeover",
+    "credential_theft": "Credential Theft",
+    "credential_stuffing": "Credential Stuffing",
+    "supply_chain": "Supply Chain Attack",
+    "supply_chain_attack": "Supply Chain Attack",
+    "social_engineering": "Social Engineering",
+    "business_email_compromise": "Business Email Compromise",
+    "bec": "Business Email Compromise",
+    "vulnerability_exploitation": "Vulnerability Exploitation",
+    "zero_day": "Zero-Day Exploit",
+    "zero_day_exploitation": "Zero-Day Exploit",
+    "insider_threat": "Insider Threat",
+    "cryptojacking": "Cryptojacking",
+    "defacement": "Web Defacement",
+    "web_defacement": "Web Defacement",
+    "man_in_the_middle": "Man-in-the-Middle",
+}
+
+_ATTACK_VECTOR_CANONICAL: dict[str, str] = {
+    "phishing": "Phishing",
+    "spear_phishing": "Spear Phishing",
+    "email": "Phishing",  # generic 'email' vector = phishing
+    "malicious_attachment": "Malicious Attachment",
+    "malicious_link": "Malicious Link",
+    "rdp": "RDP",
+    "remote_desktop": "RDP",
+    "remote_desktop_protocol": "RDP",
+    "vpn": "VPN Exploitation",
+    "vpn_exploitation": "VPN Exploitation",
+    "vpn_vulnerability": "VPN Exploitation",
+    "credential_stuffing": "Credential Stuffing",
+    "brute_force": "Brute Force",
+    "sql_injection": "SQL Injection",
+    "web_application": "Web Application",
+    "supply_chain": "Supply Chain",
+    "social_engineering": "Social Engineering",
+    "zero_day": "Zero-Day Exploit",
+    "drive_by_download": "Drive-By Download",
+    "removable_media": "Removable Media",
+    "usb": "Removable Media",
+    "insider": "Insider",
+    "stolen_credentials": "Stolen Credentials",
+    "exposed_service": "Exposed Service",
+    "misconfiguration": "Misconfiguration",
+}
+
+_INSTITUTION_TYPE_CANONICAL: dict[str, str] = {
+    "university": "University",
+    "k12": "K-12 School",
+    "k_12": "K-12 School",
+    "k-12": "K-12 School",
+    "school": "K-12 School",
+    "college": "College",
+    "community_college": "Community College",
+    "school_district": "School District",
+    "research_institution": "Research Institution",
+    "research_university": "University",
+    "vocational": "Vocational School",
+    "vocational_school": "Vocational School",
+    "teaching_hospital": "Teaching Hospital",
+    "online_university": "Online University",
+    "education_department": "Education Department",
+    "education_ministry": "Education Ministry",
+    "student_loan_servicer": "Student Loan Servicer",
+    "education_nonprofit": "Education Nonprofit",
+    "education_vendor": "Education Vendor",
+    "consortium": "Consortium",
+    "academy": "Academy",
+    "seminary": "Seminary",
+    "polytechnic": "Polytechnic",
+}
+
+_GENERIC_UNKNOWNS = {"unknown", "other", "n/a", "not applicable", "not_applicable",
+                     "unspecified", "unidentified", "not known", "not_known", ""}
+
+
+def _normalize_category(raw: str | None, canonical_map: dict[str, str]) -> str | None:
+    """Generic normalizer: lowercase+underscore key lookup, fallback to title-cased raw."""
+    if not raw:
+        return None
+    key = raw.strip().lower().replace(" ", "_").replace("-", "_")
+    alt = raw.strip().lower()
+    if key in _GENERIC_UNKNOWNS or alt in _GENERIC_UNKNOWNS:
+        return None
+    return canonical_map.get(key) or canonical_map.get(alt) or raw.strip().replace("_", " ").title()
+
+
+def _normalize_attack_category(raw: str | None) -> str | None:
+    return _normalize_category(raw, _ATTACK_CATEGORY_CANONICAL)
+
+
+def _normalize_attack_vector(raw: str | None) -> str | None:
+    return _normalize_category(raw, _ATTACK_VECTOR_CANONICAL)
+
+
+def _normalize_institution_type(raw: str | None) -> str | None:
+    return _normalize_category(raw, _INSTITUTION_TYPE_CANONICAL)
 
 
 def _normalize_mitre_tactic(raw: str) -> str:
@@ -1583,21 +1713,28 @@ def get_institution_types(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     cur = conn.execute(
         f"""
         SELECT
-            COALESCE(ef.institution_type, 'unknown') as category,
+            ef.institution_type as category,
             COUNT(*) as count
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
+          AND ef.institution_type IS NOT NULL AND ef.institution_type != ''
           AND {_live_incident_exists('ef')}
         GROUP BY category
         ORDER BY count DESC
         """
     )
     rows = cur.fetchall()
-    total = sum(r["count"] for r in rows)
+    merged: dict[str, int] = {}
+    for row in rows:
+        canonical = _normalize_institution_type(row["category"])
+        if canonical is None:
+            continue
+        merged[canonical] = merged.get(canonical, 0) + row["count"]
+    total = sum(merged.values())
     return [
-        {"category": r["category"], "count": r["count"],
-         "percentage": round(r["count"] / total * 100, 1) if total > 0 else 0}
-        for r in rows
+        {"category": name, "count": count,
+         "percentage": round(count / total * 100, 1) if total > 0 else 0}
+        for name, count in sorted(merged.items(), key=lambda x: -x[1])
     ]
 
 
@@ -2337,7 +2474,10 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
         ORDER BY institution_type
         """
     )
-    options["institution_types"] = [row["institution_type"] for row in cur.fetchall()]
+    options["institution_types"] = sorted({
+        c for row in cur.fetchall()
+        if (c := _normalize_institution_type(row["institution_type"])) is not None
+    })
     
     # Years
     cur = conn.execute(
@@ -2364,10 +2504,9 @@ def get_attack_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
         SELECT
             COALESCE(
                 NULLIF(ef.initial_access_vector, ''),
-                NULLIF(ef.attack_vector, ''),
-                'Unknown'
+                NULLIF(ef.attack_vector, '')
             ) as vector,
-            COALESCE(NULLIF(ef.attack_category, ''), 'Unknown') as category,
+            NULLIF(ef.attack_category, '') as category,
             CASE
                 WHEN ef.data_exfiltrated = 1 AND ef.was_ransom_demanded = 1 THEN 'Breach + Ransom'
                 WHEN ef.data_exfiltrated = 1 THEN 'Data Breach'
@@ -2387,12 +2526,16 @@ def get_attack_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
 
     links = []
 
-    # Prefix node IDs by level so the same label (e.g. "Unknown", "Phishing")
+    # Prefix node IDs by level so the same label (e.g. "Phishing")
     # in two different Sankey columns doesn't create a circular link in d3-sankey.
     vec_cat: Dict[tuple, int] = {}
     cat_out: Dict[tuple, int] = {}
     for r in rows:
-        v, c, o, cnt = r["vector"], r["category"], r["outcome"], r["count"]
+        v_raw, c_raw, o, cnt = r["vector"], r["category"], r["outcome"], r["count"]
+        v = _normalize_attack_vector(v_raw)
+        c = _normalize_attack_category(c_raw)
+        if v is None or c is None:
+            continue
         vid, cid, oid = f"vec:{v}", f"cat:{c}", f"out:{o}"
         vec_cat[(vid, cid)] = vec_cat.get((vid, cid), 0) + cnt
         cat_out[(cid, oid)] = cat_out.get((cid, oid), 0) + cnt
