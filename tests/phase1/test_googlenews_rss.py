@@ -46,7 +46,6 @@ def test_build_googlenews_rss_incidents_serializes_pub_date(monkeypatch):
         "_resolve_google_news_link",
         lambda _url: "https://example.com/story",
     )
-    monkeypatch.setattr(googlenews_rss, "_is_cyber_relevant", lambda _text: True)
     monkeypatch.setattr(googlenews_rss.time, "sleep", lambda _seconds: None)
 
     saved = []
