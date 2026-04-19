@@ -9,7 +9,6 @@ Covers three layers where type mismatches cause silent data loss or 500 errors:
 """
 
 import json
-from typing import Optional
 
 import pytest
 
@@ -68,7 +67,7 @@ class TestSystemImpactPydanticContract:
 #    (the exact three-liner from database.py lines 272-277 / 265-270)
 # ---------------------------------------------------------------------------
 
-def _parse_json_list(raw_value: Optional[str]):
+def _parse_json_list(raw_value: str | None):
     """Mirror of the coercion logic in database.py for data_categories and
     systems_affected_codes."""
     if not raw_value:
