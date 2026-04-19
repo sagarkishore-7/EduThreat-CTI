@@ -616,6 +616,7 @@ async def get_incident(incident_id: str):
         data_impact = DataImpact(
             data_breached=incident_data.get("data_breached"),
             data_exfiltrated=incident_data.get("data_exfiltrated"),
+            data_categories=incident_data.get("data_categories"),
             records_affected_exact=incident_data.get("records_affected_exact"),
             records_affected_min=incident_data.get("records_affected_min"),
             records_affected_max=incident_data.get("records_affected_max"),

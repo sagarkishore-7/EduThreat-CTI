@@ -209,6 +209,9 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             records_affected_max INTEGER,
             pii_records_leaked INTEGER,
             
+            -- Data Categories
+            data_categories TEXT,  -- JSON array of category codes (e.g. ["student_pii","employee_ssn"])
+
             -- System Impact
             systems_affected_codes TEXT,  -- JSON array
             critical_systems_affected INTEGER,
@@ -357,7 +360,7 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
     )
 
     # Add columns to existing tables if they don't exist (migration)
-    for col, col_type in [("country_code", "TEXT"), ("enriched_at", "TEXT"), ("skip_reason", "TEXT")]:
+    for col, col_type in [("country_code", "TEXT"), ("enriched_at", "TEXT"), ("skip_reason", "TEXT"), ("data_categories", "TEXT")]:
         try:
             conn.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
@@ -591,6 +594,10 @@ def _flatten_enrichment_for_db(
         'records_affected_min': raw_get("records_affected_min") or (enrichment.data_impact.get("records_affected_min") if enrichment.data_impact else None),
         'records_affected_max': raw_get("records_affected_max") or (enrichment.data_impact.get("records_affected_max") if enrichment.data_impact else None),
         'pii_records_leaked': raw_get("pii_records_leaked"),
+        'data_categories': json.dumps(
+            raw_get("data_categories")
+            or (enrichment.data_impact.get("data_types_affected") if enrichment.data_impact else None)
+        ) if (raw_get("data_categories") or (enrichment.data_impact and enrichment.data_impact.get("data_types_affected"))) else None,
         
         # System impact
         'systems_affected_codes': json.dumps(raw_get("systems_affected_codes")) if raw_get("systems_affected_codes") else (json.dumps(enrichment.system_impact.get("systems_affected")) if enrichment.system_impact and enrichment.system_impact.get("systems_affected") else None),
@@ -1131,7 +1138,7 @@ def save_enrichment_result(
         'initial_access_description', 'ransomware_family', 'threat_actor_name', 'threat_actor_claim_url',
         'was_ransom_demanded', 'ransom_amount', 'ransom_currency', 'ransom_paid', 'ransom_paid_amount',
         'data_breached', 'data_exfiltrated', 'records_affected_exact', 'records_affected_min',
-        'records_affected_max', 'pii_records_leaked', 'systems_affected_codes', 'critical_systems_affected',
+        'records_affected_max', 'pii_records_leaked', 'data_categories', 'systems_affected_codes', 'critical_systems_affected',
         'network_compromised', 'email_system_affected', 'student_portal_affected', 'research_systems_affected',
         'hospital_systems_affected', 'cloud_services_affected', 'third_party_vendor_impact', 'vendor_name',
         'teaching_impacted', 'teaching_disrupted', 'research_impacted', 'research_disrupted',

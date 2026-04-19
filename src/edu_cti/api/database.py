@@ -267,6 +267,12 @@ def get_incident_by_id(
                 incident["systems_affected"] = json.loads(enrichment["systems_affected_codes"])
             except Exception:
                 incident["systems_affected"] = None
+
+        if enrichment.get("data_categories"):
+            try:
+                incident["data_categories"] = json.loads(enrichment["data_categories"])
+            except Exception:
+                incident["data_categories"] = None
         
         # Use enrichment institution_name as primary (LLM-extracted name)
         if enrichment.get("institution_name"):
