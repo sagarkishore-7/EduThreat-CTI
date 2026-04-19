@@ -1752,3 +1752,106 @@ async def clear_all_incidents(
         conn.close()
 
 
+@router.post("/migrations/backfill-enrichment-fields")
+async def backfill_enrichment_fields(
+    _: bool = Depends(authenticate),
+):
+    """
+    Backfill incident_severity, institution_size, threat_actor_category,
+    threat_actor_motivation, threat_actor_origin_country, and data_categories
+    from stored enrichment_data JSON into the flat table.
+
+    Safe to run multiple times (uses COALESCE — will not overwrite existing values).
+    """
+    import json as _json
+
+    conn = get_api_connection(read_only=False)
+    try:
+        cur = conn.cursor()
+
+        # Add columns if missing
+        new_cols = [
+            ("incident_severity", "TEXT"),
+            ("institution_size", "TEXT"),
+            ("threat_actor_category", "TEXT"),
+            ("threat_actor_motivation", "TEXT"),
+            ("threat_actor_origin_country", "TEXT"),
+            ("data_categories", "TEXT"),
+        ]
+        added = []
+        for col, typ in new_cols:
+            try:
+                cur.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {typ}")
+                added.append(col)
+            except Exception:
+                pass
+        conn.commit()
+
+        cur.execute(
+            "SELECT incident_id, enrichment_data FROM incident_enrichments WHERE enrichment_data IS NOT NULL"
+        )
+        rows = cur.fetchall()
+
+        updated = 0
+        failed = 0
+        for incident_id, raw in rows:
+            try:
+                data = _json.loads(raw)
+            except Exception:
+                failed += 1
+                continue
+
+            ta = data.get("threat_actor") or {}
+            severity = data.get("incident_severity") or (data.get("incident_metadata") or {}).get("severity")
+            inst_size = data.get("institution_size") or (data.get("institution_profile") or {}).get("institution_size")
+            ta_cat = ta.get("category") or ta.get("actor_category") or ta.get("threat_actor_category")
+            ta_mot = ta.get("motivation") or ta.get("threat_actor_motivation")
+            ta_origin = ta.get("origin_country") or ta.get("threat_actor_origin_country")
+
+            di = data.get("data_impact") or {}
+            cats = data.get("data_categories") or di.get("data_types_affected") or di.get("data_categories")
+            cats_json = _json.dumps(cats) if cats else None
+
+            cur.execute("""
+                UPDATE incident_enrichments_flat SET
+                    incident_severity           = COALESCE(incident_severity, ?),
+                    institution_size            = COALESCE(institution_size, ?),
+                    threat_actor_category       = COALESCE(threat_actor_category, ?),
+                    threat_actor_motivation     = COALESCE(threat_actor_motivation, ?),
+                    threat_actor_origin_country = COALESCE(threat_actor_origin_country, ?),
+                    data_categories             = COALESCE(data_categories, ?)
+                WHERE incident_id = ?
+            """, (severity, inst_size, ta_cat, ta_mot, ta_origin, cats_json, incident_id))
+            if cur.rowcount:
+                updated += 1
+
+        conn.commit()
+
+        def _count(col):
+            cur.execute(f"SELECT COUNT(*) FROM incident_enrichments_flat WHERE {col} IS NOT NULL")
+            return cur.fetchone()[0]
+
+        stats = {
+            "incident_severity": _count("incident_severity"),
+            "institution_size": _count("institution_size"),
+            "threat_actor_category": _count("threat_actor_category"),
+            "threat_actor_motivation": _count("threat_actor_motivation"),
+            "data_categories": _count("data_categories"),
+        }
+        cur.execute("SELECT COUNT(*) FROM incident_enrichments_flat")
+        total_flat = cur.fetchone()[0]
+
+        return {
+            "success": True,
+            "enrichments_processed": len(rows),
+            "flat_rows_updated": updated,
+            "parse_failures": failed,
+            "columns_added": added,
+            "population_counts": stats,
+            "total_flat_rows": total_flat,
+        }
+    except Exception as e:
+        logger.error(f"Backfill failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
