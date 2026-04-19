@@ -185,6 +185,10 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             region TEXT,
             city TEXT,
             
+            -- Incident Classification
+            incident_severity TEXT,  -- critical / high / medium / low
+            institution_size TEXT,   -- small_under_5k / medium_5k_20k / large_20k_50k / very_large_over_50k
+
             -- Attack Details
             attack_category TEXT,
             attack_vector TEXT,
@@ -192,6 +196,9 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             initial_access_description TEXT,
             ransomware_family TEXT,
             threat_actor_name TEXT,
+            threat_actor_category TEXT,   -- ransomware_gang / apt_nation_state / hacktivist / etc.
+            threat_actor_motivation TEXT, -- financial / espionage / hacktivism / etc.
+            threat_actor_origin_country TEXT,
             threat_actor_claim_url TEXT,
             
             -- Ransom
@@ -360,7 +367,13 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
     )
 
     # Add columns to existing tables if they don't exist (migration)
-    for col, col_type in [("country_code", "TEXT"), ("enriched_at", "TEXT"), ("skip_reason", "TEXT"), ("data_categories", "TEXT")]:
+    for col, col_type in [
+        ("country_code", "TEXT"), ("enriched_at", "TEXT"), ("skip_reason", "TEXT"),
+        ("data_categories", "TEXT"),
+        ("incident_severity", "TEXT"), ("institution_size", "TEXT"),
+        ("threat_actor_category", "TEXT"), ("threat_actor_motivation", "TEXT"),
+        ("threat_actor_origin_country", "TEXT"),
+    ]:
         try:
             conn.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
@@ -564,20 +577,27 @@ def _flatten_enrichment_for_db(
         # resolved_institution_name it computed — set None here as a placeholder.
         'institution_name': None,
         'institution_type': raw_get("institution_type"),
+        'institution_size': raw_get("institution_size"),
         'country': country_normalized,
         'country_code': country_code,
         'region': raw_get("region"),
         'city': raw_get("city"),
-        
+
+        # Incident classification
+        'incident_severity': raw_get("incident_severity"),
+
         # Attack details - prefer raw JSON data for direct fields
         'attack_category': raw_get("attack_category"),
         'attack_vector': raw_get("attack_vector") or (enrichment.attack_dynamics.attack_vector if enrichment.attack_dynamics else None),
         'initial_access_vector': raw_get("initial_access_vector"),
         'initial_access_description': enrichment.initial_access_description or raw_get("initial_access_description"),
-        'ransomware_family': raw_get("ransomware_family_or_group") or (enrichment.attack_dynamics.ransomware_family if enrichment.attack_dynamics else None),
-        
+        'ransomware_family': raw_get("ransomware_family_or_group") or raw_get("ransomware_family") or (enrichment.attack_dynamics.ransomware_family if enrichment.attack_dynamics else None),
+
         # Threat actor
         'threat_actor_name': raw_get("threat_actor_name"),
+        'threat_actor_category': raw_get("threat_actor_category"),
+        'threat_actor_motivation': raw_get("threat_actor_motivation"),
+        'threat_actor_origin_country': raw_get("threat_actor_origin_country"),
         'threat_actor_claim_url': raw_get("threat_actor_claim_url"),
         
         # Ransom - use raw JSON data for exact values
@@ -1133,9 +1153,11 @@ def save_enrichment_result(
     
     # Define all columns in order
     all_columns = [
-        'incident_id', 'is_education_related', 'institution_name', 'institution_type',
+        'incident_id', 'is_education_related', 'institution_name', 'institution_type', 'institution_size',
+        'incident_severity',
         'country', 'country_code', 'region', 'city', 'attack_category', 'attack_vector', 'initial_access_vector',
-        'initial_access_description', 'ransomware_family', 'threat_actor_name', 'threat_actor_claim_url',
+        'initial_access_description', 'ransomware_family',
+        'threat_actor_name', 'threat_actor_category', 'threat_actor_motivation', 'threat_actor_origin_country', 'threat_actor_claim_url',
         'was_ransom_demanded', 'ransom_amount', 'ransom_currency', 'ransom_paid', 'ransom_paid_amount',
         'data_breached', 'data_exfiltrated', 'records_affected_exact', 'records_affected_min',
         'records_affected_max', 'pii_records_leaked', 'data_categories', 'systems_affected_codes', 'critical_systems_affected',

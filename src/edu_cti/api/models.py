@@ -114,6 +114,10 @@ class SystemImpact(BaseModel):
     email_system_affected: Optional[bool] = None
     student_portal_affected: Optional[bool] = None
     research_systems_affected: Optional[bool] = None
+    hospital_systems_affected: Optional[bool] = None
+    cloud_services_affected: Optional[bool] = None
+    third_party_vendor_impact: Optional[bool] = None
+    vendor_name: Optional[str] = None
 
 
 class UserImpact(BaseModel):
@@ -138,6 +142,9 @@ class FinancialImpact(BaseModel):
 class RegulatoryImpact(BaseModel):
     """Regulatory and compliance impact."""
     applicable_regulations: Optional[List[str]] = None
+    gdpr_breach: Optional[bool] = None
+    hipaa_breach: Optional[bool] = None
+    ferpa_breach: Optional[bool] = None
     breach_notification_required: Optional[bool] = None
     notification_sent: Optional[bool] = None
     fine_imposed: Optional[bool] = None
@@ -150,8 +157,11 @@ class RecoveryMetrics(BaseModel):
     """Recovery and response metrics."""
     recovery_method: Optional[str] = None
     recovery_duration_days: Optional[float] = None
+    from_backup: Optional[bool] = None
+    mfa_implemented: Optional[bool] = None
     law_enforcement_involved: Optional[bool] = None
     ir_firm_engaged: Optional[str] = None
+    forensics_firm: Optional[str] = None
     security_improvements: Optional[List[str]] = None
 
 

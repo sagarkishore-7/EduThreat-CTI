@@ -630,6 +630,10 @@ async def get_incident(incident_id: str):
             email_system_affected=incident_data.get("email_system_affected"),
             student_portal_affected=incident_data.get("student_portal_affected"),
             research_systems_affected=incident_data.get("research_systems_affected"),
+            hospital_systems_affected=incident_data.get("hospital_systems_affected"),
+            cloud_services_affected=incident_data.get("cloud_services_affected"),
+            third_party_vendor_impact=incident_data.get("third_party_vendor_impact"),
+            vendor_name=incident_data.get("vendor_name"),
         )
         
         user_impact = UserImpact(
@@ -648,6 +652,9 @@ async def get_incident(incident_id: str):
         )
         
         regulatory_impact = RegulatoryImpact(
+            gdpr_breach=incident_data.get("gdpr_breach"),
+            hipaa_breach=incident_data.get("hipaa_breach"),
+            ferpa_breach=incident_data.get("ferpa_breach"),
             breach_notification_required=incident_data.get("breach_notification_required"),
             notification_sent=incident_data.get("notifications_sent"),
             fine_imposed=incident_data.get("fine_imposed"),
@@ -655,10 +662,13 @@ async def get_incident(incident_id: str):
             lawsuits_filed=incident_data.get("lawsuits_filed"),
             class_action_filed=incident_data.get("class_action"),
         )
-        
+
         recovery_metrics = RecoveryMetrics(
             recovery_duration_days=incident_data.get("recovery_timeframe_days"),
+            from_backup=incident_data.get("from_backup"),
+            mfa_implemented=incident_data.get("mfa_implemented"),
             ir_firm_engaged=incident_data.get("incident_response_firm"),
+            forensics_firm=incident_data.get("forensics_firm"),
         )
         
         transparency_metrics = TransparencyMetrics(
@@ -672,6 +682,7 @@ async def get_incident(incident_id: str):
             incident_id=incident_data["incident_id"],
             institution_name=incident_data.get("institution_name") or "Unknown",
             institution_type=incident_data.get("institution_type"),
+            institution_size=incident_data.get("institution_size"),
             country=incident_data.get("country"),
             country_code=incident_data.get("country_code"),
             region=incident_data.get("region"),
@@ -689,9 +700,12 @@ async def get_incident(incident_id: str):
             leak_site_url=incident_data.get("leak_site_url"),
             attack_type_hint=incident_data.get("attack_type_hint"),
             attack_category=incident_data.get("attack_category"),
+            incident_severity=incident_data.get("incident_severity"),
             status=incident_data.get("status", "suspected"),
             source_confidence=incident_data.get("source_confidence", "medium"),
             threat_actor_name=incident_data.get("threat_actor_name"),
+            threat_actor_category=incident_data.get("threat_actor_category"),
+            threat_actor_motivation=incident_data.get("threat_actor_motivation"),
             timeline=timeline,
             mitre_attack_techniques=mitre_techniques,
             attack_dynamics=attack_dynamics,
