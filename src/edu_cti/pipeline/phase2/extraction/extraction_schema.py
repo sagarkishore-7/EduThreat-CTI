@@ -1147,12 +1147,18 @@ SUMMARY_SCHEMA = {
 }
 
 SUMMARY_PROMPT = (
-    "You are a Cyber Threat Intelligence analyst. Based on the article below, write a "
-    "2-3 sentence plain-English summary of this specific cyber incident. "
-    "State who was attacked, what type of attack occurred, what data or systems were "
-    "impacted, and any known response or outcome. Be factual — only include what the "
-    "article explicitly states. Output only the JSON object.\n\n"
+    "You are a Cyber Threat Intelligence analyst. Write a 2-3 sentence summary of the "
+    "cyber incident described in the article. Always write a complete, non-empty summary.\n\n"
+    "EXAMPLE INPUT:\n"
+    "Institution: University of Michigan\n"
+    "Attack type: ransomware_encryption\n"
+    'EXAMPLE OUTPUT: {"enriched_summary": "The University of Michigan suffered a ransomware attack in January 2023 that encrypted administrative systems and disrupted university operations. '
+    "Student email, financial aid, and registration systems were offline for approximately two weeks. "
+    'The university engaged cybersecurity experts and law enforcement to restore affected systems."}\n\n'
+    "---\n\n"
+    "NOW WRITE THE SUMMARY FOR:\n"
     "Institution: {institution}\n"
     "Attack type: {attack_category}\n\n"
-    "Article:\n{text}"
+    "Article:\n{text}\n\n"
+    'Output only the JSON object with key "enriched_summary".'
 )

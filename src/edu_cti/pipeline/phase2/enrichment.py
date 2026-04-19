@@ -14,7 +14,7 @@ from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
 from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
-from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA, SUMMARY_PROMPT
+from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA, SUMMARY_SCHEMA, SUMMARY_PROMPT
 from src.edu_cti.pipeline.phase2.extraction.extraction_prompt import PROMPT_TEMPLATE
 from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import json_to_cti_enrichment
 
@@ -523,10 +523,11 @@ class IncidentEnricher:
                     _summary_response = self.llm_client.extract_json(
                         system_prompt=(
                             "You are a Cyber Threat Intelligence analyst. "
-                            "Output only valid JSON with exactly one key: enriched_summary."
+                            "Always write a complete, informative, non-empty summary. "
+                            'Output only the JSON object with key "enriched_summary".'
                         ),
                         user_prompt=_summary_prompt,
-                        schema=None,  # No GBNF schema — GBNF forces empty string via enum; free JSON lets deepseek generate real content
+                        schema=SUMMARY_SCHEMA,  # GBNF ensures complete JSON; few-shot prompt conditions model toward real content
                         max_retries=1,
                     )
                     _summary_json = self._parse_json_response(_summary_response)
