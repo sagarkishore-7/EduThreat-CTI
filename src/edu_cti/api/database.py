@@ -264,13 +264,15 @@ def get_incident_by_id(
         
         if enrichment.get("systems_affected_codes"):
             try:
-                incident["systems_affected"] = json.loads(enrichment["systems_affected_codes"])
+                parsed = json.loads(enrichment["systems_affected_codes"])
+                incident["systems_affected"] = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, str) and parsed else None)
             except Exception:
                 incident["systems_affected"] = None
 
         if enrichment.get("data_categories"):
             try:
-                incident["data_categories"] = json.loads(enrichment["data_categories"])
+                parsed = json.loads(enrichment["data_categories"])
+                incident["data_categories"] = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, str) and parsed else None)
             except Exception:
                 incident["data_categories"] = None
         
