@@ -129,8 +129,9 @@ def test_threat_actor_and_impact_analytics_exclude_orphan_rows(temp_db):
     conn.execute(
         """
         INSERT INTO incident_enrichments_flat
-        (incident_id, is_education_related, institution_type, attack_vector, threat_actor_name, created_at, updated_at, enriched_summary)
-        VALUES (?, 1, 'university_public', 'ransomware', 'Vice Society', ?, ?, ?)
+        (incident_id, is_education_related, institution_type, attack_vector,
+         threat_actor_name, threat_actor_category, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, 'university_public', 'ransomware', 'Vice Society', 'ransomware_group', ?, ?, ?)
         """,
         (incident.incident_id, now, now, "Real actor incident"),
     )
@@ -152,8 +153,9 @@ def test_threat_actor_and_impact_analytics_exclude_orphan_rows(temp_db):
     conn.execute(
         """
         INSERT INTO incident_enrichments_flat
-        (incident_id, is_education_related, institution_type, attack_vector, threat_actor_name, created_at, updated_at, enriched_summary)
-        VALUES (?, 1, 'research_institute', 'ransomware', 'Ghost Actor', ?, ?, ?)
+        (incident_id, is_education_related, institution_type, attack_vector,
+         threat_actor_name, threat_actor_category, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, 'research_institute', 'ransomware', 'Ghost Actor', 'ghost_group', ?, ?, ?)
         """,
         (orphan_source.incident_id, now, now, "Ghost actor incident"),
     )

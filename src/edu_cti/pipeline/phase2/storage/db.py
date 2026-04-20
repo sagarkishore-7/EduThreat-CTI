@@ -664,7 +664,7 @@ def _flatten_enrichment_for_db(
         # Regulatory impact - use raw JSON data
         'gdpr_breach': raw_get("gdpr_breach") if raw_get("gdpr_breach") is not None else (enrichment.regulatory_impact.get("gdpr_breach") if enrichment.regulatory_impact else None),
         'hipaa_breach': raw_get("hipaa_breach") if raw_get("hipaa_breach") is not None else (enrichment.regulatory_impact.get("hipaa_breach") if enrichment.regulatory_impact else None),
-        'ferpa_breach': raw_get("ferpa_breach") if raw_get("ferpa_breach") is not None else (enrichment.regulatory_impact.get("ferc_breach") if enrichment.regulatory_impact else None),
+        'ferpa_breach': raw_get("ferpa_breach") if raw_get("ferpa_breach") is not None else (enrichment.regulatory_impact.get("ferpa_breach") if enrichment.regulatory_impact else None),
         'breach_notification_required': raw_get("breach_notification_required") if raw_get("breach_notification_required") is not None else (enrichment.regulatory_impact.get("breach_notification_required") if enrichment.regulatory_impact else None),
         'notifications_sent': raw_get("notifications_sent") if raw_get("notifications_sent") is not None else (enrichment.regulatory_impact.get("notifications_sent") if enrichment.regulatory_impact else None),
         'fine_imposed': raw_get("fine_imposed") if raw_get("fine_imposed") is not None else (enrichment.regulatory_impact.get("fine_imposed") if enrichment.regulatory_impact else None),

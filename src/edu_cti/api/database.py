@@ -1490,71 +1490,56 @@ def get_ransomware_geo(
 
 
 def get_threat_actor_categories(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
-    """Get threat actor category distribution from enrichment JSON."""
+    """Threat actor category distribution from flat table."""
     cur = conn.execute(
         f"""
-        SELECT ie.enrichment_data
-        FROM incident_enrichments ie
-        JOIN incident_enrichments_flat ef ON ie.incident_id = ef.incident_id
+        SELECT ef.threat_actor_category, COUNT(*) as count
+        FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND ef.threat_actor_category IS NOT NULL AND ef.threat_actor_category != ''
+          AND ef.threat_actor_category NOT IN ('unknown', 'Unknown', 'other')
           AND {_live_incident_exists('ef')}
+        GROUP BY ef.threat_actor_category
+        ORDER BY count DESC
         """
     )
-    category_counts: Dict[str, int] = {}
-    for row in cur.fetchall():
-        try:
-            data = json.loads(row["enrichment_data"])
-            # Try common paths for actor category
-            cat = None
-            if "threat_actor" in data and isinstance(data["threat_actor"], dict):
-                cat = data["threat_actor"].get("category") or data["threat_actor"].get("actor_type")
-            if "attack_dynamics" in data and isinstance(data["attack_dynamics"], dict):
-                cat = cat or data["attack_dynamics"].get("threat_actor_category")
-            cat = cat or "unknown"
-            category_counts[cat] = category_counts.get(cat, 0) + 1
-        except Exception:
-            category_counts["unknown"] = category_counts.get("unknown", 0) + 1
-
-    total = sum(category_counts.values())
+    rows = [dict(r) for r in cur.fetchall()]
+    total = sum(r["count"] for r in rows)
     return [
-        {"category": cat, "count": count,
-         "percentage": round(count / total * 100, 1) if total > 0 else 0}
-        for cat, count in sorted(category_counts.items(), key=lambda x: -x[1])
+        {
+            "category": r["threat_actor_category"],
+            "count": r["count"],
+            "percentage": round(r["count"] / total * 100, 1) if total > 0 else 0,
+        }
+        for r in rows
     ]
 
 
 def get_threat_actor_motivations(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
-    """Get threat actor motivation distribution from enrichment JSON."""
+    """Threat actor motivation distribution from flat table."""
     cur = conn.execute(
         f"""
-        SELECT ie.enrichment_data
-        FROM incident_enrichments ie
-        JOIN incident_enrichments_flat ef ON ie.incident_id = ef.incident_id
+        SELECT ef.threat_actor_motivation, COUNT(*) as count
+        FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND ef.threat_actor_motivation IS NOT NULL AND ef.threat_actor_motivation != ''
+          AND ef.threat_actor_motivation NOT IN ('unknown', 'Unknown', 'other')
           AND {_live_incident_exists('ef')}
+        GROUP BY ef.threat_actor_motivation
+        ORDER BY count DESC
         """
     )
-    motivation_counts: Dict[str, int] = {}
-    for row in cur.fetchall():
-        try:
-            data = json.loads(row["enrichment_data"])
-            mot = None
-            if "threat_actor" in data and isinstance(data["threat_actor"], dict):
-                mot = data["threat_actor"].get("motivation")
-            if "attack_dynamics" in data and isinstance(data["attack_dynamics"], dict):
-                mot = mot or data["attack_dynamics"].get("threat_actor_motivation")
-            mot = mot or "unknown"
-            motivation_counts[mot] = motivation_counts.get(mot, 0) + 1
-        except Exception:
-            motivation_counts["unknown"] = motivation_counts.get("unknown", 0) + 1
-
-    total = sum(motivation_counts.values())
+    rows = [dict(r) for r in cur.fetchall()]
+    total = sum(r["count"] for r in rows)
     return [
-        {"category": cat, "count": count,
-         "percentage": round(count / total * 100, 1) if total > 0 else 0}
-        for cat, count in sorted(motivation_counts.items(), key=lambda x: -x[1])
+        {
+            "category": r["threat_actor_motivation"],
+            "count": r["count"],
+            "percentage": round(r["count"] / total * 100, 1) if total > 0 else 0,
+        }
+        for r in rows
     ]
 
 
