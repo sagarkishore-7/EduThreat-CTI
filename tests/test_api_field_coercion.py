@@ -1,3 +1,4 @@
+from typing import Optional, Dict, Any
 """
 Tests for LLM-to-API field coercion bugs.
 
@@ -67,7 +68,7 @@ class TestSystemImpactPydanticContract:
 #    (the exact three-liner from database.py lines 272-277 / 265-270)
 # ---------------------------------------------------------------------------
 
-def _parse_json_list(raw_value: str | None):
+def _parse_json_list(raw_value: Optional[str]):
     """Mirror of the coercion logic in database.py for data_categories and
     systems_affected_codes."""
     if not raw_value:

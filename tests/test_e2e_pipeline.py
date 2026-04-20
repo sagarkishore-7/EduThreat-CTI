@@ -17,7 +17,7 @@ because they only test individual layers in isolation.
 import json
 import sqlite3
 from datetime import datetime
-from typing import Any
+from typing import Any, Optional, Dict
 from unittest.mock import MagicMock, NonCallableMagicMock
 
 import pytest
@@ -92,8 +92,8 @@ def _insert_incident(conn: sqlite3.Connection, incident_id: str, institution_nam
 
 def _stub_enrichment(
     *,
-    data_impact: dict | None = None,
-    system_impact: dict | None = None,
+    data_impact: Optional[dict] = None,
+    system_impact: Optional[dict] = None,
     attack_dynamics=None,
 ) -> MagicMock:
     """Minimal CTIEnrichmentResult stub.

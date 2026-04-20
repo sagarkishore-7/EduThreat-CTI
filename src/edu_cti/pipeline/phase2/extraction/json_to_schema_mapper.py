@@ -577,10 +577,10 @@ def _coerce_llm_scalars(json_data: Dict[str, Any]) -> Dict[str, Any]:
     systems_affected_codes, data_types, etc.) are left untouched.
     """
     _KNOWN_ARRAYS = {
-        "timeline", "mitre_attack_techniques", "systems_affected_codes",
+        "timeline", "mitre_attack_techniques", "systems_affected", "systems_affected_codes",
         "data_categories", "data_categories_affected", "data_types", "operational_impacts",
-        "security_improvements", "third_parties_involved", "other_edu_incidents",
-        "iocs", "target_demographics", "attack_chain",
+        "applicable_regulations", "security_improvements", "third_parties_involved",
+        "other_edu_incidents", "iocs", "target_demographics", "attack_chain",
     }
     result = {}
     for key, value in json_data.items():
@@ -832,15 +832,22 @@ def json_to_cti_enrichment(
     systems_affected_codes = json_data.get("systems_affected") or json_data.get("systems_affected_codes") or []
     if systems_affected_codes:
         mapped_systems = map_systems_affected_codes(systems_affected_codes)
+        _sac = set(systems_affected_codes)
         system_impact = {
             "systems_affected": mapped_systems,
             "critical_systems_affected": len(systems_affected_codes) > 0,
-            "network_compromised": "network" in str(systems_affected_codes).lower() or "wifi" in str(systems_affected_codes).lower() or "wired" in str(systems_affected_codes).lower(),
-            "email_system_affected": "email" in systems_affected_codes,
-            "student_portal_affected": "portal_student_staff" in systems_affected_codes or "sis" in systems_affected_codes,
-            "research_systems_affected": "research_hpc" in systems_affected_codes or "research_lab_instruments" in systems_affected_codes,
-            "hospital_systems_affected": None,
-            "cloud_services_affected": "cloud_storage" in systems_affected_codes,
+            # Schema uses "core_network", "wifi_network" for network compromise
+            "network_compromised": bool({"core_network", "wifi_network", "data_center"} & _sac),
+            # Schema uses "email_system"
+            "email_system_affected": "email_system" in _sac,
+            # Schema uses "student_portal" or "sis_student_information"
+            "student_portal_affected": bool({"student_portal", "sis_student_information", "staff_portal"} & _sac),
+            # Schema uses "research_computing_hpc", "research_storage", "lab_instruments"
+            "research_systems_affected": bool({"research_computing_hpc", "research_storage", "lab_instruments", "research_databases"} & _sac),
+            # Schema uses "hospital_systems" or "ehr_emr"
+            "hospital_systems_affected": bool({"hospital_systems", "ehr_emr", "medical_devices", "pharmacy_system"} & _sac),
+            # Schema uses specific cloud terms in vendor names, not a standalone enum
+            "cloud_services_affected": False,
             "third_party_vendor_impact": json_data.get("third_parties_involved") is not None and len(json_data.get("third_parties_involved", [])) > 0,
             "vendor_name": ", ".join(json_data.get("third_parties_involved", [])) if json_data.get("third_parties_involved") else None
         }
@@ -917,17 +924,32 @@ def json_to_cti_enrichment(
     if (json_data.get("teaching_impacted") is not None or json_data.get("research_impacted") is not None or
         json_data.get("outage_duration_hours") is not None or json_data.get("downtime_days") is not None or
         op_impacts):
+        # Note: schema enum for operational_impacts has no "teaching_disrupted" value.
+        # Derive it from the values that imply teaching was affected.
+        _teaching_ops = {"classes_cancelled", "classes_moved_online", "semester_extended", "lms_unavailable"}
+        _research_ops = {"research_halted", "research_data_lost"}
+        _admissions_ops = {"admissions_suspended"}
+        _payroll_ops = {"payroll_delayed"}
+        _enrollment_ops = {"registration_suspended"}
         operational_impact_metrics = {
-            "teaching_disrupted": bool(json_data.get("teaching_impacted")) or bool(json_data.get("teaching_disrupted")) or "teaching_disrupted" in op_impacts,
-            "research_disrupted": bool(json_data.get("research_impacted")) or bool(json_data.get("research_disrupted")) or "research_halted" in op_impacts or "research_disrupted" in op_impacts,
-            "admissions_disrupted": bool(json_data.get("admissions_disrupted")) or "admissions_suspended" in op_impacts or "admissions_disrupted" in op_impacts,
-            "payroll_disrupted": bool(json_data.get("payroll_disrupted")) or "payroll_delayed" in op_impacts or "payroll_disrupted" in op_impacts,
-            "enrollment_disrupted": bool(json_data.get("enrollment_disrupted")) or "registration_suspended" in op_impacts or "enrollment_disrupted" in op_impacts,
-            "clinical_operations_disrupted": bool(json_data.get("clinical_operations_disrupted")) or "clinical_operations_disrupted" in op_impacts,
-            "online_learning_disrupted": bool(json_data.get("online_learning_disrupted")) or "classes_moved_online" in op_impacts or "online_learning_disrupted" in op_impacts,
+            "teaching_disrupted": (bool(json_data.get("teaching_impacted")) or bool(json_data.get("teaching_disrupted"))
+                                   or bool(_teaching_ops & set(op_impacts))),
+            "research_disrupted": (bool(json_data.get("research_impacted")) or bool(json_data.get("research_disrupted"))
+                                   or bool(_research_ops & set(op_impacts))),
+            "admissions_disrupted": (bool(json_data.get("admissions_disrupted"))
+                                     or bool(_admissions_ops & set(op_impacts))),
+            "payroll_disrupted": (bool(json_data.get("payroll_disrupted"))
+                                  or bool(_payroll_ops & set(op_impacts))),
+            "enrollment_disrupted": (bool(json_data.get("enrollment_disrupted"))
+                                     or bool(_enrollment_ops & set(op_impacts))),
+            "clinical_operations_disrupted": (bool(json_data.get("clinical_operations_disrupted"))
+                                              or "clinical_operations_disrupted" in op_impacts),
+            "online_learning_disrupted": (bool(json_data.get("online_learning_disrupted"))
+                                          or "classes_moved_online" in op_impacts),
             "downtime_days": json_data.get("downtime_days") or (json_data.get("outage_duration_hours", 0) / 24.0 if json_data.get("outage_duration_hours") else None),
             "partial_service_days": json_data.get("partial_service_days"),
-            "classes_cancelled": bool(json_data.get("classes_cancelled")) or "classes_cancelled" in op_impacts or "exams_cancelled" in op_impacts,
+            "classes_cancelled": (bool(json_data.get("classes_cancelled"))
+                                  or "classes_cancelled" in op_impacts or "exams_cancelled" in op_impacts),
             "exams_postponed": bool(json_data.get("exams_postponed")) or "exams_postponed" in op_impacts,
             "graduation_delayed": bool(json_data.get("graduation_delayed")) or "graduation_delayed" in op_impacts,
         }
@@ -954,66 +976,75 @@ def json_to_cti_enrichment(
         if ransom_paid_amount is None and json_data.get("ransom_paid") and ransom_amount:
             ransom_paid_amount = ransom_amount
         
+        # Schema uses *_usd suffixed names for cost fields; legacy aliases kept
         financial_impact = {
             "ransom_demanded": json_data.get("was_ransom_demanded"),
             "ransom_amount_min": json_data.get("ransom_amount_min"),
             "ransom_amount_max": json_data.get("ransom_amount_max"),
             "ransom_amount_exact": ransom_amount,
-            "ransom_currency": json_data.get("ransom_currency") or "USD",  # Default to USD if not specified
+            "ransom_currency": json_data.get("ransom_currency") or "USD",
             "ransom_paid": json_data.get("ransom_paid"),
             "ransom_paid_amount": ransom_paid_amount,
-            "recovery_costs_min": json_data.get("recovery_costs_min"),
+            # Schema: "recovery_cost_usd" (single); map to min as best estimate
+            "recovery_costs_min": json_data.get("recovery_costs_min") or json_data.get("recovery_cost_usd"),
             "recovery_costs_max": json_data.get("recovery_costs_max"),
-            "legal_costs": json_data.get("legal_costs"),
-            "notification_costs": json_data.get("notification_costs"),
-            "credit_monitoring_costs": json_data.get("credit_monitoring_costs"),
+            # Schema: "legal_cost_usd"
+            "legal_costs": json_data.get("legal_costs") or json_data.get("legal_cost_usd"),
+            # Schema: "notification_cost_usd"
+            "notification_costs": json_data.get("notification_costs") or json_data.get("notification_cost_usd"),
+            "credit_monitoring_costs": json_data.get("credit_monitoring_costs") or json_data.get("credit_monitoring_cost_usd"),
             "insurance_claim": json_data.get("insurance_claim"),
-            "insurance_claim_amount": json_data.get("insurance_claim_amount"),
-            "total_cost_estimate": json_data.get("currency_normalized_cost_usd"),
+            # Schema: "insurance_payout_usd"
+            "insurance_claim_amount": json_data.get("insurance_claim_amount") or json_data.get("insurance_payout_usd"),
+            "total_cost_estimate": json_data.get("currency_normalized_cost_usd") or json_data.get("estimated_total_cost_usd"),
         }
     
     # Regulatory impact (as Dict) - comprehensive regulatory data
     regulatory_impact = None
-    regulatory_context = json_data.get("regulatory_context") or []
+    # Schema uses "applicable_regulations" array; "regulatory_context" is a legacy alias
+    applicable_regs = json_data.get("applicable_regulations") or json_data.get("regulatory_context") or []
     has_regulatory_data = (
-        regulatory_context or
-        json_data.get("fines_or_penalties") is not None or 
-        json_data.get("class_actions_or_lawsuits") is not None or 
+        applicable_regs or
+        json_data.get("fines_or_penalties") is not None or
+        json_data.get("class_actions_or_lawsuits") is not None or
         json_data.get("gdpr_breach") is not None or
         json_data.get("hipaa_breach") is not None or
         json_data.get("ferpa_breach") is not None or
         json_data.get("breach_notification_required") is not None or
         json_data.get("fine_imposed") is not None or
-        json_data.get("lawsuits_filed") is not None
+        json_data.get("fine_amount_usd") is not None or
+        json_data.get("lawsuits_filed") is not None or
+        json_data.get("class_action_filed") is not None
     )
     if has_regulatory_data:
-        # Determine breach types from regulatory_context if not explicitly set
+        # Derive breach flags from applicable_regulations array (schema) or direct booleans
+        _regs_set = set(applicable_regs)
         gdpr_breach = json_data.get("gdpr_breach")
-        if gdpr_breach is None and regulatory_context:
-            gdpr_breach = "GDPR" in regulatory_context
-        
+        if gdpr_breach is None:
+            gdpr_breach = "GDPR" in _regs_set or None
+
         hipaa_breach = json_data.get("hipaa_breach")
-        if hipaa_breach is None and regulatory_context:
-            hipaa_breach = "HIPAA" in regulatory_context
-        
+        if hipaa_breach is None:
+            hipaa_breach = "HIPAA" in _regs_set or None
+
         ferpa_breach = json_data.get("ferpa_breach")
-        if ferpa_breach is None and regulatory_context:
-            ferpa_breach = "FERPA" in regulatory_context
-        
+        if ferpa_breach is None:
+            ferpa_breach = "FERPA" in _regs_set or None
+
         dpa_notified = json_data.get("dpa_notified")
-        if dpa_notified is None and regulatory_context:
-            dpa_notified = "UK_DPA" in regulatory_context
-        
-        # Notification dates from nested object or direct fields
+        if dpa_notified is None:
+            dpa_notified = "UK_DPA" in _regs_set or None
+
         notification_dates = json_data.get("notification_dates") or {}
         notifications_sent_date = json_data.get("notifications_sent_date") or notification_dates.get("data_subjects_notified_date")
         regulators_notified_date = json_data.get("regulators_notified_date") or notification_dates.get("regulator_notified_date")
-        
+
         regulatory_impact = {
             "breach_notification_required": json_data.get("breach_notification_required"),
-            "notifications_sent": json_data.get("notifications_sent"),
+            # Schema uses "notification_sent" (singular); legacy alias "notifications_sent"
+            "notifications_sent": json_data.get("notification_sent") or json_data.get("notifications_sent"),
             "notifications_sent_date": notifications_sent_date,
-            "regulators_notified": json_data.get("regulators_notified") or regulatory_context,
+            "regulators_notified": json_data.get("regulators_notified") or applicable_regs,
             "regulators_notified_date": regulators_notified_date,
             "gdpr_breach": gdpr_breach,
             "dpa_notified": dpa_notified,
@@ -1021,13 +1052,17 @@ def json_to_cti_enrichment(
             "ferpa_breach": ferpa_breach,
             "investigation_opened": json_data.get("investigation_opened"),
             "fine_imposed": json_data.get("fine_imposed") if json_data.get("fine_imposed") is not None else (json_data.get("fines_or_penalties") is not None and len(str(json_data.get("fines_or_penalties", ""))) > 0),
-            "fine_amount": json_data.get("fine_amount"),
+            # Schema uses "fine_amount_usd"; legacy alias "fine_amount"
+            "fine_amount": json_data.get("fine_amount_usd") or json_data.get("fine_amount"),
             "fines_or_penalties_description": json_data.get("fines_or_penalties"),
             "lawsuits_filed": json_data.get("lawsuits_filed") if json_data.get("lawsuits_filed") is not None else (json_data.get("class_actions_or_lawsuits") is not None and len(str(json_data.get("class_actions_or_lawsuits", ""))) > 0),
             "lawsuit_count": json_data.get("lawsuit_count"),
-            "class_action": json_data.get("class_action") if json_data.get("class_action") is not None else (json_data.get("class_actions_or_lawsuits") is not None and "class" in str(json_data.get("class_actions_or_lawsuits", "")).lower()),
+            # Schema uses "class_action_filed"; legacy alias "class_action"
+            "class_action": (json_data.get("class_action_filed") if json_data.get("class_action_filed") is not None
+                             else json_data.get("class_action") if json_data.get("class_action") is not None
+                             else (json_data.get("class_actions_or_lawsuits") is not None and "class" in str(json_data.get("class_actions_or_lawsuits", "")).lower())),
             "class_actions_or_lawsuits_description": json_data.get("class_actions_or_lawsuits"),
-            "regulatory_context": regulatory_context,
+            "regulatory_context": applicable_regs,
         }
     
     # Recovery metrics (as Dict) - comprehensive recovery data
@@ -1085,7 +1120,8 @@ def json_to_cti_enrichment(
             "forensics_firm": json_data.get("forensics_firm_engaged") or json_data.get("forensics_firm"),
             "law_firm": json_data.get("law_firm") or json_data.get("legal_counsel_engaged"),
             "security_improvements": json_data.get("security_improvements") or json_data.get("response_actions"),
-            "mfa_implemented": json_data.get("mfa_implemented"),
+            # Schema: mfa_implemented is a value in security_improvements array, not a standalone field
+            "mfa_implemented": json_data.get("mfa_implemented") or "mfa_implemented" in (json_data.get("security_improvements") or []) or "mfa_expanded" in (json_data.get("security_improvements") or []),
             "security_training_conducted": json_data.get("security_training_conducted"),
             "response_measures": json_data.get("response_measures"),
             "law_enforcement_involved": json_data.get("law_enforcement_involved"),

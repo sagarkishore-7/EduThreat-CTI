@@ -884,7 +884,7 @@ _UNKNOWN_FAMILY_VALUES = {
     "not applicable", "not_applicable", "unspecified", "undetermined", "",
 }
 
-_RANSOMWARE_CANONICAL: dict[str, str] = {
+_RANSOMWARE_CANONICAL: Dict[str, str] = {
     # Cl0p
     "cl0p": "Cl0p", "clop": "Cl0p", "cl0p_clop": "Cl0p", "cl0p/clop": "Cl0p",
     "cl0p clop": "Cl0p",
@@ -931,7 +931,7 @@ _RANSOMWARE_CANONICAL: dict[str, str] = {
 }
 
 
-def _normalize_ransomware_family(name: str | None) -> str | None:
+def _normalize_ransomware_family(name: Optional[str]) -> Optional[str]:
     """Return the canonical display name for a ransomware family, or None if unknown/excluded."""
     if not name:
         return None
@@ -947,7 +947,7 @@ def _normalize_ransomware_family(name: str | None) -> str | None:
     )
 
 
-_ATTACK_CATEGORY_CANONICAL: dict[str, str] = {
+_ATTACK_CATEGORY_CANONICAL: Dict[str, str] = {
     "ransomware": "Ransomware",
     "ransomware_encryption": "Ransomware",
     "ransomware_double_extortion": "Ransomware (Double Extortion)",
@@ -984,7 +984,7 @@ _ATTACK_CATEGORY_CANONICAL: dict[str, str] = {
     "man_in_the_middle": "Man-in-the-Middle",
 }
 
-_ATTACK_VECTOR_CANONICAL: dict[str, str] = {
+_ATTACK_VECTOR_CANONICAL: Dict[str, str] = {
     "phishing": "Phishing",
     "spear_phishing": "Spear Phishing",
     "email": "Phishing",  # generic 'email' vector = phishing
@@ -1012,7 +1012,7 @@ _ATTACK_VECTOR_CANONICAL: dict[str, str] = {
     "misconfiguration": "Misconfiguration",
 }
 
-_INSTITUTION_TYPE_CANONICAL: dict[str, str] = {
+_INSTITUTION_TYPE_CANONICAL: Dict[str, str] = {
     "university": "University",
     "k12": "K-12 School",
     "k_12": "K-12 School",
@@ -1042,7 +1042,7 @@ _GENERIC_UNKNOWNS = {"unknown", "other", "n/a", "not applicable", "not_applicabl
                      "unspecified", "unidentified", "not known", "not_known", ""}
 
 
-def _normalize_category(raw: str | None, canonical_map: dict[str, str]) -> str | None:
+def _normalize_category(raw: Optional[str], canonical_map: Dict[str, str]) -> Optional[str]:
     """Generic normalizer: lowercase+underscore key lookup, fallback to title-cased raw."""
     if not raw:
         return None
@@ -1053,15 +1053,15 @@ def _normalize_category(raw: str | None, canonical_map: dict[str, str]) -> str |
     return canonical_map.get(key) or canonical_map.get(alt) or raw.strip().replace("_", " ").title()
 
 
-def _normalize_attack_category(raw: str | None) -> str | None:
+def _normalize_attack_category(raw: Optional[str]) -> Optional[str]:
     return _normalize_category(raw, _ATTACK_CATEGORY_CANONICAL)
 
 
-def _normalize_attack_vector(raw: str | None) -> str | None:
+def _normalize_attack_vector(raw: Optional[str]) -> Optional[str]:
     return _normalize_category(raw, _ATTACK_VECTOR_CANONICAL)
 
 
-def _normalize_institution_type(raw: str | None) -> str | None:
+def _normalize_institution_type(raw: Optional[str]) -> Optional[str]:
     return _normalize_category(raw, _INSTITUTION_TYPE_CANONICAL)
 
 
@@ -1453,7 +1453,7 @@ def get_ransomware_geo(
     # Normalize and deduplicate family names
     seen: set[str] = set()
     families: list[str] = []
-    raw_to_canonical: dict[str, str] = {}
+    raw_to_canonical: Dict[str, str] = {}
     for f in raw_families:
         canonical = _normalize_ransomware_family(f)
         if canonical and canonical not in seen:
@@ -1611,7 +1611,7 @@ def get_actor_ransomware_matrix(
     )
     seen_fam: set[str] = set()
     families: list[str] = []
-    raw_family_map: dict[str, str] = {}
+    raw_family_map: Dict[str, str] = {}
     for row in cur.fetchall():
         canonical = _normalize_ransomware_family(row["family"])
         if canonical and canonical not in seen_fam:
@@ -2089,7 +2089,7 @@ def get_ransomware_family_trend(
     # Normalize and keep unique canonical names
     seen_fam: set[str] = set()
     top_families: list[str] = []
-    raw_to_can: dict[str, str] = {}
+    raw_to_can: Dict[str, str] = {}
     for f in raw_top:
         c = _normalize_ransomware_family(f)
         if c:

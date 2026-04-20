@@ -653,24 +653,49 @@ def _flatten_enrichment_for_db(
         'users_affected_max': raw_get("users_affected_max") or (enrichment.user_impact.get("users_affected_max") if enrichment.user_impact else None),
         
         # Financial impact - use raw JSON data
-        'recovery_costs_min': raw_get("recovery_costs_min") or (enrichment.financial_impact.get("recovery_costs_min") if enrichment.financial_impact else None),
-        'recovery_costs_max': raw_get("recovery_costs_max") or (enrichment.financial_impact.get("recovery_costs_max") if enrichment.financial_impact else None),
-        'legal_costs': raw_get("legal_costs") or (enrichment.financial_impact.get("legal_costs") if enrichment.financial_impact else None),
-        'notification_costs': raw_get("notification_costs") or (enrichment.financial_impact.get("notification_costs") if enrichment.financial_impact else None),
+        # Schema uses *_usd suffixed names; legacy aliases kept for raw_get
+        'recovery_costs_min': (raw_get("recovery_costs_min") or raw_get("recovery_cost_usd")
+                               or (enrichment.financial_impact.get("recovery_costs_min") if enrichment.financial_impact else None)),
+        'recovery_costs_max': (raw_get("recovery_costs_max")
+                               or (enrichment.financial_impact.get("recovery_costs_max") if enrichment.financial_impact else None)),
+        'legal_costs': (raw_get("legal_costs") or raw_get("legal_cost_usd")
+                        or (enrichment.financial_impact.get("legal_costs") if enrichment.financial_impact else None)),
+        'notification_costs': (raw_get("notification_costs") or raw_get("notification_cost_usd")
+                               or (enrichment.financial_impact.get("notification_costs") if enrichment.financial_impact else None)),
         'insurance_claim': raw_get("insurance_claim") if raw_get("insurance_claim") is not None else (enrichment.financial_impact.get("insurance_claim") if enrichment.financial_impact else None),
-        'insurance_claim_amount': raw_get("insurance_claim_amount") or (enrichment.financial_impact.get("insurance_claim_amount") if enrichment.financial_impact else None),
+        'insurance_claim_amount': (raw_get("insurance_claim_amount") or raw_get("insurance_payout_usd")
+                                   or (enrichment.financial_impact.get("insurance_claim_amount") if enrichment.financial_impact else None)),
         'business_impact': raw_get("business_impact") or (enrichment.attack_dynamics.business_impact if enrichment.attack_dynamics else None),
         
         # Regulatory impact - use raw JSON data
-        'gdpr_breach': raw_get("gdpr_breach") if raw_get("gdpr_breach") is not None else (enrichment.regulatory_impact.get("gdpr_breach") if enrichment.regulatory_impact else None),
-        'hipaa_breach': raw_get("hipaa_breach") if raw_get("hipaa_breach") is not None else (enrichment.regulatory_impact.get("hipaa_breach") if enrichment.regulatory_impact else None),
-        'ferpa_breach': raw_get("ferpa_breach") if raw_get("ferpa_breach") is not None else (enrichment.regulatory_impact.get("ferpa_breach") if enrichment.regulatory_impact else None),
+        # Schema: gdpr/hipaa/ferpa_breach not standalone — derived from applicable_regulations
+        # Prefer mapper-derived values from enrichment.regulatory_impact
+        'gdpr_breach': (raw_get("gdpr_breach") if raw_get("gdpr_breach") is not None
+                        else ("GDPR" in (raw_get("applicable_regulations") or []) or None)
+                        if raw_get("applicable_regulations") else
+                        (enrichment.regulatory_impact.get("gdpr_breach") if enrichment.regulatory_impact else None)),
+        'hipaa_breach': (raw_get("hipaa_breach") if raw_get("hipaa_breach") is not None
+                         else ("HIPAA" in (raw_get("applicable_regulations") or []) or None)
+                         if raw_get("applicable_regulations") else
+                         (enrichment.regulatory_impact.get("hipaa_breach") if enrichment.regulatory_impact else None)),
+        'ferpa_breach': (raw_get("ferpa_breach") if raw_get("ferpa_breach") is not None
+                         else ("FERPA" in (raw_get("applicable_regulations") or []) or None)
+                         if raw_get("applicable_regulations") else
+                         (enrichment.regulatory_impact.get("ferpa_breach") if enrichment.regulatory_impact else None)),
         'breach_notification_required': raw_get("breach_notification_required") if raw_get("breach_notification_required") is not None else (enrichment.regulatory_impact.get("breach_notification_required") if enrichment.regulatory_impact else None),
-        'notifications_sent': raw_get("notifications_sent") if raw_get("notifications_sent") is not None else (enrichment.regulatory_impact.get("notifications_sent") if enrichment.regulatory_impact else None),
+        # Schema uses "notification_sent" (singular)
+        'notifications_sent': (raw_get("notification_sent") or raw_get("notifications_sent")
+                               if (raw_get("notification_sent") is not None or raw_get("notifications_sent") is not None)
+                               else (enrichment.regulatory_impact.get("notifications_sent") if enrichment.regulatory_impact else None)),
         'fine_imposed': raw_get("fine_imposed") if raw_get("fine_imposed") is not None else (enrichment.regulatory_impact.get("fine_imposed") if enrichment.regulatory_impact else None),
-        'fine_amount': raw_get("fine_amount") or (enrichment.regulatory_impact.get("fine_amount") if enrichment.regulatory_impact else None),
+        # Schema uses "fine_amount_usd"
+        'fine_amount': (raw_get("fine_amount_usd") or raw_get("fine_amount")
+                        or (enrichment.regulatory_impact.get("fine_amount") if enrichment.regulatory_impact else None)),
         'lawsuits_filed': raw_get("lawsuits_filed") if raw_get("lawsuits_filed") is not None else (enrichment.regulatory_impact.get("lawsuits_filed") if enrichment.regulatory_impact else None),
-        'class_action': raw_get("class_action") if raw_get("class_action") is not None else (enrichment.regulatory_impact.get("class_action") if enrichment.regulatory_impact else None),
+        # Schema uses "class_action_filed"
+        'class_action': (raw_get("class_action_filed") if raw_get("class_action_filed") is not None
+                         else raw_get("class_action") if raw_get("class_action") is not None
+                         else (enrichment.regulatory_impact.get("class_action") if enrichment.regulatory_impact else None)),
         
         # Recovery - use raw JSON data for dates and metrics
         # Schema uses "recovery_duration_days"; legacy alias "recovery_timeframe_days"
@@ -688,7 +713,12 @@ def _flatten_enrichment_for_db(
                 else (enrichment.recovery_metrics.get("from_backup") if enrichment.recovery_metrics else None)
             )
         ),
-        'mfa_implemented': raw_get("mfa_implemented") if raw_get("mfa_implemented") is not None else (enrichment.recovery_metrics.get("mfa_implemented") if enrichment.recovery_metrics else None),
+        # Schema: mfa_implemented is a value in security_improvements array, not a standalone field
+        'mfa_implemented': (raw_get("mfa_implemented")
+                            if raw_get("mfa_implemented") is not None
+                            else (True if "mfa_implemented" in (raw_get("security_improvements") or [])
+                                       or "mfa_expanded" in (raw_get("security_improvements") or [])
+                                  else (enrichment.recovery_metrics.get("mfa_implemented") if enrichment.recovery_metrics else None))),
         # Schema uses "ir_firm_engaged" / "forensics_firm_engaged"; legacy aliases kept
         'incident_response_firm': (
             raw_get("ir_firm_engaged") or raw_get("incident_response_firm")
