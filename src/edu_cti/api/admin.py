@@ -1801,16 +1801,67 @@ async def backfill_enrichment_fields(
                 failed += 1
                 continue
 
+            # ── Core fields ──────────────────────────────────────────────────
             ta = data.get("threat_actor") or {}
-            severity = data.get("incident_severity") or (data.get("incident_metadata") or {}).get("severity")
-            inst_size = data.get("institution_size") or (data.get("institution_profile") or {}).get("institution_size")
-            ta_cat = ta.get("category") or ta.get("actor_category") or ta.get("threat_actor_category")
-            ta_mot = ta.get("motivation") or ta.get("threat_actor_motivation")
+            ad = data.get("attack_dynamics") or {}
+            oim = data.get("operational_impact_metrics") or {}
+            fi = data.get("financial_impact") or {}
+            rm = data.get("recovery_metrics") or {}
+            ri = data.get("regulatory_impact") or {}
+            di = data.get("data_impact") or {}
+
+            severity = (data.get("incident_severity")
+                        or ad.get("incident_severity")
+                        or (data.get("incident_metadata") or {}).get("severity"))
+            inst_size = (data.get("institution_size")
+                         or (data.get("institution_profile") or {}).get("institution_size"))
+
+            # Threat actor
+            ta_cat = (ta.get("category") or ta.get("actor_category") or ta.get("threat_actor_category")
+                      or ad.get("threat_actor_category"))
+            ta_mot = (ta.get("motivation") or ta.get("threat_actor_motivation")
+                      or ad.get("threat_actor_motivation"))
             ta_origin = ta.get("origin_country") or ta.get("threat_actor_origin_country")
 
-            di = data.get("data_impact") or {}
+            # Data categories
             cats = data.get("data_categories") or di.get("data_types_affected") or di.get("data_categories")
             cats_json = _json.dumps(cats) if cats else None
+
+            # ── Recovery fields ──────────────────────────────────────────────
+            recovery_days = (rm.get("recovery_timeframe_days")
+                             or ad.get("recovery_timeframe_days"))
+            from_backup = rm.get("from_backup")
+            if from_backup is None:
+                rm_method = rm.get("recovery_method", "")
+                if rm_method in ("backup_restore", "partial_backup_partial_rebuild"):
+                    from_backup = 1
+            ir_firm = rm.get("incident_response_firm")
+            forensics = rm.get("forensics_firm")
+            mfa_impl = rm.get("mfa_implemented")
+
+            # ── Operational impact ───────────────────────────────────────────
+            def _b(v):
+                return 1 if v else (0 if v is False else None)
+
+            teaching_dis = _b(oim.get("teaching_disrupted"))
+            research_dis = _b(oim.get("research_disrupted"))
+            admissions_dis = _b(oim.get("admissions_disrupted"))
+            payroll_dis = _b(oim.get("payroll_disrupted"))
+            classes_can = _b(oim.get("classes_cancelled"))
+            exams_post = _b(oim.get("exams_postponed"))
+            downtime = oim.get("downtime_days")
+
+            # ── Regulatory ───────────────────────────────────────────────────
+            gdpr = _b(ri.get("gdpr_breach"))
+            hipaa = _b(ri.get("hipaa_breach"))
+            ferpa = _b(ri.get("ferpa_breach"))
+            fine_imp = _b(ri.get("fine_imposed"))
+            fine_amt = ri.get("fine_amount") or ri.get("fine_amount_usd")
+
+            # ── Financial ────────────────────────────────────────────────────
+            ransom_paid_amt = fi.get("ransom_paid_amount")
+            recovery_cost_min = fi.get("recovery_costs_min")
+            recovery_cost_max = fi.get("recovery_costs_max")
 
             cur.execute("""
                 UPDATE incident_enrichments_flat SET
@@ -1819,16 +1870,44 @@ async def backfill_enrichment_fields(
                     threat_actor_category       = COALESCE(threat_actor_category, ?),
                     threat_actor_motivation     = COALESCE(threat_actor_motivation, ?),
                     threat_actor_origin_country = COALESCE(threat_actor_origin_country, ?),
-                    data_categories             = COALESCE(data_categories, ?)
+                    data_categories             = COALESCE(data_categories, ?),
+                    recovery_timeframe_days     = COALESCE(recovery_timeframe_days, ?),
+                    from_backup                 = COALESCE(from_backup, ?),
+                    incident_response_firm      = COALESCE(incident_response_firm, ?),
+                    forensics_firm              = COALESCE(forensics_firm, ?),
+                    mfa_implemented             = COALESCE(mfa_implemented, ?),
+                    teaching_disrupted          = COALESCE(teaching_disrupted, ?),
+                    research_disrupted          = COALESCE(research_disrupted, ?),
+                    admissions_disrupted        = COALESCE(admissions_disrupted, ?),
+                    payroll_disrupted           = COALESCE(payroll_disrupted, ?),
+                    classes_cancelled           = COALESCE(classes_cancelled, ?),
+                    exams_postponed             = COALESCE(exams_postponed, ?),
+                    downtime_days               = COALESCE(downtime_days, ?),
+                    gdpr_breach                 = COALESCE(gdpr_breach, ?),
+                    hipaa_breach                = COALESCE(hipaa_breach, ?),
+                    ferpa_breach                = COALESCE(ferpa_breach, ?),
+                    fine_imposed                = COALESCE(fine_imposed, ?),
+                    fine_amount                 = COALESCE(fine_amount, ?),
+                    ransom_paid_amount          = COALESCE(ransom_paid_amount, ?),
+                    recovery_costs_min          = COALESCE(recovery_costs_min, ?),
+                    recovery_costs_max          = COALESCE(recovery_costs_max, ?)
                 WHERE incident_id = ?
-            """, (severity, inst_size, ta_cat, ta_mot, ta_origin, cats_json, incident_id))
+            """, (
+                severity, inst_size, ta_cat, ta_mot, ta_origin, cats_json,
+                recovery_days, from_backup, ir_firm, forensics, mfa_impl,
+                teaching_dis, research_dis, admissions_dis, payroll_dis,
+                classes_can, exams_post, downtime,
+                gdpr, hipaa, ferpa, fine_imp, fine_amt,
+                ransom_paid_amt, recovery_cost_min, recovery_cost_max,
+                incident_id,
+            ))
             if cur.rowcount:
                 updated += 1
 
         conn.commit()
 
         def _count(col):
-            cur.execute(f"SELECT COUNT(*) FROM incident_enrichments_flat WHERE {col} IS NOT NULL")
+            cur.execute(f"SELECT COUNT(*) FROM incident_enrichments_flat WHERE {col} IS NOT NULL AND {col} != 0")
             return cur.fetchone()[0]
 
         stats = {
@@ -1837,6 +1916,20 @@ async def backfill_enrichment_fields(
             "threat_actor_category": _count("threat_actor_category"),
             "threat_actor_motivation": _count("threat_actor_motivation"),
             "data_categories": _count("data_categories"),
+            "recovery_timeframe_days": _count("recovery_timeframe_days"),
+            "from_backup": _count("from_backup"),
+            "incident_response_firm": _count("incident_response_firm"),
+            "forensics_firm": _count("forensics_firm"),
+            "mfa_implemented": _count("mfa_implemented"),
+            "teaching_disrupted": _count("teaching_disrupted"),
+            "research_disrupted": _count("research_disrupted"),
+            "classes_cancelled": _count("classes_cancelled"),
+            "exams_postponed": _count("exams_postponed"),
+            "downtime_days": _count("downtime_days"),
+            "gdpr_breach": _count("gdpr_breach"),
+            "hipaa_breach": _count("hipaa_breach"),
+            "ferpa_breach": _count("ferpa_breach"),
+            "ransom_paid_amount": _count("ransom_paid_amount"),
         }
         cur.execute("SELECT COUNT(*) FROM incident_enrichments_flat")
         total_flat = cur.fetchone()[0]
