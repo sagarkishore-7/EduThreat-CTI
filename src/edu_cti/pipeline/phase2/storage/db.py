@@ -673,13 +673,31 @@ def _flatten_enrichment_for_db(
         'class_action': raw_get("class_action") if raw_get("class_action") is not None else (enrichment.regulatory_impact.get("class_action") if enrichment.regulatory_impact else None),
         
         # Recovery - use raw JSON data for dates and metrics
-        'recovery_timeframe_days': raw_get("recovery_timeframe_days") or (enrichment.attack_dynamics.recovery_timeframe_days if enrichment.attack_dynamics else (enrichment.recovery_metrics.get("recovery_timeframe_days") if enrichment.recovery_metrics else None)),
+        # Schema uses "recovery_duration_days"; legacy alias "recovery_timeframe_days"
+        'recovery_timeframe_days': (
+            raw_get("recovery_duration_days") or raw_get("recovery_timeframe_days")
+            or (enrichment.attack_dynamics.recovery_timeframe_days if enrichment.attack_dynamics else None)
+            or (enrichment.recovery_metrics.get("recovery_timeframe_days") if enrichment.recovery_metrics else None)
+        ),
         'recovery_started_date': raw_get("recovery_started_date") or (enrichment.recovery_metrics.get("recovery_started_date") if enrichment.recovery_metrics else None),
         'recovery_completed_date': raw_get("recovery_completed_date") or raw_get("service_restoration_date") or (enrichment.recovery_metrics.get("recovery_completed_date") if enrichment.recovery_metrics else None),
-        'from_backup': raw_get("from_backup") if raw_get("from_backup") is not None else (enrichment.recovery_metrics.get("from_backup") if enrichment.recovery_metrics else None),
+        'from_backup': (
+            raw_get("from_backup")
+            if raw_get("from_backup") is not None else (
+                True if raw_get("recovery_method") in ("backup_restore", "partial_backup_partial_rebuild")
+                else (enrichment.recovery_metrics.get("from_backup") if enrichment.recovery_metrics else None)
+            )
+        ),
         'mfa_implemented': raw_get("mfa_implemented") if raw_get("mfa_implemented") is not None else (enrichment.recovery_metrics.get("mfa_implemented") if enrichment.recovery_metrics else None),
-        'incident_response_firm': raw_get("incident_response_firm") or (enrichment.recovery_metrics.get("incident_response_firm") if enrichment.recovery_metrics else None),
-        'forensics_firm': raw_get("forensics_firm") or (enrichment.recovery_metrics.get("forensics_firm") if enrichment.recovery_metrics else None),
+        # Schema uses "ir_firm_engaged" / "forensics_firm_engaged"; legacy aliases kept
+        'incident_response_firm': (
+            raw_get("ir_firm_engaged") or raw_get("incident_response_firm")
+            or (enrichment.recovery_metrics.get("incident_response_firm") if enrichment.recovery_metrics else None)
+        ),
+        'forensics_firm': (
+            raw_get("forensics_firm_engaged") or raw_get("forensics_firm")
+            or (enrichment.recovery_metrics.get("forensics_firm") if enrichment.recovery_metrics else None)
+        ),
         
         # Transparency - use raw JSON data
         'public_disclosure': raw_get("public_disclosure") or raw_get("was_disclosed_publicly") if (raw_get("public_disclosure") is not None or raw_get("was_disclosed_publicly") is not None) else (enrichment.transparency_metrics.get("public_disclosure") if enrichment.transparency_metrics else None),

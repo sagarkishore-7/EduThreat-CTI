@@ -780,10 +780,12 @@ def json_to_cti_enrichment(
             else:
                 data_exfil = bool(data_exfil)
         
-        # Recovery timeframe - check multiple sources
-        recovery_days = json_data.get("recovery_timeframe_days")
-        if recovery_days is None and json_data.get("mttr_hours"):
-            recovery_days = json_data.get("mttr_hours") / 24.0
+        # Recovery timeframe — schema uses "recovery_duration_days"; legacy alias kept
+        recovery_days = (
+            json_data.get("recovery_duration_days")
+            or json_data.get("recovery_timeframe_days")
+            or (json_data.get("mttr_hours") / 24.0 if json_data.get("mttr_hours") else None)
+        )
         
         # Ransom amount handling
         ransom_amt = json_data.get("ransom_amount_exact") or json_data.get("ransom_amount")
@@ -907,27 +909,27 @@ def json_to_cti_enrichment(
         }
     
     # Operational impact metrics (as Dict)
+    # Schema field is "operational_impacts" (plural); "operational_impact" is a legacy alias.
     operational_impact_metrics = None
-    if (json_data.get("teaching_impacted") is not None or json_data.get("research_impacted") is not None or 
+    op_impacts = json_data.get("operational_impacts") or json_data.get("operational_impact") or []
+    if not isinstance(op_impacts, list):
+        op_impacts = []
+    if (json_data.get("teaching_impacted") is not None or json_data.get("research_impacted") is not None or
         json_data.get("outage_duration_hours") is not None or json_data.get("downtime_days") is not None or
-        json_data.get("operational_impact")):
-        # Ensure operational_impact is always a list (LLM may return None)
-        operational_impact = json_data.get("operational_impact") or []
-        if not isinstance(operational_impact, list):
-            operational_impact = []
+        op_impacts):
         operational_impact_metrics = {
-            "teaching_disrupted": json_data.get("teaching_impacted", False) or json_data.get("teaching_disrupted") or "teaching_disrupted" in operational_impact,
-            "research_disrupted": json_data.get("research_impacted", False) or json_data.get("research_disrupted") or "research_disrupted" in operational_impact,
-            "admissions_disrupted": json_data.get("admissions_disrupted") or "admissions_disrupted" in operational_impact,
-            "payroll_disrupted": json_data.get("payroll_disrupted") or "payroll_disrupted" in operational_impact,
-            "enrollment_disrupted": json_data.get("enrollment_disrupted") or "enrollment_disrupted" in operational_impact,
-            "clinical_operations_disrupted": json_data.get("clinical_operations_disrupted") or "clinical_operations_disrupted" in operational_impact,
-            "online_learning_disrupted": json_data.get("teaching_impact_code") == "online_platform_down" or "online_learning_disrupted" in operational_impact,
+            "teaching_disrupted": bool(json_data.get("teaching_impacted")) or bool(json_data.get("teaching_disrupted")) or "teaching_disrupted" in op_impacts,
+            "research_disrupted": bool(json_data.get("research_impacted")) or bool(json_data.get("research_disrupted")) or "research_halted" in op_impacts or "research_disrupted" in op_impacts,
+            "admissions_disrupted": bool(json_data.get("admissions_disrupted")) or "admissions_suspended" in op_impacts or "admissions_disrupted" in op_impacts,
+            "payroll_disrupted": bool(json_data.get("payroll_disrupted")) or "payroll_delayed" in op_impacts or "payroll_disrupted" in op_impacts,
+            "enrollment_disrupted": bool(json_data.get("enrollment_disrupted")) or "registration_suspended" in op_impacts or "enrollment_disrupted" in op_impacts,
+            "clinical_operations_disrupted": bool(json_data.get("clinical_operations_disrupted")) or "clinical_operations_disrupted" in op_impacts,
+            "online_learning_disrupted": bool(json_data.get("online_learning_disrupted")) or "classes_moved_online" in op_impacts or "online_learning_disrupted" in op_impacts,
             "downtime_days": json_data.get("downtime_days") or (json_data.get("outage_duration_hours", 0) / 24.0 if json_data.get("outage_duration_hours") else None),
             "partial_service_days": json_data.get("partial_service_days"),
-            "classes_cancelled": json_data.get("teaching_impact_code") == "class_cancellation" or json_data.get("classes_cancelled") or "classes_cancelled" in operational_impact,
-            "exams_postponed": json_data.get("teaching_impact_code") == "exam_disruption" or json_data.get("exams_postponed") or "exams_postponed" in operational_impact,
-            "graduation_delayed": json_data.get("graduation_delayed") or "graduation_delayed" in operational_impact
+            "classes_cancelled": bool(json_data.get("classes_cancelled")) or "classes_cancelled" in op_impacts or "exams_cancelled" in op_impacts,
+            "exams_postponed": bool(json_data.get("exams_postponed")) or "exams_postponed" in op_impacts,
+            "graduation_delayed": bool(json_data.get("graduation_delayed")) or "graduation_delayed" in op_impacts,
         }
     
     # Financial impact (as Dict) - capture all financial fields
@@ -1032,29 +1034,42 @@ def json_to_cti_enrichment(
     recovery_metrics = None
     has_recovery_data = (
         json_data.get("backup_status") is not None or 
-        json_data.get("service_restoration_date") is not None or 
-        json_data.get("response_actions") is not None or 
-        json_data.get("recovery_started_date") is not None or 
+        json_data.get("service_restoration_date") is not None or
+        json_data.get("response_actions") is not None or
+        json_data.get("recovery_started_date") is not None or
         json_data.get("recovery_completed_date") is not None or
+        # Schema uses "recovery_duration_days"; legacy alias is "recovery_timeframe_days"
+        json_data.get("recovery_duration_days") is not None or
         json_data.get("recovery_timeframe_days") is not None or
         json_data.get("mttr_hours") is not None or
+        # Schema uses "ir_firm_engaged" / "forensics_firm_engaged"; legacy aliases kept
+        json_data.get("ir_firm_engaged") is not None or
         json_data.get("incident_response_firm") is not None or
+        json_data.get("forensics_firm_engaged") is not None or
         json_data.get("forensics_firm") is not None or
         json_data.get("mfa_implemented") is not None or
+        json_data.get("security_improvements") is not None or
         json_data.get("response_measures") is not None or
-        json_data.get("from_backup") is not None
+        json_data.get("from_backup") is not None or
+        json_data.get("recovery_method") is not None
     )
     if has_recovery_data:
-        # Calculate recovery timeframe
-        recovery_days = json_data.get("recovery_timeframe_days")
-        if recovery_days is None and json_data.get("mttr_hours"):
-            recovery_days = json_data.get("mttr_hours") / 24.0
-        
-        # Determine from_backup
+        # Calculate recovery timeframe — schema calls it "recovery_duration_days"
+        recovery_days = (
+            json_data.get("recovery_duration_days")
+            or json_data.get("recovery_timeframe_days")
+            or (json_data.get("mttr_hours") / 24.0 if json_data.get("mttr_hours") else None)
+        )
+
+        # from_backup — schema uses "recovery_method" enum with "backup_restore"
         from_backup = json_data.get("from_backup")
-        if from_backup is None and json_data.get("backup_status"):
-            from_backup = json_data.get("backup_status") == "available_and_used"
-        
+        if from_backup is None:
+            recovery_method = json_data.get("recovery_method", "")
+            if recovery_method in ("backup_restore", "partial_backup_partial_rebuild"):
+                from_backup = True
+            elif json_data.get("backup_status"):
+                from_backup = json_data.get("backup_status") == "available_and_used"
+
         recovery_metrics = {
             "recovery_started_date": json_data.get("recovery_started_date"),
             "recovery_completed_date": json_data.get("recovery_completed_date") or json_data.get("service_restoration_date"),
@@ -1064,15 +1079,17 @@ def json_to_cti_enrichment(
             "backup_status": json_data.get("backup_status"),
             "backup_age_days": json_data.get("backup_age_days"),
             "clean_rebuild": json_data.get("clean_rebuild"),
-            "incident_response_firm": json_data.get("incident_response_firm"),
-            "forensics_firm": json_data.get("forensics_firm"),
-            "law_firm": json_data.get("law_firm"),
+            # Schema uses "ir_firm_engaged"; legacy alias "incident_response_firm"
+            "incident_response_firm": json_data.get("ir_firm_engaged") or json_data.get("incident_response_firm"),
+            # Schema uses "forensics_firm_engaged"; legacy alias "forensics_firm"
+            "forensics_firm": json_data.get("forensics_firm_engaged") or json_data.get("forensics_firm"),
+            "law_firm": json_data.get("law_firm") or json_data.get("legal_counsel_engaged"),
             "security_improvements": json_data.get("security_improvements") or json_data.get("response_actions"),
             "mfa_implemented": json_data.get("mfa_implemented"),
             "security_training_conducted": json_data.get("security_training_conducted"),
             "response_measures": json_data.get("response_measures"),
             "law_enforcement_involved": json_data.get("law_enforcement_involved"),
-            "law_enforcement_agency": json_data.get("law_enforcement_agency"),
+            "law_enforcement_agency": json_data.get("law_enforcement_agency") or json_data.get("law_enforcement_agencies"),
             "detection_source": json_data.get("detection_source"),
             "mttd_hours": json_data.get("mttd_hours"),
             "mttr_hours": json_data.get("mttr_hours"),
