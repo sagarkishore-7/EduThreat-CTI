@@ -832,20 +832,22 @@ def json_to_cti_enrichment(
     systems_affected_codes = json_data.get("systems_affected") or json_data.get("systems_affected_codes") or []
     if systems_affected_codes:
         mapped_systems = map_systems_affected_codes(systems_affected_codes)
+        # Check both raw LLM values (schema-compliant) and mapped canonical values
+        # (LLM sometimes returns mapped names like "network_infrastructure" instead of "core_network")
         _sac = set(systems_affected_codes)
+        _mapped_sac = set(mapped_systems) if mapped_systems else set()
         system_impact = {
             "systems_affected": mapped_systems,
             "critical_systems_affected": len(systems_affected_codes) > 0,
-            # Schema uses "core_network", "wifi_network" for network compromise
-            "network_compromised": bool({"core_network", "wifi_network", "data_center"} & _sac),
-            # Schema uses "email_system"
-            "email_system_affected": "email_system" in _sac,
-            # Schema uses "student_portal" or "sis_student_information"
-            "student_portal_affected": bool({"student_portal", "sis_student_information", "staff_portal"} & _sac),
-            # Schema uses "research_computing_hpc", "research_storage", "lab_instruments"
-            "research_systems_affected": bool({"research_computing_hpc", "research_storage", "lab_instruments", "research_databases"} & _sac),
-            # Schema uses "hospital_systems" or "ehr_emr"
-            "hospital_systems_affected": bool({"hospital_systems", "ehr_emr", "medical_devices", "pharmacy_system"} & _sac),
+            "network_compromised": bool({"core_network", "wifi_network", "data_center"} & _sac)
+                                   or "network_infrastructure" in _mapped_sac,
+            "email_system_affected": "email_system" in _sac or "email_system" in _mapped_sac,
+            "student_portal_affected": bool({"student_portal", "sis_student_information", "staff_portal"} & _sac)
+                                       or "student_portal" in _mapped_sac,
+            "research_systems_affected": bool({"research_computing_hpc", "research_storage", "lab_instruments", "research_databases"} & _sac)
+                                         or "research_systems" in _mapped_sac,
+            "hospital_systems_affected": bool({"hospital_systems", "ehr_emr", "medical_devices", "pharmacy_system"} & _sac)
+                                         or "hospital_systems" in _mapped_sac,
             # Schema uses specific cloud terms in vendor names, not a standalone enum
             "cloud_services_affected": False,
             "third_party_vendor_impact": json_data.get("third_parties_involved") is not None and len(json_data.get("third_parties_involved", [])) > 0,

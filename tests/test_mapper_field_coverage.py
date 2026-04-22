@@ -423,13 +423,14 @@ class TestEdgeCases:
         assert not flat["research_disrupted"]
         assert not flat["classes_cancelled"]
 
-    def test_systems_affected_wrong_old_names_do_not_match(self):
-        """Confirm old incorrect field names 'email', 'portal_student_staff' no longer match."""
+    def test_systems_affected_irrelevant_value_does_not_match_email(self):
+        """A value unrelated to email must not set email_system_affected."""
         _, flat = _enrich_and_flatten(_base_payload(
-            systems_affected=["email"]  # old name — not in schema enum
+            systems_affected=["payroll_system"]
         ))
-        # "email" is not "email_system" so should not match
         assert not flat["email_system_affected"]
+        assert not flat["network_compromised"]
+        assert not flat["hospital_systems_affected"]
 
     def test_fine_amount_legacy_name_still_works(self):
         """fine_amount (not usd suffix) should still be accepted as legacy alias."""

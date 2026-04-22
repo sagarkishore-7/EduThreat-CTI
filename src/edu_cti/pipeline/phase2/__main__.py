@@ -773,6 +773,13 @@ def fetch_articles_phase(
         # Stop the keepalive thread — fetch phase is done.
         _keepalive_stop.set()
         _keepalive_thread.join(timeout=5)
+        # Close HttpClient so its Playwright ThreadPoolExecutor is shut down.
+        # Without this, each run leaks one executor thread per ArticleFetcher,
+        # eventually exhausting the OS thread limit ("can't start new thread").
+        try:
+            article_fetcher.http_client.close()
+        except Exception:
+            pass
 
     logger.info(f"Fetching complete: {stats['processed']} processed, {stats['articles_fetched']} fetched, {stats['errors']} errors")
 
