@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "eduthreat-cti"
-version = "2.0.0"
+version = "2.7.1"
 description = "Real-time cyber threat intelligence pipeline for the global education sector"
 readme = {text = "Real-time cyber threat intelligence pipeline for the global education sector", content-type = "text/plain"}
 requires-python = ">=3.11"

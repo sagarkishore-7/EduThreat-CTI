@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] - 2026-04-23
+
+### Exception Handling Hardening
+
+#### Fixed
+
+- **Bare `except:` clause in PRAGMA schema check** (`api/admin.py:292`) — replaced with `except sqlite3.Error:` so `KeyboardInterrupt` and `SystemExit` are no longer swallowed during the `PRAGMA table_info(incidents)` column-existence check.
+
+- **Bare `except:` clauses in connection close** (`api/admin.py:437`, `api/admin.py:503`) — replaced with `except Exception:` in the `finally` blocks of `export_full_csv` and `export_enriched_csv`. System-level signals now propagate correctly on graceful shutdown.
+
+- **Bare `except:` clauses in JSON parsing** (`api/reports.py:154`, `api/reports.py:203`, `api/reports.py:262`) — replaced with `except (json.JSONDecodeError, ValueError, TypeError):` for parsing `mitre_attack_techniques`, `systems_affected`, and `timeline` fields. Other exceptions (including `KeyboardInterrupt`) now propagate instead of being silently swallowed.
+
+#### Changed
+
+- Codebase-wide bare `except:` count reduced from 6 to 0 across API modules.
+
+---
+
 ## [2.7.0] - 2026-04-17
 
 ### Phase 2 Extraction Pipeline — Critical Bug Fixes

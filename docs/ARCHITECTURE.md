@@ -1,7 +1,7 @@
 # System Architecture
 
-**Version**: 2.6.0  
-**Last Updated**: 2026-04-11
+**Version**: 2.7.1  
+**Last Updated**: 2026-04-23
 
 ## Overview
 
