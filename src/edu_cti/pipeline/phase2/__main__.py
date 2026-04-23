@@ -321,13 +321,23 @@ def _create_secondary_incidents(
         stub = BaseIncident(
             incident_id="",  # temp — assigned below
             source=parent_source,
+            source_event_id=None,
             institution_name=victim_name,
             victim_raw_name=victim_name,
-            incident_date=incident_date,
-            attack_type_hint=attack_type,
+            institution_type=None,
             country=country,
-            notes=stub_notes,
+            region=None,
+            city=None,
+            incident_date=incident_date,
+            date_precision="unknown",
+            source_published_date=None,
+            ingested_at=None,
+            title=victim_name,
+            subtitle=None,
+            primary_url=None,
             all_urls=[],  # empty: SERP discovery will find a dedicated article
+            attack_type_hint=attack_type,
+            notes=stub_notes,
         )
         dup_id = find_duplicate_by_name_and_date(conn, stub)
         if dup_id:

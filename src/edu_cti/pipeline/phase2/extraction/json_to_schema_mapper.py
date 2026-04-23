@@ -603,23 +603,6 @@ def map_attack_category_to_vector(category) -> Optional[str]:
     return mapping.get(category_lower, "other")
 
 
-def map_initial_access_vector(access_vector: str) -> Optional[str]:
-    """Map initial access vector."""
-    mapping = {
-        "phishing": "phishing",
-        "stolen_credentials": "credential_theft",
-        "brute_force": "brute_force",
-        "exposed_service": "vulnerability_exploit",
-        "supply_chain": "supply_chain",
-        "malicious_attachment": "phishing",
-        "drive_by": "vulnerability_exploit",
-        "vulnerability_exploit": "vulnerability_exploit",
-        "unknown": None,
-        "other": "other",
-    }
-    return mapping.get(access_vector)
-
-
 def map_data_types(data_types: List[str]) -> Dict[str, bool]:
     """Map data types to data impact metrics (handles extensive new categories)."""
     result = {}
@@ -1342,5 +1325,7 @@ def json_to_cti_enrichment(
         attack_campaign_name=json_data.get("attack_campaign_name"),
         data_volume_gb=json_data.get("data_volume_gb"),
         enriched_summary=_build_summary(json_data),
-        extraction_notes=extraction_notes
+        extraction_notes=extraction_notes,
+        other_edu_incidents=json_data.get("other_edu_incidents") or None,
+        attack_chain=normalize_attack_chain(json_data.get("attack_chain")),
     )

@@ -424,6 +424,12 @@ class CTIEnrichmentResult(BaseModel):
         description="Volume of data stolen or encrypted in gigabytes"
     )
 
+    # Attack kill chain phases (MITRE ATT&CK taxonomy)
+    attack_chain: Optional[List[str]] = Field(
+        default=None,
+        description="MITRE ATT&CK kill chain phases observed in this incident"
+    )
+
     # Secondary incidents from roundup/digest articles
     other_edu_incidents: Optional[List[Dict[str, Any]]] = Field(
         default=None,

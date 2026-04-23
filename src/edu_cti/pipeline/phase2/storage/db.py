@@ -343,6 +343,13 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             -- Data (additional)
             data_volume_gb REAL,
 
+            -- Attack classification (additional)
+            secondary_attack_categories TEXT,  -- JSON array of secondary attack types
+            attack_chain TEXT,                 -- JSON array of MITRE ATT&CK kill chain phases
+            incident_date_precision TEXT,      -- exact / approximate / month_only / year_only / unknown
+            encryption_extent TEXT,            -- full_encryption / partial_encryption / no_encryption / unknown
+            disclosure_source TEXT,            -- institution_statement / media_report / attacker_leak_site / etc.
+
             -- Summary
             enriched_summary TEXT,
             extraction_notes TEXT,
@@ -463,6 +470,12 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         ("regulatory_context", "TEXT"),
         # Data
         ("data_volume_gb", "REAL"),
+        # Attack classification (additional)
+        ("secondary_attack_categories", "TEXT"),
+        ("attack_chain", "TEXT"),
+        ("incident_date_precision", "TEXT"),
+        ("encryption_extent", "TEXT"),
+        ("disclosure_source", "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {col_type}")
@@ -915,6 +928,25 @@ def _flatten_enrichment_for_db(
         # Data (additional)
         'data_volume_gb': enrichment.data_volume_gb or raw_get("data_volume_gb"),
 
+        # Attack classification (additional)
+        'secondary_attack_categories': (
+            json.dumps(raw_get("secondary_attack_categories"))
+            if isinstance(raw_get("secondary_attack_categories"), list) and raw_get("secondary_attack_categories")
+            else None
+        ),
+        'attack_chain': (
+            json.dumps(enrichment.attack_chain)
+            if isinstance(getattr(enrichment, 'attack_chain', None), list) and enrichment.attack_chain
+            else (json.dumps(raw_get("attack_chain")) if isinstance(raw_get("attack_chain"), list) and raw_get("attack_chain") else None)
+        ),
+        'incident_date_precision': raw_get("incident_date_precision"),
+        'encryption_extent': raw_get("encryption_extent") or (
+            enrichment.system_impact.get("encryption_extent") if enrichment.system_impact else None
+        ),
+        'disclosure_source': raw_get("disclosure_source") or (
+            enrichment.transparency_metrics.get("disclosure_source") if enrichment.transparency_metrics else None
+        ),
+
         # Summary
         'enriched_summary': enrichment.enriched_summary or raw_get("enriched_summary"),
         'extraction_notes': enrichment.extraction_notes or raw_get("extraction_notes"),
@@ -927,6 +959,7 @@ def _flatten_enrichment_for_db(
         "malware_families", "attacker_tools", "threat_actor_aliases",
         "cve_ids", "cvss_scores", "vulnerability_names", "affected_products",
         "data_categories", "regulatory_context",
+        "secondary_attack_categories", "attack_chain",
     }
 
     for key, value in flat.items():
@@ -1031,26 +1064,6 @@ def get_unenriched_incidents(
         incidents.append(incident_dict)
     
     return incidents
-
-
-def should_upgrade_enrichment(
-    conn: sqlite3.Connection,
-    incident_id: str,
-) -> bool:
-    """
-    Check if enrichment should be upgraded.
-    
-    Always returns True (no confidence-based comparison anymore).
-    
-    Args:
-        conn: Database connection
-        incident_id: Incident ID to check
-        
-    Returns:
-        True (always allow upgrade)
-    """
-    # Always allow upgrade - no confidence-based comparison
-    return True
 
 
 def save_enrichment_result(
@@ -1384,6 +1397,7 @@ def save_enrichment_result(
         "iocs", "target_demographics", "attack_chain",
         "vulnerabilities_exploited", "malware_families", "attacker_tools",
         "threat_actor_aliases", "applicable_regulations",
+        "secondary_attack_categories",
     }
     if raw_json_data:
         raw_json_data = {
@@ -1461,6 +1475,9 @@ def save_enrichment_result(
         'regulatory_context',
         # Data (additional)
         'data_volume_gb',
+        # Attack classification (additional)
+        'secondary_attack_categories', 'attack_chain',
+        'incident_date_precision', 'encryption_extent', 'disclosure_source',
         'enriched_summary', 'extraction_notes', 'confidence',
         'created_at', 'updated_at'
     ]
