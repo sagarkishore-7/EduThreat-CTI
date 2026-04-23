@@ -14,6 +14,7 @@ import sys
 import time
 import queue
 import threading
+from datetime import datetime
 from typing import Dict, List, Optional
 
 from src.edu_cti.core.models import BaseIncident
@@ -276,7 +277,12 @@ def _create_secondary_incidents(
     Name+date dedup in _ingest_batch will silently skip any that already exist.
     """
     from src.edu_cti.core.models import BaseIncident, make_incident_id
-    from src.edu_cti.core.db import insert_incident, add_incident_source, source_event_exists
+    from src.edu_cti.core.db import (
+        insert_incident,
+        add_incident_source,
+        source_event_exists,
+        run_with_sqlite_lock_retry,
+    )
     from src.edu_cti.core.db import find_duplicate_by_name_and_date
 
     parent_source = (parent_incident.get("source") or
@@ -362,11 +368,30 @@ def _create_secondary_incidents(
 
         stub.incident_id = incident_id
         stub.source_event_id = dedup_key
+        first_seen_at = (
+            parent_incident.get("ingested_at")
+            or datetime.utcnow().isoformat() + "Z"
+        )
+        confidence = parent_incident.get("source_confidence")
 
         try:
-            insert_incident(conn, stub)
-            add_incident_source(conn, incident_id, parent_source, dedup_key)
-            conn.commit()
+            def _create_once() -> None:
+                insert_incident(conn, stub)
+                add_incident_source(
+                    conn,
+                    incident_id,
+                    parent_source,
+                    dedup_key,
+                    first_seen_at,
+                    confidence,
+                )
+                conn.commit()
+
+            run_with_sqlite_lock_retry(
+                conn,
+                _create_once,
+                operation=f"create secondary incident {incident_id}",
+            )
             created += 1
             logger.info(
                 f"Created secondary incident {incident_id} for '{victim_name}' "

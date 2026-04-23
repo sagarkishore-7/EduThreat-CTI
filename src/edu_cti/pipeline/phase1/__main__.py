@@ -22,6 +22,7 @@ from src.edu_cti.core.db import (
     find_duplicate_incident_by_urls,
     find_duplicate_by_name_and_date,
     load_incident_by_id,
+    run_with_sqlite_lock_retry,
 )
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase1.curated import collect_curated_incidents
@@ -132,139 +133,149 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
 
     new_count = 0
     for inc in incidents:
-        # Normalize country names at ingestion time
-        _country_code = None
-        if inc.country:
-            normalized = normalize_country(inc.country)
-            if normalized:
-                inc.country = normalized
-                _country_code = get_country_code(normalized)
+        def _ingest_one() -> int:
+            # Normalize country names at ingestion time
+            _country_code = None
+            if inc.country:
+                normalized = normalize_country(inc.country)
+                if normalized:
+                    inc.country = normalized
+                    _country_code = get_country_code(normalized)
 
-        source = inc.source
-        event_key = _event_key_for_incident(inc)
+            source = inc.source
+            event_key = _event_key_for_incident(inc)
 
-        if not event_key:
-            event_key = inc.incident_id
+            if not event_key:
+                event_key = inc.incident_id
 
-        # Step 1: Check per-source deduplication
-        # BUT: Allow updates if existing incident has broken URLs and new incident has new URLs
-        if source_event_exists(conn, source, event_key):
-            # Check if we should allow update due to broken URLs
-            from src.edu_cti.core.db import has_broken_urls
-            duplicate_result = find_duplicate_incident_by_urls(conn, inc)
-            
-            if duplicate_result:
-                duplicate_incident_id, _, _ = duplicate_result
-                if has_broken_urls(conn, duplicate_incident_id):
-                    # Existing incident has broken URLs - check if new incident has different URLs
-                    existing_incident = load_incident_by_id(conn, duplicate_incident_id)
-                    if existing_incident:
-                        existing_urls = set(existing_incident.all_urls or [])
-                        new_urls = set(inc.all_urls or [])
-                        # If new incident has URLs not in existing incident, allow update
-                        if new_urls - existing_urls:
-                            logger.info(
-                                f"Allowing URL update for incident {duplicate_incident_id} "
-                                f"(has broken URLs, new URLs available from {source})"
-                            )
-                            # Continue to cross-source deduplication logic below
-                        else:
-                            # No new URLs, skip
-                            continue
+            local_new_count = 0
+
+            # Step 1: Check per-source deduplication
+            # BUT: Allow updates if existing incident has broken URLs and new incident has new URLs
+            if source_event_exists(conn, source, event_key):
+                # Check if we should allow update due to broken URLs
+                from src.edu_cti.core.db import has_broken_urls
+                duplicate_result = find_duplicate_incident_by_urls(conn, inc)
+
+                if duplicate_result:
+                    duplicate_incident_id, _, _ = duplicate_result
+                    if has_broken_urls(conn, duplicate_incident_id):
+                        # Existing incident has broken URLs - check if new incident has different URLs
+                        existing_incident = load_incident_by_id(conn, duplicate_incident_id)
+                        if existing_incident:
+                            existing_urls = set(existing_incident.all_urls or [])
+                            new_urls = set(inc.all_urls or [])
+                            # If new incident has URLs not in existing incident, allow update
+                            if new_urls - existing_urls:
+                                logger.info(
+                                    f"Allowing URL update for incident {duplicate_incident_id} "
+                                    f"(has broken URLs, new URLs available from {source})"
+                                )
+                                # Continue to cross-source deduplication logic below
+                            else:
+                                # No new URLs, skip
+                                return 0
+                    else:
+                        # No broken URLs, skip per normal deduplication
+                        return 0
                 else:
-                    # No broken URLs, skip per normal deduplication
-                    continue
-            else:
-                # Not a duplicate, skip per normal deduplication
-                continue
+                    # Not a duplicate, skip per normal deduplication
+                    return 0
 
-        # Step 2: Check for cross-source duplicates (URL matching)
-        duplicate_result = find_duplicate_incident_by_urls(conn, inc)
-        
-        if duplicate_result:
-            duplicate_incident_id, is_enriched, should_upgrade_or_drop = duplicate_result
-            
-            if is_enriched:
-                if should_upgrade_or_drop:
+            # Step 2: Check for cross-source duplicates (URL matching)
+            duplicate_result = find_duplicate_incident_by_urls(conn, inc)
+
+            if duplicate_result:
+                duplicate_incident_id, is_enriched, should_upgrade_or_drop = duplicate_result
+
+                if is_enriched:
+                    if should_upgrade_or_drop:
+                        existing_incident = load_incident_by_id(conn, duplicate_incident_id)
+                        if existing_incident:
+                            existing_urls = set(existing_incident.all_urls or [])
+                            new_urls = set(inc.all_urls or [])
+                            merged_urls = list(existing_urls | new_urls)
+                            existing_incident.all_urls = merged_urls
+                            conn.execute(
+                                "UPDATE incidents SET llm_enriched = 0 WHERE incident_id = ?",
+                                (duplicate_incident_id,),
+                            )
+                            insert_incident(conn, existing_incident, preserve_enrichment=False)
+                            incident_id = duplicate_incident_id
+                            logger.info(f"Merged URLs for enriched incident {duplicate_incident_id}")
+                        else:
+                            incident_id = insert_incident(conn, inc)
+                    else:
+                        logger.info(f"Dropping incident {inc.incident_id} - duplicate of {duplicate_incident_id}")
+                        incident_id = duplicate_incident_id
+                else:
+                    # Step 3: Merge with existing incident (not enriched)
                     existing_incident = load_incident_by_id(conn, duplicate_incident_id)
                     if existing_incident:
-                        existing_urls = set(existing_incident.all_urls or [])
-                        new_urls = set(inc.all_urls or [])
-                        merged_urls = list(existing_urls | new_urls)
-                        existing_incident.all_urls = merged_urls
-                        conn.execute(
-                            "UPDATE incidents SET llm_enriched = 0 WHERE incident_id = ?",
-                            (duplicate_incident_id,)
-                        )
-                        insert_incident(conn, existing_incident, preserve_enrichment=False)
+                        merged = merge_incidents([existing_incident, inc])
+                        merged.incident_id = duplicate_incident_id
+                        insert_incident(conn, merged, preserve_enrichment=True)
                         incident_id = duplicate_incident_id
-                        logger.info(f"Merged URLs for enriched incident {duplicate_incident_id}")
                     else:
                         incident_id = insert_incident(conn, inc)
-                else:
-                    logger.info(f"Dropping incident {inc.incident_id} - duplicate of {duplicate_incident_id}")
-                    incident_id = duplicate_incident_id
             else:
-                # Step 3: Merge with existing incident (not enriched)
-                existing_incident = load_incident_by_id(conn, duplicate_incident_id)
-                if existing_incident:
-                    merged = merge_incidents([existing_incident, inc])
-                    merged.incident_id = duplicate_incident_id
-                    insert_incident(conn, merged, preserve_enrichment=True)
-                    incident_id = duplicate_incident_id
-                else:
-                    incident_id = insert_incident(conn, inc)
-        else:
-            # Step 2.5: Name + date dedup — catches same victim from different sources
-            # that share no URLs (e.g. Comparitech vs ransomware.live for same school).
-            # Rule: fuzzy name match (>=85 token_sort_ratio) AND dates within 14 days.
-            # If dates are both absent, only merge on exact normalized name.
-            name_dup_id = find_duplicate_by_name_and_date(conn, inc)
-            if name_dup_id:
-                existing_incident = load_incident_by_id(conn, name_dup_id)
-                if existing_incident:
-                    merged = merge_incidents([existing_incident, inc])
-                    merged.incident_id = name_dup_id
-                    insert_incident(conn, merged, preserve_enrichment=True)
-                    incident_id = name_dup_id
-                    logger.info(
-                        f"Name+date dedup: merged {inc.incident_id} ({inc.source}) "
-                        f"→ {name_dup_id} (same victim within 14 days)"
-                    )
+                # Step 2.5: Name + date dedup — catches same victim from different sources
+                # that share no URLs (e.g. Comparitech vs ransomware.live for same school).
+                # Rule: fuzzy name match (>=85 token_sort_ratio) AND dates within 14 days.
+                # If dates are both absent, only merge on exact normalized name.
+                name_dup_id = find_duplicate_by_name_and_date(conn, inc)
+                if name_dup_id:
+                    existing_incident = load_incident_by_id(conn, name_dup_id)
+                    if existing_incident:
+                        merged = merge_incidents([existing_incident, inc])
+                        merged.incident_id = name_dup_id
+                        insert_incident(conn, merged, preserve_enrichment=True)
+                        incident_id = name_dup_id
+                        logger.info(
+                            f"Name+date dedup: merged {inc.incident_id} ({inc.source}) "
+                            f"→ {name_dup_id} (same victim within 14 days)"
+                        )
+                    else:
+                        # Step 4: New incident - insert
+                        incident_id = insert_incident(conn, inc)
+                        local_new_count += 1
                 else:
                     # Step 4: New incident - insert
                     incident_id = insert_incident(conn, inc)
-                    new_count += 1
-            else:
-                # Step 4: New incident - insert
-                incident_id = insert_incident(conn, inc)
-                new_count += 1
+                    local_new_count += 1
 
-        # Step 4.5: Set country_code if we normalized it
-        if _country_code:
-            conn.execute(
-                "UPDATE incidents SET country_code = ? WHERE incident_id = ? AND (country_code IS NULL OR country_code = '')",
-                (_country_code, incident_id),
+            # Step 4.5: Set country_code if we normalized it
+            if _country_code:
+                conn.execute(
+                    "UPDATE incidents SET country_code = ? WHERE incident_id = ? AND (country_code IS NULL OR country_code = '')",
+                    (_country_code, incident_id),
+                )
+
+            # Step 5: Always add source attribution
+            add_incident_source(
+                conn,
+                incident_id,
+                source,
+                inc.source_event_id,
+                inc.ingested_at or "",
+                inc.source_confidence,
             )
 
-        # Step 5: Always add source attribution
-        add_incident_source(
+            # Step 6: Register source_event for per-source deduplication
+            register_source_event(conn, source, event_key, incident_id, inc.ingested_at or "")
+
+            # Commit per-incident to keep write-lock windows short.
+            # Phase1 and Phase2 write concurrently; holding the lock across a whole
+            # batch (up to ~20 incidents with expensive fuzzy-dedup reads) can easily
+            # exceed Phase2's busy_timeout and produce "database is locked" errors.
+            conn.commit()
+            return local_new_count
+
+        new_count += run_with_sqlite_lock_retry(
             conn,
-            incident_id,
-            source,
-            inc.source_event_id,
-            inc.ingested_at or "",
-            inc.source_confidence,
+            _ingest_one,
+            operation=f"ingest incident {inc.incident_id}",
         )
-
-        # Step 6: Register source_event for per-source deduplication
-        register_source_event(conn, source, event_key, incident_id, inc.ingested_at or "")
-
-        # Commit per-incident to keep write-lock windows short.
-        # Phase1 and Phase2 write concurrently; holding the lock across a whole
-        # batch (up to ~20 incidents with expensive fuzzy-dedup reads) can easily
-        # exceed Phase2's busy_timeout and produce "database is locked" errors.
-        conn.commit()
 
     return new_count
 

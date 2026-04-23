@@ -166,7 +166,7 @@ class IncidentEnricher:
         
         from src.edu_cti.pipeline.phase2.storage.article_storage import (
             get_all_articles_for_incident,
-            cleanup_non_primary_articles,
+            promote_primary_article,
         )
         
         # Get articles from database
@@ -242,20 +242,12 @@ class IncidentEnricher:
 
         # Mark primary article in database and cleanup
         if enrichment_result.primary_url:
-            conn.execute(
-                "UPDATE articles SET is_primary = 0 WHERE incident_id = ?",
-                (incident.incident_id,)
+            promote_primary_article(
+                conn,
+                incident.incident_id,
+                enrichment_result.primary_url,
             )
-            conn.execute(
-                "UPDATE articles SET is_primary = 1 WHERE incident_id = ? AND url = ?",
-                (incident.incident_id, enrichment_result.primary_url)
-            )
-            conn.commit()
-            
-            deleted_count = cleanup_non_primary_articles(conn, incident.incident_id)
-            if deleted_count > 0:
-                logger.info(f"Cleaned up {deleted_count} non-primary articles for {incident.incident_id}")
-        
+
         logger.debug(
             f"{incident.incident_id}: enrichment done "
             f"(edu={enrichment_result.education_relevance.is_education_related})"

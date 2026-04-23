@@ -4,6 +4,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 from datetime import datetime
 from contextlib import contextmanager
 import json
+import time
 
 import sqlite3
 
@@ -17,6 +18,59 @@ from src.edu_cti.core.deduplication import (
 
 import logging
 _db_logger = logging.getLogger(__name__)
+
+
+def is_sqlite_lock_error(exc: BaseException) -> bool:
+    """Return True for transient SQLite lock contention errors."""
+    if not isinstance(exc, sqlite3.OperationalError):
+        return False
+    message = str(exc).lower()
+    return (
+        "database is locked" in message
+        or "database table is locked" in message
+        or "database schema is locked" in message
+    )
+
+
+def run_with_sqlite_lock_retry(
+    conn: sqlite3.Connection,
+    func,
+    *,
+    operation: str,
+    max_attempts: int = 8,
+    base_delay: float = 0.25,
+    max_delay: float = 3.0,
+):
+    """
+    Retry a transient SQLite lock collision by rolling back and re-running the unit of work.
+
+    This is specifically for WAL-mode concurrent writers inside the same process where
+    SQLITE_LOCKED/SQLITE_BUSY_SNAPSHOT can still surface even with busy_timeout.
+    """
+    attempt = 1
+    while True:
+        try:
+            return func()
+        except sqlite3.OperationalError as exc:
+            if not is_sqlite_lock_error(exc) or attempt >= max_attempts:
+                raise
+
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+
+            delay = min(max_delay, base_delay * (2 ** (attempt - 1)))
+            _db_logger.warning(
+                "SQLite lock during %s (attempt %s/%s): %s; retrying in %.2fs",
+                operation,
+                attempt,
+                max_attempts,
+                exc,
+                delay,
+            )
+            time.sleep(delay)
+            attempt += 1
 
 
 def get_connection(

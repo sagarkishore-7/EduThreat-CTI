@@ -429,6 +429,24 @@ class TestCreateSecondaryIncidents:
         # First element of the list should be stored as the hint
         assert row[0] == "ransomware"
 
+    def test_stubs_copy_source_attribution(self, temp_db):
+        conn, _ = temp_db
+        self._run_create(conn, [{"victim_name": "Attributed University", "incident_date": "2024-04-01"}])
+        row = conn.execute(
+            """
+            SELECT source, source_event_id, first_seen_at
+            FROM incident_sources
+            WHERE incident_id = (
+                SELECT incident_id FROM incidents WHERE institution_name = 'Attributed University'
+            )
+            LIMIT 1
+            """
+        ).fetchone()
+        assert row is not None
+        assert row[0] == "test"
+        assert row[1] == "attributed university|2024-04-01|roundup_extract"
+        assert row[2]
+
 
 # ── dead code removed ─────────────────────────────────────────────────────────
 

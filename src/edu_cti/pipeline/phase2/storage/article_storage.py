@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Optional, List, Dict, TYPE_CHECKING
 from datetime import datetime
 
-from src.edu_cti.core.db import get_connection
+from src.edu_cti.core.db import get_connection, run_with_sqlite_lock_retry
 from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleFetcher, ArticleContent
 # metadata_extractor removed - no longer used for scoring
 from src.edu_cti.core.models import BaseIncident
@@ -79,39 +79,46 @@ def save_article(
         url_score_reasoning: Optional reasoning for the score (typically set by LLM)
         is_primary: Whether this is the primary (best) article for this incident (set by LLM)
     """
-    now = datetime.utcnow().isoformat() + "Z"
-    
-    # If marking as primary, unmark other articles for this incident
-    if is_primary:
+    def _save_once() -> None:
+        now = datetime.utcnow().isoformat() + "Z"
+
+        # If marking as primary, unmark other articles for this incident
+        if is_primary:
+            conn.execute(
+                "UPDATE articles SET is_primary = 0 WHERE incident_id = ?",
+                (incident_id,),
+            )
+
         conn.execute(
-            "UPDATE articles SET is_primary = 0 WHERE incident_id = ?",
-            (incident_id,)
+            """
+            INSERT OR REPLACE INTO articles
+            (incident_id, url, title, content, author, publish_date, fetch_successful,
+             fetch_error, content_length, fetched_at, url_score, url_score_reasoning, is_primary)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                incident_id,
+                url,
+                article.title or "",
+                article.content or "",
+                article.author,
+                article.publish_date,
+                1 if article.fetch_successful else 0,
+                article.error_message,
+                article.content_length,
+                now,
+                url_score,
+                url_score_reasoning,
+                1 if is_primary else 0,
+            ),
         )
-    
-    conn.execute(
-        """
-        INSERT OR REPLACE INTO articles
-        (incident_id, url, title, content, author, publish_date, fetch_successful,
-         fetch_error, content_length, fetched_at, url_score, url_score_reasoning, is_primary)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """,
-        (
-            incident_id,
-            url,
-            article.title or "",
-            article.content or "",
-            article.author,
-            article.publish_date,
-            1 if article.fetch_successful else 0,
-            article.error_message,
-            article.content_length,
-            now,
-            url_score,
-            url_score_reasoning,
-            1 if is_primary else 0,
-        )
+        conn.commit()
+
+    run_with_sqlite_lock_retry(
+        conn,
+        _save_once,
+        operation=f"save article {incident_id}",
     )
-    conn.commit()
 
 
 # update_article_scores_from_llm removed - URL scoring no longer used in simplified pipeline
@@ -158,6 +165,65 @@ def cleanup_non_primary_articles(
     )
     
     return count_before
+
+
+def promote_primary_article(
+    conn: sqlite3.Connection,
+    incident_id: str,
+    primary_url: str,
+) -> int:
+    """
+    Mark one stored article as primary and remove the non-primary remainder.
+
+    Returns the number of non-primary articles deleted.
+    """
+
+    def _promote_once() -> int:
+        exists = conn.execute(
+            "SELECT 1 FROM articles WHERE incident_id = ? AND url = ? LIMIT 1",
+            (incident_id, primary_url),
+        ).fetchone()
+        if not exists:
+            logger.warning(
+                "Primary article %s missing for incident %s; leaving article set unchanged",
+                primary_url,
+                incident_id,
+            )
+            return 0
+
+        cur = conn.execute(
+            "SELECT COUNT(*) as count FROM articles WHERE incident_id = ? AND url != ?",
+            (incident_id, primary_url),
+        )
+        count_before = cur.fetchone()["count"]
+
+        conn.execute(
+            """
+            UPDATE articles
+            SET is_primary = CASE WHEN url = ? THEN 1 ELSE 0 END
+            WHERE incident_id = ?
+            """,
+            (primary_url, incident_id),
+        )
+        conn.execute(
+            "DELETE FROM articles WHERE incident_id = ? AND url != ?",
+            (incident_id, primary_url),
+        )
+        conn.commit()
+
+        if count_before > 0:
+            logger.info(
+                f"Cleaned up {count_before} non-primary articles for incident {incident_id}. "
+                f"Only primary article remains in database."
+            )
+
+        return count_before
+
+    return run_with_sqlite_lock_retry(
+        conn,
+        _promote_once,
+        operation=f"promote primary article for {incident_id}",
+    )
 
 
 def get_primary_article(
