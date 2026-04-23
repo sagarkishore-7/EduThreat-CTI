@@ -1310,19 +1310,25 @@ def save_enrichment_result(
     
     update_params.append(incident_id)
 
-    # The connection uses isolation_level='IMMEDIATE' (set in get_connection()), so
-    # Python automatically issues BEGIN IMMEDIATE before this first DML statement.
-    # No explicit BEGIN needed here — it was redundant and harmful: if it timed out
-    # the except:pass ate the error, leaving subsequent writes without a transaction
-    # boundary (each auto-committed individually, producing partial/inconsistent saves).
-    conn.execute(
-        f"""
-        UPDATE incidents
-        SET {update_fields}
-        WHERE incident_id = ?
-        """,
-        tuple(update_params)
-    )
+    # BEGIN IMMEDIATE acquires the write lock up-front, preventing "database is locked"
+    # errors when multiple enrichment workers try to write at the same time.
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+    except sqlite3.OperationalError:
+        pass  # Already in a transaction — caller manages the transaction boundary
+
+    try:
+        conn.execute(
+            f"""
+            UPDATE incidents
+            SET {update_fields}
+            WHERE incident_id = ?
+            """,
+            tuple(update_params)
+        )
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
 
     # --- Post-enrichment dedup ---
     # If another already-enriched incident has the same primary_url + incident_date,
