@@ -300,9 +300,15 @@ def _create_secondary_incidents(
             continue
 
         incident_date = entry.get("incident_date") or None
-        attack_type   = entry.get("attack_type") or None
+        _at           = entry.get("attack_type")
+        # LLM sometimes returns list values in secondary incident dicts
+        attack_type   = (_at[0] if _at else None) if isinstance(_at, list) else (_at or None)
         country       = entry.get("country") or None
+        if isinstance(country, list):
+            country = country[0] if country else None
         brief_desc    = entry.get("brief_description") or None
+        if isinstance(brief_desc, list):
+            brief_desc = " ".join(str(x) for x in brief_desc) if brief_desc else None
 
         # Build notes: store the roundup reference + brief description for context.
         # The roundup URL is intentionally NOT put in all_urls — if it were, the

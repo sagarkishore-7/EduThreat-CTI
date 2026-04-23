@@ -413,6 +413,22 @@ class TestCreateSecondaryIncidents:
         ).fetchone()[0]
         assert count == 1
 
+    def test_list_valued_attack_type_does_not_crash(self, temp_db):
+        # LLM sometimes returns attack_type as a list in other_edu_incidents entries.
+        # Regression: "Error binding parameter 21: type 'list' is not supported"
+        conn, _ = temp_db
+        secondaries = [
+            {"victim_name": "Toulouse INP", "attack_type": ["ransomware", "data_breach"],
+             "country": "France", "incident_date": "2024-02-01"},
+        ]
+        self._run_create(conn, secondaries)  # must not raise
+        row = conn.execute(
+            "SELECT attack_type_hint FROM incidents WHERE institution_name = 'Toulouse INP'"
+        ).fetchone()
+        assert row is not None
+        # First element of the list should be stored as the hint
+        assert row[0] == "ransomware"
+
 
 # ── dead code removed ─────────────────────────────────────────────────────────
 
