@@ -355,12 +355,33 @@ async def api_health_check():
 async def prometheus_metrics():
     """Prometheus-compatible metrics endpoint."""
     from src.edu_cti.core.metrics import get_metrics
-    
     metrics = get_metrics()
     return Response(
         content=metrics.format_prometheus(),
         media_type="text/plain; version=0.0.4",
     )
+
+
+@app.get("/api/metrics/fetch-stats", tags=["Health"])
+async def fetch_stats():
+    """
+    Per-tier article fetch statistics — success rates, latency percentiles,
+    content length distributions, SERP and rate-limiting counts.
+    Suitable for pipeline methodology documentation in research papers.
+    """
+    from src.edu_cti.core.metrics import get_metrics
+    return get_metrics().fetch_stats_by_tier()
+
+
+@app.get("/api/metrics/research-summary", tags=["Health"])
+async def research_summary():
+    """
+    Paper-ready metrics summary — LLM extraction quality, field completeness,
+    source novelty rates, deduplication quality, and pipeline performance.
+    Suitable for citation in the methodology section of research papers.
+    """
+    from src.edu_cti.core.metrics import get_metrics
+    return get_metrics().research_summary()
 
 
 # ============================================================

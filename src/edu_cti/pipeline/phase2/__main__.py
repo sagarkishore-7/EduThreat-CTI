@@ -44,6 +44,7 @@ from src.edu_cti.core.config import (
 )
 from src.edu_cti.core.logging_utils import configure_logging
 from src.edu_cti.core.db import get_connection, init_db
+from src.edu_cti.core import metrics as _metrics
 from pathlib import Path
 
 # Module-level logger — used by module-level helpers (_record_serp_failure, etc.)
@@ -56,6 +57,82 @@ _cancel_event = threading.Event()
 # incident simultaneously when the queue is fed from multiple sources.
 _in_progress: set = set()
 _in_progress_lock = threading.Lock()
+
+# --- Critical fields used to compute per-incident completeness score (0-10) ---
+_COMPLETENESS_FIELDS = [
+    "attack_category", "institution_name", "institution_type",
+    "incident_date", "country", "ransomware_family",
+    "threat_actor_name", "attack_vector", "records_affected_exact",
+    "confidence_score",
+]
+
+# All fields tracked for per-field fill-rate metrics
+_TRACKED_FIELDS = [
+    "institution_name", "institution_type", "institution_size", "country", "region",
+    "incident_date", "attack_category", "attack_vector", "ransomware_family",
+    "threat_actor_name", "threat_actor_category", "threat_actor_motivation",
+    "threat_actor_origin_country", "records_affected_exact", "users_affected_exact",
+    "was_ransom_demanded", "ransom_amount", "ransom_paid",
+    "data_breached", "data_exfiltrated", "dwell_time_days", "recovery_duration_days",
+    "mitre_attack_techniques", "timeline", "cve_ids", "confidence_score",
+    "enriched_summary", "malware_families", "attacker_tools",
+]
+
+
+def _emit_enrichment_metrics(incident_id: str, enrichment_result, raw_json_data: Optional[dict], conn) -> None:
+    """Emit field-completeness and source novelty metrics after a successful enrichment save."""
+    try:
+        raw = raw_json_data or {}
+
+        def _has(field: str) -> bool:
+            v = raw.get(field)
+            if v is None:
+                return False
+            if isinstance(v, (list, dict)):
+                return len(v) > 0
+            if isinstance(v, str):
+                return bool(v.strip())
+            return True
+
+        # Per-field fill rate counters
+        for field in _TRACKED_FIELDS:
+            if _has(field):
+                _metrics.increment("field_populated_total", labels={"field": field})
+            else:
+                _metrics.increment("field_null_total", labels={"field": field})
+
+        # Completeness score (0–10 key fields)
+        score = sum(1 for f in _COMPLETENESS_FIELDS if _has(f))
+        _metrics.observe("incident_completeness_score", float(score))
+
+        # Source novelty: check whether this incident_id's source was already present
+        # A source is "novel" if this is the only source reporting this incident.
+        try:
+            cur = conn.execute(
+                "SELECT COUNT(DISTINCT source) FROM incident_sources WHERE incident_id = ?",
+                (incident_id,)
+            )
+            row = cur.fetchone()
+            source_count = row[0] if row else 1
+            src_prefix = incident_id.split("_")[0]
+            if source_count == 1:
+                _metrics.increment("source_novel_incident_total", labels={"source": src_prefix})
+            else:
+                _metrics.increment("source_duplicate_total", labels={"source": src_prefix})
+        except Exception:
+            pass
+
+        # Pipeline throughput gauge (incidents enriched per hour this session)
+        _metrics.set_gauge("pipeline_queue_depth", 0)  # placeholder — updated by fetch phase
+
+        # Estimated LLM cost per incident: DeepSeek ~$0.27/M input tokens, ~50K tokens/incident
+        _DEEPSEEK_COST_PER_TOKEN = 0.27 / 1_000_000
+        _AVG_TOKENS_PER_INCIDENT = 50_000
+        _estimated_cost = _DEEPSEEK_COST_PER_TOKEN * _AVG_TOKENS_PER_INCIDENT
+        _metrics.observe("enrichment_cost_per_incident_usd", _estimated_cost)
+
+    except Exception as _e:
+        logger.debug(f"Non-fatal: failed to emit enrichment metrics for {incident_id}: {_e}")
 
 
 class EnrichmentWatchdog:
@@ -755,6 +832,7 @@ def fetch_articles_phase(
                     
                     # Push to queue - enrichment consumer will pick it up
                     incident_queue.put(incident_dict)
+                    _metrics.set_gauge("pipeline_queue_depth", float(incident_queue.qsize()))
                     logger.debug(f"Pushed {incident_id} to queue (size: {incident_queue.qsize()})")
                     # Checkpoint: record that article fetch completed for this incident.
                     # On crash+restart, incidents already checkpointed skip re-fetch.
@@ -1079,6 +1157,9 @@ def enrich_articles_phase(
                             f"✓ ENRICHED  {incident_id} | {primary[:80]}"
                         )
 
+                        # --- Research metrics: field completeness + source novelty ---
+                        _emit_enrichment_metrics(incident_id, enrichment_result, raw_json_data, conn)
+
                         # Inline dedup: check immediately whether this incident duplicates
                         # an existing enriched incident and merge on the spot.
                         try:
@@ -1192,6 +1273,7 @@ def enrich_articles_phase(
                                 f"[MEM] RSS {rss_mb:.0f} MB > 600 MB threshold — "
                                 "triggering restart to reclaim memory"
                             )
+                            _metrics.increment("pipeline_memory_restart_total")
                             _os._exit(1)  # exit(1) so Railway ON_FAILURE policy restarts the container
                         elif rss_mb > 400:
                             logger.info(f"[MEM] RSS {rss_mb:.0f} MB (approaching threshold)")

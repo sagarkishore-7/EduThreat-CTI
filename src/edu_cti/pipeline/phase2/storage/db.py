@@ -22,6 +22,7 @@ from src.edu_cti.core.countries import (
 from src.edu_cti.core.db import get_connection
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
 from src.edu_cti.pipeline.phase2.utils.deduplication import choose_best_institution_name, clean_institution_name
+from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import normalize_institution_type
 from src.edu_cti.core.config import DB_PATH, SERP_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
@@ -665,7 +666,7 @@ def _flatten_enrichment_for_db(
         # institution_name is always overridden by save_enrichment_result() with the
         # resolved_institution_name it computed — set None here as a placeholder.
         'institution_name': None,
-        'institution_type': raw_get("institution_type"),
+        'institution_type': normalize_institution_type(raw_get("institution_type")),
         'institution_size': raw_get("institution_size"),
         'country': country_normalized,
         'country_code': country_code,
@@ -1116,7 +1117,8 @@ def save_enrichment_result(
         return v[0] if isinstance(v, list) and v else (None if isinstance(v, list) else v)
 
     # Use LLM-extracted values if available (from raw JSON), otherwise fallback to incident table
-    institution_type = _scalar(raw_json_data.get("institution_type")) if raw_json_data else institution_type_fallback
+    _raw_inst_type = _scalar(raw_json_data.get("institution_type")) if raw_json_data else institution_type_fallback
+    institution_type = normalize_institution_type(_raw_inst_type)
 
     country_raw = _scalar(raw_json_data.get("country")) if raw_json_data else country_fallback
     if not country_raw:

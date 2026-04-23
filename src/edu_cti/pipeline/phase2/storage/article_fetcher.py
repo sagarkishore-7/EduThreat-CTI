@@ -30,6 +30,36 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+from src.edu_cti.core import metrics as _metrics
+
+
+def _fetch_domain(url: str) -> str:
+    """Extract eTLD+1 domain label from a URL for metric labels."""
+    try:
+        host = urlparse(url).netloc.lower()
+        parts = host.split(".")
+        return ".".join(parts[-2:]) if len(parts) >= 2 else host
+    except Exception:
+        return "unknown"
+
+
+def _classify_fetch_failure(result) -> str:
+    """Map an ArticleContent failure to a short reason label for Prometheus."""
+    if result is None:
+        return "none"
+    msg = (result.error_message or "").lower()
+    if "403" in msg or "forbidden" in msg:
+        return "403"
+    if "timeout" in msg or "timed out" in msg:
+        return "timeout"
+    if "soft" in msg or "gate page" in msg or "blocked" in msg:
+        return "soft_404"
+    if "content" in msg and ("short" in msg or "empty" in msg or "threshold" in msg):
+        return "empty_content"
+    if "blocked" in msg or "social media" in msg or "ioc" in msg:
+        return "blocked_domain"
+    return "exception"
+
 
 _STRUCTURED_AUTHOR_KEYS = {
     "author",
@@ -421,6 +451,7 @@ class ArticleFetcher:
         base_domain = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
         if domain in BLOCKED_FETCH_DOMAINS or base_domain in BLOCKED_FETCH_DOMAINS:
             logger.info(f"FETCH SKIP blocked domain={domain} url={url[:80]}")
+            _metrics.increment("article_fetch_failure_total", labels={"tier": "newspaper3k", "source": _fetch_domain(url), "reason": "blocked_domain"})
             return ArticleContent(
                 url=url, title="", content="", fetch_successful=False,
                 error_message=f"Domain blocked (social media / IOC database): {domain}",
@@ -428,34 +459,67 @@ class ArticleFetcher:
             )
 
         logger.info(f"FETCH CHAIN START: {domain} — {url[:100]}")
+        _src_label = _fetch_domain(url)
 
         # --- Tier 1: newspaper3k (free, fast) ---
         if NEWSPAPER_AVAILABLE:
+            _t0 = time.time()
             article_content = self._fetch_with_newspaper(url)
+            _dur = time.time() - _t0
+            _lbl = {"tier": "newspaper3k", "source": _src_label}
+            _metrics.increment("article_fetch_attempts_total", labels=_lbl)
             if article_content and article_content.fetch_successful:
                 logger.info(f"FETCH OK tier=newspaper3k domain={domain} chars={article_content.content_length}")
+                _metrics.increment("article_fetch_success_total", labels=_lbl)
+                _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
+                _metrics.observe("article_content_length_chars", float(article_content.content_length or 0), labels=_lbl)
                 return article_content
+            _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(article_content)})
             logger.info(f"FETCH FAIL tier=newspaper3k domain={domain}")
 
         # --- Tier 2: HttpClient — curl_cffi + Playwright (free, local) ---
+        _t0 = time.time()
         article_content = self._fetch_with_browser(url)
+        _dur = time.time() - _t0
+        _lbl = {"tier": "httpclient", "source": _src_label}
+        _metrics.increment("article_fetch_attempts_total", labels=_lbl)
         if article_content and article_content.fetch_successful:
             logger.info(f"FETCH OK tier=HttpClient domain={domain} chars={article_content.content_length}")
+            _metrics.increment("article_fetch_success_total", labels=_lbl)
+            _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
+            _metrics.observe("article_content_length_chars", float(article_content.content_length or 0), labels=_lbl)
             return article_content
+        _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(article_content)})
         logger.info(f"FETCH FAIL tier=HttpClient domain={domain}")
 
         # --- Tier 3: Oxylabs (paid, anti-bot cloud scraper) ---
+        _t0 = time.time()
         oxylabs_content = self._fetch_with_oxylabs(url)
+        _dur = time.time() - _t0
+        _lbl = {"tier": "oxylabs", "source": _src_label}
+        _metrics.increment("article_fetch_attempts_total", labels=_lbl)
         if oxylabs_content and oxylabs_content.fetch_successful:
             logger.info(f"FETCH OK tier=Oxylabs domain={domain} chars={oxylabs_content.content_length}")
+            _metrics.increment("article_fetch_success_total", labels=_lbl)
+            _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
+            _metrics.observe("article_content_length_chars", float(oxylabs_content.content_length or 0), labels=_lbl)
             return oxylabs_content
+        _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(oxylabs_content)})
         logger.info(f"FETCH FAIL tier=Oxylabs domain={domain}")
 
         # --- Tier 4: archive.org (free, historical fallback) ---
+        _t0 = time.time()
         archive_content = self._fetch_from_archive(url)
+        _dur = time.time() - _t0
+        _lbl = {"tier": "archive_org", "source": _src_label}
+        _metrics.increment("article_fetch_attempts_total", labels=_lbl)
         if archive_content and archive_content.fetch_successful:
             logger.info(f"FETCH OK tier=archive.org domain={domain} chars={archive_content.content_length}")
+            _metrics.increment("article_fetch_success_total", labels=_lbl)
+            _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
+            _metrics.observe("article_content_length_chars", float(archive_content.content_length or 0), labels=_lbl)
             return archive_content
+        _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(archive_content)})
 
         # All methods failed
         logger.warning(f"FETCH FAILED ALL TIERS: domain={domain} url={url[:100]}")

@@ -84,6 +84,11 @@ EXTRACTION_SCHEMA = {
                 "university_hospital",
                 "teaching_hospital",
                 "online_university",
+                "library",
+                "tribal_college",
+                "military_academy",
+                "edtech_platform",
+                "tutoring_service",
                 "consortium",
                 "education_department",
                 "education_ministry",
@@ -91,7 +96,19 @@ EXTRACTION_SCHEMA = {
                 "education_nonprofit",
                 "education_vendor",
                 "unknown"
-            ]
+            ],
+            "description": (
+                "Canonical institution type. Choose the most specific match. "
+                "Use university_public for state/public universities; university_private for private non-research universities; "
+                "university_research for R1/R2 research-intensive universities. "
+                "Use school_district when the victim is a multi-school district (not a single school). "
+                "Use library for public or academic libraries. "
+                "Use edtech_platform for software/SaaS vendors serving education (e.g. PowerSchool, Illuminate). "
+                "Use tutoring_service for online tutoring/test-prep companies (e.g. Chegg). "
+                "Use tribal_college for tribal/first-nations colleges. "
+                "Use military_academy for military service academies. "
+                "Use unknown only when no classification is possible from the article."
+            )
         },
         "institution_size": {
             "type": "string",

@@ -126,6 +126,86 @@ EVENT_TYPE_NORMALIZATION = {
     "improve": "security_improvement",
 }
 
+INSTITUTION_TYPE_NORMALIZATION = {
+    # Generic free-text from ingestion sources → canonical enum values
+    "university": "university_public",
+    "public university": "university_public",
+    "state university": "university_public",
+    "private university": "university_private",
+    "research university": "university_research",
+    "r1 university": "university_research",
+    "r2 university": "university_research",
+    "college": "community_college",
+    "junior college": "community_college",
+    "2-year college": "community_college",
+    "two-year college": "community_college",
+    "technical school": "technical_college",
+    "tech college": "technical_college",
+    "polytechnic": "technical_college",
+    "trade school": "vocational_school",
+    "vocational": "vocational_school",
+    "school": "k12_public_school",
+    "public school": "k12_public_school",
+    "private school": "k12_private_school",
+    "charter school": "k12_charter_school",
+    "district": "school_district",
+    "school district": "school_district",
+    "independent school district": "school_district",
+    "isd": "school_district",
+    "unified school district": "school_district",
+    "board of education": "school_district",
+    "research institute": "research_institute",
+    "institute": "research_institute",
+    "research center": "research_center",
+    "research lab": "research_center",
+    "laboratory": "research_center",
+    "medical school": "medical_school",
+    "school of medicine": "medical_school",
+    "hospital": "university_hospital",
+    "university hospital": "university_hospital",
+    "teaching hospital": "teaching_hospital",
+    "online school": "online_university",
+    "online college": "online_university",
+    "public library": "library",
+    "academic library": "library",
+    "tribal college": "tribal_college",
+    "tribal university": "tribal_college",
+    "military academy": "military_academy",
+    "service academy": "military_academy",
+    "edtech": "edtech_platform",
+    "education technology": "edtech_platform",
+    "ed tech": "edtech_platform",
+    "tutoring": "tutoring_service",
+    "tutoring company": "tutoring_service",
+    "test prep": "tutoring_service",
+    "consortium": "consortium",
+    "department of education": "education_department",
+    "education department": "education_department",
+    "ministry of education": "education_ministry",
+    "student loan": "student_loan_servicer",
+    "loan servicer": "student_loan_servicer",
+    "nonprofit": "education_nonprofit",
+    "education nonprofit": "education_nonprofit",
+    "vendor": "education_vendor",
+    "education vendor": "education_vendor",
+    "software vendor": "education_vendor",
+    "n/a": "unknown",
+    "none": "unknown",
+    "": "unknown",
+}
+
+_VALID_INSTITUTION_TYPES = {
+    "university_public", "university_private", "university_research",
+    "community_college", "technical_college", "vocational_school",
+    "k12_public_school", "k12_private_school", "k12_charter_school",
+    "school_district", "research_institute", "research_center",
+    "medical_school", "university_hospital", "teaching_hospital",
+    "online_university", "library", "tribal_college", "military_academy",
+    "edtech_platform", "tutoring_service", "consortium",
+    "education_department", "education_ministry", "student_loan_servicer",
+    "education_nonprofit", "education_vendor", "unknown",
+}
+
 DATE_PRECISION_NORMALIZATION = {
     # Common LLM variations -> valid values
     "exact": "day",
@@ -185,6 +265,27 @@ def normalize_enum_value(value: Any, normalization_map: Dict[str, str], valid_va
     
     # Fallback
     return fallback
+
+
+def normalize_institution_type(value: Any) -> Optional[str]:
+    """Normalize institution_type to a valid canonical enum value."""
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        return "unknown"
+    normalized = value.lower().strip().replace("-", "_").replace(" ", "_")
+    if normalized in _VALID_INSTITUTION_TYPES:
+        return normalized
+    # Try direct lookup in normalization map (key already lowercased+stripped)
+    key = value.lower().strip()
+    if key in INSTITUTION_TYPE_NORMALIZATION:
+        return INSTITUTION_TYPE_NORMALIZATION[key]
+    # Try substring lookup — only for multi-word map keys to avoid false positives
+    # (e.g. "school" substring in "PowerSchool" should NOT match)
+    for map_key, canonical in INSTITUTION_TYPE_NORMALIZATION.items():
+        if " " in map_key and map_key in key:
+            return canonical
+    return "unknown"
 
 
 def normalize_attack_vector(value: Any) -> Optional[str]:

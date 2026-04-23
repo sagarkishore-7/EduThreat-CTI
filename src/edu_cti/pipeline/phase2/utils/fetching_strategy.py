@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import sqlite3
 
 from src.edu_cti.core.db import get_connection, get_broken_urls, mark_urls_as_broken
+from src.edu_cti.core import metrics as _metrics
 from src.edu_cti.core.deduplication import normalize_url
 from src.edu_cti.core.config import EDUCATION_KEYWORDS, CYBER_KEYWORDS, SERP_MAX_ATTEMPTS
 from src.edu_cti.core.oxylabs import OxylabsClient
@@ -116,6 +117,9 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
     else:
         return []
 
+    _src_label = (incident.get("incident_id") or "unknown").split("_")[0]
+    _metrics.increment("serp_queries_total", labels={"source": _src_label})
+
     client = OxylabsClient()
     results = client.search_news(query, max_results=5)
 
@@ -133,8 +137,10 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
             urls.append(url)
 
     if urls:
+        _metrics.increment("serp_urls_returned_total", value=len(urls), labels={"source": _src_label})
         logger.info(f"SERP discovery: found {len(urls)} articles for {log_label}")
     else:
+        _metrics.increment("serp_zero_results_total", labels={"source": _src_label})
         logger.info(f"SERP discovery: no results for {log_label}")
     return urls
 
@@ -235,6 +241,7 @@ class DomainRateLimiter:
         recent_fetches = len(self.domain_fetch_counts.get(domain, []))
         if recent_fetches >= self.max_fetches_per_hour:
             logger.debug(f"Rate limit exceeded for domain {domain} ({recent_fetches} fetches in last hour)")
+            _metrics.increment("domain_perm_blocked_total", labels={"domain": domain})
             return False
         
         return True
@@ -254,6 +261,7 @@ class DomainRateLimiter:
             if elapsed < delay:
                 wait_time = delay - elapsed
                 logger.debug(f"Waiting {wait_time:.2f}s before fetching from {domain}")
+                _metrics.increment("domain_rate_limit_delays_total", labels={"domain": domain})
                 time.sleep(wait_time)
     
     def record_fetch(self, domain: str, success: bool = True) -> None:

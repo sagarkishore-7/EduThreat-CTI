@@ -15,6 +15,8 @@ from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
+from src.edu_cti.core import metrics as _metrics
+
 try:
     from dateutil import parser as date_parser
 except ImportError:
@@ -581,6 +583,40 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
     for table in tables:
         conn.execute(f"DELETE FROM {table} WHERE incident_id = ?", (dup_id,))
     conn.execute("DELETE FROM incidents WHERE incident_id = ?", (dup_id,))
+
+    # --- Metrics ---
+    # Source labels for the dedup event
+    keep_src = keep_id.split("_")[0]
+    dup_src = dup_id.split("_")[0]
+    _metrics.increment("dedup_events_total", labels={"survivor_source": keep_src, "duplicate_source": dup_src})
+
+    # Field gain: count flat fields that the keeper gained from the duplicate
+    _COMPARABLE_FLAT_FIELDS = [
+        "attack_category", "threat_actor_name", "ransomware_family", "country",
+        "incident_date", "records_affected_exact", "ransom_amount", "institution_type",
+        "dwell_time_days", "cve_ids", "malware_families",
+    ]
+    try:
+        keep_flat = conn.execute(
+            f"SELECT {', '.join(_COMPARABLE_FLAT_FIELDS)} FROM incident_enrichments_flat WHERE incident_id = ?",
+            (keep_id,)
+        ).fetchone()
+        dup_flat = conn.execute(
+            f"SELECT {', '.join(_COMPARABLE_FLAT_FIELDS)} FROM incident_enrichments_flat WHERE incident_id = ?",
+            (dup_id,)
+        ).fetchone()
+        if keep_flat and dup_flat:
+            for i, field in enumerate(_COMPARABLE_FLAT_FIELDS):
+                keep_val = keep_flat[i]
+                dup_val = dup_flat[i]
+                # Cross-source agreement: both non-null and equal
+                if keep_val is not None and dup_val is not None and keep_val == dup_val:
+                    _metrics.increment("dedup_cross_source_agreement_total", labels={"field": field})
+                # Field gain: keeper was null, duplicate had a value
+                if keep_val is None and dup_val is not None:
+                    _metrics.increment("dedup_merge_field_gain_total", labels={"field": field})
+    except Exception:
+        pass
 
 
 def deduplicate_by_institution(

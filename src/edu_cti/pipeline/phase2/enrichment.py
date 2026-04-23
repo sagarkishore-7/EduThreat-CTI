@@ -8,7 +8,10 @@ Only extracts cyber threat intelligence data from articles.
 import logging
 import json
 import re
+import time as _time_module
 from typing import Optional, Dict, List, Tuple, Any
+
+from src.edu_cti.core import metrics as _metrics
 
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
@@ -466,16 +469,27 @@ class IncidentEnricher:
             # Call LLM — pass EXTRACTION_SCHEMA as format so Ollama builds a GBNF grammar
             # from it. This enforces enum values at token level AND removes ~8K tokens of
             # schema JSON from the user prompt.
-            raw_response = self.llm_client.extract_json(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                schema=EXTRACTION_SCHEMA,
-                max_retries=2,
-            )
-            
+            _llm_t0 = _time_module.time()
+            _metrics.increment("llm_attempt_total", labels={"attempt_num": "1"})
+            try:
+                raw_response = self.llm_client.extract_json(
+                    system_prompt=system_prompt,
+                    user_prompt=user_prompt,
+                    schema=EXTRACTION_SCHEMA,
+                    max_retries=2,
+                )
+            except Exception as _llm_exc:
+                _metrics.observe("llm_duration_seconds", _time_module.time() - _llm_t0)
+                _exc_msg = str(_llm_exc).lower()
+                if "timeout" in _exc_msg or "timed out" in _exc_msg:
+                    _metrics.increment("llm_timeout_total")
+                raise
+            _metrics.observe("llm_duration_seconds", _time_module.time() - _llm_t0)
+
             # Parse JSON response
             json_data = self._parse_json_response(raw_response)
             if json_data is None:
+                _metrics.increment("llm_invalid_json_total")
                 return None, None
 
             # Handle salvaged truncated JSON (only has education relevance flag)
@@ -567,6 +581,17 @@ class IncidentEnricher:
 
             # Map to CTIEnrichmentResult
             result = json_to_cti_enrichment(json_data, primary_url, incident)
+
+            # Emit education relevance and confidence metrics
+            _src_label = getattr(incident, "source_name", None) or "unknown"
+            if coerced_edu is not False:
+                _metrics.increment("llm_education_relevance_pass_total", labels={"source": _src_label})
+            else:
+                _metrics.increment("llm_education_relevance_fail_total", labels={"source": _src_label})
+            _conf = json_data.get("confidence_score")
+            if isinstance(_conf, (int, float)) and 0.0 <= _conf <= 1.0:
+                _metrics.observe("llm_confidence_score", float(_conf))
+
             return result, json_data
 
         except Exception as e:
