@@ -289,7 +289,7 @@ async def export_full_csv(
             cur = conn.execute("PRAGMA table_info(incidents)")
             columns = [row[1] for row in cur.fetchall()]
             has_broken_urls = "broken_urls" in columns
-        except:
+        except sqlite3.Error:
             has_broken_urls = False
         
         # Build query - always select all columns from incidents
@@ -434,7 +434,7 @@ async def export_full_csv(
         if conn:
             try:
                 conn.close()
-            except:
+            except Exception:
                 pass
 
 
@@ -500,7 +500,7 @@ async def export_enriched_csv(
         if conn:
             try:
                 conn.close()
-            except:
+            except Exception:
                 pass
 
 

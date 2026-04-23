@@ -151,7 +151,7 @@ def generate_cti_report(incident: Dict[str, Any]) -> str:
         if isinstance(techniques, str):
             try:
                 techniques = json.loads(techniques)
-            except:
+            except (json.JSONDecodeError, ValueError, TypeError):
                 techniques = []
         
         if techniques:
@@ -200,7 +200,7 @@ def generate_cti_report(incident: Dict[str, Any]) -> str:
         if isinstance(systems_affected, str):
             try:
                 systems_affected = json.loads(systems_affected)
-            except:
+            except (json.JSONDecodeError, ValueError, TypeError):
                 systems_affected = []
         
         if systems_affected:
@@ -259,7 +259,7 @@ def generate_cti_report(incident: Dict[str, Any]) -> str:
         if isinstance(timeline, str):
             try:
                 timeline = json.loads(timeline)
-            except:
+            except (json.JSONDecodeError, ValueError, TypeError):
                 timeline = []
         
         if timeline:
