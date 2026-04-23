@@ -2,6 +2,23 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.7.1 (2026-04-23)
+
+**Focus**: Exception Handling Hardening
+
+### Key Fixes
+
+- **6 bare `except:` clauses eliminated** across `api/admin.py` and `api/reports.py` — bare `except:` blocks were catching `KeyboardInterrupt` and `SystemExit`, preventing graceful shutdown and masking real failures.
+  - `admin.py` PRAGMA check: `except:` → `except sqlite3.Error:`
+  - `admin.py` connection close (×2): `except:` → `except Exception:`
+  - `reports.py` JSON parsing (×3): `except:` → `except (json.JSONDecodeError, ValueError, TypeError):`
+
+### Breaking Changes
+
+None.
+
+---
+
 ## Version 2.6.0 (2026-03-19)
 
 **Focus**: Interactive Nivo Visualization Endpoints — Sankey, Sunburst, Network, Chord
