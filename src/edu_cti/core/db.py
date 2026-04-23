@@ -51,11 +51,21 @@ def get_connection(
             pass
         return conn
     else:
-        # Write connections: longer timeout for write operations
-        conn = sqlite3.connect(str(db_path), timeout=timeout, check_same_thread=False)
-    
+        # isolation_level='IMMEDIATE' makes Python issue BEGIN IMMEDIATE before every DML.
+        # This is critical for WAL-mode concurrent writes: BEGIN DEFERRED (the default)
+        # can trigger SQLITE_LOCKED when a deferred transaction tries to upgrade to a
+        # write after another connection has committed — and SQLITE_LOCKED is NOT retried
+        # by busy_timeout. BEGIN IMMEDIATE acquires the write lock upfront, so busy_timeout
+        # applies and concurrent writers queue correctly.
+        conn = sqlite3.connect(
+            str(db_path),
+            timeout=timeout,
+            check_same_thread=False,
+            isolation_level="IMMEDIATE",
+        )
+
     conn.row_factory = sqlite3.Row
-    
+
     # Enable WAL (Write-Ahead Logging) mode for better concurrency
     # WAL allows multiple readers while a writer is active
     if not read_only:
@@ -74,7 +84,7 @@ def get_connection(
             import logging
             logger = logging.getLogger(__name__)
             logger.warning(f"Could not enable WAL mode: {e}. Continuing with default journal mode.")
-    
+
     return conn
 
 
