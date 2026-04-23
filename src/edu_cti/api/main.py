@@ -152,6 +152,7 @@ async def lifespan(app: FastAPI):
     try:
         from src.edu_cti.core.db import get_connection, init_db
         from src.edu_cti.core.config import DB_PATH
+        from src.edu_cti.pipeline.phase2.storage.article_storage import init_articles_table
         from src.edu_cti.pipeline.phase2.storage.db import init_incident_enrichments_table
 
         logger.info(f"Initializing database at: {DB_PATH}")
@@ -165,6 +166,7 @@ async def lifespan(app: FastAPI):
 
         # Initialize enrichment tables
         init_incident_enrichments_table(conn)
+        init_articles_table(conn)
 
         conn.commit()
         conn.close()

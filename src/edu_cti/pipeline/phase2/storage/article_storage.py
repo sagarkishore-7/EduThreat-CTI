@@ -79,8 +79,6 @@ def save_article(
         url_score_reasoning: Optional reasoning for the score (typically set by LLM)
         is_primary: Whether this is the primary (best) article for this incident (set by LLM)
     """
-    init_articles_table(conn)
-    
     now = datetime.utcnow().isoformat() + "Z"
     
     # If marking as primary, unmark other articles for this incident
@@ -136,8 +134,6 @@ def cleanup_non_primary_articles(
     Returns:
         Number of articles deleted
     """
-    init_articles_table(conn)
-    
     # Count non-primary articles before deletion
     cur = conn.execute(
         "SELECT COUNT(*) as count FROM articles WHERE incident_id = ? AND is_primary = 0",
@@ -178,8 +174,6 @@ def get_primary_article(
     Returns:
         Dictionary with article data, or None if not found
     """
-    init_articles_table(conn)
-    
     cur = conn.execute(
         """
         SELECT url, title, content, author, publish_date, fetch_successful,
@@ -223,8 +217,6 @@ def get_all_articles_for_incident(
     Returns:
         List of article dictionaries
     """
-    init_articles_table(conn)
-    
     cur = conn.execute(
         """
         SELECT url, title, content, author, publish_date, fetch_successful,
@@ -261,8 +253,6 @@ def article_exists(
     url: str,
 ) -> bool:
     """Check if an article already exists in the database."""
-    init_articles_table(conn)
-    
     cur = conn.execute(
         "SELECT 1 FROM articles WHERE incident_id = ? AND url = ?",
         (incident_id, url)
@@ -297,6 +287,8 @@ class ArticleProcessor:
         Returns:
             Primary URL if successful, None otherwise
         """
+        init_articles_table(conn)
+
         if not incident.all_urls:
             logger.warning(f"No URLs to fetch for incident {incident.incident_id}")
             return None
@@ -405,4 +397,3 @@ class ArticleProcessor:
                 }
         
         return scores
-

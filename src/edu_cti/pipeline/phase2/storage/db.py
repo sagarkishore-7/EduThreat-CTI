@@ -145,6 +145,14 @@ def _apply_curated_note_fallbacks(flat_data: Dict[str, Any], notes: Optional[str
             flat_data[key] = value
 
 
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? LIMIT 1",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
 def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
     """
     Initialize the incident_enrichments table with optimized structure.
@@ -1089,9 +1097,9 @@ def save_enrichment_result(
     Returns:
         True if enrichment was saved, False if skipped
     """
-    # Ensure tables exist
-    init_incident_enrichments_table(conn)
-    
+    if not (_table_exists(conn, "incident_enrichments") and _table_exists(conn, "incident_enrichments_flat")):
+        init_incident_enrichments_table(conn)
+
     # Check if we should upgrade existing enrichment
     if not force_replace:
         existing_enrichment = get_enrichment_result(conn, incident_id)
@@ -1533,9 +1541,9 @@ def get_enrichment_result(
     Returns:
         CTIEnrichmentResult if found, None otherwise
     """
-    # Ensure table exists before querying
-    init_incident_enrichments_table(conn)
-    
+    if not _table_exists(conn, "incident_enrichments"):
+        return None
+
     cur = conn.execute(
         """
         SELECT enrichment_data FROM incident_enrichments
@@ -1570,8 +1578,9 @@ def get_enrichment_flat(
     Returns:
         Dictionary with flattened enrichment fields, or None if not found
     """
-    init_incident_enrichments_table(conn)
-    
+    if not _table_exists(conn, "incident_enrichments_flat"):
+        return None
+
     cur = conn.execute(
         """
         SELECT * FROM incident_enrichments_flat

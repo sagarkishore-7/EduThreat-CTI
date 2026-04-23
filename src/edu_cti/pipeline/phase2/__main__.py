@@ -19,7 +19,7 @@ from typing import Dict, List, Optional
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.enrichment import IncidentEnricher
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
-from src.edu_cti.pipeline.phase2.storage.article_storage import ArticleProcessor
+from src.edu_cti.pipeline.phase2.storage.article_storage import ArticleProcessor, init_articles_table
 from src.edu_cti.pipeline.phase2.storage.db import (
     get_unenriched_incidents,
     save_enrichment_result,
@@ -28,6 +28,7 @@ from src.edu_cti.pipeline.phase2.storage.db import (
     checkpoint_mark,
     checkpoint_get_fetched,
     checkpoint_clear,
+    init_incident_enrichments_table,
 )
 from src.edu_cti.pipeline.phase2.utils.deduplication import deduplicate_by_institution, dedup_incident_after_save
 from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
@@ -912,10 +913,6 @@ def enrich_articles_phase(
     logger = logging.getLogger(__name__)
     logger.info("PHASE 2: LLM Enrichment")
     
-    # Initialize articles table
-    from src.edu_cti.pipeline.phase2.storage.article_storage import init_articles_table
-    init_articles_table(conn)
-    
     stats = {
         "processed": 0,
         "enriched": 0,
@@ -1410,6 +1407,8 @@ def main() -> None:
     # Initialize database
     conn = get_connection()
     init_db(conn)  # Ensure tables exist
+    init_incident_enrichments_table(conn)
+    init_articles_table(conn)
     
     try:
         # Get enrichment stats

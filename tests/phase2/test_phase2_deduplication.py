@@ -30,6 +30,7 @@ def temp_db(tmp_path):
     db_path = tmp_path / "test.db"
     conn = get_connection(db_path)
     init_db(conn)
+    init_incident_enrichments_table(conn)
     yield conn, db_path
     conn.close()
 

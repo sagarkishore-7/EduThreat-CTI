@@ -266,6 +266,23 @@ class TestEnrichmentDatabase:
         assert saved_enrichment.primary_url == "https://example.com/article1"
         assert saved_enrichment.enriched_summary == "Test university was hit by ransomware."
 
+    def test_save_enrichment_result_skips_schema_bootstrap_on_hot_path(self, temp_db, sample_incident):
+        """Per-incident saves should not re-run schema DDL during enrichment."""
+        conn, _ = temp_db
+        insert_incident(conn, sample_incident)
+
+        with patch(
+            "src.edu_cti.pipeline.phase2.storage.db.init_incident_enrichments_table",
+            side_effect=AssertionError("schema bootstrap should happen before worker writes"),
+        ):
+            saved = save_enrichment_result(
+                conn,
+                sample_incident.incident_id,
+                _sample_enrichment_result(primary_url="https://example.com/article1"),
+            )
+
+        assert saved is True
+
 
 class TestFetchingStrategy:
     def test_get_random_incidents_strips_internal_placeholder_urls(self, temp_db):
@@ -848,6 +865,10 @@ class TestFetchingStrategy:
         with patch.object(phase2_main, "parse_args", return_value=args), patch.object(
             phase2_main, "get_connection", side_effect=_test_connection
         ), patch.object(phase2_main, "init_db", side_effect=init_db), patch.object(
+            phase2_main, "init_incident_enrichments_table"
+        ) as init_enrichment_tables, patch.object(
+            phase2_main, "init_articles_table"
+        ) as init_article_tables, patch.object(
             phase2_main, "configure_logging"
         ), patch.object(
             phase2_main, "fetch_articles_phase", side_effect=_capture_fetch
@@ -866,6 +887,8 @@ class TestFetchingStrategy:
         ):
             phase2_main.main()
 
+        init_enrichment_tables.assert_called_once()
+        init_article_tables.assert_called_once()
         assert captured["incident_ids"] == [sample_incident.incident_id]
 
     def test_delete_incident_soft_deletes_and_preserves_row(self, temp_db, sample_incident):
@@ -1028,6 +1051,33 @@ class TestIncidentEnricher:
 
         assert result is None
         assert raw_json["_not_education_related"] is True
+
+    def test_process_incident_skips_article_schema_bootstrap_on_hot_path(
+        self, temp_db, sample_incident
+    ):
+        """Worker article reads should not re-run schema DDL."""
+        conn, _ = temp_db
+        insert_incident(conn, sample_incident)
+        _save_sample_article(conn, sample_incident.incident_id, sample_incident.all_urls[0])
+
+        enricher = IncidentEnricher(llm_client=Mock())
+        expected = _sample_enrichment_result(primary_url=sample_incident.all_urls[0])
+
+        with patch(
+            "src.edu_cti.pipeline.phase2.storage.article_storage.init_articles_table",
+            side_effect=AssertionError("article schema should be initialized before worker hot path"),
+        ), patch.object(
+            enricher,
+            "_enrich_article",
+            return_value=(expected, {"institution_name": "Test University"}),
+        ):
+            result, _ = enricher.process_incident(
+                sample_incident,
+                skip_if_not_education=False,
+                conn=conn,
+            )
+
+        assert result is not None
 
     def test_enricher_requires_llm_client(self):
         """IncidentEnricher should require an LLM client."""
