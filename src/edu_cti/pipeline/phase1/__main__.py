@@ -260,7 +260,12 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
         # Step 6: Register source_event for per-source deduplication
         register_source_event(conn, source, event_key, incident_id, inc.ingested_at or "")
 
-    conn.commit()
+        # Commit per-incident to keep write-lock windows short.
+        # Phase1 and Phase2 write concurrently; holding the lock across a whole
+        # batch (up to ~20 incidents with expensive fuzzy-dedup reads) can easily
+        # exceed Phase2's busy_timeout and produce "database is locked" errors.
+        conn.commit()
+
     return new_count
 
 

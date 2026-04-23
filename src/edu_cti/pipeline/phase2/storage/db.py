@@ -950,7 +950,7 @@ def _flatten_enrichment_for_db(
         # Summary
         'enriched_summary': enrichment.enriched_summary or raw_get("enriched_summary"),
         'extraction_notes': enrichment.extraction_notes or raw_get("extraction_notes"),
-        'confidence': raw_get("confidence"),
+        'confidence': raw_get("confidence_score") or raw_get("confidence"),
     }
     
     # Columns whose values are intentionally JSON-serialised lists (stored as TEXT).

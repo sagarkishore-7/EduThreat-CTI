@@ -21,7 +21,7 @@ _db_logger = logging.getLogger(__name__)
 
 def get_connection(
     db_path: Path = DB_PATH,
-    timeout: float = 30.0,
+    timeout: float = 90.0,
     read_only: bool = False,
 ) -> sqlite3.Connection:
     """
@@ -63,7 +63,7 @@ def get_connection(
             conn.execute("PRAGMA journal_mode=WAL")
             # Optimize for concurrent access
             conn.execute("PRAGMA synchronous=NORMAL")  # Balance between safety and speed
-            conn.execute("PRAGMA busy_timeout=30000")  # 30 second timeout for busy database
+            conn.execute("PRAGMA busy_timeout=90000")  # 90 second timeout for busy database
             # Increase cache size for better performance
             conn.execute("PRAGMA cache_size=-16000")  # 16MB cache
             # Enable foreign keys
@@ -116,13 +116,13 @@ def init_db(conn: sqlite3.Connection) -> None:
     try:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA synchronous=NORMAL")
-        conn.execute("PRAGMA busy_timeout=30000")
+        conn.execute("PRAGMA busy_timeout=90000")
         conn.execute("PRAGMA cache_size=-16000")  # 16MB cache
         conn.execute("PRAGMA foreign_keys=ON")
     except sqlite3.Error:
         # If WAL mode fails, continue with default (e.g., read-only filesystem)
         pass
-    
+
     conn.executescript(
         """
         -- Main incidents table: Deduplicated incidents only
