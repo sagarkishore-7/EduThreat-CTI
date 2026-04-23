@@ -832,21 +832,52 @@ def _flatten_enrichment_for_db(
         'mitre_techniques_count': len(enrichment.mitre_attack_techniques) if enrichment.mitre_attack_techniques else (len(raw_get("mitre_attack_techniques", [])) if raw_get("mitre_attack_techniques") else 0),
 
         # Threat intelligence (new fields)
-        'malware_families': json.dumps(enrichment.malware_families) if enrichment.malware_families else (json.dumps(raw_get("malware_families")) if raw_get("malware_families") else None),
-        'attacker_tools': json.dumps(enrichment.attacker_tools) if enrichment.attacker_tools else (json.dumps(raw_get("attacker_tools")) if raw_get("attacker_tools") else None),
-        'threat_actor_aliases': json.dumps(enrichment.threat_actor_aliases) if enrichment.threat_actor_aliases else (json.dumps(raw_get("threat_actor_aliases")) if raw_get("threat_actor_aliases") else None),
-        'attack_campaign_name': enrichment.attack_campaign_name or raw_get("attack_campaign_name"),
-        'cloud_provider': enrichment.cloud_provider or raw_get("cloud_provider"),
-        'infrastructure_type': enrichment.infrastructure_type or raw_get("infrastructure_type"),
-        'dwell_time_days': enrichment.dwell_time_days or raw_get("dwell_time_days"),
-        'mttd_hours': raw_get("mttd_hours") or (enrichment.recovery_metrics.get("mttd_hours") if enrichment.recovery_metrics else None),
-        'mttr_hours': raw_get("mttr_hours") or (enrichment.recovery_metrics.get("mttr_hours") if enrichment.recovery_metrics else None),
+        # Use isinstance guards so MagicMock stubs in tests don't reach json.dumps
+        'malware_families': (json.dumps(enrichment.malware_families)
+                             if isinstance(enrichment.malware_families, list) and enrichment.malware_families
+                             else (json.dumps(raw_get("malware_families"))
+                                   if isinstance(raw_get("malware_families"), list) and raw_get("malware_families")
+                                   else None)),
+        'attacker_tools': (json.dumps(enrichment.attacker_tools)
+                           if isinstance(enrichment.attacker_tools, list) and enrichment.attacker_tools
+                           else (json.dumps(raw_get("attacker_tools"))
+                                 if isinstance(raw_get("attacker_tools"), list) and raw_get("attacker_tools")
+                                 else None)),
+        'threat_actor_aliases': (json.dumps(enrichment.threat_actor_aliases)
+                                  if isinstance(enrichment.threat_actor_aliases, list) and enrichment.threat_actor_aliases
+                                  else (json.dumps(raw_get("threat_actor_aliases"))
+                                        if isinstance(raw_get("threat_actor_aliases"), list) and raw_get("threat_actor_aliases")
+                                        else None)),
+        'attack_campaign_name': (enrichment.attack_campaign_name
+                                  if isinstance(enrichment.attack_campaign_name, str)
+                                  else None) or raw_get("attack_campaign_name"),
+        'cloud_provider': (enrichment.cloud_provider
+                           if isinstance(enrichment.cloud_provider, str)
+                           else None) or raw_get("cloud_provider"),
+        'infrastructure_type': (enrichment.infrastructure_type
+                                 if isinstance(enrichment.infrastructure_type, str)
+                                 else None) or raw_get("infrastructure_type"),
+        'dwell_time_days': (enrichment.dwell_time_days
+                            if isinstance(enrichment.dwell_time_days, (int, float))
+                            else None) or raw_get("dwell_time_days"),
+        'mttd_hours': raw_get("mttd_hours") or (enrichment.recovery_metrics.get("mttd_hours") if isinstance(enrichment.recovery_metrics, dict) else None),
+        'mttr_hours': raw_get("mttr_hours") or (enrichment.recovery_metrics.get("mttr_hours") if isinstance(enrichment.recovery_metrics, dict) else None),
 
         # Vulnerabilities (new fields — flattened from vulnerabilities_exploited list)
-        'cve_ids': json.dumps([v["cve_id"] for v in enrichment.vulnerabilities_exploited if v.get("cve_id")]) if enrichment.vulnerabilities_exploited else (json.dumps([v.get("cve_id") for v in raw_get("vulnerabilities_exploited", []) if isinstance(v, dict) and v.get("cve_id")]) if raw_get("vulnerabilities_exploited") else None),
-        'cvss_scores': json.dumps([v["cvss_score"] for v in enrichment.vulnerabilities_exploited if v.get("cvss_score") is not None]) if enrichment.vulnerabilities_exploited else None,
-        'vulnerability_names': json.dumps([v["vulnerability_name"] for v in enrichment.vulnerabilities_exploited if v.get("vulnerability_name")]) if enrichment.vulnerabilities_exploited else None,
-        'affected_products': json.dumps([v["affected_product"] for v in enrichment.vulnerabilities_exploited if v.get("affected_product")]) if enrichment.vulnerabilities_exploited else None,
+        'cve_ids': (json.dumps([v["cve_id"] for v in enrichment.vulnerabilities_exploited if isinstance(v, dict) and v.get("cve_id")])
+                    if isinstance(enrichment.vulnerabilities_exploited, list) and enrichment.vulnerabilities_exploited
+                    else (json.dumps([v.get("cve_id") for v in raw_get("vulnerabilities_exploited", []) if isinstance(v, dict) and v.get("cve_id")])
+                          if isinstance(raw_get("vulnerabilities_exploited"), list) and raw_get("vulnerabilities_exploited")
+                          else None)),
+        'cvss_scores': (json.dumps([v["cvss_score"] for v in enrichment.vulnerabilities_exploited if isinstance(v, dict) and v.get("cvss_score") is not None])
+                        if isinstance(enrichment.vulnerabilities_exploited, list) and enrichment.vulnerabilities_exploited
+                        else None),
+        'vulnerability_names': (json.dumps([v["vulnerability_name"] for v in enrichment.vulnerabilities_exploited if isinstance(v, dict) and v.get("vulnerability_name")])
+                                 if isinstance(enrichment.vulnerabilities_exploited, list) and enrichment.vulnerabilities_exploited
+                                 else None),
+        'affected_products': (json.dumps([v["affected_product"] for v in enrichment.vulnerabilities_exploited if isinstance(v, dict) and v.get("affected_product")])
+                               if isinstance(enrichment.vulnerabilities_exploited, list) and enrichment.vulnerabilities_exploited
+                               else None),
 
         # Financial (additional)
         'total_cost_estimate': (raw_get("currency_normalized_cost_usd") or raw_get("estimated_total_cost_usd")

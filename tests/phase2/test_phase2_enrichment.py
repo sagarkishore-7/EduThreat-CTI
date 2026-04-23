@@ -392,7 +392,8 @@ class TestFetchingStrategy:
     def test_save_enrichment_result_duplicate_cleanup_removes_old_related_rows(self, temp_db, sample_incident):
         conn, _ = temp_db
 
-        survivor = replace(sample_incident)
+        # Use all_urls=[] so URL-redirect logic never fires (test is about dedup, not URL matching)
+        survivor = replace(sample_incident, all_urls=[])
         survivor.incident_id = make_incident_id("test_source", "https://example.com/survivor|2025-01-15")
         survivor.source_event_id = "survivor_event"
         insert_incident(conn, survivor)
@@ -402,7 +403,7 @@ class TestFetchingStrategy:
             _sample_enrichment_result(primary_url="https://example.com/shared"),
         ) is True
 
-        duplicate = replace(sample_incident)
+        duplicate = replace(sample_incident, all_urls=[])
         duplicate.incident_id = make_incident_id("test_source", "https://example.com/duplicate|2025-01-15")
         duplicate.source_event_id = "duplicate_event"
         insert_incident(conn, duplicate)
