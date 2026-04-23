@@ -691,7 +691,8 @@ def _flatten_enrichment_for_db(
         
         # Ransom - use raw JSON data for exact values
         'was_ransom_demanded': raw_get("was_ransom_demanded") if raw_get("was_ransom_demanded") is not None else (enrichment.attack_dynamics.ransom_demanded if enrichment.attack_dynamics else None),
-        'ransom_amount': raw_get("ransom_amount") or raw_get("ransom_amount_exact"),
+        'ransom_amount': (raw_get("ransom_amount") or raw_get("ransom_amount_exact")
+                         or (enrichment.attack_dynamics.ransom_amount if enrichment.attack_dynamics else None)),
         'ransom_currency': raw_get("ransom_currency"),
         'ransom_paid': raw_get("ransom_paid") if raw_get("ransom_paid") is not None else (enrichment.attack_dynamics.ransom_paid if enrichment.attack_dynamics else None),
         'ransom_paid_amount': raw_get("ransom_paid_amount"),
@@ -1132,7 +1133,14 @@ def save_enrichment_result(
     # known source URLs. If all_urls is non-empty, the primary_url must come from
     # that list — prevents Chinese mirror sites from overriding the original source.
     _all_urls_str = incident_row["all_urls"] if incident_row else None
-    _all_urls: list = json.loads(_all_urls_str) if _all_urls_str else []
+    # all_urls is stored as semicolon-separated text, not JSON
+    if _all_urls_str:
+        try:
+            _all_urls = json.loads(_all_urls_str)
+        except (json.JSONDecodeError, ValueError):
+            _all_urls = [u.strip() for u in _all_urls_str.split(";") if u.strip()]
+    else:
+        _all_urls = []
     if _all_urls and _raw_primary_url and _raw_primary_url not in _all_urls:
         logger.warning(
             "LLM primary_url %s not in all_urls for %s; using %s instead",

@@ -282,10 +282,30 @@ def flatten_enrichment_data(enrichment: CTIEnrichmentResult) -> Dict[str, Any]:
                       'research_publications_delayed', 'research_grants_affected', 'research_collaborations_affected', 'research_research_area']:
             flat[field] = None
     
+    # Threat intelligence (new fields)
+    flat['malware_families'] = json.dumps(enrichment.malware_families) if enrichment.malware_families else None
+    flat['attacker_tools'] = json.dumps(enrichment.attacker_tools) if enrichment.attacker_tools else None
+    flat['threat_actor_aliases'] = json.dumps(enrichment.threat_actor_aliases) if enrichment.threat_actor_aliases else None
+    flat['attack_campaign_name'] = enrichment.attack_campaign_name
+    flat['cloud_provider'] = enrichment.cloud_provider
+    flat['infrastructure_type'] = enrichment.infrastructure_type
+    flat['dwell_time_days'] = enrichment.dwell_time_days
+    flat['data_volume_gb'] = enrichment.data_volume_gb
+    if enrichment.vulnerabilities_exploited:
+        flat['cve_ids'] = json.dumps([v.get("cve_id") for v in enrichment.vulnerabilities_exploited if v.get("cve_id")])
+        flat['cvss_scores'] = json.dumps([v.get("cvss_score") for v in enrichment.vulnerabilities_exploited if v.get("cvss_score") is not None])
+        flat['vulnerability_names'] = json.dumps([v.get("vulnerability_name") for v in enrichment.vulnerabilities_exploited if v.get("vulnerability_name")])
+        flat['affected_products'] = json.dumps([v.get("affected_product") for v in enrichment.vulnerabilities_exploited if v.get("affected_product")])
+    else:
+        flat['cve_ids'] = None
+        flat['cvss_scores'] = None
+        flat['vulnerability_names'] = None
+        flat['affected_products'] = None
+
     # Summary and notes
     flat['enriched_summary'] = enrichment.enriched_summary
     flat['extraction_notes'] = enrichment.extraction_notes
-    
+
     return flat
 
 
@@ -493,25 +513,33 @@ def load_enriched_incidents_from_db(conn: sqlite3.Connection, use_flat_table: bo
         else:
             # Fallback: Parse JSON (slower but works with old data)
             enrichment_data = None
-        enrichment_data_str = safe_get(row, "enrichment_data")
-        if enrichment_data_str:
-            try:
-                enrichment_data = json.loads(enrichment_data_str)
-            except json.JSONDecodeError as e:
-                logger.warning(f"Error parsing enrichment data for {safe_get(row, 'incident_id')}: {e}")
-        
+            enrichment_data_str = safe_get(row, "enrichment_data")
+            if enrichment_data_str:
+                try:
+                    enrichment_data = json.loads(enrichment_data_str)
+                except json.JSONDecodeError as e:
+                    logger.warning(f"Error parsing enrichment data for {safe_get(row, 'incident_id')}: {e}")
+
             # Extract and flatten enrichment data
-        institution_from_enrichment = None
-        if enrichment_data:
-            try:
-                enrichment = CTIEnrichmentResult.model_validate(enrichment_data)
-                # Get institution_identified from enrichment
-                if enrichment.education_relevance and enrichment.education_relevance.institution_identified:
-                    institution_from_enrichment = enrichment.education_relevance.institution_identified
-                flattened = flatten_enrichment_data(enrichment)
-            except Exception as e:
-                incident_id = safe_get(row, "incident_id", "unknown")
-                logger.warning(f"Error extracting enrichment details for {incident_id}: {e}")
+            institution_from_enrichment = None
+            if enrichment_data:
+                try:
+                    enrichment = CTIEnrichmentResult.model_validate(enrichment_data)
+                    if enrichment.education_relevance and enrichment.education_relevance.institution_identified:
+                        institution_from_enrichment = enrichment.education_relevance.institution_identified
+                    flattened = flatten_enrichment_data(enrichment)
+                except Exception as e:
+                    incident_id = safe_get(row, "incident_id", "unknown")
+                    logger.warning(f"Error extracting enrichment details for {incident_id}: {e}")
+                    flattened = flatten_enrichment_data(CTIEnrichmentResult(
+                        education_relevance=EducationRelevanceCheck(
+                            is_education_related=False,
+                            reasoning="",
+                            institution_identified=None
+                        ),
+                        enriched_summary=""
+                    ))
+            else:
                 flattened = flatten_enrichment_data(CTIEnrichmentResult(
                     education_relevance=EducationRelevanceCheck(
                         is_education_related=False,
@@ -520,15 +548,6 @@ def load_enriched_incidents_from_db(conn: sqlite3.Connection, use_flat_table: bo
                     ),
                     enriched_summary=""
                 ))
-        else:
-            flattened = flatten_enrichment_data(CTIEnrichmentResult(
-                education_relevance=EducationRelevanceCheck(
-                    is_education_related=False,
-                    reasoning="",
-                    institution_identified=None
-                ),
-                enriched_summary=""
-            ))
         
         # Use institution_identified from enrichment for victim_raw_name if available
         victim_raw_name = institution_from_enrichment or safe_get(row, "victim_raw_name")
