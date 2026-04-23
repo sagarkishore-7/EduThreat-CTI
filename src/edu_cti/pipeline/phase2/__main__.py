@@ -1178,7 +1178,7 @@ def enrich_articles_phase(
                     _watchdog.heartbeat()
 
                 # Memory management: gc every 1,000 items; hard exit if RSS > 600 MB.
-                # os._exit(0) triggers a clean Railway restart without a non-zero code.
+                # os._exit(1) triggers Railway ON_FAILURE restart policy to bring the container back up.
                 if items_processed % 1000 == 0:
                     import gc
                     gc.collect()
@@ -1190,9 +1190,9 @@ def enrich_articles_phase(
                         if rss_mb > 600:
                             logger.warning(
                                 f"[MEM] RSS {rss_mb:.0f} MB > 600 MB threshold — "
-                                "triggering clean restart to reclaim memory"
+                                "triggering restart to reclaim memory"
                             )
-                            _os._exit(0)
+                            _os._exit(1)  # exit(1) so Railway ON_FAILURE policy restarts the container
                         elif rss_mb > 400:
                             logger.info(f"[MEM] RSS {rss_mb:.0f} MB (approaching threshold)")
                     except ImportError:

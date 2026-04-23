@@ -417,26 +417,50 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
     stats["data_sources"] = cur.fetchone()["count"]
 
     # Average recovery time (days) for education incidents
+    # Fallback chain: recovery_timeframe_days → downtime_days → outage_duration_hours/24
     cur = conn.execute(
         f"""
-        SELECT AVG(ef.recovery_timeframe_days) as avg_days
+        SELECT AVG(
+            CASE
+                WHEN ef.recovery_timeframe_days IS NOT NULL AND ef.recovery_timeframe_days > 0
+                    THEN ef.recovery_timeframe_days
+                WHEN ef.downtime_days IS NOT NULL AND ef.downtime_days > 0
+                    THEN ef.downtime_days
+                WHEN ef.outage_duration_hours IS NOT NULL AND ef.outage_duration_hours > 0
+                    THEN ef.outage_duration_hours / 24.0
+                ELSE NULL
+            END
+        ) as avg_days
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
-          AND ef.recovery_timeframe_days IS NOT NULL
-          AND ef.recovery_timeframe_days > 0
+          AND (
+              (ef.recovery_timeframe_days IS NOT NULL AND ef.recovery_timeframe_days > 0) OR
+              (ef.downtime_days IS NOT NULL AND ef.downtime_days > 0) OR
+              (ef.outage_duration_hours IS NOT NULL AND ef.outage_duration_hours > 0)
+          )
           AND {_live_incident_exists('ef')}
         """
     )
     row = cur.fetchone()
     stats["avg_recovery_days"] = round(row["avg_days"], 1) if row["avg_days"] else None
 
-    # Total financial impact (sum of estimated costs)
+    # Total financial impact — ransom amounts + recovery/legal/notification costs
     cur = conn.execute(
         f"""
-        SELECT SUM(ef.recovery_costs_max) as total
+        SELECT SUM(
+            COALESCE(ef.ransom_amount, 0) +
+            COALESCE(ef.recovery_costs_max, COALESCE(ef.recovery_costs_min, 0)) +
+            COALESCE(ef.legal_costs, 0) +
+            COALESCE(ef.notification_costs, 0)
+        ) as total
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
-          AND ef.recovery_costs_max IS NOT NULL AND ef.recovery_costs_max > 0
+          AND (
+              (ef.ransom_amount IS NOT NULL AND ef.ransom_amount > 0) OR
+              (ef.recovery_costs_max IS NOT NULL AND ef.recovery_costs_max > 0) OR
+              (ef.recovery_costs_min IS NOT NULL AND ef.recovery_costs_min > 0) OR
+              (ef.legal_costs IS NOT NULL AND ef.legal_costs > 0)
+          )
           AND {_live_incident_exists('ef')}
         """
     )
@@ -1831,12 +1855,25 @@ def get_regulatory_impact_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
 
 
 def get_recovery_effectiveness(conn: sqlite3.Connection) -> Dict[str, Any]:
-    """Recovery effectiveness stats."""
+    """Recovery effectiveness stats.
+
+    avg_recovery_days uses fallback chain: recovery_timeframe_days → downtime_days → outage_duration_hours/24.
+    """
     cur = conn.execute(
         f"""
         SELECT
             COUNT(*) as total,
-            AVG(recovery_timeframe_days) as avg_recovery_days,
+            AVG(
+                CASE
+                    WHEN recovery_timeframe_days IS NOT NULL AND recovery_timeframe_days > 0
+                        THEN recovery_timeframe_days
+                    WHEN downtime_days IS NOT NULL AND downtime_days > 0
+                        THEN downtime_days
+                    WHEN outage_duration_hours IS NOT NULL AND outage_duration_hours > 0
+                        THEN outage_duration_hours / 24.0
+                    ELSE NULL
+                END
+            ) as avg_recovery_days,
             AVG(downtime_days) as avg_downtime_days,
             SUM(CASE WHEN from_backup = 1 THEN 1 ELSE 0 END) as backup_count,
             SUM(CASE WHEN incident_response_firm IS NOT NULL AND incident_response_firm != '' THEN 1 ELSE 0 END) as ir_firm_count,
@@ -1939,21 +1976,39 @@ def get_institution_risk_matrix(conn: sqlite3.Connection) -> List[Dict[str, Any]
 
 
 def get_recovery_by_attack_type(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
-    """Avg recovery and downtime days by attack category."""
+    """Avg recovery and downtime days by attack category.
+
+    Uses fallback chain: recovery_timeframe_days → downtime_days → outage_duration_hours/24.
+    Lowers minimum count to 1 so categories with sparse data still appear.
+    """
     cur = conn.execute(
         f"""
         SELECT
             ef.attack_category,
-            ROUND(AVG(recovery_timeframe_days), 1) as avg_recovery_days,
-            ROUND(AVG(downtime_days), 1) as avg_downtime_days,
+            ROUND(AVG(
+                CASE
+                    WHEN ef.recovery_timeframe_days IS NOT NULL AND ef.recovery_timeframe_days > 0
+                        THEN ef.recovery_timeframe_days
+                    WHEN ef.downtime_days IS NOT NULL AND ef.downtime_days > 0
+                        THEN ef.downtime_days
+                    WHEN ef.outage_duration_hours IS NOT NULL AND ef.outage_duration_hours > 0
+                        THEN ef.outage_duration_hours / 24.0
+                    ELSE NULL
+                END
+            ), 1) as avg_recovery_days,
+            ROUND(AVG(ef.downtime_days), 1) as avg_downtime_days,
             COUNT(*) as incident_count
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.attack_category IS NOT NULL AND ef.attack_category != ''
-          AND (ef.recovery_timeframe_days > 0 OR ef.downtime_days > 0)
+          AND (
+              (ef.recovery_timeframe_days IS NOT NULL AND ef.recovery_timeframe_days > 0) OR
+              (ef.downtime_days IS NOT NULL AND ef.downtime_days > 0) OR
+              (ef.outage_duration_hours IS NOT NULL AND ef.outage_duration_hours > 0)
+          )
           AND {_live_incident_exists('ef')}
         GROUP BY attack_category
-        HAVING incident_count >= 3
+        HAVING avg_recovery_days IS NOT NULL
         ORDER BY avg_recovery_days DESC
         """
     )

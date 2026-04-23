@@ -292,12 +292,61 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             timeline_events_count INTEGER,
             mitre_techniques_json TEXT,
             mitre_techniques_count INTEGER,
-            
+
+            -- Threat Intelligence (new)
+            malware_families TEXT,           -- JSON array
+            attacker_tools TEXT,             -- JSON array
+            threat_actor_aliases TEXT,       -- JSON array
+            attack_campaign_name TEXT,
+            cloud_provider TEXT,
+            infrastructure_type TEXT,
+            dwell_time_days REAL,
+            mttd_hours REAL,
+            mttr_hours REAL,
+
+            -- Vulnerabilities (new)
+            cve_ids TEXT,                    -- JSON array of CVE IDs
+            cvss_scores TEXT,                -- JSON array of CVSS scores (REAL)
+            vulnerability_names TEXT,        -- JSON array
+            affected_products TEXT,          -- JSON array
+
+            -- Financial (additional)
+            total_cost_estimate REAL,
+
+            -- Operational (additional)
+            partial_service_days REAL,
+            clinical_operations_disrupted INTEGER,
+            graduation_delayed INTEGER,
+            online_learning_disrupted INTEGER,
+
+            -- Recovery (additional)
+            backup_status TEXT,
+            backup_age_days REAL,
+            law_enforcement_involved INTEGER,
+            law_enforcement_agency TEXT,
+            detection_source TEXT,
+
+            -- Transparency (additional)
+            official_statement_url TEXT,
+
+            -- Research Impact (new)
+            research_projects_affected INTEGER,
+            research_data_compromised INTEGER,
+            publications_delayed INTEGER,
+            grants_affected INTEGER,
+            research_area TEXT,
+
+            -- Regulatory (additional)
+            regulatory_context TEXT,         -- JSON array of applicable regulations
+
+            -- Data (additional)
+            data_volume_gb REAL,
+
             -- Summary
             enriched_summary TEXT,
             extraction_notes TEXT,
             confidence REAL,
-            
+
             -- Metadata
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
@@ -373,6 +422,46 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         ("incident_severity", "TEXT"), ("institution_size", "TEXT"),
         ("threat_actor_category", "TEXT"), ("threat_actor_motivation", "TEXT"),
         ("threat_actor_origin_country", "TEXT"),
+        # Threat intelligence
+        ("malware_families", "TEXT"),
+        ("attacker_tools", "TEXT"),
+        ("threat_actor_aliases", "TEXT"),
+        ("attack_campaign_name", "TEXT"),
+        ("cloud_provider", "TEXT"),
+        ("infrastructure_type", "TEXT"),
+        ("dwell_time_days", "REAL"),
+        ("mttd_hours", "REAL"),
+        ("mttr_hours", "REAL"),
+        # Vulnerabilities
+        ("cve_ids", "TEXT"),
+        ("cvss_scores", "TEXT"),
+        ("vulnerability_names", "TEXT"),
+        ("affected_products", "TEXT"),
+        # Financial
+        ("total_cost_estimate", "REAL"),
+        # Operational
+        ("partial_service_days", "REAL"),
+        ("clinical_operations_disrupted", "INTEGER"),
+        ("graduation_delayed", "INTEGER"),
+        ("online_learning_disrupted", "INTEGER"),
+        # Recovery
+        ("backup_status", "TEXT"),
+        ("backup_age_days", "REAL"),
+        ("law_enforcement_involved", "INTEGER"),
+        ("law_enforcement_agency", "TEXT"),
+        ("detection_source", "TEXT"),
+        # Transparency
+        ("official_statement_url", "TEXT"),
+        # Research impact
+        ("research_projects_affected", "INTEGER"),
+        ("research_data_compromised", "INTEGER"),
+        ("publications_delayed", "INTEGER"),
+        ("grants_affected", "INTEGER"),
+        ("research_area", "TEXT"),
+        # Regulatory
+        ("regulatory_context", "TEXT"),
+        # Data
+        ("data_volume_gb", "REAL"),
     ]:
         try:
             conn.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {col_type}")
@@ -740,7 +829,59 @@ def _flatten_enrichment_for_db(
         'timeline_events_count': len(enrichment.timeline) if enrichment.timeline else (len(raw_get("timeline", [])) if raw_get("timeline") else 0),
         'mitre_techniques_json': json.dumps([t.model_dump() for t in enrichment.mitre_attack_techniques]) if enrichment.mitre_attack_techniques else (json.dumps(raw_get("mitre_attack_techniques")) if raw_get("mitre_attack_techniques") else None),
         'mitre_techniques_count': len(enrichment.mitre_attack_techniques) if enrichment.mitre_attack_techniques else (len(raw_get("mitre_attack_techniques", [])) if raw_get("mitre_attack_techniques") else 0),
-        
+
+        # Threat intelligence (new fields)
+        'malware_families': json.dumps(enrichment.malware_families) if enrichment.malware_families else (json.dumps(raw_get("malware_families")) if raw_get("malware_families") else None),
+        'attacker_tools': json.dumps(enrichment.attacker_tools) if enrichment.attacker_tools else (json.dumps(raw_get("attacker_tools")) if raw_get("attacker_tools") else None),
+        'threat_actor_aliases': json.dumps(enrichment.threat_actor_aliases) if enrichment.threat_actor_aliases else (json.dumps(raw_get("threat_actor_aliases")) if raw_get("threat_actor_aliases") else None),
+        'attack_campaign_name': enrichment.attack_campaign_name or raw_get("attack_campaign_name"),
+        'cloud_provider': enrichment.cloud_provider or raw_get("cloud_provider"),
+        'infrastructure_type': enrichment.infrastructure_type or raw_get("infrastructure_type"),
+        'dwell_time_days': enrichment.dwell_time_days or raw_get("dwell_time_days"),
+        'mttd_hours': raw_get("mttd_hours") or (enrichment.recovery_metrics.get("mttd_hours") if enrichment.recovery_metrics else None),
+        'mttr_hours': raw_get("mttr_hours") or (enrichment.recovery_metrics.get("mttr_hours") if enrichment.recovery_metrics else None),
+
+        # Vulnerabilities (new fields — flattened from vulnerabilities_exploited list)
+        'cve_ids': json.dumps([v["cve_id"] for v in enrichment.vulnerabilities_exploited if v.get("cve_id")]) if enrichment.vulnerabilities_exploited else (json.dumps([v.get("cve_id") for v in raw_get("vulnerabilities_exploited", []) if isinstance(v, dict) and v.get("cve_id")]) if raw_get("vulnerabilities_exploited") else None),
+        'cvss_scores': json.dumps([v["cvss_score"] for v in enrichment.vulnerabilities_exploited if v.get("cvss_score") is not None]) if enrichment.vulnerabilities_exploited else None,
+        'vulnerability_names': json.dumps([v["vulnerability_name"] for v in enrichment.vulnerabilities_exploited if v.get("vulnerability_name")]) if enrichment.vulnerabilities_exploited else None,
+        'affected_products': json.dumps([v["affected_product"] for v in enrichment.vulnerabilities_exploited if v.get("affected_product")]) if enrichment.vulnerabilities_exploited else None,
+
+        # Financial (additional)
+        'total_cost_estimate': (raw_get("currency_normalized_cost_usd") or raw_get("estimated_total_cost_usd")
+                                or (enrichment.financial_impact.get("total_cost_estimate") if enrichment.financial_impact else None)),
+
+        # Operational (additional)
+        'partial_service_days': raw_get("partial_service_days") or (enrichment.operational_impact_metrics.get("partial_service_days") if enrichment.operational_impact_metrics else None),
+        'clinical_operations_disrupted': raw_get("clinical_operations_disrupted") if raw_get("clinical_operations_disrupted") is not None else (enrichment.operational_impact_metrics.get("clinical_operations_disrupted") if enrichment.operational_impact_metrics else None),
+        'graduation_delayed': raw_get("graduation_delayed") if raw_get("graduation_delayed") is not None else (enrichment.operational_impact_metrics.get("graduation_delayed") if enrichment.operational_impact_metrics else None),
+        'online_learning_disrupted': raw_get("online_learning_disrupted") if raw_get("online_learning_disrupted") is not None else (enrichment.operational_impact_metrics.get("online_learning_disrupted") if enrichment.operational_impact_metrics else None),
+
+        # Recovery (additional)
+        'backup_status': raw_get("backup_status") or (enrichment.recovery_metrics.get("backup_status") if enrichment.recovery_metrics else None),
+        'backup_age_days': raw_get("backup_age_days") or (enrichment.recovery_metrics.get("backup_age_days") if enrichment.recovery_metrics else None),
+        'law_enforcement_involved': raw_get("law_enforcement_involved") if raw_get("law_enforcement_involved") is not None else (enrichment.recovery_metrics.get("law_enforcement_involved") if enrichment.recovery_metrics else None),
+        'law_enforcement_agency': (raw_get("law_enforcement_agency") or raw_get("law_enforcement_agencies")
+                                   or (enrichment.recovery_metrics.get("law_enforcement_agency") if enrichment.recovery_metrics else None)),
+        'detection_source': raw_get("detection_source") or (enrichment.recovery_metrics.get("detection_source") if enrichment.recovery_metrics else None),
+
+        # Transparency (additional)
+        'official_statement_url': (raw_get("official_statement_url")
+                                   or (enrichment.transparency_metrics.get("official_statement_url") if enrichment.transparency_metrics else None)),
+
+        # Research impact (new fields)
+        'research_projects_affected': raw_get("research_projects_affected") if raw_get("research_projects_affected") is not None else (enrichment.research_impact.get("research_projects_affected") if enrichment.research_impact else None),
+        'research_data_compromised': raw_get("research_data_compromised") if raw_get("research_data_compromised") is not None else (enrichment.research_impact.get("research_data_compromised") if enrichment.research_impact else None),
+        'publications_delayed': raw_get("publications_delayed") if raw_get("publications_delayed") is not None else (enrichment.research_impact.get("publications_delayed") if enrichment.research_impact else None),
+        'grants_affected': raw_get("grants_affected") if raw_get("grants_affected") is not None else (enrichment.research_impact.get("grants_affected") if enrichment.research_impact else None),
+        'research_area': raw_get("research_area") or (enrichment.research_impact.get("research_area") if enrichment.research_impact else None),
+
+        # Regulatory (additional)
+        'regulatory_context': json.dumps(raw_get("applicable_regulations")) if raw_get("applicable_regulations") else (json.dumps(enrichment.regulatory_impact.get("regulatory_context")) if enrichment.regulatory_impact and enrichment.regulatory_impact.get("regulatory_context") else None),
+
+        # Data (additional)
+        'data_volume_gb': enrichment.data_volume_gb or raw_get("data_volume_gb"),
+
         # Summary
         'enriched_summary': enrichment.enriched_summary or raw_get("enriched_summary"),
         'extraction_notes': enrichment.extraction_notes or raw_get("extraction_notes"),
@@ -748,7 +889,12 @@ def _flatten_enrichment_for_db(
     }
     
     # Columns whose values are intentionally JSON-serialised lists (stored as TEXT).
-    _JSON_TEXT_COLS = {"systems_affected_codes", "timeline_json", "mitre_techniques_json"}
+    _JSON_TEXT_COLS = {
+        "systems_affected_codes", "timeline_json", "mitre_techniques_json",
+        "malware_families", "attacker_tools", "threat_actor_aliases",
+        "cve_ids", "cvss_scores", "vulnerability_names", "affected_products",
+        "data_categories", "regulatory_context",
+    }
 
     for key, value in flat.items():
         if isinstance(value, bool):
@@ -917,7 +1063,7 @@ def save_enrichment_result(
     cur = conn.execute(
         """
         SELECT institution_name, victim_raw_name, institution_type, country, region, city,
-               title, subtitle, source_published_date, notes
+               title, subtitle, source_published_date, notes, all_urls
         FROM incidents
         WHERE incident_id = ?
         """,
@@ -981,7 +1127,20 @@ def save_enrichment_result(
             incident_row["subtitle"] if incident_row else None,
         )
     
-    primary_url = enrichment_result.primary_url
+    _raw_primary_url = enrichment_result.primary_url
+    # Only allow a SERP-discovered URL as primary_url when the incident has no
+    # known source URLs. If all_urls is non-empty, the primary_url must come from
+    # that list — prevents Chinese mirror sites from overriding the original source.
+    _all_urls_str = incident_row["all_urls"] if incident_row else None
+    _all_urls: list = json.loads(_all_urls_str) if _all_urls_str else []
+    if _all_urls and _raw_primary_url and _raw_primary_url not in _all_urls:
+        logger.warning(
+            "LLM primary_url %s not in all_urls for %s; using %s instead",
+            _raw_primary_url, incident_id, _all_urls[0],
+        )
+        primary_url = _all_urls[0]
+    else:
+        primary_url = _raw_primary_url
     article_metadata = _get_primary_article_metadata(conn, incident_id, primary_url)
     article_publish_date = article_metadata.get("publish_date")
 
@@ -1067,14 +1226,30 @@ def save_enrichment_result(
         update_fields += ",\n        source_published_date = ?"
         update_params.append(publication_date)
     
-    # Update incident_date if LLM extracted it
-    # Always use LLM-extracted date (it's more accurate than source_published_date)
+    # Update incident_date if LLM extracted it — but guard against the LLM picking
+    # a repost/mirror date that is far AFTER the article's source_published_date.
+    # An incident cannot occur significantly after the article reporting it was written.
     if llm_incident_date:
-        update_fields += """,
+        _apply_llm_date = True
+        if source_published_date_fallback:
+            try:
+                from datetime import date as _date
+                _src_dt = _date.fromisoformat(str(source_published_date_fallback)[:10])
+                _llm_dt = _date.fromisoformat(str(llm_incident_date)[:10])
+                if (_llm_dt - _src_dt).days > 90:
+                    logger.warning(
+                        "Skipping LLM incident_date %s (>90 days after source_published_date %s) for %s",
+                        llm_incident_date, source_published_date_fallback, incident_id,
+                    )
+                    _apply_llm_date = False
+            except (ValueError, TypeError):
+                pass
+        if _apply_llm_date:
+            update_fields += """,
         incident_date = ?,
         date_precision = ?
         """
-        update_params.extend([llm_incident_date, llm_date_precision or "approximate"])
+            update_params.extend([llm_incident_date, llm_date_precision or "approximate"])
     if llm_discovery_date:
         update_fields += ",\n        discovery_date = ?"
         update_params.append(llm_discovery_date)
@@ -1166,6 +1341,8 @@ def save_enrichment_result(
         "data_categories_affected", "data_types", "operational_impacts",
         "security_improvements", "third_parties_involved", "other_edu_incidents",
         "iocs", "target_demographics", "attack_chain",
+        "vulnerabilities_exploited", "malware_families", "attacker_tools",
+        "threat_actor_aliases", "applicable_regulations",
     }
     if raw_json_data:
         raw_json_data = {
@@ -1222,10 +1399,31 @@ def save_enrichment_result(
         'recovery_completed_date', 'from_backup', 'mfa_implemented', 'incident_response_firm',
         'forensics_firm', 'public_disclosure', 'public_disclosure_date', 'disclosure_delay_days',
         'transparency_level', 'timeline_json', 'timeline_events_count', 'mitre_techniques_json',
-        'mitre_techniques_count', 'enriched_summary', 'extraction_notes', 'confidence',
+        'mitre_techniques_count',
+        # Threat intelligence (new)
+        'malware_families', 'attacker_tools', 'threat_actor_aliases', 'attack_campaign_name',
+        'cloud_provider', 'infrastructure_type', 'dwell_time_days', 'mttd_hours', 'mttr_hours',
+        # Vulnerabilities (new)
+        'cve_ids', 'cvss_scores', 'vulnerability_names', 'affected_products',
+        # Financial (additional)
+        'total_cost_estimate',
+        # Operational (additional)
+        'partial_service_days', 'clinical_operations_disrupted', 'graduation_delayed', 'online_learning_disrupted',
+        # Recovery (additional)
+        'backup_status', 'backup_age_days', 'law_enforcement_involved', 'law_enforcement_agency', 'detection_source',
+        # Transparency (additional)
+        'official_statement_url',
+        # Research impact (new)
+        'research_projects_affected', 'research_data_compromised', 'publications_delayed',
+        'grants_affected', 'research_area',
+        # Regulatory (additional)
+        'regulatory_context',
+        # Data (additional)
+        'data_volume_gb',
+        'enriched_summary', 'extraction_notes', 'confidence',
         'created_at', 'updated_at'
     ]
-    
+
     try:
         if flat_exists:
             # Update existing flat record

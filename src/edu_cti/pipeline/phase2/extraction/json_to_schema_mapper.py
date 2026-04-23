@@ -581,6 +581,8 @@ def _coerce_llm_scalars(json_data: Dict[str, Any]) -> Dict[str, Any]:
         "data_categories", "data_categories_affected", "data_types", "operational_impacts",
         "applicable_regulations", "security_improvements", "third_parties_involved",
         "other_edu_incidents", "iocs", "target_demographics", "attack_chain",
+        "vulnerabilities_exploited", "malware_families", "attacker_tools",
+        "threat_actor_aliases",
     }
     result = {}
     for key, value in json_data.items():
@@ -1184,6 +1186,35 @@ def json_to_cti_enrichment(
             "research_impact_notes_en": json_data.get("research_impact_notes_en"),
         }
     
+    # Threat intelligence: vulnerabilities_exploited
+    vulnerabilities_exploited = None
+    raw_vulns = json_data.get("vulnerabilities_exploited")
+    if isinstance(raw_vulns, list) and raw_vulns:
+        cleaned_vulns = []
+        for v in raw_vulns:
+            if isinstance(v, dict) and any(v.get(k) for k in ("cve_id", "vulnerability_name", "affected_product")):
+                cleaned_vulns.append({
+                    "cve_id": v.get("cve_id"),
+                    "vulnerability_name": v.get("vulnerability_name"),
+                    "vulnerability_type": v.get("vulnerability_type"),
+                    "affected_product": v.get("affected_product"),
+                    "cvss_score": v.get("cvss_score"),
+                })
+        vulnerabilities_exploited = cleaned_vulns if cleaned_vulns else None
+
+    # Threat intelligence: malware families and tools
+    malware_families = json_data.get("malware_families") or None
+    if isinstance(malware_families, list) and not malware_families:
+        malware_families = None
+
+    attacker_tools = json_data.get("attacker_tools") or None
+    if isinstance(attacker_tools, list) and not attacker_tools:
+        attacker_tools = None
+
+    threat_actor_aliases = json_data.get("threat_actor_aliases") or None
+    if isinstance(threat_actor_aliases, list) and not threat_actor_aliases:
+        threat_actor_aliases = None
+
     return CTIEnrichmentResult(
         education_relevance=education_relevance,
         primary_url=primary_url or json_data.get("source_url"),
@@ -1200,6 +1231,15 @@ def json_to_cti_enrichment(
         recovery_metrics=recovery_metrics,
         transparency_metrics=transparency_metrics,
         research_impact=research_impact,
+        vulnerabilities_exploited=vulnerabilities_exploited,
+        malware_families=malware_families,
+        attacker_tools=attacker_tools,
+        dwell_time_days=json_data.get("dwell_time_days"),
+        cloud_provider=json_data.get("cloud_provider"),
+        infrastructure_type=json_data.get("infrastructure_type"),
+        threat_actor_aliases=threat_actor_aliases,
+        attack_campaign_name=json_data.get("attack_campaign_name"),
+        data_volume_gb=json_data.get("data_volume_gb"),
         enriched_summary=_build_summary(json_data),
         extraction_notes=extraction_notes
     )

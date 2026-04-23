@@ -8,6 +8,7 @@ These endpoints require authentication and provide:
 """
 
 import os
+import re
 import csv
 import io
 import sqlite3
@@ -203,9 +204,14 @@ async def get_export_stats(_: bool = Depends(authenticate)):
         cur = conn.execute("SELECT COUNT(DISTINCT source) FROM incident_sources")
         sources = cur.fetchone()[0]
         
-        # DB size
-        db_path = Path(DB_PATH)
-        db_size_mb = db_path.stat().st_size / (1024 * 1024) if db_path.exists() else 0
+        # DB size — use SQLite page_count*page_size so WAL-mode writes are reflected
+        try:
+            page_count = conn.execute("PRAGMA page_count").fetchone()[0]
+            page_size = conn.execute("PRAGMA page_size").fetchone()[0]
+            db_size_mb = (page_count * page_size) / (1024 * 1024)
+        except Exception:
+            db_path = Path(DB_PATH)
+            db_size_mb = db_path.stat().st_size / (1024 * 1024) if db_path.exists() else 0
         
         return ExportStats(
             total_incidents=total,
@@ -496,6 +502,340 @@ async def export_enriched_csv(
                 conn.close()
             except:
                 pass
+
+
+def _flatten_timeline(timeline_json_str: Optional[str]) -> dict:
+    """
+    Parse timeline JSON and return flat key→value pairs suitable for CSV columns.
+
+    Extracts key event dates by event_type and computes durations (in days) between
+    important milestones so analysts can answer questions like:
+    "How long did it take from initial access to recovery?"
+    """
+    import json as _json
+    from datetime import date as _date
+
+    out: dict = {
+        "timeline_event_types": "",         # ordered comma-sep list of all event types
+        "timeline_initial_access_date": "",
+        "timeline_discovery_date": "",
+        "timeline_encryption_date": "",
+        "timeline_data_exfiltration_date": "",
+        "timeline_ransom_demand_date": "",
+        "timeline_containment_date": "",
+        "timeline_recovery_date": "",
+        "timeline_disclosure_date": "",
+        "timeline_notification_date": "",
+        "days_initial_to_discovery": "",
+        "days_initial_to_containment": "",
+        "days_initial_to_recovery": "",
+        "days_discovery_to_disclosure": "",
+        "days_discovery_to_containment": "",
+        "days_containment_to_recovery": "",
+    }
+    if not timeline_json_str:
+        return out
+
+    try:
+        events = _json.loads(timeline_json_str)
+    except (_json.JSONDecodeError, TypeError):
+        return out
+
+    if not isinstance(events, list):
+        return out
+
+    # Build a map: event_type → earliest date for that type
+    type_to_date: dict[str, _date] = {}
+    event_type_order: list[str] = []
+    for ev in events:
+        if not isinstance(ev, dict):
+            continue
+        etype = ev.get("event_type") or "other"
+        event_type_order.append(etype)
+        raw_date = ev.get("date")
+        if raw_date:
+            try:
+                dt = _date.fromisoformat(str(raw_date)[:10])
+                if etype not in type_to_date or dt < type_to_date[etype]:
+                    type_to_date[etype] = dt
+            except (ValueError, TypeError):
+                pass
+
+    out["timeline_event_types"] = ", ".join(event_type_order)
+
+    # Key milestone mappings
+    milestones = {
+        "timeline_initial_access_date":      ["initial_access", "exploitation", "reconnaissance"],
+        "timeline_discovery_date":           ["discovery", "detection", "investigation"],
+        "timeline_encryption_date":          ["encryption_started", "impact"],
+        "timeline_data_exfiltration_date":   ["data_exfiltration", "exfiltration"],
+        "timeline_ransom_demand_date":       ["ransom_demand"],
+        "timeline_containment_date":         ["containment", "eradication"],
+        "timeline_recovery_date":            ["recovery", "systems_restored", "remediation"],
+        "timeline_disclosure_date":          ["disclosure", "public_statement"],
+        "timeline_notification_date":        ["notification"],
+    }
+    resolved: dict[str, Optional[_date]] = {}
+    for col, types in milestones.items():
+        found = None
+        for t in types:
+            if t in type_to_date:
+                d = type_to_date[t]
+                if found is None or d < found:
+                    found = d
+        resolved[col] = found
+        out[col] = found.isoformat() if found else ""
+
+    def _days(a_key: str, b_key: str) -> str:
+        a = resolved.get(a_key)
+        b = resolved.get(b_key)
+        if a and b and b >= a:
+            return str((b - a).days)
+        return ""
+
+    out["days_initial_to_discovery"]    = _days("timeline_initial_access_date", "timeline_discovery_date")
+    out["days_initial_to_containment"]  = _days("timeline_initial_access_date", "timeline_containment_date")
+    out["days_initial_to_recovery"]     = _days("timeline_initial_access_date", "timeline_recovery_date")
+    out["days_discovery_to_disclosure"] = _days("timeline_discovery_date",      "timeline_disclosure_date")
+    out["days_discovery_to_containment"]= _days("timeline_discovery_date",      "timeline_containment_date")
+    out["days_containment_to_recovery"] = _days("timeline_containment_date",    "timeline_recovery_date")
+    return out
+
+
+def _flatten_mitre(mitre_json_str: Optional[str]) -> dict:
+    """
+    Parse MITRE ATT&CK JSON and return flat columns with comma-separated values.
+
+    Produces:
+    - mitre_technique_ids     e.g. "T1486, T1078, T1190"
+    - mitre_technique_names   e.g. "Data Encrypted for Impact, Valid Accounts, ..."
+    - mitre_tactics           e.g. "Impact, Defense Evasion, Initial Access"  (deduplicated)
+    - mitre_sub_techniques    e.g. "T1078.002, T1059.001"
+    """
+    import json as _json
+
+    out = {
+        "mitre_technique_ids": "",
+        "mitre_technique_names": "",
+        "mitre_tactics": "",
+        "mitre_sub_techniques": "",
+    }
+    if not mitre_json_str:
+        return out
+
+    try:
+        techniques = _json.loads(mitre_json_str)
+    except (_json.JSONDecodeError, TypeError):
+        return out
+
+    if not isinstance(techniques, list):
+        return out
+
+    ids, names, tactics, subs = [], [], [], []
+    seen_tactics: set[str] = set()
+    _tid_re = re.compile(r"(T\d{4}(?:\.\d{3})?)")
+    for t in techniques:
+        if not isinstance(t, dict):
+            continue
+        raw_id = str(t.get("technique_id") or "").strip()
+        extracted_id, extracted_name = "", ""
+        if raw_id:
+            # LLM sometimes writes "T1078.004: Valid Accounts: Cloud Accounts"
+            m = _tid_re.match(raw_id)
+            if m:
+                extracted_id = m.group(1)
+                # Remainder after "T####.###: " is the name
+                remainder = raw_id[m.end():].lstrip(": ").strip()
+                if remainder:
+                    extracted_name = remainder
+            else:
+                extracted_id = raw_id.split(":")[0].strip()
+        if extracted_id:
+            ids.append(extracted_id)
+        # Prefer explicit technique_name; fall back to name parsed from technique_id
+        name = t.get("technique_name") or extracted_name
+        if name:
+            names.append(name)
+        tactic = t.get("tactic")
+        if tactic and tactic not in seen_tactics:
+            tactics.append(tactic)
+            seen_tactics.add(tactic)
+        for sub in (t.get("sub_techniques") or []):
+            if sub and sub not in subs:
+                subs.append(sub)
+
+    out["mitre_technique_ids"]   = ", ".join(ids)
+    out["mitre_technique_names"] = ", ".join(names)
+    out["mitre_tactics"]         = ", ".join(tactics)
+    out["mitre_sub_techniques"]  = ", ".join(subs)
+    return out
+
+
+def _flatten_attack_dynamics(dynamics_json_str: Optional[str]) -> dict:
+    """
+    Parse attack_dynamics JSON (AttackDynamics schema) and return flat columns.
+
+    Extracts attack_chain (ordered kill-chain/tactic stages) as a comma-separated
+    string and encryption_impact as a scalar.
+    """
+    import json as _json
+
+    out = {
+        "attack_chain": "",
+        "encryption_impact": "",
+    }
+    if not dynamics_json_str:
+        return out
+
+    try:
+        obj = _json.loads(dynamics_json_str)
+    except (_json.JSONDecodeError, TypeError):
+        return out
+
+    if not isinstance(obj, dict):
+        return out
+
+    chain = obj.get("attack_chain") or []
+    if isinstance(chain, list):
+        out["attack_chain"] = ", ".join(str(s) for s in chain if s)
+
+    enc = obj.get("encryption_impact")
+    if enc:
+        out["encryption_impact"] = str(enc)
+
+    return out
+
+
+@router.get("/export/research-csv")
+async def export_research_csv(
+    _: bool = Depends(authenticate),
+):
+    """
+    Research dataset export — every education-related enriched incident as one row.
+
+    Joins incidents + incident_enrichments_flat + incident_sources into a single
+    denormalised CSV.  Timeline, MITRE ATT&CK, and attack_dynamics JSON blobs are
+    flattened into readable scalar / comma-separated columns:
+
+    Timeline  → key event dates (initial_access_date, discovery_date, recovery_date …)
+                + computed durations (days_initial_to_discovery, days_initial_to_recovery …)
+    MITRE     → mitre_technique_ids, mitre_technique_names, mitre_tactics, mitre_sub_techniques
+    Dynamics  → attack_chain (ordered kill-chain stages), encryption_impact
+
+    Enriched field values take precedence over raw incident values where both exist.
+    """
+    JSON_BLOB_COLS = {
+        "timeline_json", "mitre_techniques_json",
+        "llm_timeline", "llm_mitre_attack", "llm_attack_dynamics",
+    }
+
+    conn = None
+    try:
+        conn = get_api_connection()
+
+        # ── Column discovery ────────────────────────────────────────────────
+        inc_cols = [
+            r[1] for r in conn.execute("PRAGMA table_info(incidents)").fetchall()
+            if r[1] not in JSON_BLOB_COLS
+        ]
+        flat_cols = [
+            r[1] for r in conn.execute("PRAGMA table_info(incident_enrichments_flat)").fetchall()
+            if r[1] not in JSON_BLOB_COLS and r[1] != "incident_id"
+        ]
+
+        # Also fetch the raw JSON blobs for post-processing
+        inc_select = ", ".join(f"i.{c}" for c in inc_cols if c != "incident_id")
+        flat_select_parts = []
+        for c in flat_cols:
+            if c in inc_cols:
+                flat_select_parts.append(f"COALESCE(ef.{c}, i.{c}) AS {c}")
+            else:
+                flat_select_parts.append(f"ef.{c}")
+        flat_select = ", ".join(flat_select_parts)
+
+        query = f"""
+            SELECT
+                i.incident_id,
+                GROUP_CONCAT(DISTINCT isrc.source) AS sources,
+                {inc_select},
+                {flat_select},
+                ef.timeline_json,
+                ef.mitre_techniques_json,
+                i.llm_attack_dynamics
+            FROM incidents i
+            INNER JOIN incident_enrichments_flat ef
+                ON i.incident_id = ef.incident_id
+               AND ef.is_education_related = 1
+            LEFT JOIN incident_sources isrc ON i.incident_id = isrc.incident_id
+            GROUP BY i.incident_id
+            ORDER BY i.incident_date DESC, i.ingested_at DESC
+        """
+
+        cur = conn.execute(query)
+        raw_col_names = [d[0] for d in cur.description]
+        raw_rows = cur.fetchall()
+
+        if not raw_rows:
+            raise HTTPException(status_code=404, detail="No education-related enriched incidents found.")
+
+        # ── Flatten JSON blobs and build final rows ──────────────────────────
+        # Remove the raw JSON columns from output; replace with flattened versions.
+        json_col_set = {"timeline_json", "mitre_techniques_json", "llm_attack_dynamics"}
+        base_col_names = [c for c in raw_col_names if c not in json_col_set]
+
+        # Determine final column set (base + flattened additions)
+        sample_timeline = _flatten_timeline(None)
+        sample_mitre    = _flatten_mitre(None)
+        sample_dynamics = _flatten_attack_dynamics(None)
+        extra_cols = list(sample_timeline) + list(sample_mitre) + list(sample_dynamics)
+        final_col_names = base_col_names + extra_cols
+
+        timeline_idx  = raw_col_names.index("timeline_json")
+        mitre_idx     = raw_col_names.index("mitre_techniques_json")
+        dynamics_idx  = raw_col_names.index("llm_attack_dynamics")
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+        writer.writerow(final_col_names)
+
+        for raw_row in raw_rows:
+            base_values = [
+                raw_row[i] if raw_row[i] is not None else ""
+                for i, c in enumerate(raw_col_names)
+                if c not in json_col_set
+            ]
+            flat_tl  = _flatten_timeline(raw_row[timeline_idx])
+            flat_mi  = _flatten_mitre(raw_row[mitre_idx])
+            flat_dyn = _flatten_attack_dynamics(raw_row[dynamics_idx])
+            extra_values = (
+                [flat_tl[c]  for c in sample_timeline] +
+                [flat_mi[c]  for c in sample_mitre] +
+                [flat_dyn[c] for c in sample_dynamics]
+            )
+            writer.writerow(base_values + extra_values)
+
+        filename = f"eduthreat_research_edu_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        logger.info(
+            "Research CSV export: %d edu incidents, %d columns (%d base + %d flattened)",
+            len(raw_rows), len(final_col_names), len(base_col_names), len(extra_cols),
+        )
+
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Cache-Control": "no-store",
+            },
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error("Research CSV export failed: %s", e, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Export failed: {e}")
+    finally:
+        if conn:
+            conn.close()
 
 
 @router.get("/export/csv/{table_name}")
@@ -1945,6 +2285,138 @@ async def backfill_enrichment_fields(
         }
     except Exception as e:
         logger.error(f"Backfill failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        conn.close()
+
+
+@router.post("/repair-date-corruption")
+async def repair_date_corruption_endpoint(
+    dry_run: bool = True,
+    re_enrich: bool = False,
+    forward_threshold_days: int = 90,
+    _: bool = Depends(authenticate),
+):
+    """
+    Find and fix incidents where the LLM incorrectly overrode incident_date with a date
+    significantly later than source_published_date (e.g. a Chinese mirror/repost date).
+
+    Also fixes primary_url when it points to a SERP-discovered URL not in all_urls,
+    replacing it with the first real source URL from all_urls.
+
+    Parameters:
+    - dry_run: if true (default), only report what would be changed.
+    - re_enrich: if true, mark date-fixed incidents llm_enriched=0 so they re-process.
+    - forward_threshold_days: days gap that flags a date as corrupted (default 90).
+    """
+    import json as _json
+    from datetime import date as _date
+
+    conn = get_api_connection(read_only=False)
+    try:
+        # --- Find date-corrupted incidents ---
+        date_rows = conn.execute(
+            """
+            SELECT incident_id, incident_date, source_published_date, primary_url, all_urls
+            FROM incidents
+            WHERE incident_date IS NOT NULL
+              AND source_published_date IS NOT NULL
+              AND julianday(substr(incident_date, 1, 10))
+                  - julianday(substr(source_published_date, 1, 10)) > ?
+            ORDER BY (
+                julianday(substr(incident_date, 1, 10))
+                - julianday(substr(source_published_date, 1, 10))
+            ) DESC
+            """,
+            (forward_threshold_days,),
+        ).fetchall()
+
+        date_fixes = []
+        for row in date_rows:
+            iid = row["incident_id"]
+            old_date = row["incident_date"]
+            new_date = row["source_published_date"]
+            try:
+                gap = (
+                    _date.fromisoformat(str(old_date)[:10])
+                    - _date.fromisoformat(str(new_date)[:10])
+                ).days
+            except (ValueError, TypeError):
+                gap = None
+            date_fixes.append({
+                "incident_id": iid,
+                "old_incident_date": old_date,
+                "new_incident_date": new_date,
+                "gap_days": gap,
+            })
+            if not dry_run:
+                fields = "incident_date = ?, date_precision = 'approximate'"
+                params: list = [new_date]
+                if re_enrich:
+                    fields += ", llm_enriched = 0, llm_enriched_at = NULL"
+                conn.execute(
+                    f"UPDATE incidents SET {fields} WHERE incident_id = ?",
+                    (*params, iid),
+                )
+
+        # --- Find wrong primary_url incidents ---
+        url_rows = conn.execute(
+            """
+            SELECT incident_id, primary_url, all_urls
+            FROM incidents
+            WHERE primary_url IS NOT NULL
+              AND all_urls IS NOT NULL
+              AND all_urls != '[]'
+              AND all_urls != ''
+            """
+        ).fetchall()
+
+        url_fixes = []
+        for row in url_rows:
+            iid = row["incident_id"]
+            try:
+                urls = _json.loads(row["all_urls"])
+            except (_json.JSONDecodeError, TypeError):
+                continue
+            if urls and row["primary_url"] not in urls:
+                correct_url = urls[0]
+                url_fixes.append({
+                    "incident_id": iid,
+                    "old_primary_url": row["primary_url"],
+                    "new_primary_url": correct_url,
+                })
+                if not dry_run:
+                    conn.execute(
+                        "UPDATE incidents SET primary_url = ? WHERE incident_id = ?",
+                        (correct_url, iid),
+                    )
+
+        if not dry_run:
+            conn.commit()
+            cache_invalidate()
+
+        logger.info(
+            "repair-date-corruption: dry_run=%s date_fixes=%d url_fixes=%d re_enrich=%s",
+            dry_run, len(date_fixes), len(url_fixes), re_enrich,
+        )
+        return {
+            "dry_run": dry_run,
+            "forward_threshold_days": forward_threshold_days,
+            "date_corrupted_count": len(date_fixes),
+            "url_corrupted_count": len(url_fixes),
+            "date_fixes": date_fixes,
+            "url_fixes": url_fixes,
+            "re_enrich_applied": re_enrich and not dry_run,
+            "message": (
+                f"Would fix {len(date_fixes)} date(s) and {len(url_fixes)} primary_url(s)."
+                if dry_run else
+                f"Fixed {len(date_fixes)} date(s) and {len(url_fixes)} primary_url(s)."
+            ),
+        }
+    except Exception as e:
+        if not dry_run:
+            conn.rollback()
+        logger.error(f"repair-date-corruption failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()

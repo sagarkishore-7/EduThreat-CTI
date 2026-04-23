@@ -134,6 +134,7 @@ from .database import (
     get_country_attack_matrix,
 )
 from .cache import cache_get, cache_set
+from .schema_docs import SCHEMA_DOC, SchemaResponse
 
 logger = logging.getLogger(__name__)
 
@@ -222,6 +223,10 @@ OPENAPI_TAGS = [
     {
         "name": "Admin",
         "description": "Administrative endpoints for pipeline management, enrichment triggers, and database stats.",
+    },
+    {
+        "name": "Schema",
+        "description": "Database schema reference and pipeline documentation — all tables, columns, and analytics endpoint mappings.",
     },
 ]
 
@@ -383,7 +388,7 @@ async def get_dashboard():
         stats = DashboardStats(**stats_data)
 
         incidents_by_country = [
-            CountByCategory(**c) for c in get_incidents_by_country(conn, limit=15)
+            CountByCategory(**c) for c in get_incidents_by_country(conn, limit=200)
         ]
 
         incidents_by_attack_type = [
@@ -1611,6 +1616,22 @@ async def get_raw_incidents(
     except Exception as e:
         logger.error(f"Error getting raw incidents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================
+# Schema Documentation
+# ============================================================
+
+@app.get(
+    "/api/schema",
+    response_model=SchemaResponse,
+    tags=["Schema"],
+    summary="Full database schema and pipeline reference",
+)
+async def get_schema():
+    """Returns all tables, columns (with descriptions, types, and pipeline mappings),
+    pipeline layers, and analytics endpoint documentation for the EduThreat-CTI database."""
+    return SCHEMA_DOC
 
 
 # ============================================================

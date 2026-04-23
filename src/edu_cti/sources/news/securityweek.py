@@ -219,7 +219,7 @@ def build_securityweek_incidents(
                     title_link = node.find("a", href=True)
                     if not title_link:
                         continue
-                
+
                 article_url = title_link.get("href", "").strip()
                 if not article_url or article_url in seen_urls:
                     continue

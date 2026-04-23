@@ -386,6 +386,44 @@ class CTIEnrichmentResult(BaseModel):
         description="Comprehensive summary of the incident with all extracted details"
     )
     
+    # Threat intelligence fields (directly on result, not in a nested dict)
+    vulnerabilities_exploited: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Vulnerabilities exploited (cve_id, vulnerability_name, vulnerability_type, affected_product, cvss_score)"
+    )
+    malware_families: Optional[List[str]] = Field(
+        default=None,
+        description="Malware families or strains used in the attack"
+    )
+    attacker_tools: Optional[List[str]] = Field(
+        default=None,
+        description="Attacker tools, frameworks, or utilities used"
+    )
+    dwell_time_days: Optional[float] = Field(
+        default=None,
+        description="Time between initial access and detection in days"
+    )
+    cloud_provider: Optional[str] = Field(
+        default=None,
+        description="Cloud provider involved (e.g. AWS, Azure, GCP)"
+    )
+    infrastructure_type: Optional[str] = Field(
+        default=None,
+        description="Infrastructure type targeted (on_prem, cloud, hybrid)"
+    )
+    threat_actor_aliases: Optional[List[str]] = Field(
+        default=None,
+        description="Known aliases of the threat actor"
+    )
+    attack_campaign_name: Optional[str] = Field(
+        default=None,
+        description="Named attack campaign or operation name"
+    )
+    data_volume_gb: Optional[float] = Field(
+        default=None,
+        description="Volume of data stolen or encrypted in gigabytes"
+    )
+
     # Secondary incidents from roundup/digest articles
     other_edu_incidents: Optional[List[Dict[str, Any]]] = Field(
         default=None,
