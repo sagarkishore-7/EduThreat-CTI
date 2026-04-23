@@ -653,6 +653,10 @@ class PipelineManager:
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
                 "export_csv": False,  # Only export on final round
+                # Phase1 ingestion runs concurrently — cap enrichers so the total
+                # concurrent SQLite writers stays manageable (3 enrichers + 1 fetcher
+                # + 1 phase1 = 5 writers max, each using BEGIN IMMEDIATE).
+                "workers": min(ENRICHMENT_WORKERS, 3),
             }, progress_range=(30, 100), step_prefix="Enriching: ")
 
             if enrich_result and isinstance(enrich_result, dict):
