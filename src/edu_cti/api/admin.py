@@ -2053,12 +2053,22 @@ async def clear_all_incidents(
     conn = get_api_connection(read_only=False)
     try:
         tables = [
+            # Enrichment / article data (incident_iocs + incident_threat_actors
+            # are FK cascade-deleted when incidents are deleted)
             "incident_enrichments_flat",
             "incident_enrichments",
+            "pipeline_checkpoint",  # resume-tracking — must clear for fresh run
             "incident_sources",
             "source_events",
             "articles",
             "incidents",
+            # Orphaned lookup tables (junction rows already gone via CASCADE)
+            "iocs",
+            "ioc_enrichments",
+            "threat_actors",
+            # Pipeline / source bookkeeping
+            "source_state",      # last_pubdate per RSS source — CRITICAL for re-ingestion
+            "pipeline_runs",
         ]
         deleted_counts = {}
         for table in tables:
