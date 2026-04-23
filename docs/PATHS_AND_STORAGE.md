@@ -40,6 +40,19 @@ All modules import from this config:
 - `src/edu_cti/core/db.py` - Uses `DB_PATH` for database
 - `src/edu_cti/api/admin.py` - Uses `DATA_DIR` and `DB_PATH` for operations
 
+## What Belongs In `DATA_DIR`
+
+`DATA_DIR` is for mutable runtime storage only:
+- SQLite databases
+- raw source snapshots
+- processed exports
+- other generated artifacts that belong on the Railway volume
+
+Static application config should live outside `DATA_DIR`. For example, the
+education keyword list now ships with the application under
+`src/edu_cti/config/edu_keywords.json` and is loaded from package resources,
+with an optional `EDU_CTI_KEYWORDS_PATH` override for custom deployments.
+
 ## Railway Setup
 
 The Dockerfile sets:

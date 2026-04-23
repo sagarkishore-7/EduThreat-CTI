@@ -90,6 +90,9 @@ eduthreat-api = "src.edu_cti.api.__main__:main"
 where = ["."]
 include = ["src*"]
 
+[tool.setuptools.package-data]
+"src.edu_cti" = ["config/*.json"]
+
 [tool.black]
 line-length = 100
 target-version = ['py311', 'py312', 'py313']

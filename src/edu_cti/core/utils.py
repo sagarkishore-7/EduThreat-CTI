@@ -1,7 +1,9 @@
 import json
+import os
+from importlib.resources import files
 from pathlib import Path
 import datetime
-from typing import Tuple, List
+from typing import Optional, Tuple, List
 
 
 def parse_date_with_precision(raw: str) -> Tuple[str, str]:
@@ -78,25 +80,39 @@ def now_utc_iso() -> str:
 # === NEW: multilingual EDU keywords ===
 
 _EDU_KEYWORDS_CACHE: List[str] = []
+_EDU_KEYWORDS_CACHE_KEY: Optional[str] = None
 
 
-def load_edu_keywords(config_path: str = "data/config/edu_keywords.json") -> List[str]:
-    global _EDU_KEYWORDS_CACHE
-    if _EDU_KEYWORDS_CACHE:
+def _default_edu_keywords_resource():
+    return files("src.edu_cti").joinpath("config").joinpath("edu_keywords.json")
+
+
+def load_edu_keywords(config_path: Optional[str] = None) -> List[str]:
+    global _EDU_KEYWORDS_CACHE, _EDU_KEYWORDS_CACHE_KEY
+
+    override_path = config_path or os.getenv("EDU_CTI_KEYWORDS_PATH")
+    cache_key = override_path or "package:src.edu_cti/config/edu_keywords.json"
+    if _EDU_KEYWORDS_CACHE and _EDU_KEYWORDS_CACHE_KEY == cache_key:
         return _EDU_KEYWORDS_CACHE
 
-    p = Path(config_path)
-    if not p.exists():
-        _EDU_KEYWORDS_CACHE = []
-        return _EDU_KEYWORDS_CACHE
+    if override_path:
+        config_file = Path(override_path)
+        if not config_file.exists():
+            _EDU_KEYWORDS_CACHE = []
+            _EDU_KEYWORDS_CACHE_KEY = cache_key
+            return _EDU_KEYWORDS_CACHE
+        raw_text = config_file.read_text(encoding="utf-8")
+    else:
+        raw_text = _default_edu_keywords_resource().read_text(encoding="utf-8")
 
-    data = json.loads(p.read_text(encoding="utf-8"))
+    data = json.loads(raw_text)
     all_terms: List[str] = []
     for _, terms in data.items():
         all_terms.extend([t.lower() for t in terms])
 
     # dedupe
     _EDU_KEYWORDS_CACHE = sorted(set(all_terms))
+    _EDU_KEYWORDS_CACHE_KEY = cache_key
     return _EDU_KEYWORDS_CACHE
 
 
