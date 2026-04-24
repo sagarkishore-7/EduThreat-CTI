@@ -172,6 +172,11 @@ async def lifespan(app: FastAPI):
         conn.close()
 
         logger.info("Database initialized successfully")
+
+        # Start persistent metrics — load cumulative counters/histograms from DB
+        # so they survive container restarts and redeploys.
+        from src.edu_cti.core import metrics as _metrics_module
+        _metrics_module.get_metrics().configure(DB_PATH)
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}", exc_info=True)
         # Don't fail startup - let it try again on first request
@@ -762,7 +767,7 @@ async def get_incident(incident_id: str):
 # ============================================================
 
 @app.get("/api/analytics/countries", tags=["Analytics"])
-async def get_country_analytics(limit: int = Query(20, ge=1, le=100)):
+async def get_country_analytics(limit: int = Query(20, ge=1, le=500)):
     """Get incident counts by country."""
     cache_key = f"analytics:countries:{limit}"
     cached = cache_get(cache_key, ttl_seconds=300)
@@ -846,7 +851,7 @@ async def get_timeline_analytics(months: int = Query(24, ge=1, le=120)):
 
 
 @app.get("/api/analytics/threat-actors", response_model=ThreatActorsResponse, tags=["Analytics"])
-async def get_threat_actor_analytics(limit: int = Query(20, ge=1, le=100)):
+async def get_threat_actor_analytics(limit: int = Query(20, ge=1, le=500)):
     """Get threat actor activity summary."""
     cache_key = f"analytics:threat-actors:{limit}"
     cached = cache_get(cache_key, ttl_seconds=300)

@@ -9,14 +9,32 @@ Provides counters, gauges, and histograms for:
 - Pipeline performance (throughput, queue depth, cost)
 """
 
+import atexit
+import sqlite3
+import threading
 import time
 import logging
 import statistics
+from pathlib import Path
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from collections import defaultdict
 
 logger = logging.getLogger(__name__)
+
+_METRICS_TABLE_DDL = """
+CREATE TABLE IF NOT EXISTS pipeline_metrics (
+    metric_key    TEXT PRIMARY KEY,
+    metric_type   TEXT NOT NULL CHECK(metric_type IN ('counter','gauge','histogram')),
+    counter_value INTEGER DEFAULT 0,
+    gauge_value   REAL,
+    hist_sum      REAL DEFAULT 0.0,
+    hist_count    INTEGER DEFAULT 0,
+    hist_min      REAL,
+    hist_max      REAL,
+    updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+)
+"""
 
 
 def _percentile(values: List[float], p: float) -> float:
@@ -44,8 +62,158 @@ class MetricsCollector:
         self.gauges: Dict[str, float] = {}
         self.histograms: Dict[str, List[float]] = defaultdict(list)
         self.start_times: Dict[str, float] = {}
-        # label registry: metric_base_name -> {label_key_set}
         self._label_registry: Dict[str, set] = defaultdict(set)
+
+        # Persistence state (populated by configure())
+        self._db_path: Optional[Path] = None
+        self._db_lock = threading.Lock()
+        # Per histogram key: cumulative totals from previous runs stored in DB,
+        # *excluding* the current session's observations (which are in self.histograms).
+        self._hist_baseline: Dict[str, Dict[str, float]] = {}
+        self._flush_thread: Optional[threading.Thread] = None
+        self._configured = False
+
+    # ------------------------------------------------------------------
+    # Persistence — configure / load / flush
+    # ------------------------------------------------------------------
+
+    def configure(self, db_path: Path, flush_interval_seconds: int = 60) -> None:
+        """Connect this collector to a SQLite DB for cross-restart persistence.
+
+        Must be called once at process startup (e.g. from the API lifespan).
+        Subsequent calls are no-ops so double-initialisation is safe.
+        """
+        if self._configured:
+            return
+        self._db_path = Path(db_path)
+        self._configured = True
+        try:
+            self._ensure_table()
+            self._load_from_db()
+        except Exception as exc:
+            logger.error(f"Metrics: failed to load from DB ({exc}); starting fresh")
+
+        # Background periodic flush
+        def _flush_loop():
+            while True:
+                time.sleep(flush_interval_seconds)
+                try:
+                    self.flush_to_db()
+                except Exception as exc:
+                    logger.warning(f"Metrics background flush failed: {exc}")
+
+        self._flush_thread = threading.Thread(target=_flush_loop, daemon=True, name="metrics-flush")
+        self._flush_thread.start()
+
+        # Best-effort flush on clean shutdown
+        atexit.register(self._atexit_flush)
+        logger.info(f"Metrics persistence configured — DB: {self._db_path}, flush every {flush_interval_seconds}s")
+
+    def _atexit_flush(self) -> None:
+        try:
+            self.flush_to_db()
+        except Exception as exc:
+            logger.warning(f"Metrics atexit flush failed: {exc}")
+
+    def _db_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(str(self._db_path), timeout=10)
+        conn.row_factory = sqlite3.Row
+        return conn
+
+    def _ensure_table(self) -> None:
+        with self._db_lock:
+            conn = self._db_conn()
+            try:
+                conn.execute(_METRICS_TABLE_DDL)
+                conn.commit()
+            finally:
+                conn.close()
+
+    def _load_from_db(self) -> None:
+        """Seed in-memory counters/gauges/histogram baselines from DB."""
+        with self._db_lock:
+            conn = self._db_conn()
+            try:
+                rows = conn.execute("SELECT * FROM pipeline_metrics").fetchall()
+            finally:
+                conn.close()
+
+        for row in rows:
+            key = row["metric_key"]
+            mtype = row["metric_type"]
+            if mtype == "counter":
+                # Seed counter so new increments are additive on top of the DB total
+                self.counters[key] = int(row["counter_value"] or 0)
+            elif mtype == "gauge":
+                # Don't restore gauges — they represent current state, stale values mislead
+                pass
+            elif mtype == "histogram":
+                self._hist_baseline[key] = {
+                    "sum": float(row["hist_sum"] or 0.0),
+                    "count": int(row["hist_count"] or 0),
+                    "min": row["hist_min"],
+                    "max": row["hist_max"],
+                }
+        logger.info(f"Metrics: loaded {len(rows)} metric keys from DB")
+
+    def flush_to_db(self) -> None:
+        """Write current in-memory state to DB, merging with existing rows."""
+        if not self._db_path:
+            return
+
+        now = datetime.utcnow().isoformat() + "Z"
+        rows_to_upsert: List[tuple] = []
+
+        with self._db_lock:
+            # --- Counters ---
+            for key, value in list(self.counters.items()):
+                rows_to_upsert.append((key, "counter", int(value), None, None, None, None, None, now))
+
+            # --- Gauges ---
+            for key, value in list(self.gauges.items()):
+                rows_to_upsert.append((key, "gauge", None, float(value), None, None, None, None, now))
+
+            # --- Histograms: merge session observations with DB baseline ---
+            all_hist_keys = set(self.histograms.keys()) | set(self._hist_baseline.keys())
+            for key in all_hist_keys:
+                session_vals = self.histograms.get(key, [])
+                baseline = self._hist_baseline.get(key, {"sum": 0.0, "count": 0, "min": None, "max": None})
+
+                total_sum = baseline["sum"] + sum(session_vals)
+                total_count = baseline["count"] + len(session_vals)
+                session_min = min(session_vals) if session_vals else None
+                session_max = max(session_vals) if session_vals else None
+                total_min = min(v for v in [baseline["min"], session_min] if v is not None) if (baseline["min"] is not None or session_min is not None) else None
+                total_max = max(v for v in [baseline["max"], session_max] if v is not None) if (baseline["max"] is not None or session_max is not None) else None
+
+                rows_to_upsert.append((key, "histogram", None, None, total_sum, total_count, total_min, total_max, now))
+                # Update in-memory baseline so the next flush doesn't double-count
+                self._hist_baseline[key] = {"sum": total_sum, "count": total_count, "min": total_min, "max": total_max}
+                # Clear current session observations — they're now baked into the baseline
+                self.histograms[key] = []
+
+            conn = self._db_conn()
+            try:
+                conn.executemany(
+                    """INSERT INTO pipeline_metrics
+                       (metric_key, metric_type, counter_value, gauge_value,
+                        hist_sum, hist_count, hist_min, hist_max, updated_at)
+                       VALUES (?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(metric_key) DO UPDATE SET
+                         metric_type   = excluded.metric_type,
+                         counter_value = CASE WHEN excluded.metric_type='counter' THEN excluded.counter_value ELSE counter_value END,
+                         gauge_value   = CASE WHEN excluded.metric_type='gauge'   THEN excluded.gauge_value   ELSE gauge_value   END,
+                         hist_sum      = CASE WHEN excluded.metric_type='histogram' THEN excluded.hist_sum    ELSE hist_sum      END,
+                         hist_count    = CASE WHEN excluded.metric_type='histogram' THEN excluded.hist_count  ELSE hist_count    END,
+                         hist_min      = CASE WHEN excluded.metric_type='histogram' THEN excluded.hist_min    ELSE hist_min      END,
+                         hist_max      = CASE WHEN excluded.metric_type='histogram' THEN excluded.hist_max    ELSE hist_max      END,
+                         updated_at    = excluded.updated_at
+                    """,
+                    rows_to_upsert,
+                )
+                conn.commit()
+            finally:
+                conn.close()
 
     # ------------------------------------------------------------------
     # Core recording API
@@ -123,19 +291,25 @@ class MetricsCollector:
         lines.append("")
 
         # --- Histograms (as summaries with percentiles) ---
+        # _sum and _count are cumulative across all runs (session + DB baseline).
+        # Percentile quantiles are from the current session only (in-memory observations).
         seen_types = set()
-        for key, values in sorted(self.histograms.items()):
-            if not values:
+        all_hist_keys = set(self.histograms.keys()) | set(self._hist_baseline.keys())
+        for key in sorted(all_hist_keys):
+            values = self.histograms.get(key, [])
+            baseline = self._hist_baseline.get(key, {"sum": 0.0, "count": 0, "min": None, "max": None})
+            total_count = baseline["count"] + len(values)
+            total_sum = baseline["sum"] + (sum(values) if values else 0.0)
+            if total_count == 0:
                 continue
+
             base = self._base_name(key)
             if base not in seen_types:
                 lines.append(f"# TYPE {base} summary")
                 seen_types.add(base)
-            # Extract label portion for quantile lines
-            label_part = key[len(base):]  # e.g. '{tier="newspaper3k"}'
+            label_part = key[len(base):]
             if label_part:
-                # Insert quantile label into existing set
-                inner = label_part[1:-1]  # strip { }
+                inner = label_part[1:-1]
                 q50_key = f'{base}{{{inner},quantile="0.5"}}'
                 q95_key = f'{base}{{{inner},quantile="0.95"}}'
                 q99_key = f'{base}{{{inner},quantile="0.99"}}'
@@ -144,13 +318,19 @@ class MetricsCollector:
                 q95_key = f'{base}{{quantile="0.95"}}'
                 q99_key = f'{base}{{quantile="0.99"}}'
 
-            lines.append(f"{q50_key} {_percentile(values, 50):.4f}")
-            lines.append(f"{q95_key} {_percentile(values, 95):.4f}")
-            lines.append(f"{q99_key} {_percentile(values, 99):.4f}")
-            lines.append(f"{base}_count{label_part} {len(values)}")
-            lines.append(f"{base}_sum{label_part} {sum(values):.4f}")
-            lines.append(f"{base}_min{label_part} {min(values):.4f}")
-            lines.append(f"{base}_max{label_part} {max(values):.4f}")
+            if values:
+                lines.append(f"{q50_key} {_percentile(values, 50):.4f}")
+                lines.append(f"{q95_key} {_percentile(values, 95):.4f}")
+                lines.append(f"{q99_key} {_percentile(values, 99):.4f}")
+            lines.append(f"{base}_count{label_part} {total_count}")
+            lines.append(f"{base}_sum{label_part} {total_sum:.4f}")
+
+            all_mins = [v for v in [baseline.get("min"), (min(values) if values else None)] if v is not None]
+            all_maxs = [v for v in [baseline.get("max"), (max(values) if values else None)] if v is not None]
+            if all_mins:
+                lines.append(f"{base}_min{label_part} {min(all_mins):.4f}")
+            if all_maxs:
+                lines.append(f"{base}_max{label_part} {max(all_maxs):.4f}")
 
         return "\n".join(lines)
 
