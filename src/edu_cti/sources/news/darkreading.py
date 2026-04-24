@@ -81,31 +81,34 @@ def _discover_last_page(soup: Optional[BeautifulSoup]) -> int:
 
 def _has_search_results(soup: BeautifulSoup) -> bool:
     """Check if the page contains search results (handles ad popups)."""
-    # Look for the SearchResult-Content div which contains the actual articles
+    # Dark Reading redesigned: articles are in SearchResult-ContentList divs (no parent
+    # SearchResult-Content wrapper). Fall back to scanning for ContentPreview cards directly.
+    previews = soup.select("div.ContentPreview.SearchResult-ContentPreview")
+    if previews:
+        return True
+    # Legacy fallback: older layout had a SearchResult-Content wrapper
     search_result_content = soup.select_one("div.SearchResult-Content")
     if search_result_content:
-        # Check if there are actual article previews
-        content_previews = search_result_content.select("div.ContentPreview.SearchResult-ContentPreview")
-        return len(content_previews) > 0
+        return len(search_result_content.select("div.ContentPreview")) > 0
     return False
 
 
 def _extract_articles_from_page(soup: BeautifulSoup) -> List[BeautifulSoup]:
-    """Extract article nodes from SearchResult-Content."""
-    articles = []
-    
-    # Find the SearchResult-Content container
-    search_result_content = soup.select_one("div.SearchResult-Content")
-    if not search_result_content:
+    """Extract article nodes from search result page."""
+    # Dark Reading redesigned: articles live in SearchResult-ContentList divs directly,
+    # with no parent SearchResult-Content wrapper.
+    articles = soup.select("div.ContentPreview.SearchResult-ContentPreview")
+    if articles:
+        logger.debug(f"Dark Reading extracted {len(articles)} articles from page")
         return articles
-    
-    # Extract all ContentPreview nodes from SearchResult-ContentList
-    content_lists = search_result_content.select("div.SearchResult-ContentList")
-    for content_list in content_lists:
-        previews = content_list.select("div.ContentPreview.SearchResult-ContentPreview")
-        articles.extend(previews)
-    
-    logger.debug(f"Dark Reading extracted {len(articles)} articles from page")
+
+    # Legacy fallback: older layout with SearchResult-Content wrapper
+    search_result_content = soup.select_one("div.SearchResult-Content")
+    if search_result_content:
+        for content_list in search_result_content.select("div.SearchResult-ContentList"):
+            articles.extend(content_list.select("div.ContentPreview.SearchResult-ContentPreview"))
+
+    logger.debug(f"Dark Reading extracted {len(articles)} articles from page (legacy)")
     return articles
 
 
