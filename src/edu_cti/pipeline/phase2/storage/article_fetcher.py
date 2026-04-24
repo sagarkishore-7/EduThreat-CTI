@@ -458,6 +458,17 @@ class ArticleFetcher:
                 content_length=0,
             )
 
+        # Reject binary document URLs — they return raw binary content, not article HTML,
+        # and can be enormous (10+ MB PDFs) causing RSS memory spikes that kill the worker.
+        _url_path_lower = urlparse(url).path.lower()
+        if _url_path_lower.endswith(('.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xlsx', '.xls', '.zip', '.gz')):
+            logger.info(f"FETCH SKIP binary document url={url[:80]}")
+            return ArticleContent(
+                url=url, title="", content="", fetch_successful=False,
+                error_message=f"Binary document URL skipped: {_url_path_lower[-10:]}",
+                content_length=0,
+            )
+
         logger.info(f"FETCH CHAIN START: {domain} — {url[:100]}")
         _src_label = _fetch_domain(url)
 
