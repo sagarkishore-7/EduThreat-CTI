@@ -99,15 +99,21 @@ EXTRACTION_SCHEMA = {
             ],
             "description": (
                 "Canonical institution type. Choose the most specific match. "
-                "Use university_public for state/public universities; university_private for private non-research universities; "
-                "university_research for R1/R2 research-intensive universities. "
-                "Use school_district when the victim is a multi-school district (not a single school). "
-                "Use library for public or academic libraries. "
-                "Use edtech_platform for software/SaaS vendors serving education (e.g. PowerSchool, Illuminate). "
-                "Use tutoring_service for online tutoring/test-prep companies (e.g. Chegg). "
-                "Use tribal_college for tribal/first-nations colleges. "
-                "Use military_academy for military service academies. "
-                "Use unknown only when no classification is possible from the article."
+                "university_public — state/publicly funded universities (look for 'state university', 'public university', funded by state legislature). "
+                "university_private — private non-research colleges/universities: named after a founder/person, religious affiliation (Catholic, Baptist, Jesuit, Methodist, etc.), or when the article does not mention state funding. "
+                "university_research — R1/R2 research-intensive universities: look for 'research university', large NSF/NIH grants, doctoral programs emphasized, or the word 'research' is central to its identity. "
+                "school_district — when victim is named as a 'school district', 'unified school district', 'ISD', 'USD', 'CUSD', 'PUSD', 'CISD', 'HISD', 'county schools', 'public schools' (city/county-level). "
+                "k12_public_school — single public elementary, middle, or high school. "
+                "k12_private_school — single private K-12 school (non-charter). "
+                "k12_charter_school — charter school. "
+                "community_college — two-year community or junior college. "
+                "technical_college — technical/vocational two-year college. "
+                "edtech_platform — software/SaaS vendors serving education (e.g. PowerSchool, Illuminate, Blackbaud). "
+                "tutoring_service — online tutoring/test-prep companies (e.g. Chegg). "
+                "library — public or academic libraries. "
+                "tribal_college — tribal/first-nations colleges. "
+                "military_academy — military service academies. "
+                "Use unknown ONLY when no classification is possible from the article text."
             )
         },
         "institution_size": {
@@ -166,12 +172,13 @@ EXTRACTION_SCHEMA = {
                     "event_description": {
                         "type": "string",
                         "description": (
-                            "One sentence from or based on the article that explains WHY this date is classified "
-                            "as this event type. Quote or paraphrase the specific evidence. "
-                            "Examples: 'Administrators became aware of unauthorized grade changes on this date.' "
-                            "/ 'Superintendent sent letter to parents notifying them of the breach.' "
-                            "/ 'School district publicly disclosed the incident via Facebook post.' "
-                            "Keep it under 25 words."
+                            "REQUIRED — do NOT leave null or empty. "
+                            "One sentence drawn directly from the article that explains what happened on this date. "
+                            "If you cannot write a concrete sentence from the article, omit this timeline entry entirely. "
+                            "Examples: 'Administrators became aware of unauthorized grade changes.' "
+                            "/ 'District sent notification letters to affected families.' "
+                            "/ 'Ransomware encrypted servers causing campus-wide network outage.' "
+                            "Keep under 25 words."
                         )
                     },
                     "event_type": {
@@ -357,6 +364,16 @@ EXTRACTION_SCHEMA = {
         # ========== KILL CHAIN / ATTACK CHAIN ==========
         "attack_chain": {
             "type": "array",
+            "description": (
+                "MITRE Unified Kill Chain phases present in this attack. "
+                "ALWAYS populate when attack_category is known — do NOT leave null for ransomware, "
+                "data breach, or phishing incidents. "
+                "Required minimums: ransomware_* → ['initial_access','execution','impact'] at minimum; "
+                "data_breach_external/data_exposure → ['initial_access','exfiltration']; "
+                "phishing_* → ['initial_access']; ddos_* → ['impact']; "
+                "supply_chain_* → ['initial_access','execution']. "
+                "Only include phases directly evidenced by the article text."
+            ),
             "items": {
                 "type": "string",
                 "enum": [
@@ -419,6 +436,8 @@ EXTRACTION_SCHEMA = {
                 "Each technique must map to something explicitly stated in the article — do NOT add techniques "
                 "based on what is typical for this attack type. "
                 "If the article provides no technical detail about how the attack occurred, set to null. "
+                "COMPLETENESS REQUIREMENT: populate technique_id, technique_name, tactic, AND description "
+                "for every entry — do NOT add an entry with only technique_id. Either fill all four or omit. "
                 "Use standard technique IDs (e.g. T1566 for phishing, T1486 for encryption, T1078 for valid accounts)."
             ),
             "items": {
@@ -428,7 +447,10 @@ EXTRACTION_SCHEMA = {
                         "type": "string",
                         "description": "MITRE ATT&CK technique ID, e.g. T1566 or T1566.001"
                     },
-                    "technique_name": {"type": "string"},
+                    "technique_name": {
+                        "type": "string",
+                        "description": "Official MITRE technique name, e.g. 'Phishing' or 'Data Encrypted for Impact'"
+                    },
                     "tactic": {
                         "type": "string",
                         "enum": [
@@ -448,13 +470,20 @@ EXTRACTION_SCHEMA = {
                             "impact"
                         ]
                     },
-                    "description": {"type": "string"},
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "REQUIRED — one sentence from the article explaining how this technique was used. "
+                            "Do NOT leave null. Example: 'Ransomware encrypted files across administrative servers.' "
+                            "/ 'Attacker used phishing email to steal VPN credentials.' Keep under 20 words."
+                        )
+                    },
                     "sub_techniques": {
                         "type": "array",
                         "items": {"type": "string"}
                     }
                 },
-                "required": ["technique_id", "technique_name", "tactic"]
+                "required": ["technique_id", "technique_name", "tactic", "description"]
             }
         },
         
@@ -696,7 +725,9 @@ EXTRACTION_SCHEMA = {
         "data_categories": {
             "type": "array",
             "description": (
-                "Categories of data exposed or stolen. Map article text to enum values using this guide: "
+                "ALL categories of data exposed or stolen — enumerate every type that applies, do NOT stop at the first match. "
+                "Example: 'names, SSNs, and health insurance of employees' → ['employee_pii', 'employee_ssn', 'health_insurance']. "
+                "Map article text to enum values using this guide: "
                 "student_pii — student names, IDs, contact info, dates of birth, addresses; "
                 "student_ssn — student social security numbers; "
                 "student_grades/student_transcripts — academic records, GPA, course grades, transcripts; "
@@ -891,7 +922,16 @@ EXTRACTION_SCHEMA = {
             }
         },
         "critical_systems_affected": {"type": "boolean"},
-        "network_compromised": {"type": "boolean"},
+        "network_compromised": {
+            "type": "boolean",
+            "description": (
+                "True if the attacker gained network-level access beyond a single endpoint — i.e., lateral movement, "
+                "domain controller compromise, or multi-system impact is described. "
+                "Set to True for ALL ransomware attacks that encrypted multiple systems (ransomware by definition requires network access). "
+                "Set to False ONLY for isolated single-endpoint incidents or phishing with no follow-on network access confirmed. "
+                "Use null only when the article gives no information about network impact."
+            )
+        },
         "domain_admin_compromised": {"type": "boolean"},
         "backup_compromised": {"type": "boolean"},
         "encryption_extent": {
@@ -1201,6 +1241,11 @@ SUMMARY_PROMPT = (
     "Write a 2-3 sentence plain-English summary of this specific cyber incident. "
     "State who was attacked, what type of attack occurred, what data or systems were "
     "impacted, and any known response or outcome. Be factual and concise.\n\n"
+    "CONSISTENCY RULES — your summary MUST match these structured fields:\n"
+    "- If attack_category starts with 'ransomware_', use the word 'ransomware' in your summary.\n"
+    "- If attack_category is 'supply_chain_software' or 'third_party_compromise', name the vendor product.\n"
+    "- If attack_category is 'phishing_*' or 'business_email_compromise', mention phishing or email fraud.\n"
+    "- Do NOT contradict the attack_category — the summary and the category must tell the same story.\n\n"
     "Institution: {institution}\n"
     "Attack type: {attack_category}\n\n"
     "Article:\n{text}"

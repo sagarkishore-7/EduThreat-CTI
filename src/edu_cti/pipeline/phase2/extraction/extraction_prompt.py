@@ -166,10 +166,13 @@ CRITICAL OUTPUT REQUIREMENTS:
    - "insider_threat" — current or former employee, contractor
    - "unknown"
 
-8. DATA CATEGORIES, SYSTEMS AFFECTED, OPERATIONAL IMPACTS, SECURITY IMPROVEMENTS:
-   Select all tags that apply from the schema enum. Tag names are self-describing
-   (e.g. "student_pii", "employee_ssn", "email_system", "classes_cancelled",
-   "mfa_implemented"). Extract only values explicitly mentioned in the article.
+8. DATA CATEGORIES — enumerate ALL categories that apply. Do NOT stop at the first match.
+   Example: if an article mentions "names, dates of birth, SSNs, and health insurance data
+   of employees" — output ALL that match: ["employee_pii", "employee_ssn", "health_insurance"].
+   If SSNs AND home addresses of students were stolen, output BOTH "student_pii" AND "student_ssn".
+   For other fields (systems_affected, operational_impacts, security_improvements):
+   select all tags that apply from the schema enum. Extract only values explicitly mentioned
+   in the article.
 
 9. STANDARDIZED NUMERIC VALUES:
    - Convert ALL monetary amounts to USD integers:
@@ -209,6 +212,52 @@ CRITICAL OUTPUT REQUIREMENTS:
     - attack_campaign_name: Only if the article explicitly links this to a named campaign
       (e.g., "MOVEit", "PaperCut", "Cl0p campaign") — do NOT infer campaign names
     - sector_targeting_pattern: "targeted_education_only" or "opportunistic_multi_sector"
+
+13a. ATTACK CHAIN — always populate when the attack type can be determined:
+   attack_chain lists the kill-chain phases present in this incident (from MITRE Unified Kill Chain).
+   Required minimums by attack_category — NEVER leave null for these:
+   - ransomware_* → ["initial_access", "execution", "impact"] at minimum;
+     add "exfiltration" for double/triple extortion; add "lateral_movement" if described.
+   - data_breach_external / data_exposure_misconfiguration → ["initial_access", "exfiltration"]
+   - phishing_credential_harvest / phishing_malware_delivery / spear_phishing →
+     ["initial_access"]; add "credential_access" if credentials were captured.
+   - business_email_compromise → ["initial_access", "execution"]
+   - supply_chain_* / third_party_compromise → ["initial_access", "execution"]
+   - ddos_* → ["impact"]
+   - unauthorized_access → ["initial_access"]
+   Only add phases directly supported by article text — do NOT speculate about
+   "reconnaissance" or "resource_development" unless explicitly described.
+
+13b. ATTACK CATEGORY CONSISTENCY:
+   - If ransomware_family is non-null OR the word "ransomware" appears anywhere in the
+     article, attack_category MUST be one of: ransomware_encryption,
+     ransomware_double_extortion, ransomware_triple_extortion, ransomware_data_leak_only.
+     Do NOT classify a ransomware attack as "data_breach_external" or "unauthorized_access".
+   - If the attack vector was a third-party software product (MOVEit, GoAnywhere, PaperCut,
+     Blackbaud, etc.), use "supply_chain_software" or "third_party_compromise" — not
+     "ransomware_*" unless ransomware was also deployed at the victim institution itself.
+   - The enriched_summary (written in the second pass) must use language consistent with
+     attack_category: if attack_category is ransomware_*, the summary MUST include the word
+     "ransomware"; if "supply_chain_*", the summary MUST mention the vendor product.
+
+13c. MITRE ATT&CK — completeness rule:
+   For every entry in mitre_attack_techniques, populate ALL FOUR fields:
+   technique_id, technique_name, tactic, AND description. Do NOT add an entry with
+   only technique_id populated — either fill all four or omit the technique entirely.
+   Common examples you CAN use when the article explicitly describes these actions:
+   - Phishing email → T1566 / Phishing / initial_access / "Attacker sent phishing email to staff"
+   - Valid accounts used → T1078 / Valid Accounts / initial_access / "Stolen credentials used to access VPN"
+   - Ransomware file encryption → T1486 / Data Encrypted for Impact / impact / "Ransomware encrypted files across servers"
+   - Data exfiltration → T1041 / Exfiltration Over C2 Channel / exfiltration / "Data transferred to attacker-controlled server"
+   - Credential dumping → T1003 / OS Credential Dumping / credential_access / "LSASS dumped to obtain domain credentials"
+   Do NOT use these as defaults — only include if the article describes the action.
+
+13d. TIMELINE — event_description is REQUIRED for every entry:
+   If you cannot write a concrete one-sentence description drawn directly from the article,
+   OMIT that timeline entry entirely. Never leave event_description null or empty.
+   Every entry must answer: what specifically happened on this date, per the article?
+   Bad (omit): {date: "2023-04-01", event_type: "disclosure", event_description: null}
+   Good: {date: "2023-04-01", event_type: "disclosure", event_description: "District sent letters to families notifying them of the data breach."}
 
 13. ROUNDUP / MULTI-INCIDENT ARTICLES:
     If this article covers MULTIPLE separate education sector incidents (digest, weekly roundup,
