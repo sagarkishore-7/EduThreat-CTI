@@ -213,7 +213,7 @@ CRITICAL OUTPUT REQUIREMENTS:
       (e.g., "MOVEit", "PaperCut", "Cl0p campaign") — do NOT infer campaign names
     - sector_targeting_pattern: "targeted_education_only" or "opportunistic_multi_sector"
 
-13a. ATTACK CHAIN — always populate when the attack type can be determined:
+13. ATTACK CHAIN — always populate when the attack type can be determined:
    attack_chain lists the kill-chain phases present in this incident (from MITRE Unified Kill Chain).
    Required minimums by attack_category — NEVER leave null for these:
    - ransomware_* → ["initial_access", "execution", "impact"] at minimum;
@@ -228,7 +228,7 @@ CRITICAL OUTPUT REQUIREMENTS:
    Only add phases directly supported by article text — do NOT speculate about
    "reconnaissance" or "resource_development" unless explicitly described.
 
-13b. ATTACK CATEGORY CONSISTENCY:
+14. ATTACK CATEGORY CONSISTENCY:
    - If ransomware_family is non-null OR the word "ransomware" appears anywhere in the
      article, attack_category MUST be one of: ransomware_encryption,
      ransomware_double_extortion, ransomware_triple_extortion, ransomware_data_leak_only.
@@ -240,7 +240,7 @@ CRITICAL OUTPUT REQUIREMENTS:
      attack_category: if attack_category is ransomware_*, the summary MUST include the word
      "ransomware"; if "supply_chain_*", the summary MUST mention the vendor product.
 
-13c. MITRE ATT&CK — completeness rule:
+15. MITRE ATT&CK — completeness rule:
    For every entry in mitre_attack_techniques, populate ALL FOUR fields:
    technique_id, technique_name, tactic, AND description. Do NOT add an entry with
    only technique_id populated — either fill all four or omit the technique entirely.
@@ -252,14 +252,14 @@ CRITICAL OUTPUT REQUIREMENTS:
    - Credential dumping → T1003 / OS Credential Dumping / credential_access / "LSASS dumped to obtain domain credentials"
    Do NOT use these as defaults — only include if the article describes the action.
 
-13d. TIMELINE — event_description is REQUIRED for every entry:
+16. TIMELINE — event_description is REQUIRED for every entry:
    If you cannot write a concrete one-sentence description drawn directly from the article,
    OMIT that timeline entry entirely. Never leave event_description null or empty.
    Every entry must answer: what specifically happened on this date, per the article?
    Bad (omit): {date: "2023-04-01", event_type: "disclosure", event_description: null}
    Good: {date: "2023-04-01", event_type: "disclosure", event_description: "District sent letters to families notifying them of the data breach."}
 
-13. ROUNDUP / MULTI-INCIDENT ARTICLES:
+17. ROUNDUP / MULTI-INCIDENT ARTICLES:
     If this article covers MULTIPLE separate education sector incidents (digest, weekly roundup,
     breach summary, "Week in Breach", "ransomware attacks in 2023", etc.):
     - Extract the PRIMARY/most-detailed incident in all fields above as normal
