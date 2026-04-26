@@ -577,6 +577,7 @@ class MetricsCollector:
         self.histograms.clear()
         self.start_times.clear()
         self._label_registry.clear()
+        self._hist_baseline.clear()
 
 
 # ---------------------------------------------------------------------------
