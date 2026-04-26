@@ -256,8 +256,8 @@ CRITICAL OUTPUT REQUIREMENTS:
    If you cannot write a concrete one-sentence description drawn directly from the article,
    OMIT that timeline entry entirely. Never leave event_description null or empty.
    Every entry must answer: what specifically happened on this date, per the article?
-   Bad (omit): {date: "2023-04-01", event_type: "disclosure", event_description: null}
-   Good: {date: "2023-04-01", event_type: "disclosure", event_description: "District sent letters to families notifying them of the data breach."}
+   Bad (omit): {{date: "2023-04-01", event_type: "disclosure", event_description: null}}
+   Good: {{date: "2023-04-01", event_type: "disclosure", event_description: "District sent letters to families notifying them of the data breach."}}
 
 17. ROUNDUP / MULTI-INCIDENT ARTICLES:
     If this article covers MULTIPLE separate education sector incidents (digest, weekly roundup,

@@ -1118,7 +1118,7 @@ def save_enrichment_result(
     cur = conn.execute(
         """
         SELECT institution_name, victim_raw_name, institution_type, country, region, city,
-               title, subtitle, source_published_date, notes, all_urls
+               title, subtitle, source_published_date, notes, all_urls, status
         FROM incidents
         WHERE incident_id = ?
         """,
