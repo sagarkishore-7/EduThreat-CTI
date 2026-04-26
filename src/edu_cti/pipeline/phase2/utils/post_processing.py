@@ -320,17 +320,18 @@ def infer_regulatory_impact(flat_data: Dict[str, Any]) -> None:
         "IS", "NO", "LI",  # EEA
     }
 
-    # FERPA
-    if flat_data.get("ferpa_breach") is None and data_breached and country_code == "US" and _is_edu_inst:
+    # FERPA — deterministic rule: LLM often returns false (doesn't know FERPA law)
+    # so we override False too; only skip if already True.
+    if flat_data.get("ferpa_breach") is not True and data_breached and country_code == "US" and _is_edu_inst:
         if any(kw in data_cats_text for kw in ("student", "grade", "transcript", "ferpa", "educational record")):
             flat_data["ferpa_breach"] = True
 
-    # GDPR
-    if flat_data.get("gdpr_breach") is None and data_breached and country_code in _EU_CODES:
+    # GDPR — deterministic: EU/EEA data breach → GDPR applies
+    if flat_data.get("gdpr_breach") is not True and data_breached and country_code in _EU_CODES:
         flat_data["gdpr_breach"] = True
 
-    # HIPAA
-    if flat_data.get("hipaa_breach") is None and data_breached and country_code == "US":
+    # HIPAA — deterministic: US health data breach → HIPAA applies
+    if flat_data.get("hipaa_breach") is not True and data_breached and country_code == "US":
         if any(kw in data_cats_text or kw in summary for kw in (
             "health", "medical", "hipaa", "phi", "patient", "ehr", "emr",
         )):
