@@ -1,0 +1,877 @@
+"""
+Tests for all post-processing fixes (April 2026).
+
+Covers every function in post_processing.py plus the two downstream fixes
+that depend on it:
+  - fetching_strategy.discover_articles_via_serp: skips SERP when
+    institution_name is a headline (is_headline_format check).
+  - api/database.py get_incident_detail: flat-table values override the raw
+    LLM JSON blob for ransomware_family and attack_vector in attack_dynamics.
+"""
+
+import json
+import sqlite3
+from typing import Any, Dict
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+from src.edu_cti.pipeline.phase2.utils.post_processing import (
+    apply_post_processing,
+    extract_ransomware_family,
+    infer_confirmed_status,
+    infer_institution_type,
+    infer_regulatory_impact,
+    infer_us_region,
+    is_headline_format,
+)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 1. is_headline_format
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestIsHeadlineFormat:
+    def test_short_clean_name_is_not_headline(self):
+        assert is_headline_format("University of Michigan") is False
+
+    def test_none_returns_false(self):
+        assert is_headline_format(None) is False
+
+    def test_empty_string_returns_false(self):
+        assert is_headline_format("") is False
+
+    def test_over_70_chars_is_headline(self):
+        long_name = "A" * 71
+        assert is_headline_format(long_name) is True
+
+    def test_exactly_70_chars_is_not_headline(self):
+        name = "A" * 70
+        assert is_headline_format(name) is False
+
+    def test_news_source_suffix_dash_is_headline(self):
+        # Pattern: "Headline text - Publication Name"
+        assert is_headline_format("Cyberattack forces British high school to close - BBC News") is True
+
+    def test_news_source_suffix_em_dash_is_headline(self):
+        assert is_headline_format("Ransomware hits university — The Guardian") is True
+
+    def test_matches_title_exactly_is_headline(self):
+        title = "Politie houdt leden radicaal-rechtse groep aan"
+        assert is_headline_format(title, title=title) is True
+
+    def test_matches_title_case_insensitive(self):
+        title = "Cyberattack Forces British High School"
+        name = "cyberattack forces british high school"
+        assert is_headline_format(name, title=title) is True
+
+    def test_different_from_title_not_headline(self):
+        title = "Cyberattack Forces British High School to Close"
+        name = "Higham Lane School"
+        assert is_headline_format(name, title=title) is False
+
+    def test_real_headline_tu_eindhoven(self):
+        # From monitoring: TU Eindhoven's institution_name was stored as a Dutch news headline.
+        # The string is exactly 70 chars so length alone doesn't flag it — but it does match
+        # the article title exactly, which is the real detection path.
+        name = "Politie houdt leden radicaal-rechtse groep aan die TU Eindhoven hackte"
+        title = "Politie houdt leden radicaal-rechtse groep aan die TU Eindhoven hackte"
+        assert is_headline_format(name, title=title) is True  # title match
+
+    def test_real_headline_higham_lane(self):
+        name = "Cyberattack forces British high school to shut down for a week - Cybernews"
+        assert is_headline_format(name) is True  # ends with " - Cybernews"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 2. extract_ransomware_family
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestExtractRansomwareFamily:
+    def test_lockbit_in_summary(self):
+        assert extract_ransomware_family("LockBit ransomware encrypted servers", None) == "lockbit"
+
+    def test_lockbit_2_in_summary(self):
+        assert extract_ransomware_family("LockBit 2.0 group claimed the attack", None) == "lockbit"
+
+    def test_lockbit_3_in_summary(self):
+        assert extract_ransomware_family("LockBit 3 variant was used", None) == "lockbit"
+
+    def test_blackcat_alphv(self):
+        assert extract_ransomware_family("ALPHV/BlackCat posted data", None) == "blackcat_alphv"
+
+    def test_blackcat_name(self):
+        assert extract_ransomware_family("BlackCat ransomware group", None) == "blackcat_alphv"
+
+    def test_cl0p(self):
+        assert extract_ransomware_family("Cl0p exploited MOVEit", None) == "cl0p_clop"
+
+    def test_clop(self):
+        assert extract_ransomware_family("Clop gang stole files", None) == "cl0p_clop"
+
+    def test_black_basta(self):
+        assert extract_ransomware_family("Black Basta group encrypted files", None) == "black_basta"
+
+    def test_blackbasta_nospace(self):
+        assert extract_ransomware_family("BlackBasta ransomware", None) == "black_basta"
+
+    def test_rhysida(self):
+        assert extract_ransomware_family("Rhysida group attacked the school district", None) == "rhysida"
+
+    def test_akira(self):
+        assert extract_ransomware_family("Akira ransomware hit the university", None) == "akira"
+
+    def test_avoslocker(self):
+        assert extract_ransomware_family("AvosLocker deployed on campus network", None) == "avoslocker"
+
+    def test_revil(self):
+        assert extract_ransomware_family("REvil group demanded $1M ransom", None) == "revil_sodinokibi"
+
+    def test_sodinokibi(self):
+        assert extract_ransomware_family("Sodinokibi used in this attack", None) == "revil_sodinokibi"
+
+    def test_found_in_title_not_summary(self):
+        assert extract_ransomware_family(None, "Ryuk ransomware hits school district") == "ryuk"
+
+    def test_summary_takes_precedence(self):
+        # Black Basta appears first in keyword list before Play — Black Basta wins
+        result = extract_ransomware_family("Black Basta encrypted files. Play ransomware also mentioned.", None)
+        assert result == "black_basta"
+
+    def test_case_insensitive(self):
+        assert extract_ransomware_family("LOCKBIT encrypted servers", None) == "lockbit"
+
+    def test_no_match_returns_none(self):
+        assert extract_ransomware_family("Unknown attacker compromised systems", None) is None
+
+    def test_none_both_returns_none(self):
+        assert extract_ransomware_family(None, None) is None
+
+    def test_empty_strings_return_none(self):
+        assert extract_ransomware_family("", "") is None
+
+    def test_conti(self):
+        assert extract_ransomware_family("Conti ransomware group leaked data", None) == "conti"
+
+    def test_pysa(self):
+        assert extract_ransomware_family("PYSA encrypted school servers", None) == "pysa"
+
+    def test_8base(self):
+        assert extract_ransomware_family("8Base ransomware published stolen records", None) == "8base"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 3. infer_institution_type
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestInferInstitutionType:
+    def test_unified_school_district(self):
+        assert infer_institution_type("Los Angeles Unified School District", None) == "school_district"
+
+    def test_independent_school_district(self):
+        assert infer_institution_type("Houston Independent School District", None) == "school_district"
+
+    def test_isd_abbreviation(self):
+        assert infer_institution_type("Albuquerque ISD", None) == "school_district"
+
+    def test_lausd_abbreviation(self):
+        assert infer_institution_type("LAUSD", None) == "school_district"
+
+    def test_city_public_schools(self):
+        assert infer_institution_type("Detroit Public Schools", None) == "school_district"
+
+    def test_county_schools(self):
+        assert infer_institution_type("Fresno County Schools", None) == "school_district"
+
+    def test_board_of_education(self):
+        assert infer_institution_type("Chicago Board of Education", None) == "school_district"
+
+    def test_high_school(self):
+        assert infer_institution_type("Higham Lane High School", None) == "k12_public_school"
+
+    def test_elementary_school(self):
+        assert infer_institution_type("Riverside Elementary School", None) == "k12_public_school"
+
+    def test_middle_school(self):
+        assert infer_institution_type("Jefferson Middle School", None) == "k12_public_school"
+
+    def test_charter_school(self):
+        assert infer_institution_type("Denver Charter School", None) == "k12_public_school"
+
+    def test_existing_known_type_not_overwritten(self):
+        # Never demotes a known type
+        assert infer_institution_type("Some High School", "university_public") == "university_public"
+
+    def test_existing_unknown_is_upgraded(self):
+        assert infer_institution_type("Springfield School District", "unknown") == "school_district"
+
+    def test_no_match_returns_existing(self):
+        assert infer_institution_type("University of Oxford", None) is None
+
+    def test_none_name_returns_existing(self):
+        assert infer_institution_type(None, None) is None
+
+    def test_unknown_with_no_match_returns_unknown(self):
+        assert infer_institution_type("University of Michigan", "unknown") == "unknown"
+
+    def test_case_insensitive_district(self):
+        assert infer_institution_type("clark county school district", None) == "school_district"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 4. infer_us_region
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestInferUsRegion:
+    def test_boston_is_massachusetts(self):
+        assert infer_us_region("Boston", "US") == "Massachusetts"
+
+    def test_case_insensitive(self):
+        assert infer_us_region("BOSTON", "US") == "Massachusetts"
+
+    def test_whitespace_stripped(self):
+        assert infer_us_region("  Boston  ", "US") == "Massachusetts"
+
+    def test_chicago_is_illinois(self):
+        assert infer_us_region("Chicago", "US") == "Illinois"
+
+    def test_austin_is_texas(self):
+        assert infer_us_region("Austin", "US") == "Texas"
+
+    def test_albuquerque_is_new_mexico(self):
+        assert infer_us_region("Albuquerque", "US") == "New Mexico"
+
+    def test_seattle_is_washington(self):
+        assert infer_us_region("Seattle", "US") == "Washington"
+
+    def test_non_us_country_returns_none(self):
+        assert infer_us_region("London", "GB") is None
+
+    def test_none_country_code_returns_none(self):
+        assert infer_us_region("Boston", None) is None
+
+    def test_none_city_returns_none(self):
+        assert infer_us_region(None, "US") is None
+
+    def test_unknown_city_returns_none(self):
+        assert infer_us_region("Gotham City", "US") is None
+
+    def test_ann_arbor_is_michigan(self):
+        assert infer_us_region("Ann Arbor", "US") == "Michigan"
+
+    def test_multi_word_city(self):
+        assert infer_us_region("New York City", "US") == "New York"
+
+    def test_saint_paul(self):
+        assert infer_us_region("Saint Paul", "US") == "Minnesota"
+
+    def test_honolulu_is_hawaii(self):
+        assert infer_us_region("Honolulu", "US") == "Hawaii"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5. infer_regulatory_impact
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestInferRegulatoryImpact:
+
+    def _base_us_edu(self, **overrides) -> Dict[str, Any]:
+        base = {
+            "is_education_related": True,
+            "institution_type": "university_public",
+            "country_code": "US",
+            "data_breached": True,
+            "enriched_summary": "",
+            "data_categories": json.dumps(["student_pii", "student_ssn"]),
+        }
+        base.update(overrides)
+        return base
+
+    # ── FERPA ──────────────────────────────────────────────────────────────────
+
+    def test_ferpa_inferred_for_us_edu_with_student_data(self):
+        flat = self._base_us_edu()
+        infer_regulatory_impact(flat)
+        assert flat["ferpa_breach"] is True
+
+    def test_ferpa_not_set_when_already_present(self):
+        flat = self._base_us_edu(ferpa_breach=False)
+        infer_regulatory_impact(flat)
+        assert flat["ferpa_breach"] is False  # not overwritten
+
+    def test_ferpa_not_inferred_without_student_data(self):
+        flat = self._base_us_edu(data_categories=json.dumps(["financial_records"]))
+        infer_regulatory_impact(flat)
+        assert flat.get("ferpa_breach") is None
+
+    def test_ferpa_not_inferred_for_non_us(self):
+        flat = self._base_us_edu(country_code="GB", data_categories=json.dumps(["student_pii"]))
+        infer_regulatory_impact(flat)
+        assert flat.get("ferpa_breach") is None
+
+    def test_ferpa_not_inferred_when_no_breach(self):
+        flat = self._base_us_edu(data_breached=False)
+        infer_regulatory_impact(flat)
+        assert flat.get("ferpa_breach") is None
+
+    def test_ferpa_with_list_data_categories(self):
+        flat = self._base_us_edu(data_categories=["student_grades", "employee_pii"])
+        infer_regulatory_impact(flat)
+        assert flat["ferpa_breach"] is True
+
+    # ── GDPR ───────────────────────────────────────────────────────────────────
+
+    def test_gdpr_inferred_for_eu_country(self):
+        flat = {
+            "is_education_related": True,
+            "institution_type": "university_public",
+            "country_code": "DE",
+            "data_breached": True,
+            "enriched_summary": "",
+            "data_categories": "[]",
+        }
+        infer_regulatory_impact(flat)
+        assert flat["gdpr_breach"] is True
+
+    def test_gdpr_inferred_for_gb(self):
+        flat = {
+            "is_education_related": True,
+            "institution_type": "school_district",
+            "country_code": "GB",
+            "data_breached": True,
+            "enriched_summary": "",
+            "data_categories": "[]",
+        }
+        infer_regulatory_impact(flat)
+        assert flat["gdpr_breach"] is True
+
+    def test_gdpr_inferred_for_nl(self):
+        flat = {
+            "is_education_related": True,
+            "institution_type": "university_public",
+            "country_code": "NL",
+            "data_breached": True,
+            "enriched_summary": "",
+            "data_categories": "[]",
+        }
+        infer_regulatory_impact(flat)
+        assert flat["gdpr_breach"] is True
+
+    def test_gdpr_not_inferred_for_us(self):
+        flat = self._base_us_edu()
+        flat.pop("gdpr_breach", None)
+        infer_regulatory_impact(flat)
+        assert flat.get("gdpr_breach") is None
+
+    def test_gdpr_not_overwritten(self):
+        flat = {
+            "is_education_related": True,
+            "institution_type": "university_public",
+            "country_code": "FR",
+            "data_breached": True,
+            "enriched_summary": "",
+            "data_categories": "[]",
+            "gdpr_breach": False,
+        }
+        infer_regulatory_impact(flat)
+        assert flat["gdpr_breach"] is False
+
+    # ── HIPAA ──────────────────────────────────────────────────────────────────
+
+    def test_hipaa_inferred_from_data_categories(self):
+        flat = self._base_us_edu(
+            institution_type="teaching_hospital",
+            data_categories=json.dumps(["medical_records", "student_pii"]),
+        )
+        infer_regulatory_impact(flat)
+        assert flat["hipaa_breach"] is True
+
+    def test_hipaa_inferred_from_summary_keyword(self):
+        flat = self._base_us_edu(
+            data_categories="[]",
+            enriched_summary="University hospital exposed patient health records and PHI.",
+        )
+        infer_regulatory_impact(flat)
+        assert flat["hipaa_breach"] is True
+
+    def test_hipaa_not_inferred_without_health_data(self):
+        flat = self._base_us_edu(
+            data_categories=json.dumps(["student_pii"]),
+            enriched_summary="Students' names and addresses were exposed.",
+        )
+        infer_regulatory_impact(flat)
+        assert flat.get("hipaa_breach") is None
+
+    def test_hipaa_not_inferred_for_non_us(self):
+        flat = {
+            "is_education_related": True,
+            "institution_type": "university_public",
+            "country_code": "GB",
+            "data_breached": True,
+            "enriched_summary": "Patient health records exposed.",
+            "data_categories": json.dumps(["medical_records"]),
+        }
+        infer_regulatory_impact(flat)
+        assert flat.get("hipaa_breach") is None
+
+    # ── breach_notification_required ──────────────────────────────────────────
+
+    def test_breach_notification_required_for_pii(self):
+        flat = self._base_us_edu()
+        infer_regulatory_impact(flat)
+        assert flat["breach_notification_required"] is True
+
+    def test_breach_notification_not_required_without_pii(self):
+        flat = self._base_us_edu(data_categories=json.dumps(["internal_communications"]))
+        infer_regulatory_impact(flat)
+        assert flat.get("breach_notification_required") is None
+
+    # ── notifications_sent ────────────────────────────────────────────────────
+
+    def test_notifications_sent_from_credit_monitoring(self):
+        flat = self._base_us_edu(
+            enriched_summary="The university is offering credit monitoring services to affected students."
+        )
+        infer_regulatory_impact(flat)
+        assert flat["notifications_sent"] is True
+
+    def test_notifications_sent_from_began_notifying(self):
+        flat = self._base_us_edu(
+            enriched_summary="The district began notifying affected individuals in March."
+        )
+        infer_regulatory_impact(flat)
+        assert flat["notifications_sent"] is True
+
+    def test_notifications_sent_from_breach_notification_letter(self):
+        flat = self._base_us_edu(
+            enriched_summary="Victims received a data breach notification letter."
+        )
+        infer_regulatory_impact(flat)
+        assert flat["notifications_sent"] is True
+
+    def test_notifications_not_inferred_without_keywords(self):
+        flat = self._base_us_edu(
+            enriched_summary="The university confirmed a data breach occurred."
+        )
+        infer_regulatory_impact(flat)
+        assert flat.get("notifications_sent") is None
+
+    def test_not_education_related_skips_all(self):
+        flat = {
+            "is_education_related": False,
+            "country_code": "US",
+            "data_breached": True,
+            "data_categories": json.dumps(["student_pii"]),
+            "enriched_summary": "credit monitoring offered",
+        }
+        infer_regulatory_impact(flat)
+        assert flat.get("ferpa_breach") is None
+        assert flat.get("gdpr_breach") is None
+        assert flat.get("hipaa_breach") is None
+        assert flat.get("notifications_sent") is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 6. infer_confirmed_status
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestInferConfirmedStatus:
+    def test_notifying_affected_individuals(self):
+        assert infer_confirmed_status("The university began notifying affected individuals.", None) is True
+
+    def test_credit_monitoring_offered(self):
+        assert infer_confirmed_status("The institution is offering credit monitoring services.", None) is True
+
+    def test_officially_confirmed(self):
+        assert infer_confirmed_status("The district officially confirmed the breach.", None) is True
+
+    def test_publicly_disclosed(self):
+        assert infer_confirmed_status("The university publicly disclosed the incident.", None) is True
+
+    def test_announced_a_breach(self):
+        assert infer_confirmed_status("The school announced a data breach affecting 10,000 students.", None) is True
+
+    def test_breach_notification_phrase(self):
+        assert infer_confirmed_status("Victims received a breach notification letter.", None) is True
+
+    def test_apologized(self):
+        assert infer_confirmed_status("The university apologized to affected students.", None) is True
+
+    def test_paid_ransom(self):
+        assert infer_confirmed_status("The district paid the ransom to recover files.", None) is True
+
+    def test_ransom_was_paid(self):
+        assert infer_confirmed_status("Ransom was paid to restore systems.", None) is True
+
+    def test_acknowledged_the_breach(self):
+        assert infer_confirmed_status("The university acknowledged the breach in a statement.", None) is True
+
+    def test_found_in_title(self):
+        assert infer_confirmed_status(None, "University confirms data breach notification sent") is True
+
+    def test_no_confirmation_language_returns_false(self):
+        assert infer_confirmed_status("Hackers may have accessed student records.", None) is False
+
+    def test_none_both_returns_false(self):
+        assert infer_confirmed_status(None, None) is False
+
+    def test_empty_strings_returns_false(self):
+        assert infer_confirmed_status("", "") is False
+
+    def test_case_insensitive(self):
+        assert infer_confirmed_status("BEGAN NOTIFYING AFFECTED INDIVIDUALS", None) is True
+
+    def test_has_sent_notifications(self):
+        assert infer_confirmed_status("The college has sent notifications to all affected users.", None) is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 7. apply_post_processing (orchestrator integration)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestApplyPostProcessing:
+
+    def _make_incident_row(self, title: str = "Test Incident") -> MagicMock:
+        row = MagicMock()
+        row.__getitem__ = lambda self, key: title if key == "title" else None
+        return row
+
+    def test_ransomware_family_filled_from_summary(self):
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "Springfield University",
+            "institution_type": "university_public",
+            "country_code": "US",
+            "city": None,
+            "data_breached": False,
+            "enriched_summary": "LockBit ransomware encrypted university servers.",
+            "is_education_related": False,
+        }
+        apply_post_processing(flat, None, summary="LockBit ransomware encrypted university servers.")
+        assert flat["ransomware_family"] == "lockbit"
+
+    def test_ransomware_family_not_overwritten(self):
+        flat = {
+            "ransomware_family": "akira",
+            "institution_name": "Springfield University",
+            "institution_type": "university_public",
+            "country_code": "US",
+            "city": None,
+            "data_breached": False,
+            "enriched_summary": "LockBit ransomware encrypted servers.",
+            "is_education_related": False,
+        }
+        apply_post_processing(flat, None, summary="LockBit ransomware encrypted servers.")
+        assert flat["ransomware_family"] == "akira"  # not overwritten
+
+    def test_institution_type_upgraded_from_unknown(self):
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "Clark County School District",
+            "institution_type": "unknown",
+            "country_code": "US",
+            "city": None,
+            "region": None,
+            "data_breached": False,
+            "enriched_summary": "",
+            "is_education_related": False,
+        }
+        apply_post_processing(flat, None)
+        assert flat["institution_type"] == "school_district"
+
+    def test_region_filled_from_city(self):
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "MIT",
+            "institution_type": "university_research",
+            "country_code": "US",
+            "city": "Boston",
+            "region": None,
+            "data_breached": False,
+            "enriched_summary": "",
+            "is_education_related": False,
+        }
+        apply_post_processing(flat, None)
+        assert flat["region"] == "Massachusetts"
+
+    def test_region_not_filled_for_non_us(self):
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "TU Eindhoven",
+            "institution_type": "university_public",
+            "country_code": "NL",
+            "city": "Eindhoven",
+            "region": None,
+            "data_breached": False,
+            "enriched_summary": "",
+            "is_education_related": False,
+        }
+        apply_post_processing(flat, None)
+        assert flat.get("region") is None
+
+    def test_regulatory_impact_filled_for_us_edu_breach(self):
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "State University",
+            "institution_type": "university_public",
+            "country_code": "US",
+            "city": None,
+            "region": None,
+            "data_breached": True,
+            "data_categories": json.dumps(["student_pii", "student_ssn"]),
+            "enriched_summary": "The university began notifying affected students.",
+            "is_education_related": True,
+        }
+        apply_post_processing(flat, None)
+        assert flat.get("ferpa_breach") is True
+        assert flat.get("notifications_sent") is True
+        assert flat.get("breach_notification_required") is True
+
+    def test_title_used_for_ransomware_when_no_summary(self):
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "Some School",
+            "institution_type": "k12_public_school",
+            "country_code": "US",
+            "city": None,
+            "data_breached": False,
+            "enriched_summary": None,
+            "is_education_related": False,
+        }
+        incident_row = self._make_incident_row(title="Ryuk ransomware hits school district")
+        apply_post_processing(flat, incident_row)
+        assert flat["ransomware_family"] == "ryuk"
+
+    def test_all_nulls_handled_gracefully(self):
+        flat = {
+            "ransomware_family": None,
+            "institution_name": None,
+            "institution_type": None,
+            "country_code": None,
+            "city": None,
+            "region": None,
+            "data_breached": None,
+            "enriched_summary": None,
+            "is_education_related": None,
+        }
+        apply_post_processing(flat, None)
+        # Should not raise; all values stay None or unchanged
+        assert flat["ransomware_family"] is None
+
+    def test_gdpr_filled_for_eu_breach(self):
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "TU Eindhoven",
+            "institution_type": "university_public",
+            "country_code": "NL",
+            "city": "Eindhoven",
+            "region": None,
+            "data_breached": True,
+            "data_categories": "[]",
+            "enriched_summary": "",
+            "is_education_related": True,
+        }
+        apply_post_processing(flat, None)
+        assert flat.get("gdpr_breach") is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 8. fetching_strategy: SERP bypass for headline institution_name
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestSerpHeadlineBypass:
+    """
+    discover_articles_via_serp must skip the SERP call when institution_name
+    looks like a news headline (is_headline_format returns True).
+    """
+
+    def _make_incident(self, name: str, title: str = "") -> Dict[str, Any]:
+        return {
+            "institution_name": name,
+            "victim_raw_name": "",
+            "title": title,
+            "attack_type_hint": "ransomware",
+            "incident_date": "2025-01-15",
+        }
+
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy.OxylabsClient")
+    def test_serp_skipped_for_headline_name(self, mock_oxylabs_cls):
+        from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
+
+        headline = "Cyberattack forces British high school to shut down for a week - Cybernews"
+        incident = self._make_incident(headline)
+        result = discover_articles_via_serp(incident)
+
+        # Oxylabs should never be called
+        mock_oxylabs_cls.return_value.search_news.assert_not_called()
+        assert result == []
+
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy.OxylabsClient")
+    def test_serp_called_for_normal_name(self, mock_oxylabs_cls):
+        from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
+
+        mock_client = mock_oxylabs_cls.return_value
+        mock_client._is_configured.return_value = True
+        mock_client.search_news.return_value = [
+            {"url": "https://example.com/article", "title": "University breach", "description": ""}
+        ]
+
+        incident = self._make_incident("University of Michigan", "University of Michigan breach")
+        result = discover_articles_via_serp(incident)
+
+        mock_client.search_news.assert_called_once()
+
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy.OxylabsClient")
+    def test_serp_skipped_for_very_long_name(self, mock_oxylabs_cls):
+        from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
+
+        long_name = "This is a very long institution name that clearly exceeds seventy characters total"
+        incident = self._make_incident(long_name)
+        result = discover_articles_via_serp(incident)
+
+        mock_oxylabs_cls.return_value.search_news.assert_not_called()
+        assert result == []
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. API database.py: flat-table values override JSON blob for attack_dynamics
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestApiAttackDynamicsOverride:
+    """
+    When get_incident_detail builds the attack_dynamics dict from the raw JSON
+    blob, it must override ransomware_family and attack_vector with values from
+    the post-processed flat table (incident_enrichments_flat).
+    """
+
+    def _setup_db(self) -> sqlite3.Connection:
+        """Create an in-memory DB with the schema tables needed for the test."""
+        from src.edu_cti.core.db import init_db
+        from src.edu_cti.pipeline.phase2.storage.db import init_incident_enrichments_table
+        from src.edu_cti.pipeline.phase2.storage.article_storage import init_articles_table
+
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        init_db(conn)
+        init_incident_enrichments_table(conn)
+        init_articles_table(conn)
+        return conn
+
+    def _insert_incident(self, conn, incident_id: str = "test_001"):
+        # incidents table has no 'source' column (moved to incident_sources)
+        conn.execute(
+            """
+            INSERT INTO incidents (
+                incident_id, institution_name, victim_raw_name,
+                status, ingested_at, primary_url
+            ) VALUES (?,?,?,?,?,?)
+            """,
+            (incident_id, "Test University", "Test University",
+             "suspected", "2024-01-01T00:00:00Z", "https://example.com/article"),
+        )
+        conn.commit()
+
+    def _insert_enrichment_blob(self, conn, incident_id: str, raw_blob: dict):
+        """Insert raw LLM JSON blob (pre-post-processing values)."""
+        conn.execute(
+            """INSERT INTO incident_enrichments
+               (incident_id, enrichment_data, created_at, updated_at)
+               VALUES (?,?,?,?)""",
+            (incident_id, json.dumps(raw_blob), "2024-01-02T00:00:00Z", "2024-01-02T00:00:00Z"),
+        )
+        conn.commit()
+
+    def _insert_flat_row(self, conn, incident_id: str, ransomware_family: str, attack_vector: str):
+        """Insert post-processed flat row."""
+        conn.execute(
+            """
+            INSERT INTO incident_enrichments_flat
+                (incident_id, ransomware_family, attack_vector, is_education_related, created_at, updated_at)
+            VALUES (?,?,?,?,?,?)
+            """,
+            (incident_id, ransomware_family, attack_vector, 1, "2024-01-02T00:00:00Z", "2024-01-02T00:00:00Z"),
+        )
+        conn.commit()
+
+    def test_flat_table_ransomware_overrides_blob(self):
+        """
+        Scenario: LLM JSON blob has ransomware_family=null, but post-processing
+        filled it in the flat table. The API must return the flat-table value.
+        """
+        from src.edu_cti.api.database import get_incident_by_id as get_incident_detail
+
+        conn = self._setup_db()
+        iid = "test_001"
+        self._insert_incident(conn, iid)
+
+        # Blob has null ransomware_family
+        blob = {
+            "attack_dynamics": {
+                "ransomware_family": None,
+                "attack_vector": None,
+                "attack_chain": ["initial_access", "execution", "impact"],
+            }
+        }
+        self._insert_enrichment_blob(conn, iid, blob)
+
+        # Flat table has it filled (post-processing keyword scan result)
+        self._insert_flat_row(conn, iid, "lockbit", "phishing_email")
+
+        result = get_incident_detail(conn, iid)
+
+        assert result is not None
+        ad = result.get("attack_dynamics", {})
+        assert ad.get("ransomware_family") == "lockbit"
+        assert ad.get("attack_vector") == "phishing_email"
+
+    def test_blob_value_kept_when_flat_has_none(self):
+        """
+        When flat table has no value for these fields, the blob value is kept.
+        """
+        from src.edu_cti.api.database import get_incident_by_id as get_incident_detail
+
+        conn = self._setup_db()
+        iid = "test_002"
+        self._insert_incident(conn, iid)
+
+        blob = {
+            "attack_dynamics": {
+                "ransomware_family": "akira",
+                "attack_vector": "exposed_vpn",
+                "attack_chain": ["initial_access", "impact"],
+            }
+        }
+        self._insert_enrichment_blob(conn, iid, blob)
+        self._insert_flat_row(conn, iid, None, None)
+
+        result = get_incident_detail(conn, iid)
+
+        ad = result.get("attack_dynamics", {})
+        # flat has None → blob value is kept
+        assert ad.get("ransomware_family") == "akira"
+        assert ad.get("attack_vector") == "exposed_vpn"
+
+    def test_flat_overrides_wrong_blob_ransomware(self):
+        """
+        Scenario from monitoring: LLM stored wrong ransomware_family in blob,
+        post-processing keyword scan found the correct one in flat table.
+        """
+        from src.edu_cti.api.database import get_incident_by_id as get_incident_detail
+
+        conn = self._setup_db()
+        iid = "test_003"
+        self._insert_incident(conn, iid)
+
+        blob = {
+            "attack_dynamics": {
+                "ransomware_family": "unknown",
+                "attack_vector": "phishing_email",
+            }
+        }
+        self._insert_enrichment_blob(conn, iid, blob)
+        self._insert_flat_row(conn, iid, "rhysida", "phishing_email")
+
+        result = get_incident_detail(conn, iid)
+
+        ad = result.get("attack_dynamics", {})
+        assert ad.get("ransomware_family") == "rhysida"
