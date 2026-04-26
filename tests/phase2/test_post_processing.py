@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.edu_cti.pipeline.phase2.utils.post_processing import (
+    _guard_timeline_dates,
     apply_post_processing,
     extract_ransomware_family,
     infer_confirmed_status,
@@ -875,3 +876,108 @@ class TestApiAttackDynamicsOverride:
 
         ad = result.get("attack_dynamics", {})
         assert ad.get("ransomware_family") == "rhysida"
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 9. _guard_timeline_dates
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestGuardTimelineDates:
+    """Timeline event dates that are >90 days after source_published_date are nulled."""
+
+    def _make_incident_row(self, source_published_date: str):
+        row = MagicMock()
+        row.__getitem__ = lambda self, k: source_published_date if k == "source_published_date" else None
+        return row
+
+    def test_future_date_nulled(self):
+        """Event date >90 days after source is nulled and precision set to approximate."""
+        flat = {
+            "timeline_json": json.dumps([
+                {"date": "2026-04-23", "date_precision": "day", "event_description": "Attack occurred"},
+            ]),
+        }
+        incident_row = self._make_incident_row("2025-03-10")
+        _guard_timeline_dates(flat, incident_row)
+        events = json.loads(flat["timeline_json"])
+        assert events[0]["date"] is None
+        assert events[0]["date_precision"] == "approximate"
+        assert events[0]["event_description"] == "Attack occurred"  # description preserved
+
+    def test_recent_date_preserved(self):
+        """Event date within 90 days of source is left untouched."""
+        flat = {
+            "timeline_json": json.dumps([
+                {"date": "2025-03-15", "date_precision": "day", "event_description": "Discovery"},
+            ]),
+        }
+        incident_row = self._make_incident_row("2025-03-10")
+        _guard_timeline_dates(flat, incident_row)
+        events = json.loads(flat["timeline_json"])
+        assert events[0]["date"] == "2025-03-15"
+        assert events[0]["date_precision"] == "day"
+
+    def test_exactly_90_days_preserved(self):
+        """Event exactly 90 days after source is preserved (boundary: >90, not >=90)."""
+        flat = {
+            "timeline_json": json.dumps([
+                {"date": "2025-06-08", "date_precision": "day", "event_description": "Notification"},
+            ]),
+        }
+        incident_row = self._make_incident_row("2025-03-10")  # 90 days later = 2025-06-08
+        _guard_timeline_dates(flat, incident_row)
+        events = json.loads(flat["timeline_json"])
+        assert events[0]["date"] == "2025-06-08"
+
+    def test_mixed_events_only_bad_nulled(self):
+        """Only the offending event is nulled; nearby events are preserved."""
+        flat = {
+            "timeline_json": json.dumps([
+                {"date": "2025-03-10", "event_description": "Initial access"},
+                {"date": "2026-04-24", "event_description": "Discovery (wrong year)"},
+                {"date": "2025-03-15", "event_description": "Containment"},
+            ]),
+        }
+        incident_row = self._make_incident_row("2025-03-10")
+        _guard_timeline_dates(flat, incident_row)
+        events = json.loads(flat["timeline_json"])
+        assert events[0]["date"] == "2025-03-10"
+        assert events[1]["date"] is None
+        assert events[1]["date_precision"] == "approximate"
+        assert events[2]["date"] == "2025-03-15"
+
+    def test_no_source_date_leaves_timeline_unchanged(self):
+        """If no source_published_date is available, the timeline is untouched."""
+        timeline = [{"date": "2026-04-23", "event_description": "Attack"}]
+        flat = {"timeline_json": json.dumps(timeline)}
+        row = MagicMock()
+        row.__getitem__ = lambda self, k: None
+        _guard_timeline_dates(flat, row)
+        events = json.loads(flat["timeline_json"])
+        assert events[0]["date"] == "2026-04-23"  # unchanged
+
+    def test_empty_timeline_no_error(self):
+        """Empty timeline JSON doesn't raise."""
+        flat = {"timeline_json": json.dumps([])}
+        incident_row = self._make_incident_row("2025-03-10")
+        _guard_timeline_dates(flat, incident_row)
+        assert json.loads(flat["timeline_json"]) == []
+
+    def test_no_timeline_no_error(self):
+        """Missing timeline_json key doesn't raise."""
+        flat = {}
+        incident_row = self._make_incident_row("2025-03-10")
+        _guard_timeline_dates(flat, flat)  # incident_row with no source_published_date
+        assert "timeline_json" not in flat
+
+    def test_uses_flat_source_date_when_no_incident_row(self):
+        """Falls back to flat_data['source_published_date'] when incident_row is None."""
+        flat = {
+            "timeline_json": json.dumps([
+                {"date": "2026-04-23", "event_description": "Attack"},
+            ]),
+            "source_published_date": "2025-03-10",
+        }
+        _guard_timeline_dates(flat, None)
+        events = json.loads(flat["timeline_json"])
+        assert events[0]["date"] is None

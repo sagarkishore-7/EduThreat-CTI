@@ -858,6 +858,61 @@ def _fix_private_institution_type(flat_data: Dict[str, Any]) -> None:
         flat_data["institution_type"] = override
 
 
+def _guard_timeline_dates(flat_data: Dict[str, Any], incident_row: Optional[Any]) -> None:
+    """
+    Null out timeline event dates that are >90 days after source_published_date.
+
+    LLMs sometimes write the current processing date into timeline events when
+    the article content couldn't be fetched (only title/subtitle available).
+    The incident_date field has its own guard in db.py; this extends it to
+    the per-event dates stored inside timeline_json.
+    """
+    timeline_raw = flat_data.get("timeline_json")
+    if not timeline_raw:
+        return
+
+    src_str = (
+        (incident_row["source_published_date"] if incident_row else None)
+        or flat_data.get("source_published_date")
+        or flat_data.get("incident_date")
+    )
+    if not src_str:
+        return
+
+    try:
+        from datetime import date as _date
+        src_dt = _date.fromisoformat(str(src_str)[:10])
+    except (ValueError, TypeError):
+        return
+
+    try:
+        events = json.loads(timeline_raw) if isinstance(timeline_raw, str) else list(timeline_raw)
+    except (json.JSONDecodeError, TypeError):
+        return
+
+    if not isinstance(events, list):
+        return
+
+    changed = False
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        ev_date = event.get("date")
+        if not ev_date:
+            continue
+        try:
+            ev_dt = _date.fromisoformat(str(ev_date)[:10])
+            if (ev_dt - src_dt).days > 90:
+                event["date"] = None
+                event["date_precision"] = "approximate"
+                changed = True
+        except (ValueError, TypeError):
+            continue
+
+    if changed:
+        flat_data["timeline_json"] = json.dumps(events)
+
+
 def apply_post_processing(
     flat_data: Dict[str, Any],
     incident_row: Optional[Any],
@@ -945,3 +1000,8 @@ def apply_post_processing(
         vol = infer_data_volume_gb(_summary)
         if vol is not None:
             flat_data["data_volume_gb"] = vol
+
+    # 11. Timeline date guard: null out timeline event dates that are >90 days
+    # after source_published_date (LLM confuses current processing date with
+    # article date when the article content couldn't be fetched).
+    _guard_timeline_dates(flat_data, incident_row)

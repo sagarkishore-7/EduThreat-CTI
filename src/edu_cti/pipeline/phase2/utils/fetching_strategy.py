@@ -34,6 +34,29 @@ from src.edu_cti.pipeline.phase2.storage.article_storage import (
 logger = logging.getLogger(__name__)
 
 
+def _append_url_to_incident(conn: sqlite3.Connection, incident_id: str, url: str) -> None:
+    """Append url to incidents.all_urls (semicolon-separated) when not already present.
+
+    Called after a SERP-discovered URL fetches successfully so that
+    save_enrichment_result() recognises the URL as a valid primary_url candidate
+    and doesn't fall back to the original broken/PDF source URL.
+    """
+    row = conn.execute(
+        "SELECT all_urls FROM incidents WHERE incident_id = ?", (incident_id,)
+    ).fetchone()
+    if not row:
+        return
+    existing_raw = row[0] or ""
+    existing = {u.strip() for u in existing_raw.split(";") if u.strip()}
+    if url in existing:
+        return
+    existing.add(url)
+    conn.execute(
+        "UPDATE incidents SET all_urls = ? WHERE incident_id = ?",
+        (";".join(sorted(existing)), incident_id),
+    )
+
+
 def is_internal_placeholder_url(url: str) -> bool:
     """
     Return True for internal/non-fetchable placeholder URLs.
@@ -566,6 +589,9 @@ class SmartArticleFetchingStrategy:
                 if discovered:
                     all_urls = discovered
                     incident = dict(incident, all_urls=all_urls)
+                    # Persist discovered URLs so save_enrichment_result validates them.
+                    for disc_url in discovered:
+                        _append_url_to_incident(self.conn, incident_id, disc_url)
                 else:
                     logger.info(f"[{i}/{len(incidents)}] SERP found no articles for {incident_id}")
                     results[incident_id] = []
@@ -697,6 +723,9 @@ class SmartArticleFetchingStrategy:
                             try:
                                 save_article(self.conn, incident_id=incident_id, url=serp_url, article=article_content)
                                 logger.info(f"SERP fallback: fetched {domain} ({len(article_content.content)} chars)")
+                                # Register the SERP URL in all_urls so save_enrichment_result
+                                # won't reject it as the primary_url.
+                                _append_url_to_incident(self.conn, incident_id, serp_url)
                             except Exception as se:
                                 logger.error(f"SERP fallback save error {serp_url}: {se}")
                     except Exception as e:
