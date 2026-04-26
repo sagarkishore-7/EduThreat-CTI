@@ -32,7 +32,17 @@ _RANSOMWARE_KEYWORDS: list[tuple[str, str]] = [
     ("hive ransomware", "hive"),
     ("hunters international", "hunters_international"),
     ("inc ransom", "inc_ransom"),
+    ("ransomhub ransomware", "ransomhub"),
     ("ransomhub", "ransomhub"),
+    ("blacksuit ransomware", "blacksuit"),
+    ("blacksuit", "blacksuit"),
+    ("phobos ransomware", "phobos"),
+    ("phobos", "phobos"),
+    ("avoslocker", "avoslocker"),
+    ("fog ransomware group", "fog"),
+    ("doppelpaymer", "doppelpaymer"),
+    ("qilin ransomware", "qilin"),
+    ("qilin", "qilin"),
     ("doppelpaymer", "doppelpaymer"),
     ("blackmatter", "blackmatter"),
     ("blacksuit", "blacksuit"),
@@ -53,6 +63,8 @@ _RANSOMWARE_KEYWORDS: list[tuple[str, str]] = [
     ("8base", "8base"),
     ("fog ransomware", "fog"),
     ("interlock ransomware", "interlock"),
+    ("interlock group", "interlock"),
+    ("interlock", "interlock"),
     ("meow ransomware", "meow"),
     ("grief ransomware", "grief"),
     ("noescape", "noescape"),
@@ -349,6 +361,89 @@ def infer_confirmed_status(enriched_summary: Optional[str], title: Optional[str]
     return bool(_CONFIRMATION_RE.search(text)) if text else False
 
 
+_DATA_CAT_KEYWORDS: list[tuple[str, str]] = [
+    # Student data
+    ("student record", "student_pii"),
+    ("student data", "student_pii"),
+    ("student information", "student_pii"),
+    ("student personal", "student_pii"),
+    ("student name", "student_pii"),
+    ("student ssn", "student_ssn"),
+    ("student social security", "student_ssn"),
+    ("student address", "student_pii"),
+    ("student grade", "student_grades"),
+    ("student transcript", "student_transcripts"),
+    ("student financial aid", "student_financial_aid"),
+    ("student health", "student_health_records"),
+    # Employee data
+    ("employee record", "employee_pii"),
+    ("employee data", "employee_pii"),
+    ("employee information", "employee_pii"),
+    ("staff record", "employee_pii"),
+    ("staff data", "employee_pii"),
+    ("faculty record", "employee_pii"),
+    ("faculty data", "employee_pii"),
+    ("employee ssn", "employee_ssn"),
+    ("staff ssn", "employee_ssn"),
+    ("employee social security", "employee_ssn"),
+    ("employee tax", "employee_tax_info"),
+    ("w-2", "employee_tax_info"),
+    ("payroll", "employee_tax_info"),
+    ("employee salary", "employee_salary"),
+    # Financial
+    ("financial record", "financial_records"),
+    ("financial data", "financial_records"),
+    ("financial information", "financial_records"),
+    ("bank account", "financial_records"),
+    ("credit card", "payment_card_data"),
+    ("payment card", "payment_card_data"),
+    # Health
+    ("health record", "health_records"),
+    ("medical record", "health_records"),
+    ("health information", "health_records"),
+    ("patient data", "health_records"),
+    ("protected health information", "phi"),
+    (" phi ", "phi"),
+    # SSNs (generic)
+    ("social security number", "ssn_general"),
+    ("ssn", "ssn_general"),
+    # Credentials
+    ("password", "credentials"),
+    ("credential", "credentials"),
+    ("login information", "credentials"),
+]
+
+
+def _infer_data_categories(flat_data: Dict[str, Any], summary: Optional[str]) -> None:
+    """Add data_categories inferred from enriched_summary keywords (never removes existing)."""
+    if not summary:
+        return
+    text = summary.lower()
+
+    # Parse existing categories
+    raw = flat_data.get("data_categories")
+    if isinstance(raw, list):
+        existing: list = list(raw)
+    elif isinstance(raw, str) and raw:
+        try:
+            existing = json.loads(raw)
+            if not isinstance(existing, list):
+                existing = []
+        except (json.JSONDecodeError, TypeError):
+            existing = []
+    else:
+        existing = []
+
+    added = False
+    for keyword, category in _DATA_CAT_KEYWORDS:
+        if keyword in text and category not in existing:
+            existing.append(category)
+            added = True
+
+    if added:
+        flat_data["data_categories"] = json.dumps(existing)
+
+
 def apply_post_processing(
     flat_data: Dict[str, Any],
     incident_row: Optional[Any],
@@ -366,8 +461,10 @@ def apply_post_processing(
     _title = incident_row["title"] if incident_row else None
     _summary = summary or flat_data.get("enriched_summary")
 
-    # 1. Ransomware family from summary / title keyword scan
-    if not flat_data.get("ransomware_family"):
+    # 1. Ransomware family from summary / title keyword scan.
+    # Override "unknown" too — keyword scan gives a definitive name where GBNF forced "unknown".
+    current_family = flat_data.get("ransomware_family")
+    if not current_family or current_family == "unknown":
         family = extract_ransomware_family(_summary, _title)
         if family:
             flat_data["ransomware_family"] = family
@@ -387,3 +484,11 @@ def apply_post_processing(
 
     # 4. Regulatory impact rules
     infer_regulatory_impact(flat_data)
+
+    # 5. network_compromised: ransomware by definition encrypts/disrupts network-connected systems
+    attack_cat = (flat_data.get("attack_category") or "").lower()
+    if attack_cat.startswith("ransomware_") and not flat_data.get("network_compromised"):
+        flat_data["network_compromised"] = True
+
+    # 6. data_categories: keyword scan of enriched_summary to catch fields LLM missed
+    _infer_data_categories(flat_data, _summary)

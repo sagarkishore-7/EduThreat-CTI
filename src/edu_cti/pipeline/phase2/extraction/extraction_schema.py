@@ -581,6 +581,17 @@ EXTRACTION_SCHEMA = {
                 "nokoyawa",
                 "ransomhouse",
                 "daixin",
+                "ransomhub",
+                "interlock",
+                "fog",
+                "meow",
+                "phobos",
+                "avoslocker",
+                "blacksuit",
+                "doppelpaymer",
+                "qilin",
+                "pysa",
+                "prometheus",
                 "unknown",
                 "other"
             ]

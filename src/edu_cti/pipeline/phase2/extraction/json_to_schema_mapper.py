@@ -300,10 +300,8 @@ def normalize_attack_vector(value: Any) -> Optional[str]:
         "exposed_database", "exposed_api", "man_in_the_middle", "supply_chain_compromise",
         "third_party_vendor", "software_update_compromise", "trusted_relationship", "social_engineering",
         "pretexting", "baiting", "tailgating", "usb_drop", "insider_access", "former_employee",
-        "cloud_misconfiguration", "api_key_exposure", "storage_bucket_exposure", "phishing",
-        "spear_phishing", "vulnerability_exploit", "credential_theft", "malware", "ransomware",
-        "insider_threat", "supply_chain", "third_party_breach", "ddos", "dns_hijacking",
-        "sim_swapping", "unknown", "other"
+        "cloud_misconfiguration", "api_key_exposure", "storage_bucket_exposure",
+        "dns_hijacking", "sim_swapping", "unknown", "other"
     }
     return normalize_enum_value(value, ATTACK_VECTOR_NORMALIZATION, valid_values, "unknown")
 
@@ -556,9 +554,10 @@ def map_attack_category_to_vector(category) -> Optional[str]:
     # Normalize to lowercase for matching
     category_lower = category.lower()
     
-    # Ransomware variants
+    # Ransomware variants — don't derive attack_vector from category; the initial
+    # access method is unknown without explicit article evidence.
     if "ransomware" in category_lower:
-        return "ransomware"
+        return None
     
     # Phishing variants
     if "phishing" in category_lower or "bec" in category_lower or "whaling" in category_lower:

@@ -167,7 +167,6 @@ class AttackDynamics(BaseModel):
         "vulnerability_exploit",
         "credential_theft",
         "malware",
-        "ransomware",
         "insider_threat",
         "supply_chain",
         "third_party_breach",
