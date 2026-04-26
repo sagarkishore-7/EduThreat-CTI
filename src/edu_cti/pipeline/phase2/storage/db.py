@@ -673,11 +673,13 @@ def _flatten_enrichment_for_db(
         _derived_data_breached = _llm_data_breached
     elif (raw_get("attack_category") or "").lower() in _DATA_BREACH_CATS:
         _derived_data_breached = True
-    elif raw_get("data_exfiltrated"):
+    elif raw_get("data_exfiltrated") or raw_get("data_exfiltration"):
         _derived_data_breached = True
     elif raw_get("data_categories"):
         _derived_data_breached = True
-    elif raw_get("records_affected_exact") or raw_get("records_affected_min"):
+    elif raw_get("records_affected_exact") or raw_get("records_affected_min") or raw_get("records_affected"):
+        _derived_data_breached = True
+    elif raw_get("data_volume_gb") and float(raw_get("data_volume_gb") or 0) > 0:
         _derived_data_breached = True
     else:
         _derived_data_breached = None
@@ -1144,6 +1146,14 @@ def save_enrichment_result(
 
     country_raw = _scalar(raw_json_data.get("country")) if raw_json_data else country_fallback
     if not country_raw:
+        # When LLM returned null, use the incidents table value (set at ingestion time)
+        country_raw = country_fallback
+    if not country_raw and notes_fallback:
+        # Google News RSS and similar curated sources embed "lang=XX;country=YY;query=..."
+        _nc = re.search(r"\bcountry=([A-Z]{2})\b", notes_fallback)
+        if _nc:
+            country_raw = _nc.group(1)  # ISO-2 code; normalize_country handles it
+    if not country_raw:
         country_raw = _derive_country_from_context(conn, incident_id, incident_row)
         if isinstance(country_raw, tuple):
             country_raw = next((value for value in country_raw if value), None)
@@ -1151,7 +1161,11 @@ def save_enrichment_result(
     country_code = get_country_code(country) if country else None
 
     region = _scalar(raw_json_data.get("region")) if raw_json_data else region_fallback
+    if not region:
+        region = region_fallback
     city = _scalar(raw_json_data.get("city")) if raw_json_data else city_fallback
+    if not city:
+        city = city_fallback
     # Prefer the LLM's extracted name directly — it followed the prompt instruction
     # "institution_name must be ONLY the victim institution label, not a headline".
     # Only fall back to multi-candidate scoring when the LLM returned null, because

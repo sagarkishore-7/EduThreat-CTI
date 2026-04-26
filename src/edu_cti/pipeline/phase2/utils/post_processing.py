@@ -414,6 +414,188 @@ _DATA_CAT_KEYWORDS: list[tuple[str, str]] = [
 ]
 
 
+# ── MITRE ATT&CK technique lookup (technique_id → (name, tactic)) ────────────────
+# Covers the techniques most commonly seen in education-sector incident reporting.
+_MITRE_TECHNIQUE_INFO: dict[str, tuple[str, str]] = {
+    # Reconnaissance
+    "T1595": ("Active Scanning", "Reconnaissance"),
+    "T1595.001": ("Scanning IP Blocks", "Reconnaissance"),
+    "T1595.002": ("Vulnerability Scanning", "Reconnaissance"),
+    "T1592": ("Gather Victim Host Information", "Reconnaissance"),
+    "T1589": ("Gather Victim Identity Information", "Reconnaissance"),
+    "T1590": ("Gather Victim Network Information", "Reconnaissance"),
+    "T1591": ("Gather Victim Org Information", "Reconnaissance"),
+    "T1598": ("Phishing for Information", "Reconnaissance"),
+    # Resource Development
+    "T1583": ("Acquire Infrastructure", "Resource Development"),
+    "T1584": ("Compromise Infrastructure", "Resource Development"),
+    "T1585": ("Establish Accounts", "Resource Development"),
+    "T1587": ("Develop Capabilities", "Resource Development"),
+    "T1588": ("Obtain Capabilities", "Resource Development"),
+    # Initial Access
+    "T1133": ("External Remote Services", "Initial Access"),
+    "T1190": ("Exploit Public-Facing Application", "Initial Access"),
+    "T1195": ("Supply Chain Compromise", "Initial Access"),
+    "T1199": ("Trusted Relationship", "Initial Access"),
+    "T1200": ("Hardware Additions", "Initial Access"),
+    "T1078": ("Valid Accounts", "Initial Access"),
+    "T1566": ("Phishing", "Initial Access"),
+    "T1566.001": ("Spearphishing Attachment", "Initial Access"),
+    "T1566.002": ("Spearphishing Link", "Initial Access"),
+    "T1091": ("Replication Through Removable Media", "Initial Access"),
+    # Execution
+    "T1059": ("Command and Scripting Interpreter", "Execution"),
+    "T1059.001": ("PowerShell", "Execution"),
+    "T1059.003": ("Windows Command Shell", "Execution"),
+    "T1059.006": ("Python", "Execution"),
+    "T1203": ("Exploitation for Client Execution", "Execution"),
+    "T1204": ("User Execution", "Execution"),
+    "T1204.001": ("Malicious Link", "Execution"),
+    "T1204.002": ("Malicious File", "Execution"),
+    "T1047": ("Windows Management Instrumentation", "Execution"),
+    "T1053": ("Scheduled Task/Job", "Execution"),
+    "T1053.005": ("Scheduled Task", "Execution"),
+    "T1569": ("System Services", "Execution"),
+    "T1569.002": ("Service Execution", "Execution"),
+    # Persistence
+    "T1098": ("Account Manipulation", "Persistence"),
+    "T1136": ("Create Account", "Persistence"),
+    "T1136.001": ("Local Account", "Persistence"),
+    "T1543": ("Create or Modify System Process", "Persistence"),
+    "T1547": ("Boot or Logon Autostart Execution", "Persistence"),
+    "T1574": ("Hijack Execution Flow", "Persistence"),
+    "T1078.004": ("Cloud Accounts", "Persistence"),
+    "T1505": ("Server Software Component", "Persistence"),
+    "T1505.003": ("Web Shell", "Persistence"),
+    # Privilege Escalation
+    "T1055": ("Process Injection", "Privilege Escalation"),
+    "T1055.001": ("Dynamic-link Library Injection", "Privilege Escalation"),
+    "T1068": ("Exploitation for Privilege Escalation", "Privilege Escalation"),
+    "T1548": ("Abuse Elevation Control Mechanism", "Privilege Escalation"),
+    "T1134": ("Access Token Manipulation", "Privilege Escalation"),
+    # Defense Evasion
+    "T1027": ("Obfuscated Files or Information", "Defense Evasion"),
+    "T1036": ("Masquerading", "Defense Evasion"),
+    "T1070": ("Indicator Removal", "Defense Evasion"),
+    "T1070.001": ("Clear Windows Event Logs", "Defense Evasion"),
+    "T1070.004": ("File Deletion", "Defense Evasion"),
+    "T1112": ("Modify Registry", "Defense Evasion"),
+    "T1140": ("Deobfuscate/Decode Files or Information", "Defense Evasion"),
+    "T1202": ("Indirect Command Execution", "Defense Evasion"),
+    "T1497": ("Virtualization/Sandbox Evasion", "Defense Evasion"),
+    "T1562": ("Impair Defenses", "Defense Evasion"),
+    "T1562.001": ("Disable or Modify Tools", "Defense Evasion"),
+    "T1564": ("Hide Artifacts", "Defense Evasion"),
+    # Credential Access
+    "T1003": ("OS Credential Dumping", "Credential Access"),
+    "T1003.001": ("LSASS Memory", "Credential Access"),
+    "T1056": ("Input Capture", "Credential Access"),
+    "T1110": ("Brute Force", "Credential Access"),
+    "T1110.001": ("Password Guessing", "Credential Access"),
+    "T1110.003": ("Password Spraying", "Credential Access"),
+    "T1110.004": ("Credential Stuffing", "Credential Access"),
+    "T1187": ("Forced Authentication", "Credential Access"),
+    "T1212": ("Exploitation for Credential Access", "Credential Access"),
+    "T1539": ("Steal Web Session Cookie", "Credential Access"),
+    "T1552": ("Unsecured Credentials", "Credential Access"),
+    "T1555": ("Credentials from Password Stores", "Credential Access"),
+    "T1558": ("Steal or Forge Kerberos Tickets", "Credential Access"),
+    # Discovery
+    "T1016": ("System Network Configuration Discovery", "Discovery"),
+    "T1018": ("Remote System Discovery", "Discovery"),
+    "T1046": ("Network Service Discovery", "Discovery"),
+    "T1057": ("Process Discovery", "Discovery"),
+    "T1082": ("System Information Discovery", "Discovery"),
+    "T1083": ("File and Directory Discovery", "Discovery"),
+    "T1087": ("Account Discovery", "Discovery"),
+    "T1135": ("Network Share Discovery", "Discovery"),
+    "T1201": ("Password Policy Discovery", "Discovery"),
+    "T1482": ("Domain Trust Discovery", "Discovery"),
+    # Lateral Movement
+    "T1021": ("Remote Services", "Lateral Movement"),
+    "T1021.001": ("Remote Desktop Protocol", "Lateral Movement"),
+    "T1021.002": ("SMB/Windows Admin Shares", "Lateral Movement"),
+    "T1021.004": ("SSH", "Lateral Movement"),
+    "T1021.006": ("Windows Remote Management", "Lateral Movement"),
+    "T1080": ("Taint Shared Content", "Lateral Movement"),
+    "T1210": ("Exploitation of Remote Services", "Lateral Movement"),
+    "T1534": ("Internal Spearphishing", "Lateral Movement"),
+    "T1570": ("Lateral Tool Transfer", "Lateral Movement"),
+    # Collection
+    "T1005": ("Data from Local System", "Collection"),
+    "T1039": ("Data from Network Shared Drive", "Collection"),
+    "T1041": ("Exfiltration Over C2 Channel", "Exfiltration"),
+    "T1056.001": ("Keylogging", "Collection"),
+    "T1074": ("Data Staged", "Collection"),
+    "T1113": ("Screen Capture", "Collection"),
+    "T1119": ("Automated Collection", "Collection"),
+    "T1560": ("Archive Collected Data", "Collection"),
+    "T1560.001": ("Archive via Utility", "Collection"),
+    # Command and Control
+    "T1071": ("Application Layer Protocol", "Command and Control"),
+    "T1071.001": ("Web Protocols", "Command and Control"),
+    "T1071.004": ("DNS", "Command and Control"),
+    "T1090": ("Proxy", "Command and Control"),
+    "T1095": ("Non-Application Layer Protocol", "Command and Control"),
+    "T1102": ("Web Service", "Command and Control"),
+    "T1105": ("Ingress Tool Transfer", "Command and Control"),
+    "T1132": ("Data Encoding", "Command and Control"),
+    "T1573": ("Encrypted Channel", "Command and Control"),
+    # Exfiltration
+    "T1020": ("Automated Exfiltration", "Exfiltration"),
+    "T1030": ("Data Transfer Size Limits", "Exfiltration"),
+    "T1048": ("Exfiltration Over Alternative Protocol", "Exfiltration"),
+    "T1048.003": ("Exfiltration Over Unencrypted Non-C2 Protocol", "Exfiltration"),
+    "T1537": ("Transfer Data to Cloud Account", "Exfiltration"),
+    "T1567": ("Exfiltration Over Web Service", "Exfiltration"),
+    # Impact
+    "T1485": ("Data Destruction", "Impact"),
+    "T1486": ("Data Encrypted for Impact", "Impact"),
+    "T1489": ("Service Stop", "Impact"),
+    "T1490": ("Inhibit System Recovery", "Impact"),
+    "T1491": ("Defacement", "Impact"),
+    "T1495": ("Firmware Corruption", "Impact"),
+    "T1499": ("Endpoint Denial of Service", "Impact"),
+    "T1529": ("System Shutdown/Reboot", "Impact"),
+    "T1531": ("Account Access Removal", "Impact"),
+    "T1657": ("Financial Theft", "Impact"),
+}
+
+
+def _fill_mitre_technique_names(flat_data: Dict[str, Any]) -> None:
+    """Fill null technique_name and tactic from static lookup when technique_id is known."""
+    raw = flat_data.get("mitre_techniques_json")
+    if not raw:
+        return
+    try:
+        techniques = json.loads(raw) if isinstance(raw, str) else raw
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not isinstance(techniques, list):
+        return
+
+    changed = False
+    for tech in techniques:
+        if not isinstance(tech, dict):
+            continue
+        tid = (tech.get("technique_id") or "").strip()
+        if not tid:
+            continue
+        info = _MITRE_TECHNIQUE_INFO.get(tid)
+        if not info:
+            continue
+        name, tactic = info
+        if not tech.get("technique_name"):
+            tech["technique_name"] = name
+            changed = True
+        if not tech.get("tactic"):
+            tech["tactic"] = tactic
+            changed = True
+
+    if changed:
+        flat_data["mitre_techniques_json"] = json.dumps(techniques)
+
+
 def _infer_data_categories(flat_data: Dict[str, Any], summary: Optional[str]) -> None:
     """Add data_categories inferred from enriched_summary keywords (never removes existing)."""
     if not summary:
@@ -492,3 +674,16 @@ def apply_post_processing(
 
     # 6. data_categories: keyword scan of enriched_summary to catch fields LLM missed
     _infer_data_categories(flat_data, _summary)
+
+    # 7. MITRE technique name/tactic from static lookup when technique_id is known
+    _fill_mitre_technique_names(flat_data)
+
+    # 8. data_breached: infer from exfiltration or ransom payment signals in flat_data
+    if flat_data.get("data_breached") is None:
+        _attack_cat = (flat_data.get("attack_category") or "").lower()
+        if flat_data.get("ransom_paid") or flat_data.get("data_exfiltrated"):
+            flat_data["data_breached"] = True
+        elif any(kw in _attack_cat for kw in ("exfiltration", "data_leak", "data_breach", "data_exposure")):
+            flat_data["data_breached"] = True
+        elif flat_data.get("data_categories") or flat_data.get("records_affected_exact") or flat_data.get("records_affected_min"):
+            flat_data["data_breached"] = True
