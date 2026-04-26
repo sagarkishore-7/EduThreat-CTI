@@ -1226,6 +1226,18 @@ def save_enrichment_result(
             _all_urls = [u.strip() for u in _all_urls_str.split(";") if u.strip()]
     else:
         _all_urls = []
+    # Domains that are victim-listing sites, not news articles. Prefer any other URL.
+    _LEAK_SITE_DOMAINS = {"ransomware.live", "ransomwatch.telemetry.ltd", "id.ransomware.live"}
+
+    def _is_leak_site(url: Optional[str]) -> bool:
+        if not url:
+            return False
+        try:
+            from urllib.parse import urlparse
+            return urlparse(url).netloc.lower().lstrip("www.") in _LEAK_SITE_DOMAINS
+        except Exception:
+            return False
+
     if _all_urls and _raw_primary_url and _raw_primary_url not in _all_urls:
         logger.warning(
             "LLM primary_url %s not in all_urls for %s; using %s instead",
@@ -1234,6 +1246,13 @@ def save_enrichment_result(
         primary_url = _all_urls[0]
     else:
         primary_url = _raw_primary_url
+
+    # Prefer a real news article over a ransomware victim listing page.
+    if _is_leak_site(primary_url) and _all_urls:
+        news_url = next((u for u in _all_urls if not _is_leak_site(u)), None)
+        if news_url:
+            logger.debug("Replacing leak-site primary_url with news URL: %s", news_url)
+            primary_url = news_url
     article_metadata = _get_primary_article_metadata(conn, incident_id, primary_url)
     article_publish_date = article_metadata.get("publish_date")
 

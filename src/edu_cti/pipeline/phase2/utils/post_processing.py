@@ -176,6 +176,154 @@ _US_CITY_TO_STATE: dict[str, str] = {
 }
 
 # ── Status confirmation keywords ─────────────────────────────────────────────────
+# ── Defunct ransomware families (disbanded/rebranded) ────────────────────────────
+# Maps canonical family name → approximate date it ceased operations.
+# Attacks dated AFTER the cutoff should not be attributed to these families.
+_DEFUNCT_AFTER: dict[str, str] = {
+    "conti":             "2022-06-01",
+    "revil_sodinokibi":  "2022-02-01",
+    "darkside":          "2021-05-15",
+    "maze":              "2020-11-01",
+    "doppelpaymer":      "2022-03-01",
+    "avoslocker":        "2023-05-01",
+    "hive":              "2023-01-27",
+    "cl0p_clop":         "2024-06-01",
+}
+
+# ── Attack vector keyword scan ────────────────────────────────────────────────────
+# (keyword, canonical_vector) ordered most-specific first
+_ATTACK_VECTOR_KEYWORDS: list[tuple[str, str]] = [
+    ("spear.?phishing",        "spear_phishing_email"),
+    ("spearphishing",          "spear_phishing_email"),
+    ("phishing email",         "phishing_email"),
+    ("phishing link",          "malicious_link"),
+    ("phishing attach",        "malicious_attachment"),
+    ("malicious attach",       "malicious_attachment"),
+    ("malicious link",         "malicious_link"),
+    ("business email compromise", "business_email_compromise"),
+    (r"\bbec\b",               "business_email_compromise"),
+    ("credential stuff",       "credential_stuffing"),
+    ("password spray",         "password_spraying"),
+    ("brute.?forc",            "brute_force"),
+    ("stolen credential",      "stolen_credentials"),
+    ("compromised credential", "stolen_credentials"),
+    ("valid account",          "stolen_credentials"),
+    (r"\brdp\b",               "exposed_rdp"),
+    ("remote desktop",         "exposed_rdp"),
+    (r"\bvpn\b",               "exposed_vpn"),
+    ("exposed.*ssh",           "exposed_ssh"),
+    ("exposed.*database",      "exposed_database"),
+    ("exposed.*api",           "exposed_api"),
+    ("zero.?day",              "vulnerability_exploit_zero_day"),
+    (r"\bcve-\d{4}",           "vulnerability_exploit_known"),
+    ("unpatched",              "unpatched_system"),
+    ("misconfigur",            "misconfiguration"),
+    ("default credential",     "default_credentials"),
+    ("default password",       "default_credentials"),
+    ("sql injection",          "sql_injection"),
+    (r"\bssrf\b",              "ssrf"),
+    (r"\bxss\b",               "xss"),
+    ("supply chain",           "supply_chain_compromise"),
+    ("third.?party vendor",    "third_party_vendor"),
+    ("watering hole",          "watering_hole"),
+    ("drive.?by",              "drive_by_download"),
+    ("usb",                    "usb_drop"),
+    ("insider",                "insider_access"),
+    ("social engineer",        "social_engineering"),
+    ("cloud misconfigur",      "cloud_misconfiguration"),
+    ("storage bucket",         "storage_bucket_exposure"),
+    ("api key",                "api_key_exposure"),
+    ("phishing",               "phishing_email"),  # generic fallback
+]
+
+# ── Known private universities ────────────────────────────────────────────────────
+# Maps lowercased institution name → canonical institution_type override.
+# Only corrects LLM-assigned "university_public" to "university_private".
+_KNOWN_PRIVATE_UNIVERSITIES: dict[str, str] = {
+    # Elite US private
+    "stanford university": "university_private",
+    "stanford university department of public safety": "university_private",
+    "harvard university": "university_private",
+    "harvard medical school": "university_private",
+    "mit": "university_private",
+    "massachusetts institute of technology": "university_private",
+    "yale university": "university_private",
+    "princeton university": "university_private",
+    "columbia university": "university_private",
+    "university of pennsylvania": "university_private",
+    "brown university": "university_private",
+    "dartmouth college": "university_private",
+    "cornell university": "university_private",
+    "duke university": "university_private",
+    "vanderbilt university": "university_private",
+    "emory university": "university_private",
+    "rice university": "university_private",
+    "notre dame university": "university_private",
+    "university of notre dame": "university_private",
+    "georgetown university": "university_private",
+    "johns hopkins university": "university_private",
+    "northwestern university": "university_private",
+    "university of chicago": "university_private",
+    "nyu": "university_private",
+    "new york university": "university_private",
+    "boston university": "university_private",
+    "boston college": "university_private",
+    "tufts university": "university_private",
+    "northeastern university": "university_private",
+    "wake forest university": "university_private",
+    "tulane university": "university_private",
+    "fordham university": "university_private",
+    "villanova university": "university_private",
+    "marquette university": "university_private",
+    "loyola university": "university_private",
+    "seton hall university": "university_private",
+    "american university": "university_private",
+    "george washington university": "university_private",
+    "drexel university": "university_private",
+    "lehigh university": "university_private",
+    "lehigh valley health network": "hospital",
+    "howard university": "university_private",
+    "xavier university": "university_private",
+    "rensselaer polytechnic institute": "university_private",
+    "rochester institute of technology": "university_private",
+    "carnegie mellon university": "university_private",
+    "case western reserve university": "university_private",
+    "santa clara university": "university_private",
+    "gonzaga university": "university_private",
+    "pepperdine university": "university_private",
+    "occidental college": "university_private",
+    "cal tech": "university_private",
+    "california institute of technology": "university_private",
+    "caltech": "university_private",
+    # UK private/independent
+    "oxford university": "university_private",
+    "university of oxford": "university_private",
+    "cambridge university": "university_private",
+    "university of cambridge": "university_private",
+    "london school of economics": "university_private",
+    "imperial college london": "university_private",
+    "king's college london": "university_private",
+    # Other well-known private
+    "leiden university": "university_private",
+    "maastricht university": "university_private",
+    "eindhoven university of technology": "university_private",
+    "tu eindhoven": "university_private",
+    "delft university of technology": "university_private",
+    "tu delft": "university_private",
+    # Japanese private
+    "miyagi gakuin women's university": "university_private",
+    "waseda university": "university_private",
+    "keio university": "university_private",
+    "sophia university": "university_private",
+    # French private
+    "léonard de vinci university pole": "university_private",
+    "leonard de vinci": "university_private",
+    "sciences po": "university_private",
+    # Canadian private
+    "mcgill university": "university_private",
+    "university of toronto": "university_private",
+}
+
 _CONFIRMATION_RE = re.compile(
     r"\b(?:"
     r"apologize[sd]?|apologise[sd]?|"
@@ -627,6 +775,90 @@ def _infer_data_categories(flat_data: Dict[str, Any], summary: Optional[str]) ->
         flat_data["data_categories"] = json.dumps(existing)
 
 
+def infer_attack_vector(summary: Optional[str], title: Optional[str]) -> Optional[str]:
+    """Scan summary+title for attack vector signals. Returns canonical vector or None."""
+    text = " ".join(filter(None, [summary, title])).lower()
+    if not text:
+        return None
+    for pattern, vector in _ATTACK_VECTOR_KEYWORDS:
+        if re.search(pattern, text, re.IGNORECASE):
+            return vector
+    return None
+
+
+def infer_data_volume_gb(summary: Optional[str]) -> Optional[float]:
+    """Extract data volume in GB from summary text (e.g. '430 GB', '1.2 terabytes')."""
+    if not summary:
+        return None
+    # GB / gigabyte(s)
+    m = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:GB|gigabyte)', summary, re.IGNORECASE)
+    if m:
+        return float(m.group(1).replace(",", "."))
+    # TB / terabyte(s) → convert to GB
+    m = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:TB|terabyte)', summary, re.IGNORECASE)
+    if m:
+        return float(m.group(1).replace(",", ".")) * 1024
+    # MB — only capture if clearly large (>= 100 MB)
+    m = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:MB|megabyte)', summary, re.IGNORECASE)
+    if m:
+        mb = float(m.group(1).replace(",", "."))
+        return mb / 1024 if mb >= 100 else None
+    return None
+
+
+def infer_region_from_institution_name(name: Optional[str], country_code: Optional[str]) -> Optional[str]:
+    """
+    Extract US state from 'University of X at City' or 'City University' patterns
+    when city lookup can then resolve to state.
+    """
+    if not name or country_code != "US":
+        return None
+    # "University of X at City" / "X at City, State"
+    m = re.search(r'\bat\s+([A-Z][a-z]+(?:[\s-][A-Z][a-z]+)?)', name)
+    if m:
+        city = m.group(1).strip().lower()
+        state = _US_CITY_TO_STATE.get(city)
+        if state:
+            return state
+    # "City University" / "City College" — city is first word(s)
+    m = re.search(r'^([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+(?:University|College|School)', name)
+    if m:
+        city = m.group(1).strip().lower()
+        state = _US_CITY_TO_STATE.get(city)
+        if state:
+            return state
+    return None
+
+
+def _sanitize_defunct_ransomware(flat_data: Dict[str, Any]) -> None:
+    """
+    Clear ransomware_family when the family is known to have disbanded before the incident date.
+    LLMs commonly hallucinate Conti/REvil for recent attacks.
+    """
+    family = flat_data.get("ransomware_family")
+    if not family or family not in _DEFUNCT_AFTER:
+        return
+    incident_date = flat_data.get("incident_date") or flat_data.get("source_published_date")
+    if not incident_date:
+        return
+    try:
+        cutoff = _DEFUNCT_AFTER[family]
+        if str(incident_date)[:10] > cutoff:
+            flat_data["ransomware_family"] = None
+    except Exception:
+        pass
+
+
+def _fix_private_institution_type(flat_data: Dict[str, Any]) -> None:
+    """Override LLM-assigned 'university_public' for known private institutions."""
+    if flat_data.get("institution_type") != "university_public":
+        return
+    name = (flat_data.get("institution_name") or "").lower().strip()
+    override = _KNOWN_PRIVATE_UNIVERSITIES.get(name)
+    if override:
+        flat_data["institution_type"] = override
+
+
 def apply_post_processing(
     flat_data: Dict[str, Any],
     incident_row: Optional[Any],
@@ -652,6 +884,9 @@ def apply_post_processing(
         if family:
             flat_data["ransomware_family"] = family
 
+    # 1b. Sanity-check: clear family if gang was defunct before the incident date.
+    _sanitize_defunct_ransomware(flat_data)
+
     # 2. institution_type from institution name patterns
     current_type = flat_data.get("institution_type")
     if not current_type or current_type == "unknown":
@@ -659,11 +894,22 @@ def apply_post_processing(
         if inferred and inferred != current_type:
             flat_data["institution_type"] = inferred
 
+    # 2b. Override "university_public" for known private institutions.
+    _fix_private_institution_type(flat_data)
+
     # 3. US state (region) from city lookup
     if not flat_data.get("region") and flat_data.get("city"):
         state = infer_us_region(flat_data.get("city"), flat_data.get("country_code"))
         if state:
             flat_data["region"] = state
+
+    # 3b. US state from institution name ("University of X at City" pattern)
+    if not flat_data.get("region"):
+        region = infer_region_from_institution_name(
+            flat_data.get("institution_name"), flat_data.get("country_code")
+        )
+        if region:
+            flat_data["region"] = region
 
     # 4. Regulatory impact rules
     infer_regulatory_impact(flat_data)
@@ -688,3 +934,15 @@ def apply_post_processing(
             flat_data["data_breached"] = True
         elif flat_data.get("data_categories") or flat_data.get("records_affected_exact") or flat_data.get("records_affected_min"):
             flat_data["data_breached"] = True
+
+    # 9. attack_vector from summary/title keyword scan when LLM left it null/unknown
+    if not flat_data.get("attack_vector") or flat_data.get("attack_vector") == "unknown":
+        vector = infer_attack_vector(_summary, _title)
+        if vector:
+            flat_data["attack_vector"] = vector
+
+    # 10. data_volume_gb from summary text (e.g. "430 GB", "1.2 TB")
+    if flat_data.get("data_volume_gb") is None:
+        vol = infer_data_volume_gb(_summary)
+        if vol is not None:
+            flat_data["data_volume_gb"] = vol
