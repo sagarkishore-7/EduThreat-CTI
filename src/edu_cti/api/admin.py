@@ -26,6 +26,7 @@ from pydantic import BaseModel
 from src.edu_cti.core.config import DB_PATH, DATA_DIR
 from src.edu_cti.api.database import get_api_connection, count_education_incidents
 from src.edu_cti.api.cache import cache_invalidate
+from src.edu_cti.core.metrics import get_metrics
 from src.edu_cti.pipeline.phase2.utils.deduplication import deduplicate_by_institution
 
 # Use DATA_DIR from config (auto-detects Railway)
@@ -2069,6 +2070,8 @@ async def clear_all_incidents(
             # Pipeline / source bookkeeping
             "source_state",      # last_pubdate per RSS source — CRITICAL for re-ingestion
             "pipeline_runs",
+            # Metrics — cleared alongside incidents so counters reflect the new dataset
+            "pipeline_metrics",
         ]
         deleted_counts = {}
         for table in tables:
@@ -2084,6 +2087,9 @@ async def clear_all_incidents(
 
         # Vacuum to reclaim space
         conn.execute("VACUUM")
+
+        # Reset in-memory metrics so /metrics immediately reflects the clean slate
+        get_metrics().reset()
 
         total = sum(deleted_counts.values())
         cache_invalidate()  # Clear cached dashboard/analytics data
