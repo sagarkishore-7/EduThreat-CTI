@@ -306,7 +306,18 @@ def get_incident_by_id(
             full_enrichment = json.loads(enrichment_json_row["enrichment_data"])
             # Add any fields not in flat table
             if "attack_dynamics" not in incident and "attack_dynamics" in full_enrichment:
-                incident["attack_dynamics"] = full_enrichment.get("attack_dynamics")
+                ad = full_enrichment.get("attack_dynamics")
+                # Prefer post-processed flat-table values over raw LLM JSON blob.
+                # apply_post_processing() may have filled fields the LLM left null.
+                if ad and isinstance(ad, dict) and enrichment_row:
+                    for flat_key in ("ransomware_family", "attack_vector"):
+                        try:
+                            flat_val = enrichment_row[flat_key]
+                        except (IndexError, KeyError):
+                            flat_val = None
+                        if flat_val:
+                            ad[flat_key] = flat_val
+                incident["attack_dynamics"] = ad
             if "education_relevance" in full_enrichment:
                 incident["education_relevance"] = full_enrichment.get("education_relevance")
         except Exception:

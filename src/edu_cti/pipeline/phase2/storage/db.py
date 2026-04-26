@@ -23,7 +23,7 @@ from src.edu_cti.core.db import get_connection
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
 from src.edu_cti.pipeline.phase2.utils.deduplication import choose_best_institution_name, clean_institution_name
 from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import normalize_institution_type
-from src.edu_cti.pipeline.phase2.utils.post_processing import apply_post_processing, is_headline_format
+from src.edu_cti.pipeline.phase2.utils.post_processing import apply_post_processing, infer_confirmed_status, is_headline_format
 from src.edu_cti.core.config import DB_PATH, SERP_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
@@ -1455,6 +1455,19 @@ def save_enrichment_result(
         flat_data['city'] = city
     _apply_curated_note_fallbacks(flat_data, notes_fallback)
     apply_post_processing(flat_data, incident_row, summary=summary)
+
+    # Promote status to "confirmed" when enriched summary contains confirmation language.
+    # infer_confirmed_status is deterministic — only promotes, never demotes.
+    _incident_status = incident_row["status"] if incident_row else None
+    if _incident_status == "suspected":
+        _inc_title = incident_row["title"] if incident_row else None
+        if infer_confirmed_status(summary, _inc_title):
+            conn.execute(
+                "UPDATE incidents SET status = 'confirmed' WHERE incident_id = ?",
+                (incident_id,),
+            )
+            logger.debug("Promoted status to confirmed for %s based on enriched summary", incident_id)
+
     flat_data['created_at'] = now
     flat_data['updated_at'] = now
     
