@@ -23,6 +23,7 @@ from src.edu_cti.core.db import get_connection
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
 from src.edu_cti.pipeline.phase2.utils.deduplication import choose_best_institution_name, clean_institution_name
 from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import normalize_institution_type
+from src.edu_cti.pipeline.phase2.utils.post_processing import apply_post_processing, is_headline_format
 from src.edu_cti.core.config import DB_PATH, SERP_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
@@ -1173,6 +1174,22 @@ def save_enrichment_result(
         # a headline despite the instruction), then use it directly.
         _cleaned = clean_institution_name(str(_llm_name).strip())
         resolved_institution_name = _cleaned if _cleaned else str(_llm_name).strip()
+        # Secondary check: if cleaned result still looks like a news headline, fall
+        # back to ingestion-time scoring.  This catches non-English headlines that
+        # _ATTACK_TERM_RE in clean_institution_name() does not recognise.
+        if is_headline_format(resolved_institution_name, incident_row["title"] if incident_row else None):
+            logger.warning(
+                "institution_name looks like a headline ('%s...'); falling back to ingestion-time names",
+                resolved_institution_name[:60],
+            )
+            _recovered = choose_best_institution_name(
+                institution_name_fallback,
+                victim_name_fallback,
+                incident_row["title"] if incident_row else None,
+                incident_row["subtitle"] if incident_row else None,
+            )
+            if _recovered:
+                resolved_institution_name = _recovered
     else:
         # LLM returned null — use best available name from ingestion-time data.
         resolved_institution_name = choose_best_institution_name(
@@ -1304,6 +1321,14 @@ def save_enrichment_result(
                         llm_incident_date, source_published_date_fallback, incident_id,
                     )
                     _apply_llm_date = False
+                # Year mismatch guard: catches LLM writing "2026" for a 2025 article.
+                # Allow ±1 year to accommodate cross-year articles (e.g., Dec article about Jan incident).
+                elif _apply_llm_date and abs(_llm_dt.year - _src_dt.year) > 1:
+                    logger.warning(
+                        "Skipping LLM incident_date %s (year %s differs from source year %s by >1) for %s",
+                        llm_incident_date, _llm_dt.year, _src_dt.year, incident_id,
+                    )
+                    _apply_llm_date = False
             except (ValueError, TypeError):
                 pass
         if _apply_llm_date:
@@ -1429,6 +1454,7 @@ def save_enrichment_result(
     if not flat_data.get('city'):
         flat_data['city'] = city
     _apply_curated_note_fallbacks(flat_data, notes_fallback)
+    apply_post_processing(flat_data, incident_row, summary=summary)
     flat_data['created_at'] = now
     flat_data['updated_at'] = now
     

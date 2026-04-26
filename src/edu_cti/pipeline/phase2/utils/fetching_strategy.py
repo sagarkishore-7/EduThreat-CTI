@@ -19,6 +19,7 @@ from src.edu_cti.core import metrics as _metrics
 from src.edu_cti.core.deduplication import normalize_url
 from src.edu_cti.core.config import EDUCATION_KEYWORDS, CYBER_KEYWORDS, SERP_MAX_ATTEMPTS
 from src.edu_cti.core.oxylabs import OxylabsClient
+from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
 from src.edu_cti.pipeline.phase2.storage.article_fetcher import (
     ArticleFetcher,
     ArticleContent,
@@ -81,7 +82,7 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
     name = (incident.get("institution_name") or incident.get("victim_raw_name") or "").strip()
     title = (incident.get("title") or "").strip()
 
-    if name and name.lower() not in INVALID_NAMES:
+    if name and name.lower() not in INVALID_NAMES and not is_headline_format(name, title):
         # Skip domain-format names (e.g. unila.edu.mx, saiedu.fi) — Google News
         # won't find news articles for a bare domain name. These consistently
         # return 0 results and waste Oxylabs credits.
