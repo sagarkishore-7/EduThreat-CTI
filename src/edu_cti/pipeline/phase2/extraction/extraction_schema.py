@@ -111,12 +111,13 @@ EXTRACTION_SCHEMA = {
         },
         "institution_size": {
             "type": "string",
-            "enum": ["small_under_5k", "medium_5k_20k", "large_20k_50k", "very_large_over_50k", "unknown"]
+            "enum": ["small_under_5k", "medium_5k_20k", "large_20k_50k", "very_large_over_50k", "unknown"],
+            "description": "Enrollment size: small_under_5k (<5,000 students); medium_5k_20k (5–20K); large_20k_50k (20–50K); very_large_over_50k (>50K). Use unknown if not stated."
         },
-        "country": {"type": "string"},
+        "country": {"type": "string", "description": "Standard English country name of the victim institution. Translate and romanise non-Latin names. E.g. 'United States', 'United Kingdom', 'Japan'."},
         "country_code": {"type": "string", "description": "ISO 3166-1 alpha-2 country code, e.g. US, GB, DE"},
-        "region": {"type": "string"},
-        "city": {"type": "string"},
+        "region": {"type": "string", "description": "State, province, or region of the victim institution. E.g. 'California', 'Ontario', 'Bavaria'. Null if not stated."},
+        "city": {"type": "string", "description": "City where the victim institution is located. Null if not stated."},
         
         # ========== INCIDENT CLASSIFICATION ==========
         "incident_severity": {
@@ -126,14 +127,16 @@ EXTRACTION_SCHEMA = {
         },
         "incident_status": {
             "type": "string",
-            "enum": ["ongoing", "contained", "resolved", "unknown"]
+            "enum": ["ongoing", "contained", "resolved", "unknown"],
+            "description": "Current status at time of article: ongoing — attack still active or systems still down; contained — attack stopped, recovery in progress; resolved — fully recovered and back to normal; unknown — not stated in article."
         },
         
         # ========== TIMELINE & DATES ==========
         "incident_date": {"type": "string", "description": "ISO 8601 date of the incident, e.g. 2024-03-15"},
         "incident_date_precision": {
             "type": "string",
-            "enum": ["exact", "approximate", "month_only", "year_only", "unknown"]
+            "enum": ["exact", "approximate", "month_only", "year_only", "unknown"],
+            "description": "Precision of incident_date: exact — specific date stated; approximate — resolved from relative expression ('last week', 'two months ago'); month_only — only month/year known; year_only — only year known; unknown — no date determinable."
         },
         "discovery_date": {"type": "string", "description": "ISO 8601 date when the incident was discovered, e.g. 2024-03-20"},
         "publication_date": {"type": "string", "description": "ISO 8601 date the article/report was published, e.g. 2024-03-22"},
@@ -215,6 +218,21 @@ EXTRACTION_SCHEMA = {
         # ========== ATTACK CLASSIFICATION (EXTENSIVE) ==========
         "attack_category": {
             "type": "string",
+            "description": (
+                "Primary classification of the attack. Choose the single best match. "
+                "ransomware_encryption — files encrypted, ransom demanded for decryption key. "
+                "ransomware_double_extortion — files encrypted AND data exfiltrated/threatened. "
+                "ransomware_data_leak_only — data stolen and published/threatened, but NO encryption. "
+                "data_breach_external — external attacker accessed and stole data without ransomware. "
+                "data_exposure_misconfiguration — data exposed publicly due to misconfigured storage/server. "
+                "phishing_credential_harvest — phishing used to steal login credentials. "
+                "business_email_compromise — fraudulent email used to divert payments or deceive staff. "
+                "supply_chain_software — victim compromised via a software vendor (e.g. MOVEit, SolarWinds). "
+                "third_party_compromise — victim affected because a third-party service provider was breached. "
+                "ddos_* — distributed denial of service attacks. "
+                "unauthorized_access — attacker gained access to systems without explicit ransom or data theft. "
+                "Use unknown only when insufficient information is in the article to classify."
+            ),
             "enum": [
                 # Ransomware variants
                 "ransomware_encryption",
@@ -289,6 +307,20 @@ EXTRACTION_SCHEMA = {
         # ========== ATTACK VECTOR (EXTENSIVE) ==========
         "attack_vector": {
             "type": "string",
+            "description": (
+                "How the attacker initially gained access. Choose the single best match. "
+                "phishing_email — generic phishing to many targets. "
+                "spear_phishing_email — targeted phishing at specific individuals. "
+                "stolen_credentials — credentials obtained elsewhere and reused. "
+                "vulnerability_exploit_known — known CVE exploited (patch was available). "
+                "vulnerability_exploit_zero_day — zero-day exploit, no patch existed. "
+                "exposed_rdp — Remote Desktop Protocol exposed to internet. "
+                "exposed_vpn — VPN appliance exploited (e.g. Pulse Secure, Fortinet). "
+                "third_party_vendor — access gained through a vendor's compromised system. "
+                "supply_chain_compromise — via a software update or supplier. "
+                "misconfiguration — improperly secured system exposed (open S3 bucket, unsecured database). "
+                "Use unknown when initial access method is not stated in the article."
+            ),
             "enum": [
                 # Email-based
                 "phishing_email",
@@ -352,8 +384,11 @@ EXTRACTION_SCHEMA = {
                 "other"
             ]
         },
-        "initial_access_description": {"type": "string"},
-        
+        "initial_access_description": {
+            "type": "string",
+            "description": "One sentence describing how the attacker gained initial access, drawn directly from the article. E.g. 'Attacker exploited unpatched MOVEit vulnerability to access file transfer server.' Null if initial access method is not described."
+        },
+
         # ========== KILL CHAIN / ATTACK CHAIN ==========
         "attack_chain": {
             "type": "array",
@@ -481,14 +516,18 @@ EXTRACTION_SCHEMA = {
         },
         
         # ========== THREAT ACTOR (EXTENSIVE) ==========
-        "threat_actor_claimed": {"type": "boolean"},
+        "threat_actor_claimed": {
+            "type": "boolean",
+            "description": "Set to true if the threat actor publicly claimed responsibility (on a leak site, Telegram, dark web forum, or similar). Set to false if claims were explicitly denied. Null if not mentioned."
+        },
         "threat_actor_name": {
             "type": "string",
             "description": "Name of the threat actor or group as explicitly stated in the article. Set to null if not named — do NOT infer from ransomware family or attack type."
         },
         "threat_actor_aliases": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {"type": "string"},
+            "description": "Alternative names or aliases for the threat actor group as mentioned in the article."
         },
         "threat_actor_category": {
             "type": "string",
@@ -505,7 +544,8 @@ EXTRACTION_SCHEMA = {
                 "competitor",
                 "unknown",
                 "other"
-            ]
+            ],
+            "description": "Category of threat actor: ransomware_gang — the group operating a RaaS platform; ransomware_affiliate — a group using a RaaS platform; apt_nation_state — confirmed government-sponsored; apt_state_sponsored — state-affiliated but not confirmed direct; cybercriminal_organized — organised crime not specifically ransomware; hacktivist — politically motivated; insider_threat — current or former employee. Use unknown when actor is named but category is unclear."
         },
         "threat_actor_motivation": {
             "type": "string",
@@ -519,13 +559,14 @@ EXTRACTION_SCHEMA = {
                 "research_theft",
                 "competitive_advantage",
                 "unknown"
-            ]
+            ],
+            "description": "Primary motivation as stated or implied by the article: financial_gain — ransom or data monetisation; espionage — intelligence collection; hacktivism — political/ideological; research_theft — targeting research IP; unknown — not stated."
         },
         "threat_actor_origin_country": {
             "type": "string",
             "description": "Country of origin as explicitly stated in the article. Do NOT infer from the actor's known attribution — set to null unless the article says so."
         },
-        "threat_actor_claim_url": {"type": "string"},
+        "threat_actor_claim_url": {"type": "string", "description": "URL of the threat actor's post claiming responsibility (leak site, Telegram, forum). Null if not stated."},
         
         # ========== RANSOMWARE/MALWARE (EXTENSIVE) ==========
         "ransomware_family": {
@@ -637,6 +678,7 @@ EXTRACTION_SCHEMA = {
         },
         "attacker_communication_channel": {
             "type": "string",
+            "description": "Channel used by the attacker to communicate ransom demands or claims. E.g. tor_leak_site — data published on dark web leak site; ransom_note — note left on victim systems; telegram — via Telegram. Null if not stated.",
             "enum": [
                 "email",
                 "tor_leak_site",
@@ -667,18 +709,34 @@ EXTRACTION_SCHEMA = {
         "ransom_amount_min": {"type": "number", "description": "Minimum ransom amount in USD — only from an explicitly stated figure. Null if not stated."},
         "ransom_amount_max": {"type": "number", "description": "Maximum ransom amount in USD — only from an explicitly stated figure. Null if not stated."},
         "ransom_amount_exact": {"type": "number", "description": "Exact ransom amount in USD — only from an explicitly stated figure. Null if not stated."},
-        "ransom_currency": {"type": "string"},
+        "ransom_currency": {"type": "string", "description": "Currency of the ransom demand, e.g. 'USD', 'EUR'. Null if not stated."},
         "ransom_cryptocurrency": {
             "type": "string",
+            "description": "Cryptocurrency demanded for ransom payment. Null if not stated.",
             "enum": ["bitcoin", "monero", "ethereum", "other", "unknown"]
         },
-        "ransom_paid": {"type": "boolean"},
-        "ransom_paid_amount": {"type": "number"},
-        "ransom_negotiated": {"type": "boolean"},
-        "ransom_deadline_given": {"type": "boolean"},
-        "ransom_deadline_days": {"type": "number"},
-        "decryptor_received": {"type": "boolean"},
-        "decryptor_worked": {"type": "boolean"},
+        "ransom_paid": {
+            "type": "boolean",
+            "description": "Set to true if the article explicitly states ransom was paid. Set to false if the institution explicitly refused to pay or the article confirms no payment. Null if not mentioned."
+        },
+        "ransom_paid_amount": {"type": "number", "description": "Amount paid in USD. Only from explicitly stated figure. Null if not stated."},
+        "ransom_negotiated": {
+            "type": "boolean",
+            "description": "Set to true if ransom negotiations between victim and attacker are described. Null if not mentioned."
+        },
+        "ransom_deadline_given": {
+            "type": "boolean",
+            "description": "Set to true if the attacker gave a payment deadline. Null if not mentioned."
+        },
+        "ransom_deadline_days": {"type": "number", "description": "Number of days given to pay the ransom. Null if not stated."},
+        "decryptor_received": {
+            "type": "boolean",
+            "description": "Set to true if the victim received a working decryption key or tool after the attack. Null if not mentioned."
+        },
+        "decryptor_worked": {
+            "type": "boolean",
+            "description": "Set to true if the decryption tool successfully restored encrypted files. Null if not mentioned."
+        },
         
         # ========== INDICATORS OF COMPROMISE ==========
         "iocs": {
@@ -729,12 +787,30 @@ EXTRACTION_SCHEMA = {
         },
         
         # ========== DATA IMPACT (EXTENSIVE) ==========
-        "data_breached": {"type": "boolean"},
-        "data_exfiltrated": {"type": "boolean"},
-        "data_encrypted": {"type": "boolean"},
-        "data_destroyed": {"type": "boolean"},
-        "data_published": {"type": "boolean"},
-        "data_sold": {"type": "boolean"},
+        "data_breached": {
+            "type": "boolean",
+            "description": "Set to true if personal or sensitive data was confirmed to have been accessed, stolen, or exposed. Set to false ONLY if the article explicitly confirms no data was accessed. Null if not mentioned. For ransomware_double_extortion this is almost always true."
+        },
+        "data_exfiltrated": {
+            "type": "boolean",
+            "description": "Set to true if data was confirmed to have been copied and taken by the attacker. True for ransomware_double_extortion by definition. Null if not confirmed in the article."
+        },
+        "data_encrypted": {
+            "type": "boolean",
+            "description": "Set to true if files or systems were encrypted by the attacker. True for ransomware_encryption and ransomware_double_extortion. Set to false if article confirms no encryption occurred. Null if not mentioned."
+        },
+        "data_destroyed": {
+            "type": "boolean",
+            "description": "Set to true if data was permanently deleted or corrupted. Null if not mentioned."
+        },
+        "data_published": {
+            "type": "boolean",
+            "description": "Set to true if stolen data was published on a leak site, dark web, or made publicly available. Null if not mentioned."
+        },
+        "data_sold": {
+            "type": "boolean",
+            "description": "Set to true if stolen data was reportedly offered for sale. Null if not mentioned."
+        },
         "data_categories": {
             "type": "array",
             "description": (
@@ -833,10 +909,12 @@ EXTRACTION_SCHEMA = {
         # ========== SYSTEM IMPACT (EXTENSIVE) ==========
         "infrastructure_type": {
             "type": "string",
+            "description": "Type of IT infrastructure affected. Use unknown if not stated in the article.",
             "enum": ["on_premises", "cloud_only", "hybrid", "multi_cloud", "unknown"]
         },
         "cloud_provider": {
             "type": "string",
+            "description": "Cloud provider involved if cloud infrastructure was affected. Use none if purely on-premises. Null if not mentioned.",
             "enum": ["aws", "azure", "gcp", "oracle", "other", "none", "unknown"]
         },
         "systems_affected": {
@@ -934,7 +1012,10 @@ EXTRACTION_SCHEMA = {
                 ]
             }
         },
-        "critical_systems_affected": {"type": "boolean"},
+        "critical_systems_affected": {
+            "type": "boolean",
+            "description": "Set to true if safety-critical or operationally essential systems were impacted (patient care, core network, financial systems, student records, research computing). Null if not described."
+        },
         "network_compromised": {
             "type": "boolean",
             "description": (
@@ -945,23 +1026,25 @@ EXTRACTION_SCHEMA = {
                 "Use null only when the article gives no information about network impact."
             )
         },
-        "domain_admin_compromised": {"type": "boolean"},
-        "backup_compromised": {"type": "boolean"},
+        "domain_admin_compromised": {"type": "boolean", "description": "Set to true if the attacker gained domain administrator or Active Directory admin access. Trigger phrases: 'domain controller compromised', 'admin credentials stolen', 'AD taken over'. Null if not mentioned."},
+        "backup_compromised": {"type": "boolean", "description": "Set to true if backup systems were deleted, encrypted, or corrupted by the attacker. Trigger phrases: 'backups were deleted', 'encrypted backups', 'backup systems were also affected'. Null if not mentioned."},
         "encryption_extent": {
             "type": "string",
-            "enum": ["full_encryption", "partial_encryption", "no_encryption", "unknown"]
+            "enum": ["full_encryption", "partial_encryption", "no_encryption", "unknown"],
+            "description": "Scope of encryption: full_encryption — all/most systems; partial_encryption — some systems; no_encryption — data theft without encryption; unknown — ransomware confirmed but extent not stated."
         },
-        "systems_encrypted_count": {"type": "integer"},
-        "servers_affected_count": {"type": "integer"},
-        "endpoints_affected_count": {"type": "integer"},
-        
+        "systems_encrypted_count": {"type": "integer", "description": "Number of systems or servers encrypted. Null if not stated."},
+        "servers_affected_count": {"type": "integer", "description": "Number of servers affected. Null if not stated."},
+        "endpoints_affected_count": {"type": "integer", "description": "Number of endpoints or workstations affected. Null if not stated."},
+
         # ========== OPERATIONAL IMPACT ==========
         "outage_start_date": {"type": "string", "description": "ISO 8601 date the outage began"},
         "outage_end_date": {"type": "string", "description": "ISO 8601 date the outage ended"},
-        "outage_duration_hours": {"type": "number"},
-        "downtime_days": {"type": "number"},
-        "partial_service_days": {"type": "number"},
+        "outage_duration_hours": {"type": "number", "description": "Total outage duration in hours. Only from explicitly stated figures. Null if not stated."},
+        "downtime_days": {"type": "number", "description": "Days the institution was fully down or systems were completely unavailable. Only from explicitly stated figures. Null if not stated."},
+        "partial_service_days": {"type": "number", "description": "Days operating in degraded/partial capacity after the initial outage. Only from explicitly stated figures. Null if not stated."},
         "operational_impacts": {
+            "description": "Operational disruptions caused by the attack. Select all that apply based on article text.",
             "type": "array",
             "items": {
                 "type": "string",
@@ -996,33 +1079,50 @@ EXTRACTION_SCHEMA = {
         },
         
         # ========== USER IMPACT ==========
-        "students_affected": {"type": "integer"},
-        "staff_affected": {"type": "integer"},
-        "faculty_affected": {"type": "integer"},
-        "alumni_affected": {"type": "integer"},
-        "applicants_affected": {"type": "integer"},
-        "patients_affected": {"type": "integer"},
-        "donors_affected": {"type": "integer"},
-        "total_individuals_affected": {"type": "integer"},
-        
+        "students_affected": {"type": "integer", "description": "Number of students whose data was affected. Only from explicitly stated numbers. Null if not stated."},
+        "staff_affected": {"type": "integer", "description": "Number of staff/employees whose data was affected. Null if not stated."},
+        "faculty_affected": {"type": "integer", "description": "Number of faculty members whose data was affected. Null if not stated."},
+        "alumni_affected": {"type": "integer", "description": "Number of alumni whose data was affected. Null if not stated."},
+        "applicants_affected": {"type": "integer", "description": "Number of applicants or prospective students affected. Null if not stated."},
+        "patients_affected": {"type": "integer", "description": "Number of patients affected (for university hospitals). Null if not stated."},
+        "donors_affected": {"type": "integer", "description": "Number of donors whose data was affected. Null if not stated."},
+        "total_individuals_affected": {"type": "integer", "description": "Total number of individuals affected across all categories. Null if not stated."},
+
         # ========== FINANCIAL IMPACT ==========
-        "estimated_total_cost_usd": {"type": "number"},
-        "ransom_cost_usd": {"type": "number"},
-        "recovery_cost_usd": {"type": "number"},
-        "legal_cost_usd": {"type": "number"},
-        "notification_cost_usd": {"type": "number"},
-        "credit_monitoring_cost_usd": {"type": "number"},
-        "lost_revenue_usd": {"type": "number"},
-        "insurance_claim": {"type": "boolean"},
-        "insurance_payout_usd": {"type": "number"},
+        "estimated_total_cost_usd": {"type": "number", "description": "Total estimated cost in USD — only from explicitly stated figures. Null if not stated."},
+        "ransom_cost_usd": {"type": "number", "description": "Ransom payment amount in USD — only from explicitly stated figures. Null if not stated."},
+        "recovery_cost_usd": {"type": "number", "description": "Recovery and remediation cost in USD — only from explicitly stated figures. Null if not stated."},
+        "legal_cost_usd": {"type": "number", "description": "Legal cost in USD — only from explicitly stated figures. Null if not stated."},
+        "notification_cost_usd": {"type": "number", "description": "Breach notification cost in USD. Null if not stated."},
+        "credit_monitoring_cost_usd": {"type": "number", "description": "Cost of credit monitoring offered to victims. Null if not stated."},
+        "lost_revenue_usd": {"type": "number", "description": "Revenue lost due to downtime. Null if not stated."},
+        "insurance_claim": {
+            "type": "boolean",
+            "description": "Set to true if the institution filed or was expected to file a cyber insurance claim. Null if not mentioned."
+        },
+        "insurance_payout_usd": {"type": "number", "description": "Insurance payout amount in USD. Null if not stated."},
         "business_impact_severity": {
             "type": "string",
-            "enum": ["catastrophic", "critical", "major", "moderate", "minor", "negligible"]
+            "enum": ["catastrophic", "critical", "major", "moderate", "minor", "negligible"],
+            "description": "How severely operations were disrupted: catastrophic — complete operational shutdown, major data loss; critical — major systems down for weeks; major — significant multi-day disruption; moderate — notable but limited scope; minor — quickly resolved; negligible — near-zero impact."
         },
         
         # ========== REGULATORY IMPACT ==========
         "applicable_regulations": {
             "type": "array",
+            "description": (
+                "Legal/regulatory frameworks that govern this breach — infer from country and data categories if not explicitly stated. "
+                "FERPA — US institution with student education records; "
+                "HIPAA — US institution with patient health data; "
+                "GDPR — EU/EEA/UK institution with any personal data of EU residents; "
+                "UK_DPA — UK institution (post-Brexit, applies alongside GDPR); "
+                "CCPA_CPRA — California institution or incident involving California residents; "
+                "Canada_PIPEDA — Canadian institution; "
+                "Australia_Privacy_Act — Australian institution; "
+                "state_breach_notification — US state breach notification law applies (applies in most US states when PII is breached); "
+                "PCI_DSS — payment card data was involved. "
+                "Set to null if none clearly apply."
+            ),
             "items": {
                 "type": "string",
                 "enum": [
@@ -1041,31 +1141,51 @@ EXTRACTION_SCHEMA = {
                 ]
             }
         },
-        "breach_notification_required": {"type": "boolean"},
-        "notification_sent": {"type": "boolean"},
-        "notification_sent_date": {"type": "string", "description": "ISO 8601 date the breach notification was sent"},
+        "breach_notification_required": {
+            "type": "boolean",
+            "description": "Set to true if the breach involves PII in a jurisdiction requiring notification (FERPA, GDPR, HIPAA, US state laws), or if the article mentions notification obligations. Null if not determinable from the article."
+        },
+        "notification_sent": {
+            "type": "boolean",
+            "description": "Set to true if the institution sent breach notifications to affected individuals or regulators. Look for: 'notified affected individuals', 'sent letters to', 'offering credit monitoring', 'emailed affected'. Null if not mentioned."
+        },
+        "notification_sent_date": {"type": "string", "description": "ISO 8601 date the breach notification was sent to affected individuals. Null if not stated."},
         "regulators_notified": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {"type": "string"},
+            "description": "Regulatory bodies notified. E.g. ['Maine Attorney General', 'HHS', 'ICO', 'CNIL']. Null if not mentioned."
         },
-        "investigation_opened": {"type": "boolean"},
+        "investigation_opened": {
+            "type": "boolean",
+            "description": "Set to true if a formal investigation was opened by law enforcement or a regulatory body. Null if not mentioned."
+        },
         "investigating_agencies": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {"type": "string"},
+            "description": "Agencies conducting formal investigations. E.g. ['FBI', 'ICO', 'Maine AG']. Null if none mentioned."
         },
-        "fine_imposed": {"type": "boolean"},
-        "fine_amount_usd": {"type": "number"},
-        "lawsuits_filed": {"type": "boolean"},
-        "lawsuit_count": {"type": "integer"},
-        "class_action_filed": {"type": "boolean"},
-        "settlement_amount_usd": {"type": "number"},
+        "fine_imposed": {
+            "type": "boolean",
+            "description": "Set to true if a regulatory fine or penalty was imposed on the institution. Null if not mentioned."
+        },
+        "fine_amount_usd": {"type": "number", "description": "Fine amount in USD. Only from explicitly stated figure. Null if not stated."},
+        "lawsuits_filed": {
+            "type": "boolean",
+            "description": "Set to true if a lawsuit was filed against the institution related to this incident. Null if not mentioned."
+        },
+        "lawsuit_count": {"type": "integer", "description": "Number of lawsuits filed. Null if not stated."},
+        "class_action_filed": {
+            "type": "boolean",
+            "description": "Set to true if a class action lawsuit was filed against the institution. Null if not mentioned."
+        },
+        "settlement_amount_usd": {"type": "number", "description": "Settlement amount in USD. Only from explicitly stated figure. Null if not stated."},
         
         # ========== RESPONSE & RECOVERY ==========
-        "incident_response_activated": {"type": "boolean"},
-        "ir_firm_engaged": {"type": "string"},
-        "forensics_firm_engaged": {"type": "string"},
-        "legal_counsel_engaged": {"type": "string"},
-        "pr_firm_engaged": {"type": "string"},
+        "incident_response_activated": {"type": "boolean", "description": "Set to true if a formal incident response was initiated — e.g. 'activated incident response plan', 'IR team deployed', 'emergency response team assembled'. Null if not mentioned."},
+        "ir_firm_engaged": {"type": "string", "description": "Name of the external incident response firm engaged (e.g. 'Mandiant', 'CrowdStrike', 'Palo Alto Unit 42'). Null if not stated."},
+        "forensics_firm_engaged": {"type": "string", "description": "Name of the digital forensics firm engaged. May be the same as ir_firm_engaged. Null if not stated."},
+        "legal_counsel_engaged": {"type": "string", "description": "Name of legal counsel or law firm engaged to advise on the breach. Null if not stated."},
+        "pr_firm_engaged": {"type": "string", "description": "Name of public relations firm engaged to manage communications about the incident. Null if not stated."},
         "law_enforcement_involved": {
             "type": "boolean",
             "description": (
@@ -1091,6 +1211,7 @@ EXTRACTION_SCHEMA = {
         },
         "recovery_method": {
             "type": "string",
+            "description": "Primary method used to recover systems. backup_restore — recovered from backups; decryptor_used — decryption key obtained without paying; ransom_paid_decryption — paid ransom and received decryptor; clean_rebuild — rebuilt systems from scratch; partial_backup_partial_rebuild — mixed approach; ongoing — recovery still in progress at time of article; unknown — recovery mentioned but method not stated.",
             "enum": [
                 "backup_restore",
                 "decryptor_used",
@@ -1103,11 +1224,12 @@ EXTRACTION_SCHEMA = {
         },
         "recovery_started_date": {"type": "string", "description": "ISO 8601 date recovery operations began"},
         "recovery_completed_date": {"type": "string", "description": "ISO 8601 date recovery was completed"},
-        "recovery_duration_days": {"type": "number"},
+        "recovery_duration_days": {"type": "number", "description": "Total days from incident to full recovery. Only from explicitly stated figures. Null if not stated."},
         "mttd_hours": {"type": "number", "description": "Mean Time To Detect"},
         "mttr_hours": {"type": "number", "description": "Mean Time To Recover"},
         "security_improvements": {
             "type": "array",
+            "description": "Security measures implemented AFTER the incident as part of remediation or improvements. Only include measures explicitly stated in the article as being adopted post-incident.",
             "items": {
                 "type": "string",
                 "enum": [
@@ -1141,13 +1263,14 @@ EXTRACTION_SCHEMA = {
                 ]
             }
         },
-        
+
         # ========== TRANSPARENCY & DISCLOSURE ==========
-        "public_disclosure": {"type": "boolean"},
+        "public_disclosure": {"type": "boolean", "description": "Set to true if the institution publicly disclosed the incident (issued a statement, notified media, posted on website, or filed a regulatory notice). Null if not mentioned."},
         "public_disclosure_date": {"type": "string", "description": "ISO 8601 date the incident was publicly disclosed"},
-        "disclosure_delay_days": {"type": "number"},
+        "disclosure_delay_days": {"type": "number", "description": "Days between incident discovery and public disclosure. Only from explicitly stated dates in the article. Null if not calculable."},
         "disclosure_source": {
             "type": "string",
+            "description": "How the incident became publicly known. institution_statement — the victim institution issued a press release or statement; media_report — first reported by journalists; attacker_leak_site — disclosed by the attacker publishing data; regulatory_filing — via HHS, AG, SEC, or other regulatory filing; security_researcher — discovered and reported by a security researcher.",
             "enum": [
                 "institution_statement",
                 "media_report",
@@ -1161,11 +1284,12 @@ EXTRACTION_SCHEMA = {
         },
         "transparency_level": {
             "type": "string",
+            "description": "How forthcoming the institution was in disclosing incident details. excellent — detailed statement with specifics, timeline, and remediation; good — clear statement with most key facts; adequate — basic acknowledgment with limited detail; poor — minimal or evasive disclosure; none — no public disclosure made.",
             "enum": ["excellent", "good", "adequate", "poor", "none"]
         },
-        "official_statement_url": {"type": "string"},
-        "incident_report_url": {"type": "string"},
-        "updates_provided_count": {"type": "integer"},
+        "official_statement_url": {"type": "string", "description": "URL of the institution's official public statement about the incident. Null if not linked in the article."},
+        "incident_report_url": {"type": "string", "description": "URL of a formal incident report or regulatory filing. Null if not linked in the article."},
+        "updates_provided_count": {"type": "integer", "description": "Number of public updates the institution issued about this incident. Null if not stated."},
         
         # ========== CROSS-INCIDENT ANALYSIS FIELDS ==========
         "attack_campaign_name": {
@@ -1177,20 +1301,22 @@ EXTRACTION_SCHEMA = {
             "items": {"type": "string"},
             "description": "IDs or references to related incidents"
         },
-        "common_vulnerability_exploited": {"type": "string"},
+        "common_vulnerability_exploited": {"type": "string", "description": "CVE ID or short name of the vulnerability exploited if this incident is part of a wider exploitation wave (e.g. 'CVE-2023-34362 MOVEit'). Null if not a known campaign vulnerability."},
         "sector_targeting_pattern": {
             "type": "string",
+            "description": "Whether this attack appeared to specifically target education or was opportunistic. targeted_education_only — attacker chose this victim because it was in education; opportunistic_multi_sector — attack affected multiple sectors, education was incidental; unknown — cannot be determined.",
             "enum": ["targeted_education_only", "opportunistic_multi_sector", "unknown"]
         },
-        
+
         # ========== SOURCE METADATA ==========
-        "source_url": {"type": "string"},
-        "source_headline": {"type": "string"},
-        "source_publisher": {"type": "string"},
-        "source_language": {"type": "string"},
+        "source_url": {"type": "string", "description": "URL of the article being analysed. Copy verbatim from the article metadata provided."},
+        "source_headline": {"type": "string", "description": "Headline or title of the article. Copy verbatim from the article."},
+        "source_publisher": {"type": "string", "description": "Name of the news outlet or publisher (e.g. 'BleepingComputer', 'The Register', 'EdScoop'). Null if not identifiable."},
+        "source_language": {"type": "string", "description": "ISO 639-1 language code of the article (e.g. 'en', 'de', 'nl', 'fr'). Defaults to 'en' for English."},
         "key_quotes": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {"type": "string"},
+            "description": "Direct quotes from the article that are particularly informative — e.g. official statements, spokesperson comments, or notable admissions. Only exact quotes — do not paraphrase."
         },
         
         # ========== NOTES ==========
