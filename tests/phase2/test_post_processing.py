@@ -83,6 +83,23 @@ class TestIsHeadlineFormat:
         name = "Cyberattack forces British high school to shut down for a week - Cybernews"
         assert is_headline_format(name) is True  # ends with " - Cybernews"
 
+    def test_broadcaster_with_domain_dot_is_headline(self):
+        # Regression: WTVR.com suffix was NOT caught because '.' was missing from char class
+        assert is_headline_format("How a recent VCU data breach impacts alumni - WTVR.com") is True
+
+    def test_broadcaster_with_dot_co_uk(self):
+        assert is_headline_format("Ransomware cripples UK university - BBC.co.uk") is True
+
+    def test_broadcaster_wptv_dot_com(self):
+        assert is_headline_format(
+            "Computer hackers demand $40 million ransom from Broward County Public Schools - WPTV.com"
+        ) is True
+
+    def test_real_institution_name_not_flagged(self):
+        # Real names that include dots should not be caught
+        assert is_headline_format("St. Mary's University") is False
+        assert is_headline_format("U.S. Naval Academy") is False
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. extract_ransomware_family
@@ -217,6 +234,48 @@ class TestInferInstitutionType:
 
     def test_case_insensitive_district(self):
         assert infer_institution_type("clark county school district", None) == "school_district"
+
+    # International K-12 patterns
+    def test_spanish_primaria(self):
+        assert infer_institution_type("Primaria Emiliano Zapata", None) == "k12_public_school"
+
+    def test_spanish_secundaria(self):
+        assert infer_institution_type("Secundaria Técnica 42", None) == "k12_public_school"
+
+    def test_spanish_preparatoria(self):
+        assert infer_institution_type("Preparatoria Regional de Jalisco", None) == "k12_public_school"
+
+    def test_french_lycee(self):
+        assert infer_institution_type("Lycée Henri Matisse", None) == "k12_public_school"
+
+    def test_french_college(self):
+        assert infer_institution_type("Collège Jean Moulin", None) == "k12_public_school"
+
+    def test_dutch_basisschool(self):
+        assert infer_institution_type("Basisschool De Regenboog", None) == "k12_public_school"
+
+    def test_italian_scuola_elementare(self):
+        assert infer_institution_type("Scuola Elementare G. Garibaldi", None) == "k12_public_school"
+
+    def test_italian_istituto_comprensivo(self):
+        assert infer_institution_type("Istituto Comprensivo Salerno 1", None) == "k12_public_school"
+
+    # International university patterns
+    def test_german_universitaet(self):
+        assert infer_institution_type("Universität Münster", None) == "university_public"
+
+    def test_french_universite(self):
+        assert infer_institution_type("Université de Paris", None) == "university_public"
+
+    def test_german_fachhochschule(self):
+        assert infer_institution_type("Fachhochschule Münster", None) == "university_public"
+
+    def test_italian_politecnico(self):
+        assert infer_institution_type("Politecnico di Milano", None) == "university_public"
+
+    def test_intl_type_not_overwritten_when_known(self):
+        # Never demotes an already-set type
+        assert infer_institution_type("Primaria Emiliano Zapata", "school_district") == "school_district"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -525,6 +584,83 @@ class TestInferConfirmedStatus:
     def test_has_sent_notifications(self):
         assert infer_confirmed_status("The college has sent notifications to all affected users.", None) is True
 
+    # New dark-web publication patterns
+    def test_posted_on_dark_web(self):
+        assert infer_confirmed_status("Hackers posted the data on the dark web.", None) is True
+
+    def test_published_on_dark_web(self):
+        assert infer_confirmed_status("Stolen records were published on dark web forums.", None) is True
+
+    def test_dark_web_leak(self):
+        assert infer_confirmed_status("A dark web leak exposed 31 students' health records.", None) is True
+
+    # Payment disclosure patterns
+    def test_paid_dollar_amount(self):
+        assert infer_confirmed_status("The university paid $457,000 to recover their systems.", None) is True
+
+    def test_ransom_payment_of(self):
+        assert infer_confirmed_status("A ransom payment of $1.2M was made to restore files.", None) is True
+
+    # Regulatory / legal patterns
+    def test_notified_attorney_general(self):
+        assert infer_confirmed_status("The district notified the attorney general of the breach.", None) is True
+
+    def test_regulatory_filing(self):
+        assert infer_confirmed_status("A regulatory filing confirmed the incident in March.", None) is True
+
+    def test_class_action_lawsuit(self):
+        assert infer_confirmed_status("A class-action lawsuit was filed against the university.", None) is True
+
+    def test_lawsuit_filed(self):
+        assert infer_confirmed_status("A lawsuit has been filed on behalf of affected students.", None) is True
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# 5b. infer_regulatory_impact — gate: None is_education_related still triggers
+# ═══════════════════════════════════════════════════════════════════════════════
+
+class TestRegulatoryGate:
+    """The gate should block only when is_education_related is explicitly False."""
+
+    def test_none_is_education_related_does_not_block(self):
+        """Synthetic/sparse incidents where LLM returned null should still get FERPA."""
+        flat = {
+            "is_education_related": None,
+            "institution_type": "school_district",
+            "country_code": "US",
+            "data_breached": True,
+            "enriched_summary": "",
+            "data_categories": '["student_pii"]',
+        }
+        infer_regulatory_impact(flat)
+        assert flat["ferpa_breach"] is True
+
+    def test_false_is_education_related_blocks(self):
+        """Incidents the LLM said are NOT education-related must stay blocked."""
+        flat = {
+            "is_education_related": False,
+            "institution_type": "university_public",
+            "country_code": "US",
+            "data_breached": True,
+            "enriched_summary": "",
+            "data_categories": '["student_pii"]',
+        }
+        infer_regulatory_impact(flat)
+        assert flat.get("ferpa_breach") is None
+
+    def test_none_is_education_related_gdpr_fires_for_eu(self):
+        """GDPR should also fire when is_education_related is None for EU incidents."""
+        flat = {
+            "is_education_related": None,
+            "institution_type": "university_public",
+            "country_code": "NL",
+            "data_breached": True,
+            "enriched_summary": "",
+            "data_categories": "[]",
+        }
+        infer_regulatory_impact(flat)
+        assert flat["gdpr_breach"] is True
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 7. apply_post_processing (orchestrator integration)
@@ -658,6 +794,80 @@ class TestApplyPostProcessing:
         apply_post_processing(flat, None)
         # Should not raise; all values stay None or unchanged
         assert flat["ransomware_family"] is None
+
+    def test_students_affected_propagated_from_records_exact(self):
+        """When records_affected_exact is set and data_categories has student data,
+        students_affected should be filled."""
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "Primaria Emiliano Zapata",
+            "institution_type": "k12_public_school",
+            "country_code": "MX",
+            "city": None,
+            "region": None,
+            "data_breached": True,
+            "data_categories": '["student_pii"]',
+            "enriched_summary": "31 students' data was leaked.",
+            "is_education_related": True,
+            "records_affected_exact": 31,
+            "students_affected": None,
+        }
+        apply_post_processing(flat, None)
+        assert flat["students_affected"] == 31
+
+    def test_students_affected_not_overwritten(self):
+        """LLM-set students_affected must not be overwritten."""
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "Test University",
+            "institution_type": "university_public",
+            "country_code": "US",
+            "city": None,
+            "data_breached": True,
+            "data_categories": '["student_pii"]',
+            "enriched_summary": "",
+            "is_education_related": True,
+            "records_affected_exact": 1000,
+            "students_affected": 500,
+        }
+        apply_post_processing(flat, None)
+        assert flat["students_affected"] == 500  # not overwritten
+
+    def test_students_affected_not_set_without_student_categories(self):
+        """Should not propagate if data_categories has no student keywords."""
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "Test University",
+            "institution_type": "university_public",
+            "country_code": "US",
+            "city": None,
+            "data_breached": True,
+            "data_categories": '["employee_pii"]',
+            "enriched_summary": "",
+            "is_education_related": True,
+            "records_affected_exact": 100,
+            "students_affected": None,
+        }
+        apply_post_processing(flat, None)
+        assert flat.get("students_affected") is None
+
+    def test_spanish_health_data_keyword_inferred(self):
+        """'temas de salud' in summary should add health_records to data_categories."""
+        flat = {
+            "ransomware_family": None,
+            "institution_name": "Primaria Emiliano Zapata",
+            "institution_type": "k12_public_school",
+            "country_code": "MX",
+            "city": None,
+            "data_breached": True,
+            "data_categories": '["student_pii"]',
+            "enriched_summary": "Los datos incluyen temas de salud personal de los alumnos.",
+            "is_education_related": True,
+        }
+        apply_post_processing(flat, None)
+        import json as _json
+        cats = _json.loads(flat["data_categories"])
+        assert "health_records" in cats
 
     def test_gdpr_filled_for_eu_breach(self):
         flat = {

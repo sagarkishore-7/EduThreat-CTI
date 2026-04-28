@@ -337,7 +337,19 @@ _CONFIRMATION_RE = re.compile(
     r"admitted (?:the |a )?(?:breach|attack|hack)|"
     r"acknowledged (?:the |a )?(?:breach|attack|incident)|"
     r"paid (?:the )?ransom|ransom (?:was )?paid|"
-    r"has (?:sent|issued) notifications?|notifying (?:affected|impacted)"
+    r"has (?:sent|issued) notifications?|notifying (?:affected|impacted)|"
+    # Dark web publication = confirmed exfiltration
+    r"(?:published|posted|uploaded|leaked?) (?:the data )?(?:on|to) (?:the )?dark web|"
+    r"dark web (?:forum|leak|listing|post)|"
+    # Payment disclosures (e.g. "paid $457,000")
+    r"paid \$[\d,]+|ransom (?:payment|amount) of|settlement (?:of|worth) \$|"
+    # Regulatory filings / attorney general notifications
+    r"notified the (?:attorney general|state attorney)|"
+    r"regulatory (?:filing|notice|notification)|"
+    r"attorney general (?:notification|filing|notice)|"
+    # Lawsuits confirm the incident is real
+    r"class[- ]action (?:lawsuit|suit|filing?)|"
+    r"lawsuit (?:has been )?filed"
     r")\b",
     re.IGNORECASE,
 )
@@ -360,12 +372,33 @@ _K12_SCHOOL_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# International K-12 school name patterns
+_K12_SCHOOL_INTL_RE = re.compile(
+    r"\b(?:"
+    r"primaria|secundaria|preparatoria|bachillerato|"           # Spanish
+    r"école (?:primaire|élémentaire|maternelle|secondaire)|"   # French compound
+    r"collège|lycée|"                                           # French schools
+    r"basisschool|middelbare school|voortgezet onderwijs|"     # Dutch
+    r"scuola (?:elementare|media|secondaria|superiore)|"       # Italian
+    r"istituto (?:comprensivo|superiore)"                       # Italian
+    r")\b",
+    re.IGNORECASE,
+)
+# International university / higher-ed name patterns
+_UNIVERSITY_INTL_RE = re.compile(
+    r"\b(?:"
+    r"universität|università|université|universidad|universidade|"
+    r"fachhochschule|hochschule|"
+    r"polytechnique|politecnico|politécnica|politécnico"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 # ── Headline detection ───────────────────────────────────────────────────────────
 _HEADLINE_SOURCE_RE = re.compile(
-    # " - Source Name" suffix (1-3 words after the dash)
-    r"\s+[-–—]\s+\w[\w\s]{0,30}$"
+    # " - Source Name" suffix — allow dots for domains like WTVR.com, BBC.co.uk
+    r"\s+[-–—]\s+\w[\w\s\.]{0,30}$"
 )
 
 
@@ -411,8 +444,10 @@ def infer_institution_type(name: Optional[str], existing_type: Optional[str]) ->
         return existing_type
     if _K12_DISTRICT_RE.search(name) or _K12_DISTRICT_ABBR_RE.search(name):
         return "school_district"
-    if _K12_SCHOOL_RE.search(name):
+    if _K12_SCHOOL_RE.search(name) or _K12_SCHOOL_INTL_RE.search(name):
         return "k12_public_school"
+    if _UNIVERSITY_INTL_RE.search(name):
+        return "university_public"
     return existing_type
 
 
@@ -434,7 +469,7 @@ def infer_regulatory_impact(flat_data: Dict[str, Any]) -> None:
     - breach_notification_required → US + data_breached + PII categories
     - notifications_sent → credit-monitoring / apology language in summary
     """
-    if not flat_data.get("is_education_related"):
+    if flat_data.get("is_education_related") is False:
         return
 
     institution_type = (flat_data.get("institution_type") or "").lower()
@@ -559,6 +594,18 @@ _DATA_CAT_KEYWORDS: list[tuple[str, str]] = [
     ("password", "credentials"),
     ("credential", "credentials"),
     ("login information", "credentials"),
+    # Looser health variants (catches "health data", "temas de salud", etc.)
+    ("health data", "health_records"),
+    ("health information", "health_records"),
+    ("temas de salud", "health_records"),         # Spanish: "health topics/data"
+    ("datos de salud", "health_records"),         # Spanish: "health data"
+    # General PII — broad personal data references
+    ("personal data", "general_pii"),
+    ("personal information", "general_pii"),
+    ("datos personales", "general_pii"),          # Spanish
+    ("données personnelles", "general_pii"),       # French
+    ("persoonsgegevens", "general_pii"),           # Dutch
+    ("dati personali", "general_pii"),             # Italian
 ]
 
 
@@ -1005,3 +1052,13 @@ def apply_post_processing(
     # after source_published_date (LLM confuses current processing date with
     # article date when the article content couldn't be fetched).
     _guard_timeline_dates(flat_data, incident_row)
+
+    # 12. Propagate records_affected_exact → students_affected when data_categories
+    # confirms student data was involved and user_impact is otherwise null.
+    if flat_data.get("students_affected") is None:
+        _cats = flat_data.get("data_categories") or ""
+        _cats_str = _cats if isinstance(_cats, str) else json.dumps(_cats)
+        if any(kw in _cats_str.lower() for kw in ("student", "pupil", "ferpa", "transcript", "grade")):
+            _n = flat_data.get("records_affected_exact")
+            if _n:
+                flat_data["students_affected"] = _n

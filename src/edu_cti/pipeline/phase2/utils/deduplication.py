@@ -351,6 +351,7 @@ def find_duplicate_institutions(
     incident_date: Optional[str],
     window_days: int = 14,
     name_threshold: int = 85,
+    incident_country_code: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Find enriched incidents with the same institution within the date window.
@@ -364,7 +365,8 @@ def find_duplicate_institutions(
         SELECT i.incident_id,
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                i.incident_date,
-               i.llm_summary
+               i.llm_summary,
+               i.country_code
         FROM incidents i
         LEFT JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE i.incident_id != ?
@@ -382,6 +384,11 @@ def find_duplicate_institutions(
 
         row_date = parse_incident_date(row["incident_date"])
         if not dates_within_window(incident_dt, row_date, window_days):
+            continue
+
+        # Block cross-country merges when both country codes are known and differ
+        other_cc = row["country_code"]
+        if incident_country_code and other_cc and incident_country_code != other_cc:
             continue
 
         duplicates.append(
@@ -838,6 +845,7 @@ def dedup_incident_after_save(
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
+               i.country_code,
                COALESCE(i.llm_enriched, 0) AS llm_enriched,
                {_DETAIL_SCORE_SQL} AS detail_score,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
@@ -873,6 +881,7 @@ def dedup_incident_after_save(
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
+               i.country_code,
                COALESCE(i.llm_enriched, 0) AS llm_enriched,
                {_DETAIL_SCORE_SQL} AS detail_score,
                COALESCE(LENGTH(i.llm_summary), 0) AS summary_length,
@@ -896,6 +905,10 @@ def dedup_incident_after_save(
         # Date window check
         other_dt = parse_incident_date(other["incident_date"])
         if incident_dt and other_dt and abs((incident_dt - other_dt).days) > window_days:
+            continue
+
+        # Country guard: block cross-country merges when both codes are known and differ
+        if row["country_code"] and other["country_code"] and row["country_code"] != other["country_code"]:
             continue
 
         # Name match: check cross-product of primary + victim_raw candidates

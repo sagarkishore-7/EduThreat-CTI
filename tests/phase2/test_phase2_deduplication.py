@@ -457,6 +457,54 @@ class TestDeduplication:
         ).fetchone() is not None
         assert get_enrichment_result(conn, oxylabs_incident.incident_id) is not None
 
+    def test_find_duplicate_institutions_blocks_different_countries(self, temp_db):
+        """Burke County GA must not be flagged as duplicate of Broward County FL."""
+        conn, _ = temp_db
+
+        burke = _incident("comparitech", "https://example.com/burke", "2020-03-01", "Burke County Public Schools")
+        broward = _incident("googlenews_rss", "https://example.com/broward", "2021-03-01", "Broward County Public Schools")
+
+        # Force different country_codes
+        insert_incident(conn, burke)
+        insert_incident(conn, broward)
+        conn.execute("UPDATE incidents SET country_code = 'US', region = 'Georgia' WHERE incident_id = ?", (burke.incident_id,))
+        conn.execute("UPDATE incidents SET country_code = 'US', region = 'Florida' WHERE incident_id = ?", (broward.incident_id,))
+        conn.commit()
+
+        save_enrichment_result(conn, burke.incident_id, _enrichment("Burke County breach summary.", burke.all_urls[0], institution_name="Burke County Public Schools"))
+        save_enrichment_result(conn, broward.incident_id, _enrichment("Broward County breach summary.", broward.all_urls[0], institution_name="Broward County Public Schools"))
+
+        from src.edu_cti.pipeline.phase2.utils.deduplication import find_duplicate_institutions
+        # Both are US, but date window is 14 days and these are 365 days apart
+        duplicates = find_duplicate_institutions(
+            conn, burke.incident_id, "Burke County Public Schools", "2020-03-01",
+            window_days=14, incident_country_code="US",
+        )
+        assert len(duplicates) == 0  # dates too far apart
+
+    def test_inline_dedup_blocks_cross_country_merge(self, temp_db):
+        """Two incidents with the same name but different country_codes must not merge."""
+        conn, _ = temp_db
+
+        # Simulating two "National University" incidents in different countries
+        inc_us = _incident("googlenews_rss", "https://example.com/nat-us", "2024-01-15", "National University")
+        inc_ph = _incident("oxylabs_news", "https://example.com/nat-ph", "2024-01-15", "National University")
+
+        insert_incident(conn, inc_us)
+        insert_incident(conn, inc_ph)
+        conn.execute("UPDATE incidents SET country_code = 'US' WHERE incident_id = ?", (inc_us.incident_id,))
+        conn.execute("UPDATE incidents SET country_code = 'PH' WHERE incident_id = ?", (inc_ph.incident_id,))
+        conn.commit()
+
+        save_enrichment_result(conn, inc_us.incident_id, _enrichment("US National University breach — long summary that would normally win.", inc_us.all_urls[0], institution_name="National University"))
+        survivor = dedup_incident_after_save(conn, inc_ph.incident_id, window_days=14)
+
+        # Must NOT have merged despite identical name and date
+        assert survivor is None
+        # Both incidents still exist
+        assert conn.execute("SELECT 1 FROM incidents WHERE incident_id = ?", (inc_us.incident_id,)).fetchone() is not None
+        assert conn.execute("SELECT 1 FROM incidents WHERE incident_id = ?", (inc_ph.incident_id,)).fetchone() is not None
+
     def test_batch_dedup_prefers_richer_enriched_incident(self, temp_db):
         """When both incidents are enriched, the richer CTI record should survive."""
         conn, _ = temp_db
