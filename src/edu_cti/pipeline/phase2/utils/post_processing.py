@@ -416,9 +416,16 @@ def infer_regulatory_impact(flat_data: Dict[str, Any]) -> None:
         "IS", "NO", "LI",  # EEA
     }
 
-    # FERPA — infer only when LLM left it null; respect explicit LLM decisions (True/False)
+    # FERPA — US education institution + data breach → FERPA applies.
+    # Student education records are covered by FERPA; generic "personal data"
+    # at a university almost certainly includes student records.
     if flat_data.get("ferpa_breach") is None and data_breached and country_code == "US" and _is_edu_inst:
         if any(kw in data_cats_text for kw in ("student", "grade", "transcript", "ferpa", "educational record")):
+            flat_data["ferpa_breach"] = True
+        elif any(kw in data_cats_text for kw in ("personal_data", "general_pii", "personal_information")):
+            # Generic "personal data" at a US edu institution → assume student records included
+            flat_data["ferpa_breach"] = True
+        elif any(kw in summary for kw in ("student data", "student records", "student information")):
             flat_data["ferpa_breach"] = True
 
     # GDPR — deterministic: EU/EEA data breach → GDPR applies (only when LLM left it null)
@@ -432,11 +439,15 @@ def infer_regulatory_impact(flat_data: Dict[str, Any]) -> None:
         )):
             flat_data["hipaa_breach"] = True
 
-    # breach_notification_required
+    # breach_notification_required — all 50 US states have breach notification laws
+    # when personal identifiable information is involved.
     if flat_data.get("breach_notification_required") is None and data_breached and country_code == "US":
         _pii_cats = ("pii", "ssn", "social_security", "employee", "student", "health",
-                     "financial", "personal_information", "medical", "address", "date_of_birth")
-        if any(kw in data_cats_text for kw in _pii_cats):
+                     "financial", "personal_information", "medical", "address", "date_of_birth",
+                     "personal_data", "personal_information", "general_pii")
+        if any(kw in data_cats_text for kw in _pii_cats) or \
+           any(kw in summary for kw in ("personal data", "personal information", "pii", "ssn",
+                                        "student data", "employee data", "health records")):
             flat_data["breach_notification_required"] = True
 
     # notifications_sent — inferred from credit-monitoring / apology language
@@ -952,6 +963,32 @@ def apply_post_processing(
     # after source_published_date (LLM confuses current processing date with
     # article date when the article content couldn't be fetched).
     _guard_timeline_dates(flat_data, incident_row)
+
+    # 12b. law_enforcement_involved: infer from agencies array or enriched_summary
+    if flat_data.get("law_enforcement_involved") is None:
+        _agencies = flat_data.get("law_enforcement_agencies") or []
+        if isinstance(_agencies, str):
+            _agencies = [_agencies]
+        _le_keywords = {"fbi", "cisa", "police", "interpol", "nca", "europol", "ncsc",
+                        "secret service", "law enforcement", "federal authorities",
+                        "investigators", "authorities"}
+        _agencies_lower = " ".join(str(a).lower() for a in _agencies)
+        _summary_lower = (_summary or "").lower()
+        if (_agencies_lower and any(kw in _agencies_lower for kw in _le_keywords)) or \
+           any(kw in _summary_lower for kw in _le_keywords):
+            flat_data["law_enforcement_involved"] = True
+
+        _fbi_keywords = {"fbi", "federal bureau", "federal authorities"}
+        if flat_data.get("fbi_involved") is None:
+            if any(kw in _agencies_lower for kw in _fbi_keywords) or \
+               any(kw in _summary_lower for kw in _fbi_keywords):
+                flat_data["fbi_involved"] = True
+
+        _cisa_keywords = {"cisa", "cybersecurity and infrastructure"}
+        if flat_data.get("cisa_involved") is None:
+            if any(kw in _agencies_lower for kw in _cisa_keywords) or \
+               any(kw in _summary_lower for kw in _cisa_keywords):
+                flat_data["cisa_involved"] = True
 
     # 12. Propagate records_affected_exact → students_affected when data_categories
     # confirms student data was involved and user_impact is otherwise null.

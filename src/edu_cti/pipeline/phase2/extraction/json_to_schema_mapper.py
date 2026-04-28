@@ -651,6 +651,11 @@ def map_data_types(data_types: List[str]) -> Dict[str, bool]:
         "financial_data": "financial_data",
         "credentials": "personal_information",
         "pii": "personal_information",
+        "general_pii": "personal_information",
+        "personal_data": "personal_information",
+        "personal_information": "personal_information",
+        "health_records": "medical_records",
+        "health_data": "medical_records",
         "grades_transcripts": "student_data",
         "special_category_gdpr": "personal_information",
         "other": "administrative_data",
@@ -896,6 +901,8 @@ def json_to_cti_enrichment(
         # Operational impact from extraction schema - normalize to valid enum list
         operational_impact = normalize_operational_impact(json_data.get("operational_impact"))
 
+        _FALSE_STRINGS = {"false", "no", "0", "none", "null", "not mentioned", "unknown"}
+
         def _to_bool(v):
             """Coerce any LLM value to Optional[bool]. Integers/strings → bool; None → None."""
             if v is None or isinstance(v, bool):
@@ -903,7 +910,29 @@ def json_to_cti_enrichment(
             if isinstance(v, (int, float)):
                 return v > 0
             if isinstance(v, str):
-                return v.strip().lower() in ("true", "yes", "1")
+                s = v.strip().lower()
+                if s in ("true", "yes", "1"):
+                    return True
+                if s in _FALSE_STRINGS:
+                    return False
+                return None  # Unrecognised string → null
+            return bool(v)
+
+        def _agency_to_bool(v):
+            """For law-enforcement boolean fields: any non-empty non-false string → True.
+
+            The LLM sometimes outputs an agency name ('fbi', 'cisa') instead of true.
+            Any non-false string value is treated as True since the intent is clear.
+            """
+            if v is None or isinstance(v, bool):
+                return v
+            if isinstance(v, (int, float)):
+                return v > 0
+            if isinstance(v, str):
+                s = v.strip().lower()
+                if s in _FALSE_STRINGS or s == "":
+                    return False
+                return True  # non-empty, non-false → the LLM meant True
             return bool(v)
 
         attack_dynamics = AttackDynamics(
@@ -1221,7 +1250,7 @@ def json_to_cti_enrichment(
             "mfa_implemented": json_data.get("mfa_implemented") or "mfa_implemented" in (json_data.get("security_improvements") or []) or "mfa_expanded" in (json_data.get("security_improvements") or []),
             "security_training_conducted": json_data.get("security_training_conducted"),
             "response_measures": json_data.get("response_measures"),
-            "law_enforcement_involved": json_data.get("law_enforcement_involved"),
+            "law_enforcement_involved": _agency_to_bool(json_data.get("law_enforcement_involved")),
             "law_enforcement_agency": json_data.get("law_enforcement_agency") or json_data.get("law_enforcement_agencies"),
             "detection_source": json_data.get("detection_source"),
             "mttd_hours": json_data.get("mttd_hours"),

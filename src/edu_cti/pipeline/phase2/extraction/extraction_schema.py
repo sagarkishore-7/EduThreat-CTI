@@ -1189,25 +1189,25 @@ EXTRACTION_SCHEMA = {
         "law_enforcement_involved": {
             "type": "boolean",
             "description": (
-                "Set to true if any law enforcement agency is mentioned as involved in the investigation or response. "
-                "Includes: FBI, CISA, local/state police, Interpol, NCA, Europol, NCSC, Secret Service, national cybercrime units. "
-                "Trigger phrases: 'FBI is assisting', 'working with federal authorities', 'referred to law enforcement', "
-                "'police were notified', 'cooperating with authorities', 'investigation underway by', 'we are aware of the attack and assisting'. "
-                "Set to false only if article explicitly states law enforcement was NOT contacted. Null if not mentioned."
+                "true if any law enforcement agency (FBI, CISA, police, Interpol, NCA, Europol, NCSC, Secret Service) "
+                "is mentioned as investigating or assisting with this specific incident. "
+                "Trigger phrases: 'FBI is assisting', 'working with the FBI', 'referred to law enforcement', "
+                "'police were notified', 'cooperating with authorities', 'investigators are working with'. "
+                "false only if the article explicitly states law enforcement was NOT contacted. null if not mentioned."
             )
         },
         "law_enforcement_agencies": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "List of specific agencies named (e.g. 'FBI', 'CISA', 'Metropolitan Police'). Null if none named."
+            "description": "Names of specific agencies involved, e.g. ['FBI', 'CISA', 'Metropolitan Police']. null if none named."
         },
         "fbi_involved": {
             "type": "boolean",
-            "description": "Set to true if the FBI or 'federal authorities' are explicitly mentioned as involved. Null if not mentioned."
+            "description": "true if the FBI or 'federal authorities' are explicitly mentioned as involved in this incident. null if not mentioned."
         },
         "cisa_involved": {
             "type": "boolean",
-            "description": "Set to true if CISA is explicitly mentioned as involved. Null if not mentioned."
+            "description": "true if CISA is explicitly mentioned as involved. null if not mentioned."
         },
         "recovery_method": {
             "type": "string",
@@ -1845,21 +1845,20 @@ EXTRACTION_SCHEMA_PART2 = {
         "law_enforcement_involved": {
             "type": "boolean",
             "description": (
-                "Set to true if any law enforcement agency is mentioned as involved in the investigation or response. "
-                "Includes: FBI, CISA, local/state police, Interpol, NCA, Europol, NCSC, Secret Service, national cybercrime units. "
-                "Trigger phrases: 'FBI is assisting', 'working with federal authorities', 'referred to law enforcement', "
-                "'police were notified', 'cooperating with authorities', 'we are aware of the attack and assisting'. "
-                "Set to false only if article explicitly states law enforcement was NOT contacted. Null if not mentioned."
+                "true if any law enforcement agency (FBI, CISA, police, Interpol, NCA, Europol, NCSC) is mentioned "
+                "as investigating or assisting with this specific incident. "
+                "Trigger: 'working with the FBI', 'FBI is assisting', 'referred to law enforcement', 'cooperating with authorities'. "
+                "false only if the article explicitly states law enforcement was NOT contacted. null if not mentioned."
             )
         },
-        "law_enforcement_agencies": {"type": "array", "items": {"type": "string"}},
+        "law_enforcement_agencies": {"type": "array", "items": {"type": "string"}, "description": "Specific agency names e.g. ['FBI', 'CISA']. null if none named."},
         "fbi_involved": {
             "type": "boolean",
-            "description": "Set to true if the FBI or 'federal authorities' are explicitly mentioned as involved. Null if not mentioned."
+            "description": "true if the FBI or 'federal authorities' are explicitly mentioned as involved in this incident. null if not mentioned."
         },
         "cisa_involved": {
             "type": "boolean",
-            "description": "Set to true if CISA is explicitly mentioned as involved. Null if not mentioned."
+            "description": "true if CISA is explicitly mentioned as involved. null if not mentioned."
         },
         "recovery_method": {
             "type": "string",
