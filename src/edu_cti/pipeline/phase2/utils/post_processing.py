@@ -236,93 +236,6 @@ _ATTACK_VECTOR_KEYWORDS: list[tuple[str, str]] = [
     ("phishing",               "phishing_email"),  # generic fallback
 ]
 
-# ── Known private universities ────────────────────────────────────────────────────
-# Maps lowercased institution name → canonical institution_type override.
-# Only corrects LLM-assigned "university_public" to "university_private".
-_KNOWN_PRIVATE_UNIVERSITIES: dict[str, str] = {
-    # Elite US private
-    "stanford university": "university_private",
-    "stanford university department of public safety": "university_private",
-    "harvard university": "university_private",
-    "harvard medical school": "university_private",
-    "mit": "university_private",
-    "massachusetts institute of technology": "university_private",
-    "yale university": "university_private",
-    "princeton university": "university_private",
-    "columbia university": "university_private",
-    "university of pennsylvania": "university_private",
-    "brown university": "university_private",
-    "dartmouth college": "university_private",
-    "cornell university": "university_private",
-    "duke university": "university_private",
-    "vanderbilt university": "university_private",
-    "emory university": "university_private",
-    "rice university": "university_private",
-    "notre dame university": "university_private",
-    "university of notre dame": "university_private",
-    "georgetown university": "university_private",
-    "johns hopkins university": "university_private",
-    "northwestern university": "university_private",
-    "university of chicago": "university_private",
-    "nyu": "university_private",
-    "new york university": "university_private",
-    "boston university": "university_private",
-    "boston college": "university_private",
-    "tufts university": "university_private",
-    "northeastern university": "university_private",
-    "wake forest university": "university_private",
-    "tulane university": "university_private",
-    "fordham university": "university_private",
-    "villanova university": "university_private",
-    "marquette university": "university_private",
-    "loyola university": "university_private",
-    "seton hall university": "university_private",
-    "american university": "university_private",
-    "george washington university": "university_private",
-    "drexel university": "university_private",
-    "lehigh university": "university_private",
-    "lehigh valley health network": "hospital",
-    "howard university": "university_private",
-    "xavier university": "university_private",
-    "rensselaer polytechnic institute": "university_private",
-    "rochester institute of technology": "university_private",
-    "carnegie mellon university": "university_private",
-    "case western reserve university": "university_private",
-    "santa clara university": "university_private",
-    "gonzaga university": "university_private",
-    "pepperdine university": "university_private",
-    "occidental college": "university_private",
-    "cal tech": "university_private",
-    "california institute of technology": "university_private",
-    "caltech": "university_private",
-    # UK private/independent
-    "oxford university": "university_private",
-    "university of oxford": "university_private",
-    "cambridge university": "university_private",
-    "university of cambridge": "university_private",
-    "london school of economics": "university_private",
-    "imperial college london": "university_private",
-    "king's college london": "university_private",
-    # Other well-known private
-    "leiden university": "university_private",
-    "maastricht university": "university_private",
-    "eindhoven university of technology": "university_private",
-    "tu eindhoven": "university_private",
-    "delft university of technology": "university_private",
-    "tu delft": "university_private",
-    # Japanese private
-    "miyagi gakuin women's university": "university_private",
-    "waseda university": "university_private",
-    "keio university": "university_private",
-    "sophia university": "university_private",
-    # French private
-    "léonard de vinci university pole": "university_private",
-    "leonard de vinci": "university_private",
-    "sciences po": "university_private",
-    # Canadian private
-    "mcgill university": "university_private",
-    "university of toronto": "university_private",
-}
 
 _CONFIRMATION_RE = re.compile(
     r"\b(?:"
@@ -445,9 +358,9 @@ def infer_institution_type(name: Optional[str], existing_type: Optional[str]) ->
     if _K12_DISTRICT_RE.search(name) or _K12_DISTRICT_ABBR_RE.search(name):
         return "school_district"
     if _K12_SCHOOL_RE.search(name) or _K12_SCHOOL_INTL_RE.search(name):
-        return "k12_public_school"
+        return "k12_school"
     if _UNIVERSITY_INTL_RE.search(name):
-        return "university_public"
+        return "university"
     return existing_type
 
 
@@ -895,16 +808,6 @@ def _sanitize_defunct_ransomware(flat_data: Dict[str, Any]) -> None:
         pass
 
 
-def _fix_private_institution_type(flat_data: Dict[str, Any]) -> None:
-    """Override LLM-assigned 'university_public' for known private institutions."""
-    if flat_data.get("institution_type") != "university_public":
-        return
-    name = (flat_data.get("institution_name") or "").lower().strip()
-    override = _KNOWN_PRIVATE_UNIVERSITIES.get(name)
-    if override:
-        flat_data["institution_type"] = override
-
-
 def _guard_timeline_dates(flat_data: Dict[str, Any], incident_row: Optional[Any]) -> None:
     """
     Null out timeline event dates that are >90 days after source_published_date.
@@ -994,9 +897,6 @@ def apply_post_processing(
         inferred = infer_institution_type(flat_data.get("institution_name"), current_type)
         if inferred and inferred != current_type:
             flat_data["institution_type"] = inferred
-
-    # 2b. Override "university_public" for known private institutions.
-    _fix_private_institution_type(flat_data)
 
     # 3. US state (region) from city lookup
     if not flat_data.get("region") and flat_data.get("city"):

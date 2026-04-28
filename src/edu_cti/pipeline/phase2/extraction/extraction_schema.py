@@ -68,15 +68,11 @@ EXTRACTION_SCHEMA = {
         "institution_type": {
             "type": "string",
             "enum": [
-                "university_public",
-                "university_private",
-                "university_research",
+                "university",
                 "community_college",
                 "technical_college",
                 "vocational_school",
-                "k12_public_school",
-                "k12_private_school",
-                "k12_charter_school",
+                "k12_school",
                 "school_district",
                 "research_institute",
                 "research_center",
@@ -99,15 +95,12 @@ EXTRACTION_SCHEMA = {
             ],
             "description": (
                 "Canonical institution type. Choose the most specific match. "
-                "university_public — state/publicly funded universities (look for 'state university', 'public university', funded by state legislature). "
-                "university_private — private non-research colleges/universities: named after a founder/person, religious affiliation (Catholic, Baptist, Jesuit, Methodist, etc.), or when the article does not mention state funding. "
-                "university_research — R1/R2 research-intensive universities: look for 'research university', large NSF/NIH grants, doctoral programs emphasized, or the word 'research' is central to its identity. "
-                "school_district — when victim is named as a 'school district', 'unified school district', 'ISD', 'USD', 'CUSD', 'PUSD', 'CISD', 'HISD', 'county schools', 'public schools' (city/county-level). "
-                "k12_public_school — single public elementary, middle, or high school. "
-                "k12_private_school — single private K-12 school (non-charter). "
-                "k12_charter_school — charter school. "
+                "university — any degree-granting higher education institution (all universities regardless of public/private/research status: state universities, Ivy League, liberal arts colleges, polytechnics). "
                 "community_college — two-year community or junior college. "
                 "technical_college — technical/vocational two-year college. "
+                "k12_school — single K-12 school of any type (public, private, charter, elementary, middle, or high school). "
+                "school_district — district-level organization ('school district', 'unified school district', 'ISD', 'USD', 'county schools', 'public schools' at city/county level). "
+                "research_institute / research_center — standalone research organisation, not degree-granting. "
                 "edtech_platform — software/SaaS vendors serving education (e.g. PowerSchool, Illuminate, Blackbaud). "
                 "tutoring_service — online tutoring/test-prep companies (e.g. Chegg). "
                 "library — public or academic libraries. "
@@ -660,7 +653,16 @@ EXTRACTION_SCHEMA = {
         },
         
         # ========== RANSOM DETAILS ==========
-        "was_ransom_demanded": {"type": "boolean"},
+        "was_ransom_demanded": {
+            "type": "boolean",
+            "description": (
+                "Set to true if the article states a ransom was demanded — e.g. 'demanded payment', "
+                "'ransom note left', 'attackers demanded X', 'asked for payment in exchange for decryption key', "
+                "'threatened to publish data unless paid'. For attack_category ransomware_encryption or "
+                "ransomware_double_extortion this is almost always true. "
+                "Set to false only if the article explicitly confirms no ransom was demanded. Null if not mentioned."
+            )
+        },
         "ransom_amount": {"type": "number", "description": "Ransom amount in USD — only from an explicitly stated figure. Do NOT estimate. Null if not stated."},
         "ransom_amount_min": {"type": "number", "description": "Minimum ransom amount in USD — only from an explicitly stated figure. Null if not stated."},
         "ransom_amount_max": {"type": "number", "description": "Maximum ransom amount in USD — only from an explicitly stated figure. Null if not stated."},
@@ -1064,13 +1066,29 @@ EXTRACTION_SCHEMA = {
         "forensics_firm_engaged": {"type": "string"},
         "legal_counsel_engaged": {"type": "string"},
         "pr_firm_engaged": {"type": "string"},
-        "law_enforcement_involved": {"type": "boolean"},
+        "law_enforcement_involved": {
+            "type": "boolean",
+            "description": (
+                "Set to true if any law enforcement agency is mentioned as involved in the investigation or response. "
+                "Includes: FBI, CISA, local/state police, Interpol, NCA, Europol, NCSC, Secret Service, national cybercrime units. "
+                "Trigger phrases: 'FBI is assisting', 'working with federal authorities', 'referred to law enforcement', "
+                "'police were notified', 'cooperating with authorities', 'investigation underway by', 'we are aware of the attack and assisting'. "
+                "Set to false only if article explicitly states law enforcement was NOT contacted. Null if not mentioned."
+            )
+        },
         "law_enforcement_agencies": {
             "type": "array",
-            "items": {"type": "string"}
+            "items": {"type": "string"},
+            "description": "List of specific agencies named (e.g. 'FBI', 'CISA', 'Metropolitan Police'). Null if none named."
         },
-        "fbi_involved": {"type": "boolean"},
-        "cisa_involved": {"type": "boolean"},
+        "fbi_involved": {
+            "type": "boolean",
+            "description": "Set to true if the FBI or 'federal authorities' are explicitly mentioned as involved. Null if not mentioned."
+        },
+        "cisa_involved": {
+            "type": "boolean",
+            "description": "Set to true if CISA is explicitly mentioned as involved. Null if not mentioned."
+        },
         "recovery_method": {
             "type": "string",
             "enum": [
@@ -1250,16 +1268,20 @@ EXTRACTION_SCHEMA_PART1 = {
         "institution_type": {
             "type": "string",
             "enum": [
-                "university_public", "university_private", "university_research",
-                "community_college", "technical_college", "vocational_school",
-                "k12_public_school", "k12_private_school", "k12_charter_school",
-                "school_district", "research_institute", "research_center",
+                "university", "community_college", "technical_college", "vocational_school",
+                "k12_school", "school_district", "research_institute", "research_center",
                 "medical_school", "university_hospital", "teaching_hospital",
                 "online_university", "library", "tribal_college", "military_academy",
                 "edtech_platform", "tutoring_service", "consortium",
                 "education_department", "education_ministry", "student_loan_servicer",
                 "education_nonprofit", "education_vendor", "unknown",
             ],
+            "description": (
+                "university — any degree-granting higher education institution (all universities: public, private, research, liberal arts). "
+                "k12_school — single K-12 school (public, private, or charter). "
+                "school_district — district-level organization ('school district', 'ISD', 'USD', 'county schools'). "
+                "community_college — two-year community/junior college. technical_college — technical/vocational two-year college."
+            ),
         },
         "institution_size": {
             "type": "string",
@@ -1401,7 +1423,16 @@ EXTRACTION_SCHEMA_PART1 = {
                 ],
             },
         },
-        "was_ransom_demanded": {"type": "boolean"},
+        "was_ransom_demanded": {
+            "type": "boolean",
+            "description": (
+                "Set to true if the article states a ransom was demanded — e.g. 'demanded payment', "
+                "'ransom note left', 'attackers demanded X', 'asked for payment in exchange for decryption key', "
+                "'threatened to publish data unless paid'. For ransomware_encryption or ransomware_double_extortion "
+                "attacks this is almost always true. "
+                "Set to false only if the article explicitly confirms no ransom was demanded. Null if not mentioned."
+            )
+        },
         "ransom_amount_exact": {"type": "number"},
         "ransom_paid": {"type": "boolean"},
         "data_breached": {"type": "boolean"},
@@ -1685,10 +1716,25 @@ EXTRACTION_SCHEMA_PART2 = {
         "incident_response_activated": {"type": "boolean"},
         "ir_firm_engaged": {"type": "string"},
         "forensics_firm_engaged": {"type": "string"},
-        "law_enforcement_involved": {"type": "boolean"},
+        "law_enforcement_involved": {
+            "type": "boolean",
+            "description": (
+                "Set to true if any law enforcement agency is mentioned as involved in the investigation or response. "
+                "Includes: FBI, CISA, local/state police, Interpol, NCA, Europol, NCSC, Secret Service, national cybercrime units. "
+                "Trigger phrases: 'FBI is assisting', 'working with federal authorities', 'referred to law enforcement', "
+                "'police were notified', 'cooperating with authorities', 'we are aware of the attack and assisting'. "
+                "Set to false only if article explicitly states law enforcement was NOT contacted. Null if not mentioned."
+            )
+        },
         "law_enforcement_agencies": {"type": "array", "items": {"type": "string"}},
-        "fbi_involved": {"type": "boolean"},
-        "cisa_involved": {"type": "boolean"},
+        "fbi_involved": {
+            "type": "boolean",
+            "description": "Set to true if the FBI or 'federal authorities' are explicitly mentioned as involved. Null if not mentioned."
+        },
+        "cisa_involved": {
+            "type": "boolean",
+            "description": "Set to true if CISA is explicitly mentioned as involved. Null if not mentioned."
+        },
         "recovery_method": {
             "type": "string",
             "enum": [

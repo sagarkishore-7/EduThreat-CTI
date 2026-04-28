@@ -205,20 +205,20 @@ class TestInferInstitutionType:
         assert infer_institution_type("Chicago Board of Education", None) == "school_district"
 
     def test_high_school(self):
-        assert infer_institution_type("Higham Lane High School", None) == "k12_public_school"
+        assert infer_institution_type("Higham Lane High School", None) == "k12_school"
 
     def test_elementary_school(self):
-        assert infer_institution_type("Riverside Elementary School", None) == "k12_public_school"
+        assert infer_institution_type("Riverside Elementary School", None) == "k12_school"
 
     def test_middle_school(self):
-        assert infer_institution_type("Jefferson Middle School", None) == "k12_public_school"
+        assert infer_institution_type("Jefferson Middle School", None) == "k12_school"
 
     def test_charter_school(self):
-        assert infer_institution_type("Denver Charter School", None) == "k12_public_school"
+        assert infer_institution_type("Denver Charter School", None) == "k12_school"
 
     def test_existing_known_type_not_overwritten(self):
         # Never demotes a known type
-        assert infer_institution_type("Some High School", "university_public") == "university_public"
+        assert infer_institution_type("Some High School", "university") == "university"
 
     def test_existing_unknown_is_upgraded(self):
         assert infer_institution_type("Springfield School District", "unknown") == "school_district"
@@ -237,41 +237,41 @@ class TestInferInstitutionType:
 
     # International K-12 patterns
     def test_spanish_primaria(self):
-        assert infer_institution_type("Primaria Emiliano Zapata", None) == "k12_public_school"
+        assert infer_institution_type("Primaria Emiliano Zapata", None) == "k12_school"
 
     def test_spanish_secundaria(self):
-        assert infer_institution_type("Secundaria Técnica 42", None) == "k12_public_school"
+        assert infer_institution_type("Secundaria Técnica 42", None) == "k12_school"
 
     def test_spanish_preparatoria(self):
-        assert infer_institution_type("Preparatoria Regional de Jalisco", None) == "k12_public_school"
+        assert infer_institution_type("Preparatoria Regional de Jalisco", None) == "k12_school"
 
     def test_french_lycee(self):
-        assert infer_institution_type("Lycée Henri Matisse", None) == "k12_public_school"
+        assert infer_institution_type("Lycée Henri Matisse", None) == "k12_school"
 
     def test_french_college(self):
-        assert infer_institution_type("Collège Jean Moulin", None) == "k12_public_school"
+        assert infer_institution_type("Collège Jean Moulin", None) == "k12_school"
 
     def test_dutch_basisschool(self):
-        assert infer_institution_type("Basisschool De Regenboog", None) == "k12_public_school"
+        assert infer_institution_type("Basisschool De Regenboog", None) == "k12_school"
 
     def test_italian_scuola_elementare(self):
-        assert infer_institution_type("Scuola Elementare G. Garibaldi", None) == "k12_public_school"
+        assert infer_institution_type("Scuola Elementare G. Garibaldi", None) == "k12_school"
 
     def test_italian_istituto_comprensivo(self):
-        assert infer_institution_type("Istituto Comprensivo Salerno 1", None) == "k12_public_school"
+        assert infer_institution_type("Istituto Comprensivo Salerno 1", None) == "k12_school"
 
     # International university patterns
     def test_german_universitaet(self):
-        assert infer_institution_type("Universität Münster", None) == "university_public"
+        assert infer_institution_type("Universität Münster", None) == "university"
 
     def test_french_universite(self):
-        assert infer_institution_type("Université de Paris", None) == "university_public"
+        assert infer_institution_type("Université de Paris", None) == "university"
 
     def test_german_fachhochschule(self):
-        assert infer_institution_type("Fachhochschule Münster", None) == "university_public"
+        assert infer_institution_type("Fachhochschule Münster", None) == "university"
 
     def test_italian_politecnico(self):
-        assert infer_institution_type("Politecnico di Milano", None) == "university_public"
+        assert infer_institution_type("Politecnico di Milano", None) == "university"
 
     def test_intl_type_not_overwritten_when_known(self):
         # Never demotes an already-set type
@@ -338,7 +338,7 @@ class TestInferRegulatoryImpact:
     def _base_us_edu(self, **overrides) -> Dict[str, Any]:
         base = {
             "is_education_related": True,
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "US",
             "data_breached": True,
             "enriched_summary": "",
@@ -384,7 +384,7 @@ class TestInferRegulatoryImpact:
     def test_gdpr_inferred_for_eu_country(self):
         flat = {
             "is_education_related": True,
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "DE",
             "data_breached": True,
             "enriched_summary": "",
@@ -408,7 +408,7 @@ class TestInferRegulatoryImpact:
     def test_gdpr_inferred_for_nl(self):
         flat = {
             "is_education_related": True,
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "NL",
             "data_breached": True,
             "enriched_summary": "",
@@ -426,7 +426,7 @@ class TestInferRegulatoryImpact:
     def test_gdpr_not_overwritten(self):
         flat = {
             "is_education_related": True,
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "FR",
             "data_breached": True,
             "enriched_summary": "",
@@ -465,7 +465,7 @@ class TestInferRegulatoryImpact:
     def test_hipaa_not_inferred_for_non_us(self):
         flat = {
             "is_education_related": True,
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "GB",
             "data_breached": True,
             "enriched_summary": "Patient health records exposed.",
@@ -639,7 +639,7 @@ class TestRegulatoryGate:
         """Incidents the LLM said are NOT education-related must stay blocked."""
         flat = {
             "is_education_related": False,
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "US",
             "data_breached": True,
             "enriched_summary": "",
@@ -652,7 +652,7 @@ class TestRegulatoryGate:
         """GDPR should also fire when is_education_related is None for EU incidents."""
         flat = {
             "is_education_related": None,
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "NL",
             "data_breached": True,
             "enriched_summary": "",
@@ -677,7 +677,7 @@ class TestApplyPostProcessing:
         flat = {
             "ransomware_family": None,
             "institution_name": "Springfield University",
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "US",
             "city": None,
             "data_breached": False,
@@ -691,7 +691,7 @@ class TestApplyPostProcessing:
         flat = {
             "ransomware_family": "akira",
             "institution_name": "Springfield University",
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "US",
             "city": None,
             "data_breached": False,
@@ -735,7 +735,7 @@ class TestApplyPostProcessing:
         flat = {
             "ransomware_family": None,
             "institution_name": "TU Eindhoven",
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "NL",
             "city": "Eindhoven",
             "region": None,
@@ -750,7 +750,7 @@ class TestApplyPostProcessing:
         flat = {
             "ransomware_family": None,
             "institution_name": "State University",
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "US",
             "city": None,
             "region": None,
@@ -768,7 +768,7 @@ class TestApplyPostProcessing:
         flat = {
             "ransomware_family": None,
             "institution_name": "Some School",
-            "institution_type": "k12_public_school",
+            "institution_type": "k12_school",
             "country_code": "US",
             "city": None,
             "data_breached": False,
@@ -801,7 +801,7 @@ class TestApplyPostProcessing:
         flat = {
             "ransomware_family": None,
             "institution_name": "Primaria Emiliano Zapata",
-            "institution_type": "k12_public_school",
+            "institution_type": "k12_school",
             "country_code": "MX",
             "city": None,
             "region": None,
@@ -820,7 +820,7 @@ class TestApplyPostProcessing:
         flat = {
             "ransomware_family": None,
             "institution_name": "Test University",
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "US",
             "city": None,
             "data_breached": True,
@@ -838,7 +838,7 @@ class TestApplyPostProcessing:
         flat = {
             "ransomware_family": None,
             "institution_name": "Test University",
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "US",
             "city": None,
             "data_breached": True,
@@ -856,7 +856,7 @@ class TestApplyPostProcessing:
         flat = {
             "ransomware_family": None,
             "institution_name": "Primaria Emiliano Zapata",
-            "institution_type": "k12_public_school",
+            "institution_type": "k12_school",
             "country_code": "MX",
             "city": None,
             "data_breached": True,
@@ -873,7 +873,7 @@ class TestApplyPostProcessing:
         flat = {
             "ransomware_family": None,
             "institution_name": "TU Eindhoven",
-            "institution_type": "university_public",
+            "institution_type": "university",
             "country_code": "NL",
             "city": "Eindhoven",
             "region": None,

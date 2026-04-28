@@ -577,7 +577,7 @@ class TestFetchingStrategy:
         ).fetchone()
 
         assert row["country"] == "United States"
-        assert row["institution_type"] == "university_public"  # normalized from "university"
+        assert row["institution_type"] == "university"  # normalized from "university"
         assert row["attack_category"] == "ransomware"
         assert row["attack_vector"] == "phishing"
         assert row["ransomware_family"] == "LockBit"

@@ -548,7 +548,7 @@ class TestDeduplicationMetrics:
                 institution_type, incident_date, date_precision, ingested_at, last_updated_at,
                 title, primary_url, status, source_confidence)
             VALUES (?, 'Test University', 'Test University', 'United States',
-                'university_public', '2024-01-15', 'day',
+                'university', '2024-01-15', 'day',
                 '2024-01-16T00:00:00', '2024-01-16T00:00:00',
                 'Test incident', 'https://example.com/1', 'confirmed', 'high')
         """, (incident_id,))
@@ -711,7 +711,7 @@ class TestEmitEnrichmentMetrics:
             INSERT INTO incidents (incident_id, institution_name, victim_raw_name, country,
                 institution_type, incident_date, date_precision, ingested_at, last_updated_at,
                 title, primary_url, status, source_confidence)
-            VALUES ('kb_001', 'Test', 'Test', 'US', 'university_public', '2024-01-01', 'day',
+            VALUES ('kb_001', 'Test', 'Test', 'US', 'university', '2024-01-01', 'day',
                     '2024-01-02', '2024-01-02', 'T', 'http://x.com', 'confirmed', 'high')
         """)
         conn.execute("""
@@ -791,10 +791,9 @@ class TestNormalizeInstitutionType:
 
     # Already-canonical values pass through unchanged
     @pytest.mark.parametrize("canonical", [
-        "university_public", "university_private", "university_research",
+        "university",
         "community_college", "technical_college", "vocational_school",
-        "k12_public_school", "k12_private_school", "k12_charter_school",
-        "school_district", "research_institute", "research_center",
+        "k12_school", "school_district", "research_institute", "research_center",
         "medical_school", "university_hospital", "teaching_hospital",
         "online_university", "library", "tribal_college", "military_academy",
         "edtech_platform", "tutoring_service", "consortium",
@@ -806,10 +805,10 @@ class TestNormalizeInstitutionType:
 
     # Free-text source labels normalize correctly
     @pytest.mark.parametrize("raw,expected", [
-        ("University", "university_public"),
-        ("university", "university_public"),
-        ("School", "k12_public_school"),
-        ("school", "k12_public_school"),
+        ("University", "university"),
+        ("university", "university"),
+        ("School", "k12_school"),
+        ("school", "k12_school"),
         ("Research Institute", "research_institute"),
         ("research institute", "research_institute"),
         ("school_district", "school_district"),
@@ -839,7 +838,7 @@ class TestNormalizeInstitutionType:
         assert self._norm("PowerSchool") == "unknown"
 
     def test_case_insensitive(self):
-        assert self._norm("UNIVERSITY") == "university_public"
+        assert self._norm("UNIVERSITY") == "university"
         assert self._norm("SCHOOL DISTRICT") == "school_district"
 
 

@@ -84,7 +84,7 @@ def _minimal_enrichment(**kwargs) -> CTIEnrichmentResult:
     return CTIEnrichmentResult(**defaults)
 
 
-def _minimal_raw(institution_type: str = "university_public") -> dict:
+def _minimal_raw(institution_type: str = "university") -> dict:
     return {
         "is_edu_cyber_incident": True,
         "institution_name": "Test University",
@@ -99,19 +99,29 @@ def _minimal_raw(institution_type: str = "university_public") -> dict:
 
 class TestNormalizeInstitutionType:
     def test_already_canonical_passes_through(self):
-        assert normalize_institution_type("university_public") == "university_public"
-        assert normalize_institution_type("k12_public_school") == "k12_public_school"
+        assert normalize_institution_type("university") == "university"
+        assert normalize_institution_type("k12_school") == "k12_school"
         assert normalize_institution_type("community_college") == "community_college"
 
-    def test_free_text_university_maps_to_public(self):
-        assert normalize_institution_type("University") == "university_public"
+    def test_old_university_public_maps_to_university(self):
+        assert normalize_institution_type("university_public") == "university"
+        assert normalize_institution_type("university_private") == "university"
+        assert normalize_institution_type("university_research") == "university"
+
+    def test_old_k12_types_map_to_k12_school(self):
+        assert normalize_institution_type("k12_public_school") == "k12_school"
+        assert normalize_institution_type("k12_private_school") == "k12_school"
+        assert normalize_institution_type("k12_charter_school") == "k12_school"
+
+    def test_free_text_university_maps_to_university(self):
+        assert normalize_institution_type("University") == "university"
 
     def test_free_text_school_maps_to_k12(self):
-        assert normalize_institution_type("School") == "k12_public_school"
+        assert normalize_institution_type("School") == "k12_school"
 
     def test_free_text_college_maps(self):
         result = normalize_institution_type("College")
-        assert result in {"community_college", "university_public", "liberal_arts_college"}
+        assert result in {"community_college", "university"}
 
     def test_research_institute_maps(self):
         assert normalize_institution_type("Research Institute") == "research_institute"
@@ -134,9 +144,9 @@ class TestNormalizeInstitutionType:
     def test_case_insensitive(self):
         assert normalize_institution_type("UNIVERSITY") == normalize_institution_type("university")
 
-    def test_hyphen_and_underscore_normalize(self):
-        # "university-public" should hit the canonical set after normalisation
-        assert normalize_institution_type("university-public") == "university_public"
+    def test_hyphen_normalized(self):
+        # "university-public" backward-compat maps to university
+        assert normalize_institution_type("university-public") == "university"
 
 
 # ── normalize_attack_vector ───────────────────────────────────────────────────

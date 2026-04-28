@@ -30,7 +30,7 @@ def _insert(conn, incident_id: str, all_urls):
         title="Test Incident",
         institution_name="Test University",
         victim_raw_name="Test University",
-        institution_type="university_public",
+        institution_type="university",
         country="United States",
         region=None,
         city=None,

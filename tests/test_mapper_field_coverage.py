@@ -22,7 +22,7 @@ def _base_payload(**overrides):
         "is_edu_cyber_incident": True,
         "education_relevance_reasoning": "A university was attacked.",
         "institution_name": "Test University",
-        "institution_type": "university_public",
+        "institution_type": "university",
         "attack_category": "ransomware_encryption",
         "attack_vector": "phishing_email",
     }

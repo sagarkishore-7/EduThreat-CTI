@@ -131,7 +131,7 @@ def test_threat_actor_and_impact_analytics_exclude_orphan_rows(temp_db):
         INSERT INTO incident_enrichments_flat
         (incident_id, is_education_related, institution_type, attack_vector,
          threat_actor_name, threat_actor_category, created_at, updated_at, enriched_summary)
-        VALUES (?, 1, 'university_public', 'ransomware', 'Vice Society', 'ransomware_group', ?, ?, ?)
+        VALUES (?, 1, 'university', 'ransomware', 'Vice Society', 'ransomware_group', ?, ?, ?)
         """,
         (incident.incident_id, now, now, "Real actor incident"),
     )
@@ -184,10 +184,10 @@ def test_threat_actor_and_impact_analytics_exclude_orphan_rows(temp_db):
     assert actor_categories == [{"category": "ransomware_group", "count": 1, "percentage": 100.0}]
 
     attack_vectors = get_attack_vector_by_institution(conn, limit=10)
-    assert attack_vectors["institution_types"] == ["university_public"]
+    assert attack_vectors["institution_types"] == ["university"]
     assert attack_vectors["vectors"] == ["ransomware"]
     assert attack_vectors["data"] == [
-        {"institution_type": "university_public", "attack_vector": "ransomware", "count": 1}
+        {"institution_type": "university", "attack_vector": "ransomware", "count": 1}
     ]
 
 

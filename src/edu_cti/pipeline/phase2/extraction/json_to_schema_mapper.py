@@ -128,13 +128,20 @@ EVENT_TYPE_NORMALIZATION = {
 
 INSTITUTION_TYPE_NORMALIZATION = {
     # Generic free-text from ingestion sources → canonical enum values
-    "university": "university_public",
-    "public university": "university_public",
-    "state university": "university_public",
-    "private university": "university_private",
-    "research university": "university_research",
-    "r1 university": "university_research",
-    "r2 university": "university_research",
+    "university": "university",
+    "public university": "university",
+    "state university": "university",
+    "private university": "university",
+    "research university": "university",
+    "r1 university": "university",
+    "r2 university": "university",
+    # Backward-compat: old enum values the LLM may still output → new values
+    "university_public": "university",
+    "university_private": "university",
+    "university_research": "university",
+    "k12_public_school": "k12_school",
+    "k12_private_school": "k12_school",
+    "k12_charter_school": "k12_school",
     "college": "community_college",
     "junior college": "community_college",
     "2-year college": "community_college",
@@ -144,10 +151,10 @@ INSTITUTION_TYPE_NORMALIZATION = {
     "polytechnic": "technical_college",
     "trade school": "vocational_school",
     "vocational": "vocational_school",
-    "school": "k12_public_school",
-    "public school": "k12_public_school",
-    "private school": "k12_private_school",
-    "charter school": "k12_charter_school",
+    "school": "k12_school",
+    "public school": "k12_school",
+    "private school": "k12_school",
+    "charter school": "k12_school",
     "district": "school_district",
     "school district": "school_district",
     "independent school district": "school_district",
@@ -195,10 +202,9 @@ INSTITUTION_TYPE_NORMALIZATION = {
 }
 
 _VALID_INSTITUTION_TYPES = {
-    "university_public", "university_private", "university_research",
+    "university",
     "community_college", "technical_college", "vocational_school",
-    "k12_public_school", "k12_private_school", "k12_charter_school",
-    "school_district", "research_institute", "research_center",
+    "k12_school", "school_district", "research_institute", "research_center",
     "medical_school", "university_hospital", "teaching_hospital",
     "online_university", "library", "tribal_college", "military_academy",
     "edtech_platform", "tutoring_service", "consortium",
@@ -276,6 +282,10 @@ def normalize_institution_type(value: Any) -> Optional[str]:
     normalized = value.lower().strip().replace("-", "_").replace(" ", "_")
     if normalized in _VALID_INSTITUTION_TYPES:
         return normalized
+    # Try normalized form (hyphens/spaces → underscores) in the normalization map
+    # e.g. "university-public" → "university_public" → "university"
+    if normalized in INSTITUTION_TYPE_NORMALIZATION:
+        return INSTITUTION_TYPE_NORMALIZATION[normalized]
     # Try direct lookup in normalization map (key already lowercased+stripped)
     key = value.lower().strip()
     if key in INSTITUTION_TYPE_NORMALIZATION:
