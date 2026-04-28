@@ -1230,6 +1230,559 @@ EXTRACTION_SCHEMA = {
     ]
 }
 
+# ── Split extraction schemas (experimental 3-call approach) ───────────────────
+# Call 1: Core identification & classification (~45 fields, ~2.5K token schema).
+#   attack_chain placed immediately after attack_vector so it gets focused attention.
+# Call 2: Deep intelligence (~35 fields, ~2.5K token schema) — the chronically null fields.
+#   timeline (event_description), mitre_attack_techniques (all 4 fields), regulatory,
+#   financial breakdown, recovery, disclosure.
+
+EXTRACTION_SCHEMA_PART1 = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CTI Extraction Part 1 — Core Identification & Classification",
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "is_edu_cyber_incident": {"type": "boolean"},
+        "education_relevance_reasoning": {"type": "string"},
+        "institution_name": {"type": "string"},
+        "institution_aliases": {"type": "array", "items": {"type": "string"}},
+        "institution_type": {
+            "type": "string",
+            "enum": [
+                "university_public", "university_private", "university_research",
+                "community_college", "technical_college", "vocational_school",
+                "k12_public_school", "k12_private_school", "k12_charter_school",
+                "school_district", "research_institute", "research_center",
+                "medical_school", "university_hospital", "teaching_hospital",
+                "online_university", "library", "tribal_college", "military_academy",
+                "edtech_platform", "tutoring_service", "consortium",
+                "education_department", "education_ministry", "student_loan_servicer",
+                "education_nonprofit", "education_vendor", "unknown",
+            ],
+        },
+        "institution_size": {
+            "type": "string",
+            "enum": ["small_under_5k", "medium_5k_20k", "large_20k_50k", "very_large_over_50k", "unknown"],
+        },
+        "country": {"type": "string"},
+        "country_code": {"type": "string"},
+        "region": {"type": "string"},
+        "city": {"type": "string"},
+        "incident_severity": {
+            "type": "string",
+            "enum": ["critical", "high", "medium", "low", "informational"],
+        },
+        "incident_status": {
+            "type": "string",
+            "enum": ["ongoing", "contained", "resolved", "unknown"],
+        },
+        "incident_date": {"type": "string"},
+        "incident_date_precision": {
+            "type": "string",
+            "enum": ["exact", "approximate", "month_only", "year_only", "unknown"],
+        },
+        "discovery_date": {"type": "string"},
+        "publication_date": {"type": "string"},
+        "attack_category": {
+            "type": "string",
+            "enum": [
+                "ransomware_encryption", "ransomware_double_extortion",
+                "ransomware_triple_extortion", "ransomware_data_leak_only",
+                "phishing_credential_harvest", "phishing_malware_delivery",
+                "spear_phishing", "whaling", "business_email_compromise",
+                "smishing", "vishing",
+                "data_breach_external", "data_breach_internal",
+                "data_exposure_misconfiguration", "data_leak_accidental",
+                "ddos_volumetric", "ddos_application", "ddos_protocol",
+                "malware_trojan", "malware_worm", "malware_backdoor",
+                "malware_rootkit", "malware_cryptominer", "malware_infostealer",
+                "malware_rat", "malware_botnet",
+                "unauthorized_access", "privilege_escalation",
+                "credential_stuffing", "brute_force", "password_spraying",
+                "web_defacement", "sql_injection", "xss_attack", "api_abuse",
+                "insider_malicious", "insider_negligent", "insider_compromised",
+                "supply_chain_software", "supply_chain_hardware",
+                "supply_chain_service_provider", "third_party_compromise",
+                "social_engineering", "physical_breach", "account_takeover",
+                "extortion_no_ransomware", "hacktivism", "espionage",
+                "sabotage", "fraud", "unknown", "other",
+            ],
+        },
+        "secondary_attack_categories": {"type": "array", "items": {"type": "string"}},
+        "attack_vector": {
+            "type": "string",
+            "enum": [
+                "phishing_email", "spear_phishing_email", "malicious_attachment",
+                "malicious_link", "business_email_compromise",
+                "stolen_credentials", "credential_stuffing", "brute_force",
+                "password_spraying", "credential_phishing", "session_hijacking",
+                "vulnerability_exploit_known", "vulnerability_exploit_zero_day",
+                "unpatched_system", "misconfiguration", "default_credentials",
+                "drive_by_download", "watering_hole", "malvertising",
+                "sql_injection", "xss", "csrf", "ssrf", "path_traversal",
+                "exposed_service", "exposed_rdp", "exposed_vpn", "exposed_ssh",
+                "exposed_database", "exposed_api", "man_in_the_middle",
+                "supply_chain_compromise", "third_party_vendor",
+                "software_update_compromise", "trusted_relationship",
+                "social_engineering", "pretexting", "baiting", "tailgating", "usb_drop",
+                "insider_access", "former_employee",
+                "cloud_misconfiguration", "api_key_exposure", "storage_bucket_exposure",
+                "dns_hijacking", "bgp_hijacking", "sim_swapping", "unknown", "other",
+            ],
+        },
+        # attack_chain immediately after attack_vector — LLM sees kill-chain prompt
+        # while still in the attack-classification context, reducing null rate.
+        "attack_chain": {
+            "type": "array",
+            "description": (
+                "MITRE Unified Kill Chain phases present. ALWAYS populate when attack_category is known. "
+                "ransomware_* → ['initial_access','execution','impact'] minimum. "
+                "data_breach_external → ['initial_access','exfiltration']. "
+                "ddos_* → ['impact']. Only phases evidenced by the article."
+            ),
+            "items": {
+                "type": "string",
+                "enum": [
+                    "reconnaissance", "resource_development", "initial_access", "execution",
+                    "persistence", "privilege_escalation", "defense_evasion", "credential_access",
+                    "discovery", "lateral_movement", "collection", "command_and_control",
+                    "exfiltration", "impact",
+                ],
+            },
+        },
+        "initial_access_description": {"type": "string"},
+        "threat_actor_claimed": {"type": "boolean"},
+        "threat_actor_name": {"type": "string"},
+        "threat_actor_aliases": {"type": "array", "items": {"type": "string"}},
+        "threat_actor_category": {
+            "type": "string",
+            "enum": [
+                "apt_nation_state", "apt_state_sponsored", "cybercriminal_organized",
+                "cybercriminal_individual", "ransomware_gang", "ransomware_affiliate",
+                "hacktivist", "insider_threat", "script_kiddie", "competitor", "unknown", "other",
+            ],
+        },
+        "threat_actor_motivation": {
+            "type": "string",
+            "enum": [
+                "financial_gain", "espionage", "hacktivism", "sabotage",
+                "personal_grievance", "notoriety", "research_theft",
+                "competitive_advantage", "unknown",
+            ],
+        },
+        "threat_actor_origin_country": {"type": "string"},
+        "ransomware_family": {
+            "type": "string",
+            "enum": [
+                "lockbit", "lockbit_2", "lockbit_3", "blackcat_alphv", "cl0p_clop",
+                "akira", "play", "8base", "bianlian", "royal", "black_basta", "medusa",
+                "rhysida", "hunters_international", "inc_ransom", "vice_society", "hive",
+                "conti", "ryuk", "revil_sodinokibi", "darkside", "blackmatter", "maze",
+                "netwalker", "ragnar_locker", "avaddon", "cuba", "pysa_mespinoza", "babuk",
+                "grief", "snatch", "quantum", "karakurt", "lorenz", "noescape", "cactus",
+                "trigona", "money_message", "nokoyawa", "ransomhouse", "daixin", "ransomhub",
+                "interlock", "fog", "meow", "phobos", "avoslocker", "blacksuit",
+                "doppelpaymer", "qilin", "pysa", "prometheus", "unknown", "other",
+            ],
+        },
+        "malware_families": {"type": "array", "items": {"type": "string"}},
+        "attacker_tools": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "cobalt_strike", "metasploit", "mimikatz", "psexec", "bloodhound",
+                    "sharphound", "powershell_empire", "covenant", "sliver", "brute_ratel",
+                    "impacket", "rubeus", "kerbrute", "hashcat", "john_the_ripper",
+                    "nmap", "masscan", "shodan", "rclone", "mega_sync", "winscp",
+                    "filezilla", "anydesk", "teamviewer", "atera", "splashtop",
+                    "ngrok", "ligolo", "chisel", "plink", "other",
+                ],
+            },
+        },
+        "was_ransom_demanded": {"type": "boolean"},
+        "ransom_amount_exact": {"type": "number"},
+        "ransom_paid": {"type": "boolean"},
+        "data_breached": {"type": "boolean"},
+        "data_exfiltrated": {"type": "boolean"},
+        "data_encrypted": {"type": "boolean"},
+        "data_destroyed": {"type": "boolean"},
+        "data_published": {"type": "boolean"},
+        "data_sold": {"type": "boolean"},
+        "data_categories": {
+            "type": "array",
+            "description": "ALL data types exposed — enumerate every category that applies.",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "student_pii", "student_ssn", "student_grades", "student_transcripts",
+                    "student_financial_aid", "student_disciplinary", "student_health_records",
+                    "student_immigration", "student_housing",
+                    "employee_pii", "employee_ssn", "employee_payroll", "employee_benefits",
+                    "employee_performance", "employee_background_checks",
+                    "alumni_pii", "alumni_donation_history",
+                    "research_data", "research_grants", "research_ip", "research_unpublished",
+                    "research_classified",
+                    "financial_records", "bank_accounts", "credit_cards", "tax_records",
+                    "donor_information",
+                    "medical_records", "health_insurance", "mental_health", "disability_records",
+                    "usernames_passwords", "api_keys", "certificates",
+                    "intellectual_property", "legal_documents", "contracts",
+                    "internal_communications", "security_configurations",
+                    "network_diagrams", "general_pii", "health_records", "other",
+                ],
+            },
+        },
+        "records_affected_min": {"type": "integer"},
+        "records_affected_max": {"type": "integer"},
+        "records_affected_exact": {"type": "integer"},
+        "data_volume_gb": {"type": "number"},
+        "systems_affected": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "email_system", "active_directory", "identity_management", "vpn", "firewall",
+                    "dns", "dhcp", "file_servers", "backup_systems", "virtualization",
+                    "core_network", "wifi_network", "voip_phone", "data_center",
+                    "public_website", "student_portal", "staff_portal", "alumni_portal",
+                    "applicant_portal", "lms_learning_management", "sis_student_information",
+                    "registration_system", "grade_system", "library_system", "exam_proctoring",
+                    "erp_system", "hr_system", "payroll_system", "financial_system",
+                    "procurement", "admissions_system", "financial_aid_system",
+                    "research_computing_hpc", "research_storage", "lab_instruments",
+                    "research_databases", "ehr_emr", "hospital_systems", "medical_devices",
+                    "pharmacy_system", "printing_system", "parking_system",
+                    "physical_access", "cctv_security", "other",
+                ],
+            },
+        },
+        "critical_systems_affected": {"type": "boolean"},
+        "network_compromised": {"type": "boolean"},
+        "domain_admin_compromised": {"type": "boolean"},
+        "backup_compromised": {"type": "boolean"},
+        "encryption_extent": {
+            "type": "string",
+            "enum": ["full_encryption", "partial_encryption", "no_encryption", "unknown"],
+        },
+        "outage_duration_hours": {"type": "number"},
+        "downtime_days": {"type": "number"},
+        "operational_impacts": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "classes_cancelled", "classes_moved_online", "exams_postponed",
+                    "exams_cancelled", "graduation_delayed", "semester_extended",
+                    "campus_closed", "research_halted", "research_data_lost",
+                    "payroll_delayed", "financial_aid_delayed", "admissions_suspended",
+                    "registration_suspended", "email_unavailable", "website_down",
+                    "student_portal_down", "lms_unavailable", "network_offline",
+                    "vpn_unavailable", "library_closed", "it_helpdesk_overwhelmed",
+                    "manual_processes_required", "clinical_operations_disrupted",
+                    "patient_care_affected", "other",
+                ],
+            },
+        },
+        "students_affected": {"type": "integer"},
+        "staff_affected": {"type": "integer"},
+        "total_individuals_affected": {"type": "integer"},
+        "confidence_score": {"type": "number", "minimum": 0, "maximum": 1.0},
+        "extraction_notes": {"type": "string"},
+        "other_edu_incidents": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "victim_name": {"type": "string"},
+                    "incident_date": {"type": "string"},
+                    "attack_type": {"type": "string"},
+                    "country": {"type": "string"},
+                    "brief_description": {"type": "string"},
+                },
+                "required": ["victim_name"],
+            },
+        },
+    },
+    "required": ["is_edu_cyber_incident"],
+}
+
+
+EXTRACTION_SCHEMA_PART2 = {
+    "$schema": "http://json-schema.org/draft-07/schema#",
+    "title": "CTI Extraction Part 2 — Deep Intelligence",
+    "description": (
+        "Second extraction pass. Fill ONLY these fields from the article. "
+        "Core facts (institution, attack type, data) were already extracted in Part 1 — do not repeat them here."
+    ),
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "timeline": {
+            "type": "array",
+            "description": (
+                "Chronological events EXPLICITLY stated in the article. "
+                "event_description is REQUIRED for every entry — if you cannot write a concrete "
+                "one-sentence description from the article text, OMIT that entry entirely. "
+                "Never leave event_description null."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string"},
+                    "date_precision": {
+                        "type": "string",
+                        "enum": ["day", "month", "year", "approximate"],
+                    },
+                    "event_description": {
+                        "type": "string",
+                        "description": (
+                            "REQUIRED. One sentence from the article: what specifically happened on this date. "
+                            "Example: 'District sent notification letters to affected families.' "
+                            "Keep under 25 words. If you cannot write this, omit the whole entry."
+                        ),
+                    },
+                    "event_type": {
+                        "type": "string",
+                        "enum": [
+                            "initial_access", "reconnaissance", "lateral_movement",
+                            "privilege_escalation", "exploitation", "data_exfiltration",
+                            "encryption_started", "ransom_demand", "impact",
+                            "operational_impact", "discovery", "containment", "eradication",
+                            "recovery", "disclosure", "notification", "investigation",
+                            "remediation", "response_action", "security_improvement",
+                            "law_enforcement_contact", "public_statement",
+                            "systems_restored", "other",
+                        ],
+                    },
+                },
+                "required": ["event_description"],
+            },
+        },
+        "mitre_attack_techniques": {
+            "type": "array",
+            "description": (
+                "MITRE ATT&CK techniques directly evidenced by article text. "
+                "ALL FOUR fields are REQUIRED for every entry: technique_id, technique_name, tactic, description. "
+                "If you cannot fill all four from the article, omit that technique entirely. "
+                "Do NOT add techniques based on what is typical — only what the article explicitly describes."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "technique_id": {"type": "string", "description": "e.g. T1566 or T1566.001"},
+                    "technique_name": {"type": "string", "description": "Official MITRE name, e.g. 'Phishing'"},
+                    "tactic": {
+                        "type": "string",
+                        "enum": [
+                            "reconnaissance", "resource_development", "initial_access", "execution",
+                            "persistence", "privilege_escalation", "defense_evasion",
+                            "credential_access", "discovery", "lateral_movement", "collection",
+                            "command_and_control", "exfiltration", "impact",
+                        ],
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "REQUIRED. One sentence from the article how this technique was used. "
+                            "Example: 'Ransomware encrypted files across administrative servers.' Under 20 words."
+                        ),
+                    },
+                },
+                "required": ["technique_id", "technique_name", "tactic", "description"],
+            },
+        },
+        "vulnerabilities_exploited": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "cve_id": {"type": "string"},
+                    "vulnerability_name": {"type": "string"},
+                    "vulnerability_type": {
+                        "type": "string",
+                        "enum": [
+                            "remote_code_execution", "privilege_escalation",
+                            "authentication_bypass", "sql_injection", "xss", "ssrf",
+                            "deserialization", "path_traversal", "buffer_overflow",
+                            "memory_corruption", "information_disclosure",
+                            "denial_of_service", "zero_day", "other",
+                        ],
+                    },
+                    "affected_product": {"type": "string"},
+                    "cvss_score": {"type": "number", "minimum": 0, "maximum": 10},
+                },
+            },
+        },
+        "iocs": {
+            "type": "object",
+            "properties": {
+                "ip_addresses": {"type": "array", "items": {"type": "string"}},
+                "domains": {"type": "array", "items": {"type": "string"}},
+                "urls": {"type": "array", "items": {"type": "string"}},
+                "file_hashes": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "hash_type": {"type": "string", "enum": ["md5", "sha1", "sha256", "sha512"]},
+                            "hash_value": {"type": "string"},
+                        },
+                    },
+                },
+                "email_addresses": {"type": "array", "items": {"type": "string"}},
+                "file_names": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "applicable_regulations": {
+            "type": "array",
+            "description": (
+                "Regulations applicable to this incident. Apply inference rules: "
+                "FERPA → any US education institution with student data breached. "
+                "HIPAA → any health/medical records involved. "
+                "GDPR → any EU institution or EU resident data. "
+                "UK_DPA → UK institution. state_breach_notification → any US institution."
+            ),
+            "items": {
+                "type": "string",
+                "enum": [
+                    "FERPA", "HIPAA", "GDPR", "CCPA_CPRA", "PCI_DSS", "GLBA", "SOX",
+                    "UK_DPA", "Australia_Privacy_Act", "Canada_PIPEDA",
+                    "state_breach_notification", "other",
+                ],
+            },
+        },
+        "breach_notification_required": {"type": "boolean"},
+        "notification_sent": {"type": "boolean"},
+        "notification_sent_date": {"type": "string"},
+        "regulators_notified": {"type": "array", "items": {"type": "string"}},
+        "investigation_opened": {"type": "boolean"},
+        "investigating_agencies": {"type": "array", "items": {"type": "string"}},
+        "fine_imposed": {"type": "boolean"},
+        "fine_amount_usd": {"type": "number"},
+        "lawsuits_filed": {"type": "boolean"},
+        "lawsuit_count": {"type": "integer"},
+        "class_action_filed": {"type": "boolean"},
+        "settlement_amount_usd": {"type": "number"},
+        "ransom_amount": {"type": "number"},
+        "ransom_amount_min": {"type": "number"},
+        "ransom_amount_max": {"type": "number"},
+        "ransom_currency": {"type": "string"},
+        "ransom_cryptocurrency": {
+            "type": "string",
+            "enum": ["bitcoin", "monero", "ethereum", "other", "unknown"],
+        },
+        "ransom_negotiated": {"type": "boolean"},
+        "decryptor_received": {"type": "boolean"},
+        "decryptor_worked": {"type": "boolean"},
+        "estimated_total_cost_usd": {"type": "number"},
+        "recovery_cost_usd": {"type": "number"},
+        "legal_cost_usd": {"type": "number"},
+        "insurance_claim": {"type": "boolean"},
+        "insurance_payout_usd": {"type": "number"},
+        "dwell_time_days": {"type": "number"},
+        "incident_response_activated": {"type": "boolean"},
+        "ir_firm_engaged": {"type": "string"},
+        "forensics_firm_engaged": {"type": "string"},
+        "law_enforcement_involved": {"type": "boolean"},
+        "law_enforcement_agencies": {"type": "array", "items": {"type": "string"}},
+        "fbi_involved": {"type": "boolean"},
+        "cisa_involved": {"type": "boolean"},
+        "recovery_method": {
+            "type": "string",
+            "enum": [
+                "backup_restore", "decryptor_used", "ransom_paid_decryption",
+                "clean_rebuild", "partial_backup_partial_rebuild", "ongoing", "unknown",
+            ],
+        },
+        "recovery_duration_days": {"type": "number"},
+        "security_improvements": {
+            "type": "array",
+            "items": {
+                "type": "string",
+                "enum": [
+                    "mfa_implemented", "mfa_expanded", "password_policy_strengthened",
+                    "network_segmentation", "endpoint_detection_response",
+                    "siem_implemented", "soc_established", "backup_strategy_improved",
+                    "air_gapped_backups", "immutable_backups", "security_awareness_training",
+                    "phishing_simulation", "vulnerability_management", "penetration_testing",
+                    "security_audit", "zero_trust_initiative", "privileged_access_management",
+                    "email_security_enhanced", "web_filtering", "dns_filtering",
+                    "encryption_at_rest", "encryption_in_transit",
+                    "incident_response_plan_updated", "tabletop_exercises",
+                    "cyber_insurance_obtained", "vendor_security_review", "other",
+                ],
+            },
+        },
+        "public_disclosure": {"type": "boolean"},
+        "public_disclosure_date": {"type": "string"},
+        "disclosure_delay_days": {"type": "number"},
+        "disclosure_source": {
+            "type": "string",
+            "enum": [
+                "institution_statement", "media_report", "attacker_leak_site",
+                "regulatory_filing", "law_enforcement", "social_media",
+                "security_researcher", "other",
+            ],
+        },
+        "transparency_level": {
+            "type": "string",
+            "enum": ["excellent", "good", "adequate", "poor", "none"],
+        },
+        "attack_campaign_name": {"type": "string"},
+        "sector_targeting_pattern": {
+            "type": "string",
+            "enum": ["targeted_education_only", "opportunistic_multi_sector", "unknown"],
+        },
+        "key_quotes": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": [],
+}
+
+PART2_PROMPT_TEMPLATE = """You are a Senior Cyber Threat Intelligence Analyst. A previous analysis pass already extracted the core facts below. Your job is to extract the DEEP INTELLIGENCE fields from the same article — focus entirely on timeline, MITRE ATT&CK, regulatory implications, financial details, and recovery.
+
+CORE FACTS FROM PART 1 (do not re-extract these):
+- Institution: {institution_name} ({institution_type}, {country})
+- Attack type: {attack_category}
+- Attack vector: {attack_vector}
+- Ransomware: {ransomware_family}
+- Data breached: {data_categories}
+- Records: {records_affected_exact}
+- Published: {publication_date}
+
+YOUR TASK — extract ONLY the following fields from the article:
+
+1. TIMELINE — event_description is REQUIRED for every entry. If you cannot write a concrete one-sentence description drawn directly from the article for a date, OMIT that entry entirely. Never leave event_description null or empty. Good: "District sent breach notification letters to 47,000 affected families." Bad: leaving event_description as null.
+
+2. MITRE ATT&CK — all four fields (technique_id, technique_name, tactic, description) are REQUIRED for every technique. If you cannot fill all four from the article, omit that technique entirely. Only include techniques directly evidenced by the article — not what is typical for this attack type.
+
+3. REGULATORY — apply these rules:
+   - FERPA applies to any US education institution where student data was breached
+   - HIPAA applies if medical or health records were involved
+   - GDPR applies to EU institutions or EU resident data
+   - UK_DPA applies to UK institutions
+   - state_breach_notification applies to any US institution
+
+4. FINANCIAL — only from explicitly stated figures in the article. Null if not stated.
+
+5. RECOVERY — IR firms, law enforcement, recovery method, security improvements — only from the article.
+
+6. DISCLOSURE — how and when was this disclosed? Transparency level?
+
+NULL RULES: If information is not in the article, set to null. Do not guess. Do not fabricate.
+
+ARTICLE:
+URL: {url}
+Title: {title}
+Published: {publication_date}
+
+{text}
+
+---
+Output ONLY the JSON object for Part 2 fields. No prose."""
+
+
 # ── Second LLM call: summary-only schema ──────────────────────────────────────
 SUMMARY_SCHEMA = {
     "$schema": "http://json-schema.org/draft-07/schema#",

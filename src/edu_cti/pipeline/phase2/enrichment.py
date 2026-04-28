@@ -17,7 +17,13 @@ from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
 from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
-from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA, SUMMARY_PROMPT
+from src.edu_cti.pipeline.phase2.extraction.extraction_schema import (
+    EXTRACTION_SCHEMA,
+    EXTRACTION_SCHEMA_PART1,
+    EXTRACTION_SCHEMA_PART2,
+    PART2_PROMPT_TEMPLATE,
+    SUMMARY_PROMPT,
+)
 from src.edu_cti.pipeline.phase2.extraction.extraction_prompt import PROMPT_TEMPLATE
 from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import json_to_cti_enrichment
 
@@ -122,24 +128,30 @@ def count_filled_fields(enrichment_result: CTIEnrichmentResult) -> int:
 class IncidentEnricher:
     """
     Main orchestrator for enriching CTI incidents with LLM.
-    
-    Handles:
-    - Article fetching from URLs
-    - Education relevance checking (Yes/No with reasoning)
-    - Comprehensive CTI extraction (timeline, MITRE ATT&CK, attack dynamics, impact metrics)
-    - Article scoring based on field coverage
+
+    For short articles (< SPLIT_THRESHOLD_CHARS combined text) a single extraction
+    call is used. For long articles the 3-call split strategy is used instead:
+      Call 1 — core identification & classification (Part 1 schema, ~45 fields)
+      Call 2 — deep intelligence (Part 2 schema, ~35 fields: timeline, MITRE,
+                regulatory, financial, recovery)
+      Call 3 — enriched_summary (unchanged)
+    This keeps each grammar-constrained schema small so the model fills every
+    field rather than dropping late-schema fields under long-context pressure.
     """
-    
+
+    # Articles longer than this (combined chars) use the 3-call split.
+    # Below the threshold a single call is faster and equally accurate.
+    SPLIT_THRESHOLD_CHARS = 25_000
+
     def __init__(self, llm_client: Optional[OllamaLLMClient] = None):
-        """
-        Initialize the enricher.
-        
-        Args:
-            llm_client: Ollama LLM client (required)
-        """
         if not llm_client:
             raise ValueError("llm_client is required")
         self.llm_client = llm_client
+
+    def _should_use_split(self, article_contents: Dict[str, "ArticleContent"]) -> bool:
+        """Return True when combined article text exceeds the split threshold."""
+        total = sum(len(a.content or "") for a in article_contents.values())
+        return total >= self.SPLIT_THRESHOLD_CHARS
     
     def process_incident(
         self,
@@ -200,17 +212,20 @@ class IncidentEnricher:
                 content_length=art_data.get("content_length", 0),
             )
         
-        # Process articles
+        # Process articles — use the 3-call split for long articles
         if len(article_contents) > 1:
-            # Multiple articles - enrich each and select best
             enrichment_result, raw_json_data = self._process_multiple_articles(
                 incident, article_contents, skip_if_not_education
             )
         else:
-            # Single article
-            enrichment_result, raw_json_data = self._enrich_article(
-                incident, article_contents
-            )
+            use_split = self._should_use_split(article_contents)
+            if use_split:
+                logger.debug(
+                    f"{incident.incident_id}: article ≥ {self.SPLIT_THRESHOLD_CHARS:,} chars "
+                    f"— using 3-call split extraction"
+                )
+            _enrich = self._enrich_article_split if use_split else self._enrich_article
+            enrichment_result, raw_json_data = _enrich(incident, article_contents)
             
             if not enrichment_result:
                 # If _enrich_article already set a marker (e.g. _not_education_related),
@@ -277,11 +292,16 @@ class IncidentEnricher:
         n = len(article_contents)
         primary_url = next(iter(article_contents))
 
-        logger.debug(f"{incident.incident_id}: {n} articles — trying combined LLM call first")
+        _use_split = self._should_use_split(article_contents)
+        logger.debug(
+            f"{incident.incident_id}: {n} articles — "
+            f"{'3-call split' if _use_split else 'single-call'} combined attempt"
+        )
+        _enrich_combined = self._enrich_article_split if _use_split else self._enrich_article
 
         # ── Step 1: single combined call ──────────────────────────────────────────
         try:
-            enrichment_result, raw_json_data = self._enrich_article(incident, article_contents)
+            enrichment_result, raw_json_data = _enrich_combined(incident, article_contents)
 
             if enrichment_result:
                 is_edu = enrichment_result.education_relevance.is_education_related
@@ -322,7 +342,12 @@ class IncidentEnricher:
             logger.debug(f"  [{idx}/{n}] enriching {url[:80]}")
             try:
                 single_article = {url: article_content}
-                enrichment_result, raw_json_data = self._enrich_article(incident, single_article)
+                _enrich_single = (
+                    self._enrich_article_split
+                    if self._should_use_split(single_article)
+                    else self._enrich_article
+                )
+                enrichment_result, raw_json_data = _enrich_single(incident, single_article)
 
                 if enrichment_result:
                     all_not_education = False
@@ -799,6 +824,222 @@ class IncidentEnricher:
             logger.error(f"Error parsing response: {e}")
             return None
     
+    def _enrich_article_split(
+        self,
+        incident: BaseIncident,
+        article_contents: Dict[str, ArticleContent],
+    ) -> Tuple[Optional[CTIEnrichmentResult], Optional[Dict[str, Any]]]:
+        """
+        Experimental 3-call split extraction.
+
+        Call 1: Core identification & classification (EXTRACTION_SCHEMA_PART1, ~45 fields).
+                attack_chain is here, right after attack_vector, for focused attention.
+        Call 2: Deep intelligence (EXTRACTION_SCHEMA_PART2, ~35 fields): timeline with
+                event_description, MITRE ATT&CK with all 4 fields, regulatory, financial,
+                recovery — the chronically null fields.
+        Call 3: Summary (unchanged from _enrich_article).
+
+        Returns the merged result as a (CTIEnrichmentResult, raw_json_data) tuple.
+        Falls back to the original _enrich_article() if Part 1 fails.
+        """
+        if not article_contents:
+            return None, None
+
+        primary_url = list(article_contents.keys())[0]
+        primary_article = article_contents[primary_url]
+
+        all_text = []
+        for url, article in article_contents.items():
+            all_text.append(f"[URL: {url}]")
+            if article.title:
+                all_text.append(f"Title: {article.title}")
+            if article.publish_date:
+                all_text.append(f"Published: {article.publish_date}")
+            if article.author:
+                all_text.append(f"Author: {article.author}")
+            all_text.append(f"\n{article.content}\n")
+        combined_text = "\n".join(all_text)
+
+        MAX_ARTICLE_CHARS = 180_000
+        if len(combined_text) > MAX_ARTICLE_CHARS:
+            combined_text = combined_text[:MAX_ARTICLE_CHARS] + "\n\n[TRUNCATED]"
+
+        title = primary_article.title or ""
+
+        system_prompt = (
+            "You are a Cyber Threat Intelligence Analyst specialising in education sector incidents. "
+            "Output ONLY valid JSON. Null for unknown fields. No prose, no markdown."
+        )
+
+        # ── Part 1: core extraction ───────────────────────────────────────────
+        notes_text = (incident.notes or "").strip()
+        is_roundup_stub = notes_text.startswith("Extracted from roundup:")
+        known_name = (incident.institution_name or "").strip()
+        _UNKNOWN_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
+        if is_roundup_stub and known_name and known_name.lower() not in _UNKNOWN_NAMES:
+            target_institution_line = (
+                f"\n- TARGET INSTITUTION: {known_name}"
+                f"\n  (This article may cover multiple institutions. Extract THIS institution's"
+                f" incident as the primary. List all others in other_edu_incidents.)"
+            )
+        else:
+            target_institution_line = ""
+
+        article_metadata_lines = []
+        if incident.source_published_date:
+            article_metadata_lines.append(f"- Source Published Date: {incident.source_published_date}")
+        if primary_article.publish_date:
+            article_metadata_lines.append(f"- Article Publish Date: {primary_article.publish_date}")
+        article_metadata_block = ("\n" + "\n".join(article_metadata_lines)) if article_metadata_lines else "\n- Article Metadata: unknown"
+
+        part1_prompt = PROMPT_TEMPLATE.format(
+            url=primary_url,
+            title=title,
+            target_institution_line=target_institution_line,
+            article_metadata_block=article_metadata_block,
+            text=combined_text,
+        )
+
+        try:
+            _t0 = _time_module.time()
+            _metrics.increment("llm_attempt_total", labels={"attempt_num": "1"})
+            raw_part1 = self.llm_client.extract_json(
+                system_prompt=system_prompt,
+                user_prompt=part1_prompt,
+                schema=EXTRACTION_SCHEMA_PART1,
+                max_retries=2,
+            )
+            _metrics.observe("llm_duration_seconds", _time_module.time() - _t0)
+        except Exception as exc:
+            _metrics.observe("llm_duration_seconds", _time_module.time() - _t0)
+            logger.warning(f"Split extraction Part 1 failed ({exc}), falling back to single-call")
+            return self._enrich_article(incident, article_contents)
+
+        json_part1 = self._parse_json_response(raw_part1)
+        if json_part1 is None:
+            logger.warning("Split extraction Part 1 returned invalid JSON, falling back")
+            return self._enrich_article(incident, article_contents)
+
+        from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import _coerce_llm_scalars
+        json_part1 = _coerce_llm_scalars(json_part1)
+
+        coerced_edu = _coerce_bool_like(json_part1.get("is_edu_cyber_incident"))
+        if coerced_edu is False:
+            json_part1 = _strip_non_education_cti_fields(json_part1)
+            result = json_to_cti_enrichment(json_part1, primary_url, incident)
+            return result, json_part1
+
+        # ── Part 2: deep intelligence ─────────────────────────────────────────
+        def _fmt(v):
+            if v is None:
+                return "unknown"
+            if isinstance(v, list):
+                return ", ".join(str(x) for x in v) if v else "unknown"
+            return str(v)
+
+        part2_text = combined_text[:60_000]  # smaller cap — model is focused
+        part2_prompt = PART2_PROMPT_TEMPLATE.format(
+            institution_name=_fmt(json_part1.get("institution_name")),
+            institution_type=_fmt(json_part1.get("institution_type")),
+            country=_fmt(json_part1.get("country")),
+            attack_category=_fmt(json_part1.get("attack_category")),
+            attack_vector=_fmt(json_part1.get("attack_vector")),
+            ransomware_family=_fmt(json_part1.get("ransomware_family")),
+            data_categories=_fmt(json_part1.get("data_categories")),
+            records_affected_exact=_fmt(json_part1.get("records_affected_exact")),
+            publication_date=_fmt(json_part1.get("publication_date") or primary_article.publish_date),
+            url=primary_url,
+            title=title,
+            text=part2_text,
+        )
+
+        json_part2: Dict[str, Any] = {}
+        try:
+            _t2 = _time_module.time()
+            _metrics.increment("llm_attempt_total", labels={"attempt_num": "2"})
+            raw_part2 = self.llm_client.extract_json(
+                system_prompt=system_prompt,
+                user_prompt=part2_prompt,
+                schema=EXTRACTION_SCHEMA_PART2,
+                max_retries=1,
+            )
+            _metrics.observe("llm_duration_seconds", _time_module.time() - _t2)
+            parsed2 = self._parse_json_response(raw_part2)
+            if parsed2 is not None:
+                json_part2 = _coerce_llm_scalars(parsed2)
+                logger.debug(
+                    f"Split Part 2 succeeded: "
+                    f"timeline={len(json_part2.get('timeline') or [])}, "
+                    f"mitre={len(json_part2.get('mitre_attack_techniques') or [])}, "
+                    f"regs={json_part2.get('applicable_regulations')}"
+                )
+        except Exception as exc:
+            logger.warning(f"Split extraction Part 2 failed ({exc}) — continuing with Part 1 only")
+
+        # ── Merge Part 1 + Part 2 (Part 2 overwrites where populated) ────────
+        merged = {**json_part1}
+        for key, val in json_part2.items():
+            if val is not None and val != [] and val != {}:
+                merged[key] = val
+
+        # ── Part 3: summary call (unchanged logic) ────────────────────────────
+        if coerced_edu is not False and combined_text:
+            try:
+                _institution = (
+                    merged.get("institution_name")
+                    or (incident.institution_name if hasattr(incident, "institution_name") else None)
+                    or "Unknown institution"
+                )
+                _attack_cat = merged.get("attack_category") or "unknown"
+                _summary_prompt = SUMMARY_PROMPT.format(
+                    institution=_institution,
+                    attack_category=_attack_cat,
+                    text=combined_text[:8000],
+                )
+                _chat_resp = self.llm_client.chat(
+                    messages=[
+                        {"role": "system", "content": (
+                            "You are a Cyber Threat Intelligence analyst. "
+                            "Write a concise 2-3 sentence summary of the cyber incident."
+                        )},
+                        {"role": "user", "content": _summary_prompt},
+                    ],
+                    format=None,
+                    stream=False,
+                    temperature=0.1,
+                )
+                _summary_text: Optional[str] = None
+                if hasattr(_chat_resp, "message") and hasattr(_chat_resp.message, "content"):
+                    _summary_text = _chat_resp.message.content
+                elif isinstance(_chat_resp, dict):
+                    _msg = _chat_resp.get("message", {})
+                    _summary_text = (
+                        _msg.get("content", "") if isinstance(_msg, dict)
+                        else getattr(_msg, "content", None)
+                    )
+                if _summary_text:
+                    _summary_text = _summary_text.strip()
+                    if _summary_text.startswith("{"):
+                        try:
+                            _parsed = json.loads(_summary_text)
+                            _summary_text = _parsed.get("enriched_summary", _summary_text)
+                        except Exception:
+                            pass
+                    if len(_summary_text) > 20:
+                        merged["enriched_summary"] = _summary_text
+            except Exception as _e:
+                logger.warning(f"Split extraction summary call failed (non-fatal): {_e}")
+
+        # ── Map to CTIEnrichmentResult ────────────────────────────────────────
+        result = json_to_cti_enrichment(merged, primary_url, incident)
+        _src_label = getattr(incident, "source_name", None) or "unknown"
+        _metrics.increment("llm_education_relevance_pass_total", labels={"source": _src_label})
+        _conf = merged.get("confidence_score")
+        if isinstance(_conf, (int, float)) and 0.0 <= _conf <= 1.0:
+            _metrics.observe("llm_confidence_score", float(_conf))
+
+        return result, merged
+
     # Backwards compatibility alias
     def enrich_incident_json_schema(
         self,
