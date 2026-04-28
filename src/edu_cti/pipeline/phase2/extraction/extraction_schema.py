@@ -1189,25 +1189,27 @@ EXTRACTION_SCHEMA = {
         "law_enforcement_involved": {
             "type": "boolean",
             "description": (
-                "true if any law enforcement agency (FBI, CISA, police, Interpol, NCA, Europol, NCSC, Secret Service) "
-                "is mentioned as investigating or assisting with this specific incident. "
-                "Trigger phrases: 'FBI is assisting', 'working with the FBI', 'referred to law enforcement', "
-                "'police were notified', 'cooperating with authorities', 'investigators are working with'. "
-                "false only if the article explicitly states law enforcement was NOT contacted. null if not mentioned."
+                "REQUIRED when any law enforcement body is mentioned in relation to this incident. "
+                "Set to true for ANY of the following (worldwide): "
+                "FBI, CISA, local/national police, Interpol, Europol, NCA, NCSC, Secret Service, "
+                "BKA, Gendarmerie, ANSSI, NCSC-UK, AFP, RCMP, or any national cybercrime unit. "
+                "Trigger phrases (any language): 'working with the FBI', 'police were notified', "
+                "'authorities are investigating', 'referred to law enforcement', 'cooperating with police', "
+                "'federal agents', 'national cyber agency', 'handed over to police', 'criminal investigation opened'. "
+                "Set to false ONLY if the article explicitly states law enforcement was NOT contacted. "
+                "Set to null if law enforcement is not mentioned at all in the article. "
+                "Always pair with law_enforcement_agencies listing the specific bodies named."
             )
         },
         "law_enforcement_agencies": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Names of specific agencies involved, e.g. ['FBI', 'CISA', 'Metropolitan Police']. null if none named."
-        },
-        "fbi_involved": {
-            "type": "boolean",
-            "description": "true if the FBI or 'federal authorities' are explicitly mentioned as involved in this incident. null if not mentioned."
-        },
-        "cisa_involved": {
-            "type": "boolean",
-            "description": "true if CISA is explicitly mentioned as involved. null if not mentioned."
+            "description": (
+                "List every law enforcement or government agency named in the article as involved. "
+                "Use the agency's official short name as written in the article. "
+                "Examples: ['FBI', 'CISA', 'Metropolitan Police', 'Europol', 'NCSC', 'AFP', 'BKA']. "
+                "null if no specific agency is named."
+            )
         },
         "recovery_method": {
             "type": "string",
@@ -1845,20 +1847,17 @@ EXTRACTION_SCHEMA_PART2 = {
         "law_enforcement_involved": {
             "type": "boolean",
             "description": (
-                "true if any law enforcement agency (FBI, CISA, police, Interpol, NCA, Europol, NCSC) is mentioned "
-                "as investigating or assisting with this specific incident. "
-                "Trigger: 'working with the FBI', 'FBI is assisting', 'referred to law enforcement', 'cooperating with authorities'. "
-                "false only if the article explicitly states law enforcement was NOT contacted. null if not mentioned."
+                "REQUIRED when any law enforcement body is mentioned. "
+                "true for ANY agency worldwide: FBI, CISA, police, Interpol, Europol, NCA, NCSC, BKA, AFP, RCMP, etc. "
+                "Triggers: 'working with the FBI', 'police were notified', 'authorities are investigating', "
+                "'referred to law enforcement', 'federal agents', 'criminal investigation opened'. "
+                "false ONLY if article explicitly states law enforcement was NOT contacted. null if not mentioned at all."
             )
         },
-        "law_enforcement_agencies": {"type": "array", "items": {"type": "string"}, "description": "Specific agency names e.g. ['FBI', 'CISA']. null if none named."},
-        "fbi_involved": {
-            "type": "boolean",
-            "description": "true if the FBI or 'federal authorities' are explicitly mentioned as involved in this incident. null if not mentioned."
-        },
-        "cisa_involved": {
-            "type": "boolean",
-            "description": "true if CISA is explicitly mentioned as involved. null if not mentioned."
+        "law_enforcement_agencies": {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Every agency named in the article, e.g. ['FBI', 'Europol', 'Metropolitan Police']. null if none named."
         },
         "recovery_method": {
             "type": "string",

@@ -965,30 +965,24 @@ def apply_post_processing(
     _guard_timeline_dates(flat_data, incident_row)
 
     # 12b. law_enforcement_involved: infer from agencies array or enriched_summary
+    # when LLM left the boolean null despite mentioning an agency.
     if flat_data.get("law_enforcement_involved") is None:
         _agencies = flat_data.get("law_enforcement_agencies") or []
         if isinstance(_agencies, str):
-            _agencies = [_agencies]
+            try:
+                import json as _json
+                _agencies = _json.loads(_agencies)
+            except Exception:
+                _agencies = [_agencies]
         _le_keywords = {"fbi", "cisa", "police", "interpol", "nca", "europol", "ncsc",
                         "secret service", "law enforcement", "federal authorities",
-                        "investigators", "authorities"}
+                        "bka", "afp", "rcmp", "anssi", "investigators", "authorities",
+                        "gendarmerie", "carabinieri", "guardia civil"}
         _agencies_lower = " ".join(str(a).lower() for a in _agencies)
         _summary_lower = (_summary or "").lower()
         if (_agencies_lower and any(kw in _agencies_lower for kw in _le_keywords)) or \
            any(kw in _summary_lower for kw in _le_keywords):
             flat_data["law_enforcement_involved"] = True
-
-        _fbi_keywords = {"fbi", "federal bureau", "federal authorities"}
-        if flat_data.get("fbi_involved") is None:
-            if any(kw in _agencies_lower for kw in _fbi_keywords) or \
-               any(kw in _summary_lower for kw in _fbi_keywords):
-                flat_data["fbi_involved"] = True
-
-        _cisa_keywords = {"cisa", "cybersecurity and infrastructure"}
-        if flat_data.get("cisa_involved") is None:
-            if any(kw in _agencies_lower for kw in _cisa_keywords) or \
-               any(kw in _summary_lower for kw in _cisa_keywords):
-                flat_data["cisa_involved"] = True
 
     # 12. Propagate records_affected_exact → students_affected when data_categories
     # confirms student data was involved and user_impact is otherwise null.

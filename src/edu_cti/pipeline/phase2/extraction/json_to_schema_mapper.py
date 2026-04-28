@@ -1251,7 +1251,9 @@ def json_to_cti_enrichment(
             "security_training_conducted": json_data.get("security_training_conducted"),
             "response_measures": json_data.get("response_measures"),
             "law_enforcement_involved": _agency_to_bool(json_data.get("law_enforcement_involved")),
-            "law_enforcement_agency": json_data.get("law_enforcement_agency") or json_data.get("law_enforcement_agencies"),
+            "law_enforcement_agency": (lambda v: [v] if isinstance(v, str) and v else v)(
+                json_data.get("law_enforcement_agencies") or json_data.get("law_enforcement_agency")
+            ),
             "detection_source": json_data.get("detection_source"),
             "mttd_hours": json_data.get("mttd_hours"),
             "mttr_hours": json_data.get("mttr_hours"),
