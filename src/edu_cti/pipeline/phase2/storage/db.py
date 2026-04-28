@@ -1260,6 +1260,36 @@ def save_enrichment_result(
     if not publication_date:
         publication_date = article_publish_date
 
+    # Extract SERP search window year from notes (e.g., "source=...;window=2025")
+    _window_year = None
+    if notes_fallback:
+        _wm = re.search(r'\bwindow=(\d{4})\b', notes_fallback)
+        if _wm:
+            _window_year = int(_wm.group(1))
+
+    # Guard LLM publication_date: discard if it looks like today's enrichment date but the
+    # SERP search window was a prior year (LLM hallucinated current date instead of reading
+    # the article), or if it's in the future.
+    if publication_date:
+        try:
+            from datetime import date as _date
+            _today = _date.fromisoformat(now[:10])
+            _pub_dt = _date.fromisoformat(str(publication_date)[:10])
+            if _pub_dt > _today:
+                logger.warning(
+                    "Discarding LLM publication_date %s (future date) for %s",
+                    publication_date, incident_id,
+                )
+                publication_date = None
+            elif (_today - _pub_dt).days <= 7 and _window_year and _window_year < _today.year:
+                logger.warning(
+                    "Discarding LLM publication_date %s (matches enrichment date; SERP window=%s) for %s",
+                    publication_date, _window_year, incident_id,
+                )
+                publication_date = None
+        except (ValueError, TypeError):
+            pass
+
     # Update incident with enrichment data
     summary = enrichment_result.enriched_summary
     
@@ -1343,23 +1373,40 @@ def save_enrichment_result(
     # An incident cannot occur significantly after the article reporting it was written.
     if llm_incident_date:
         _apply_llm_date = True
-        if source_published_date_fallback:
+        # Use pre-existing source_published_date; fall back to LLM's (now-validated) publication_date
+        # so incidents with no prior date still get the year-mismatch check.
+        _eff_src = source_published_date_fallback or publication_date
+        if _eff_src:
             try:
                 from datetime import date as _date
-                _src_dt = _date.fromisoformat(str(source_published_date_fallback)[:10])
+                _src_dt = _date.fromisoformat(str(_eff_src)[:10])
                 _llm_dt = _date.fromisoformat(str(llm_incident_date)[:10])
                 if (_llm_dt - _src_dt).days > 90:
                     logger.warning(
                         "Skipping LLM incident_date %s (>90 days after source_published_date %s) for %s",
-                        llm_incident_date, source_published_date_fallback, incident_id,
+                        llm_incident_date, _eff_src, incident_id,
                     )
                     _apply_llm_date = False
                 # Year mismatch guard: catches LLM writing "2026" for a 2025 article.
                 # Allow ±1 year to accommodate cross-year articles (e.g., Dec article about Jan incident).
-                elif _apply_llm_date and abs(_llm_dt.year - _src_dt.year) > 1:
+                elif abs(_llm_dt.year - _src_dt.year) > 1:
                     logger.warning(
                         "Skipping LLM incident_date %s (year %s differs from source year %s by >1) for %s",
                         llm_incident_date, _llm_dt.year, _src_dt.year, incident_id,
+                    )
+                    _apply_llm_date = False
+            except (ValueError, TypeError):
+                pass
+        # Also guard against the SERP search window year — catches the case where both
+        # publication_date and incident_date were hallucinated to the current year.
+        if _apply_llm_date and _window_year:
+            try:
+                from datetime import date as _date
+                _llm_dt = _date.fromisoformat(str(llm_incident_date)[:10])
+                if abs(_llm_dt.year - _window_year) > 1:
+                    logger.warning(
+                        "Skipping LLM incident_date %s (year %s differs from SERP window %s) for %s",
+                        llm_incident_date, _llm_dt.year, _window_year, incident_id,
                     )
                     _apply_llm_date = False
             except (ValueError, TypeError):
