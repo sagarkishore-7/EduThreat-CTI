@@ -446,6 +446,103 @@ class TestDDLInit:
         result = save_enrichment_result(temp_db, incident.incident_id, enrichment)
         assert result is True
 
+    def test_init_repairs_legacy_enrichment_tables_in_place(self, tmp_path):
+        db_path = tmp_path / "legacy_enrichment_schema.db"
+        conn = get_connection(db_path)
+        init_db(conn)
+        conn.execute("DROP TABLE IF EXISTS incident_enrichments")
+        conn.execute("DROP TABLE IF EXISTS incident_enrichment_runs")
+        conn.execute("DROP TABLE IF EXISTS incident_enrichments_flat")
+        conn.execute(
+            """
+            CREATE TABLE incident_enrichments (
+                incident_id TEXT PRIMARY KEY,
+                enrichment_data TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE incident_enrichment_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE incident_enrichments_flat (
+                incident_id TEXT PRIMARY KEY,
+                institution_name TEXT,
+                attack_category TEXT,
+                country TEXT,
+                was_ransom_demanded INTEGER,
+                created_at TEXT,
+                is_education_related INTEGER,
+                threat_actor_name TEXT
+            )
+            """
+        )
+
+        init_incident_enrichments_table(conn)
+
+        enrichment_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(incident_enrichments)")
+        }
+        run_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(incident_enrichment_runs)")
+        }
+        flat_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(incident_enrichments_flat)")
+        }
+
+        assert "final_enrichment_json" in enrichment_cols
+        assert "raw_extraction_json" in enrichment_cols
+        assert "final_enrichment_json" in run_cols
+        assert "access_vector" in flat_cols
+        assert "notification_delay_days" in flat_cols
+        conn.close()
+
+    def test_init_db_repairs_legacy_incidents_table_in_place(self, tmp_path):
+        db_path = tmp_path / "legacy_incidents_schema.db"
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        conn.execute(
+            """
+            CREATE TABLE incidents (
+                incident_id TEXT PRIMARY KEY,
+                institution_name TEXT,
+                country TEXT,
+                incident_date TEXT,
+                source_published_date TEXT,
+                title TEXT,
+                llm_enriched INTEGER DEFAULT 0,
+                attack_type_hint TEXT,
+                ingested_at TEXT
+            )
+            """
+        )
+        conn.commit()
+
+        init_db(conn)
+
+        incident_cols = {
+            row["name"] for row in conn.execute("PRAGMA table_info(incidents)")
+        }
+        for col in (
+            "broken_urls",
+            "country_code",
+            "serp_attempt_count",
+            "llm_excluded",
+            "llm_excluded_reason",
+            "discovery_date",
+        ):
+            assert col in incident_cols
+        conn.close()
+
 
 # ---------------------------------------------------------------------------
 # 5. End-to-end save + retrieval of new fields from flat table

@@ -269,15 +269,6 @@ def init_db(conn: sqlite3.Connection) -> None:
             last_pubdate TEXT
         );
         
-        -- Indexes for performance
-        CREATE INDEX IF NOT EXISTS idx_incidents_country ON incidents(country);
-        CREATE INDEX IF NOT EXISTS idx_incidents_date ON incidents(incident_date);
-        CREATE INDEX IF NOT EXISTS idx_incidents_enriched ON incidents(llm_enriched);
-        CREATE INDEX IF NOT EXISTS idx_incidents_attack_type ON incidents(attack_type_hint);
-        CREATE INDEX IF NOT EXISTS idx_incidents_ingested ON incidents(ingested_at);
-        CREATE INDEX IF NOT EXISTS idx_incident_sources_incident ON incident_sources(incident_id);
-        CREATE INDEX IF NOT EXISTS idx_incident_sources_source ON incident_sources(source);
-
         -- Pipeline run tracking (persists across container restarts)
         CREATE TABLE IF NOT EXISTS pipeline_runs (
             run_id          TEXT PRIMARY KEY,
@@ -298,6 +289,31 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
         """
     )
+
+    # Existing Railway databases may keep older tables after row-only clears.
+    # Repair those tables in place by adding any current columns that are missing.
+    for col, col_type in [
+        ("broken_urls", "TEXT"),
+        ("country_code", "TEXT"),
+        ("serp_attempt_count", "INTEGER DEFAULT 0"),
+        ("llm_excluded", "INTEGER DEFAULT 0"),
+        ("llm_excluded_reason", "TEXT"),
+        ("discovery_date", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE incidents ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+
+    # Create indexes after repairing legacy table columns so stale schemas can
+    # heal in place before SQLite validates indexed column names.
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_incidents_country ON incidents(country)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_incidents_date ON incidents(incident_date)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_incidents_enriched ON incidents(llm_enriched)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_incidents_attack_type ON incidents(attack_type_hint)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_incidents_ingested ON incidents(ingested_at)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_incident_sources_incident ON incident_sources(incident_id)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_incident_sources_source ON incident_sources(source)")
 
     conn.commit()
 

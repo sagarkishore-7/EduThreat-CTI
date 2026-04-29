@@ -312,6 +312,27 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    for col, col_type in [
+        ("raw_response_payload", "TEXT"),
+        ("raw_extraction_json", "TEXT"),
+        ("final_enrichment_json", "TEXT"),
+        ("storage_metadata", "TEXT"),
+        ("enrichment_version", "TEXT DEFAULT '3.0'"),
+        ("enrichment_confidence", "REAL"),
+        ("llm_provider", "TEXT"),
+        ("llm_model", "TEXT"),
+        ("extraction_mode", "TEXT"),
+        ("prompt_version", "TEXT"),
+        ("schema_version", "TEXT"),
+        ("mapper_version", "TEXT"),
+        ("post_processing_version", "TEXT"),
+        ("created_at", "TEXT"),
+        ("updated_at", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE incident_enrichments ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
 
     conn.execute(
         """
@@ -336,6 +357,26 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    for col, col_type in [
+        ("raw_response_payload", "TEXT"),
+        ("raw_extraction_json", "TEXT"),
+        ("final_enrichment_json", "TEXT"),
+        ("storage_metadata", "TEXT"),
+        ("enrichment_version", "TEXT DEFAULT '3.0'"),
+        ("enrichment_confidence", "REAL"),
+        ("llm_provider", "TEXT"),
+        ("llm_model", "TEXT"),
+        ("extraction_mode", "TEXT"),
+        ("prompt_version", "TEXT"),
+        ("schema_version", "TEXT"),
+        ("mapper_version", "TEXT"),
+        ("post_processing_version", "TEXT"),
+        ("created_at", "TEXT"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE incident_enrichment_runs ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_enrichment_runs_incident
@@ -553,7 +594,72 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         """
     )
     
-    # Create indexes for common query patterns
+    # Existing row-cleared Railway databases may still have older flat schemas.
+    for col, col_type in [
+        ("country_code", "TEXT"),
+        ("enriched_at", "TEXT"),
+        ("skip_reason", "TEXT"),
+        ("data_categories", "TEXT"),
+        ("incident_severity", "TEXT"),
+        ("institution_size", "TEXT"),
+        ("access_vector", "TEXT"),
+        ("threat_actor_category", "TEXT"),
+        ("threat_actor_motivation", "TEXT"),
+        ("threat_actor_origin_country", "TEXT"),
+        ("malware_families", "TEXT"),
+        ("attacker_tools", "TEXT"),
+        ("threat_actor_aliases", "TEXT"),
+        ("attack_campaign_name", "TEXT"),
+        ("cloud_provider", "TEXT"),
+        ("dwell_time_days", "REAL"),
+        ("mttd_hours", "REAL"),
+        ("mttr_hours", "REAL"),
+        ("primary_cve_id", "TEXT"),
+        ("max_cvss_score", "REAL"),
+        ("primary_mitre_technique_id", "TEXT"),
+        ("timeline_events_count", "INTEGER"),
+        ("total_cost_estimate", "REAL"),
+        ("clinical_operations_disrupted", "INTEGER"),
+        ("graduation_delayed", "INTEGER"),
+        ("online_learning_disrupted", "INTEGER"),
+        ("backup_status", "TEXT"),
+        ("backup_age_days", "REAL"),
+        ("law_enforcement_involved", "INTEGER"),
+        ("law_enforcement_agency", "TEXT"),
+        ("official_statement_url", "TEXT"),
+        ("research_projects_affected", "INTEGER"),
+        ("research_data_compromised", "INTEGER"),
+        ("publications_delayed", "INTEGER"),
+        ("grants_affected", "INTEGER"),
+        ("research_area", "TEXT"),
+        ("regulatory_context", "TEXT"),
+        ("data_volume_gb", "REAL"),
+        ("secondary_attack_categories", "TEXT"),
+        ("attack_chain", "TEXT"),
+        ("incident_date_precision", "TEXT"),
+        ("encryption_extent", "TEXT"),
+        ("disclosure_source", "TEXT"),
+        ("alumni_affected", "INTEGER"),
+        ("parents_affected", "INTEGER"),
+        ("applicants_affected", "INTEGER"),
+        ("patients_affected", "INTEGER"),
+        ("ransom_amount_min", "REAL"),
+        ("ransom_amount_max", "REAL"),
+        ("notifications_sent_date", "TEXT"),
+        ("dpa_notified", "INTEGER"),
+        ("investigation_opened", "INTEGER"),
+        ("academic_period_affected", "TEXT"),
+        ("dark_web_posting_confirmed", "INTEGER"),
+        ("prior_breach_same_institution", "INTEGER"),
+        ("notification_delay_days", "INTEGER"),
+    ]:
+        try:
+            conn.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {col_type}")
+        except sqlite3.OperationalError:
+            pass
+
+    # Create indexes after repairing legacy columns so stale schemas can heal
+    # in place before SQLite validates indexed column names.
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_enrichments_attack_category 
@@ -590,7 +696,6 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         ON incident_enrichments_flat(threat_actor_name)
         """
     )
-    # Composite indexes for common dashboard query patterns
     conn.execute(
         """
         CREATE INDEX IF NOT EXISTS idx_enrichments_edu_incident
