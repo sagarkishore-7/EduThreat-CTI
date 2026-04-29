@@ -202,11 +202,11 @@ CRITICAL OUTPUT REQUIREMENTS:
      "exact" (specific date stated), "approximate" (relative expression resolved),
      "month_only" (only month known), "year_only" (only year known), "unknown"
 
-11. INCIDENT SEVERITY:
-    - "critical" — business-stopping, major confirmed data loss, significant financial impact
-    - "high" — major operational disruption, substantial data at risk
-    - "medium" — notable impact, contained relatively quickly, limited data exposure
-    - "low" — minor incident, limited impact, quickly resolved
+11. INCIDENT IMPACT FACTS:
+    - Focus on concrete facts rather than subjective labels.
+    - Capture exact outage duration, affected systems, affected users, data categories,
+      ransom/payment details, recovery status, and notification activity.
+    - The pipeline derives severity and confidence later from these stronger facts.
 
 12. CROSS-INCIDENT ANALYSIS:
     - attack_campaign_name: Only if the article explicitly links this to a named campaign
@@ -285,6 +285,6 @@ EXTRACTION GUIDELINES:
 - Extract IOCs (IP addresses, domains, file hashes) if mentioned
 - Capture recovery timeline and any security improvements implemented post-incident
 - Use the MOST SPECIFIC enum value available for classification fields
-- Set confidence_score based on information completeness (0.0 = almost no detail, 1.0 = very detailed)
+- Do not self-score completeness or confidence. Focus on accurate factual extraction.
 
 Output ONLY the JSON object, no other text."""

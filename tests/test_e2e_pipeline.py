@@ -137,7 +137,7 @@ def _write_flat(conn: sqlite3.Connection, incident_id: str, raw_json: dict[str, 
     # Also write stub to incident_enrichments (required for get_incident_by_id full-JSON path)
     conn.execute(
         """INSERT OR REPLACE INTO incident_enrichments
-           (incident_id, enrichment_data, created_at, updated_at)
+           (incident_id, final_enrichment_json, created_at, updated_at)
            VALUES (?, ?, ?, ?)""",
         (incident_id, json.dumps(raw_json), flat["created_at"], flat["updated_at"]),
     )
@@ -247,7 +247,7 @@ class TestStringVsListCoercion:
             (flat["incident_id"], flat["data_categories"], flat["created_at"], flat["updated_at"], flat["enriched_at"]),
         )
         conn.execute(
-            "INSERT OR REPLACE INTO incident_enrichments (incident_id, enrichment_data, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO incident_enrichments (incident_id, final_enrichment_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
             ("test_str_001", json.dumps({}), flat["created_at"], flat["updated_at"]),
         )
         conn.commit()
@@ -272,7 +272,7 @@ class TestStringVsListCoercion:
             ("test_str_002", json.dumps("email_system"), flat_ts, flat_ts, flat_ts),
         )
         conn.execute(
-            "INSERT OR REPLACE INTO incident_enrichments (incident_id, enrichment_data, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO incident_enrichments (incident_id, final_enrichment_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
             ("test_str_002", json.dumps({}), flat_ts, flat_ts),
         )
         conn.commit()
@@ -303,7 +303,7 @@ class TestStringVsListCoercion:
             ("test_str_003", json.dumps(""), flat_ts, flat_ts, flat_ts),
         )
         conn.execute(
-            "INSERT OR REPLACE INTO incident_enrichments (incident_id, enrichment_data, created_at, updated_at) VALUES (?, ?, ?, ?)",
+            "INSERT OR REPLACE INTO incident_enrichments (incident_id, final_enrichment_json, created_at, updated_at) VALUES (?, ?, ?, ?)",
             ("test_str_003", json.dumps({}), flat_ts, flat_ts),
         )
         conn.commit()

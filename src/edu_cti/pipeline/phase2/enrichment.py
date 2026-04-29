@@ -43,6 +43,12 @@ _NON_EDU_ALLOWED_KEYS = {
     "_reason",
 }
 
+_STORAGE_DEBUG_KEY = "_storage_debug"
+_PROMPT_VERSION = "phase2_prompt_v1"
+_SCHEMA_VERSION = "phase2_schema_v1"
+_MAPPER_VERSION = "phase2_mapper_v1"
+_POST_PROCESSING_VERSION = "phase2_post_processing_v1"
+
 
 def _coerce_bool_like(value: Any) -> Optional[bool]:
     """Convert common LLM boolean representations to bool while preserving None."""
@@ -77,6 +83,47 @@ def _strip_non_education_cti_fields(json_data: Dict[str, Any]) -> Dict[str, Any]
         or "LLM determined the article is not an education cyber incident."
     )
     return sanitized
+
+
+def _build_storage_debug_payload(
+    llm_client: OllamaLLMClient,
+    extraction_mode: str,
+    raw_llm_responses: Dict[str, Optional[str]],
+) -> Dict[str, Any]:
+    """Capture exact model artifacts plus lightweight provenance metadata."""
+    return {
+        "raw_llm_responses": {
+            key: value
+            for key, value in raw_llm_responses.items()
+            if value is not None
+        },
+        "llm_metadata": {
+            "provider": "ollama",
+            "host": getattr(llm_client, "host", None),
+            "model": getattr(llm_client, "model", None),
+            "extraction_mode": extraction_mode,
+            "prompt_version": _PROMPT_VERSION,
+            "schema_version": _SCHEMA_VERSION,
+            "mapper_version": _MAPPER_VERSION,
+            "post_processing_version": _POST_PROCESSING_VERSION,
+        },
+    }
+
+
+def _attach_storage_debug(
+    json_data: Dict[str, Any],
+    llm_client: OllamaLLMClient,
+    extraction_mode: str,
+    raw_llm_responses: Dict[str, Optional[str]],
+) -> Dict[str, Any]:
+    """Attach debug artifacts to the parsed extraction payload without affecting mapping."""
+    enriched = dict(json_data)
+    enriched[_STORAGE_DEBUG_KEY] = _build_storage_debug_payload(
+        llm_client=llm_client,
+        extraction_mode=extraction_mode,
+        raw_llm_responses=raw_llm_responses,
+    )
+    return enriched
 
 
 def count_filled_fields(enrichment_result: CTIEnrichmentResult) -> int:
@@ -151,6 +198,39 @@ class IncidentEnricher:
         if not llm_client:
             raise ValueError("llm_client is required")
         self.llm_client = llm_client
+
+    def _extract_json_with_artifacts(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: Dict[str, Any],
+        max_retries: int,
+    ) -> Tuple[str, str]:
+        """
+        Return normalized JSON plus the exact raw model text when available.
+
+        Falls back to the older extract_json() contract so existing mocks/tests
+        and alternate clients keep working.
+        """
+        extractor = getattr(self.llm_client, "extract_json_with_metadata", None)
+        if callable(extractor):
+            payload = extractor(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                schema=schema,
+                max_retries=max_retries,
+            )
+            if isinstance(payload, dict) and "normalized_json" in payload:
+                raw_text = payload.get("raw_content") or payload["normalized_json"]
+                return payload["normalized_json"], raw_text
+
+        normalized_json = self.llm_client.extract_json(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+            max_retries=max_retries,
+        )
+        return normalized_json, normalized_json
 
     def _should_use_split(self, article_contents: Dict[str, "ArticleContent"]) -> bool:
         """Return True when combined article text exceeds the split threshold."""
@@ -493,7 +573,7 @@ class IncidentEnricher:
             _llm_t0 = _time_module.time()
             _metrics.increment("llm_attempt_total", labels={"attempt_num": "1"})
             try:
-                raw_response = self.llm_client.extract_json(
+                raw_response, raw_response_text = self._extract_json_with_artifacts(
                     system_prompt=system_prompt,
                     user_prompt=user_prompt,
                     schema=EXTRACTION_SCHEMA,
@@ -542,6 +622,7 @@ class IncidentEnricher:
             # ── Second LLM call: generate enriched_summary ───────────────────
             # Dedicated small call so the full token budget for the main call
             # goes to intelligence fields. Only run for education-related incidents.
+            summary_raw_text: Optional[str] = None
             if coerced_edu is not False and combined_text:
                 try:
                     _institution = (
@@ -583,6 +664,7 @@ class IncidentEnricher:
                             _msg.get("content", "") if isinstance(_msg, dict)
                             else getattr(_msg, "content", None)
                         )
+                    summary_raw_text = _summary_text
 
                     if _summary_text:
                         _summary_text = _summary_text.strip()
@@ -613,6 +695,16 @@ class IncidentEnricher:
                 )
                 if _corrected:
                     _metrics.increment("instructor_correction_applied_total")
+
+            json_data = _attach_storage_debug(
+                json_data=json_data,
+                llm_client=self.llm_client,
+                extraction_mode="single_call",
+                raw_llm_responses={
+                    "extraction": raw_response_text,
+                    "summary": summary_raw_text,
+                },
+            )
 
             # Map to CTIEnrichmentResult
             result = json_to_cti_enrichment(json_data, primary_url, incident)
@@ -921,7 +1013,7 @@ class IncidentEnricher:
         try:
             _t0 = _time_module.time()
             _metrics.increment("llm_attempt_total", labels={"attempt_num": "1"})
-            raw_part1 = self.llm_client.extract_json(
+            raw_part1, raw_part1_text = self._extract_json_with_artifacts(
                 system_prompt=system_prompt,
                 user_prompt=part1_prompt,
                 schema=EXTRACTION_SCHEMA_PART1,
@@ -972,10 +1064,11 @@ class IncidentEnricher:
         )
 
         json_part2: Dict[str, Any] = {}
+        raw_part2_text: Optional[str] = None
         try:
             _t2 = _time_module.time()
             _metrics.increment("llm_attempt_total", labels={"attempt_num": "2"})
-            raw_part2 = self.llm_client.extract_json(
+            raw_part2, raw_part2_text = self._extract_json_with_artifacts(
                 system_prompt=system_prompt,
                 user_prompt=part2_prompt,
                 schema=EXTRACTION_SCHEMA_PART2,
@@ -989,7 +1082,7 @@ class IncidentEnricher:
                     f"Split Part 2 succeeded: "
                     f"timeline={len(json_part2.get('timeline') or [])}, "
                     f"mitre={len(json_part2.get('mitre_attack_techniques') or [])}, "
-                    f"regs={json_part2.get('applicable_regulations')}"
+                    f"regulators={json_part2.get('regulators_notified')}"
                 )
         except Exception as exc:
             logger.warning(f"Split extraction Part 2 failed ({exc}) — continuing with Part 1 only")
@@ -1001,6 +1094,7 @@ class IncidentEnricher:
                 merged[key] = val
 
         # ── Part 3: summary call (unchanged logic) ────────────────────────────
+        summary_raw_text: Optional[str] = None
         if coerced_edu is not False and combined_text:
             try:
                 _institution = (
@@ -1035,6 +1129,7 @@ class IncidentEnricher:
                         _msg.get("content", "") if isinstance(_msg, dict)
                         else getattr(_msg, "content", None)
                     )
+                summary_raw_text = _summary_text
                 if _summary_text:
                     _summary_text = _summary_text.strip()
                     if _summary_text.startswith("{"):
@@ -1058,6 +1153,17 @@ class IncidentEnricher:
             )
             if _corrected:
                 _metrics.increment("instructor_correction_applied_total")
+
+        merged = _attach_storage_debug(
+            json_data=merged,
+            llm_client=self.llm_client,
+            extraction_mode="split_call",
+            raw_llm_responses={
+                "part1_extraction": raw_part1_text,
+                "part2_extraction": raw_part2_text,
+                "summary": summary_raw_text,
+            },
+        )
 
         # ── Map to CTIEnrichmentResult ────────────────────────────────────────
         result = json_to_cti_enrichment(merged, primary_url, incident)

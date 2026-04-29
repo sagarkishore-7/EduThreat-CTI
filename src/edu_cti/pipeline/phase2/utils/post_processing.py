@@ -461,6 +461,40 @@ def infer_regulatory_impact(flat_data: Dict[str, Any]) -> None:
         if any(kw in summary for kw in _notify_kws):
             flat_data["notifications_sent"] = True
 
+    existing_regs: list[str] = []
+    _existing_context = flat_data.get("regulatory_context")
+    if isinstance(_existing_context, list):
+        existing_regs = [str(v) for v in _existing_context if str(v).strip()]
+    elif isinstance(_existing_context, str) and _existing_context.strip():
+        try:
+            parsed = json.loads(_existing_context)
+            if isinstance(parsed, list):
+                existing_regs = [str(v) for v in parsed if str(v).strip()]
+        except (json.JSONDecodeError, TypeError):
+            existing_regs = []
+
+    def _append_reg(value: str) -> None:
+        if value not in existing_regs:
+            existing_regs.append(value)
+
+    if flat_data.get("ferpa_breach"):
+        _append_reg("FERPA")
+    if flat_data.get("hipaa_breach"):
+        _append_reg("HIPAA")
+    if flat_data.get("gdpr_breach"):
+        _append_reg("GDPR")
+    if country_code == "GB" and data_breached:
+        _append_reg("UK_DPA")
+    if flat_data.get("dpa_notified") and country_code in _EU_CODES:
+        _append_reg("GDPR")
+        if country_code == "GB":
+            _append_reg("UK_DPA")
+    if flat_data.get("breach_notification_required") and country_code == "US":
+        _append_reg("state_breach_notification")
+
+    if existing_regs:
+        flat_data["regulatory_context"] = json.dumps(existing_regs)
+
 
 def infer_confirmed_status(enriched_summary: Optional[str], title: Optional[str]) -> bool:
     """Return True if the summary or title contains language that confirms the incident."""

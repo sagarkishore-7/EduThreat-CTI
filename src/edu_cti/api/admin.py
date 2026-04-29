@@ -1142,6 +1142,7 @@ async def cleanup_unknown_institutions_endpoint(
             for row in rows:
                 iid = row["incident_id"]
                 conn.execute("DELETE FROM incident_enrichments WHERE incident_id = ?", (iid,))
+                conn.execute("DELETE FROM incident_enrichment_runs WHERE incident_id = ?", (iid,))
                 conn.execute("DELETE FROM incident_enrichments_flat WHERE incident_id = ?", (iid,))
                 conn.execute(
                     "UPDATE incidents SET llm_enriched = 0, llm_enriched_at = NULL, "
@@ -1165,6 +1166,7 @@ async def cleanup_unknown_institutions_endpoint(
         for row in rows:
             iid = row["incident_id"]
             conn.execute("DELETE FROM incident_enrichments WHERE incident_id = ?", (iid,))
+            conn.execute("DELETE FROM incident_enrichment_runs WHERE incident_id = ?", (iid,))
             conn.execute("DELETE FROM incident_enrichments_flat WHERE incident_id = ?", (iid,))
             conn.execute("DELETE FROM source_events WHERE incident_id = ?", (iid,))
             conn.execute("DELETE FROM incidents WHERE incident_id = ?", (iid,))
@@ -1234,6 +1236,8 @@ async def purge_non_education_preview(
         counts["enrichments_flat_edu_1"] = conn.execute("SELECT COUNT(*) FROM incident_enrichments_flat WHERE is_education_related = 1").fetchone()[0]
         counts["enrichments_flat_edu_0"] = conn.execute("SELECT COUNT(*) FROM incident_enrichments_flat WHERE is_education_related = 0").fetchone()[0]
         counts["enrichments_flat_edu_null"] = conn.execute("SELECT COUNT(*) FROM incident_enrichments_flat WHERE is_education_related IS NULL").fetchone()[0]
+        counts["enrichments_latest_total"] = conn.execute("SELECT COUNT(*) FROM incident_enrichments").fetchone()[0]
+        counts["enrichment_runs_total"] = conn.execute("SELECT COUNT(*) FROM incident_enrichment_runs").fetchone()[0]
 
         counts["orphan_enriched"] = conn.execute("""
             SELECT COUNT(*) FROM incidents i
@@ -1918,6 +1922,7 @@ async def delete_incidents(
         tables = [
             "incident_enrichments_flat",
             "incident_enrichments",
+            "incident_enrichment_runs",
             "incident_sources",
             "source_events",
             "articles",
@@ -2057,6 +2062,7 @@ async def clear_all_incidents(
             # Enrichment / article data
             "incident_enrichments_flat",
             "incident_enrichments",
+            "incident_enrichment_runs",
             "pipeline_checkpoint",  # resume-tracking — must clear for fresh run
             "incident_sources",
             "source_events",
@@ -2101,205 +2107,6 @@ async def clear_all_incidents(
         raise HTTPException(status_code=500, detail=f"Clear all failed: {str(e)}")
     finally:
         conn.close()
-
-
-@router.post("/migrations/backfill-enrichment-fields")
-async def backfill_enrichment_fields(
-    _: bool = Depends(authenticate),
-):
-    """
-    Backfill incident_severity, institution_size, threat_actor_category,
-    threat_actor_motivation, threat_actor_origin_country, and data_categories
-    from stored enrichment_data JSON into the flat table.
-
-    Safe to run multiple times (uses COALESCE — will not overwrite existing values).
-    """
-    import json as _json
-
-    conn = get_api_connection(read_only=False)
-    try:
-        cur = conn.cursor()
-
-        # Add columns if missing
-        new_cols = [
-            ("incident_severity", "TEXT"),
-            ("institution_size", "TEXT"),
-            ("threat_actor_category", "TEXT"),
-            ("threat_actor_motivation", "TEXT"),
-            ("threat_actor_origin_country", "TEXT"),
-            ("data_categories", "TEXT"),
-        ]
-        added = []
-        for col, typ in new_cols:
-            try:
-                cur.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {typ}")
-                added.append(col)
-            except Exception:
-                pass
-        conn.commit()
-
-        cur.execute(
-            "SELECT incident_id, enrichment_data FROM incident_enrichments WHERE enrichment_data IS NOT NULL"
-        )
-        rows = cur.fetchall()
-
-        updated = 0
-        failed = 0
-        for incident_id, raw in rows:
-            try:
-                data = _json.loads(raw)
-            except Exception:
-                failed += 1
-                continue
-
-            # ── Core fields ──────────────────────────────────────────────────
-            ta = data.get("threat_actor") or {}
-            ad = data.get("attack_dynamics") or {}
-            oim = data.get("operational_impact_metrics") or {}
-            fi = data.get("financial_impact") or {}
-            rm = data.get("recovery_metrics") or {}
-            ri = data.get("regulatory_impact") or {}
-            di = data.get("data_impact") or {}
-
-            severity = (data.get("incident_severity")
-                        or ad.get("incident_severity")
-                        or (data.get("incident_metadata") or {}).get("severity"))
-            inst_size = (data.get("institution_size")
-                         or (data.get("institution_profile") or {}).get("institution_size"))
-
-            # Threat actor
-            ta_cat = (ta.get("category") or ta.get("actor_category") or ta.get("threat_actor_category")
-                      or ad.get("threat_actor_category"))
-            ta_mot = (ta.get("motivation") or ta.get("threat_actor_motivation")
-                      or ad.get("threat_actor_motivation"))
-            ta_origin = ta.get("origin_country") or ta.get("threat_actor_origin_country")
-
-            # Data categories
-            cats = data.get("data_categories") or di.get("data_types_affected") or di.get("data_categories")
-            cats_json = _json.dumps(cats) if cats else None
-
-            # ── Recovery fields ──────────────────────────────────────────────
-            recovery_days = (rm.get("recovery_timeframe_days")
-                             or ad.get("recovery_timeframe_days"))
-            from_backup = rm.get("from_backup")
-            if from_backup is None:
-                rm_method = rm.get("recovery_method", "")
-                if rm_method in ("backup_restore", "partial_backup_partial_rebuild"):
-                    from_backup = 1
-            ir_firm = rm.get("incident_response_firm")
-            forensics = rm.get("forensics_firm")
-            mfa_impl = rm.get("mfa_implemented")
-
-            # ── Operational impact ───────────────────────────────────────────
-            def _b(v):
-                return 1 if v else (0 if v is False else None)
-
-            teaching_dis = _b(oim.get("teaching_disrupted"))
-            research_dis = _b(oim.get("research_disrupted"))
-            admissions_dis = _b(oim.get("admissions_disrupted"))
-            payroll_dis = _b(oim.get("payroll_disrupted"))
-            classes_can = _b(oim.get("classes_cancelled"))
-            exams_post = _b(oim.get("exams_postponed"))
-            downtime = oim.get("downtime_days")
-
-            # ── Regulatory ───────────────────────────────────────────────────
-            gdpr = _b(ri.get("gdpr_breach"))
-            hipaa = _b(ri.get("hipaa_breach"))
-            ferpa = _b(ri.get("ferpa_breach"))
-            fine_imp = _b(ri.get("fine_imposed"))
-            fine_amt = ri.get("fine_amount") or ri.get("fine_amount_usd")
-
-            # ── Financial ────────────────────────────────────────────────────
-            ransom_paid_amt = fi.get("ransom_paid_amount")
-            recovery_cost_min = fi.get("recovery_costs_min")
-            recovery_cost_max = fi.get("recovery_costs_max")
-
-            cur.execute("""
-                UPDATE incident_enrichments_flat SET
-                    incident_severity           = COALESCE(incident_severity, ?),
-                    institution_size            = COALESCE(institution_size, ?),
-                    threat_actor_category       = COALESCE(threat_actor_category, ?),
-                    threat_actor_motivation     = COALESCE(threat_actor_motivation, ?),
-                    threat_actor_origin_country = COALESCE(threat_actor_origin_country, ?),
-                    data_categories             = COALESCE(data_categories, ?),
-                    recovery_timeframe_days     = COALESCE(recovery_timeframe_days, ?),
-                    from_backup                 = COALESCE(from_backup, ?),
-                    incident_response_firm      = COALESCE(incident_response_firm, ?),
-                    forensics_firm              = COALESCE(forensics_firm, ?),
-                    mfa_implemented             = COALESCE(mfa_implemented, ?),
-                    teaching_disrupted          = COALESCE(teaching_disrupted, ?),
-                    research_disrupted          = COALESCE(research_disrupted, ?),
-                    admissions_disrupted        = COALESCE(admissions_disrupted, ?),
-                    payroll_disrupted           = COALESCE(payroll_disrupted, ?),
-                    classes_cancelled           = COALESCE(classes_cancelled, ?),
-                    exams_postponed             = COALESCE(exams_postponed, ?),
-                    downtime_days               = COALESCE(downtime_days, ?),
-                    gdpr_breach                 = COALESCE(gdpr_breach, ?),
-                    hipaa_breach                = COALESCE(hipaa_breach, ?),
-                    ferpa_breach                = COALESCE(ferpa_breach, ?),
-                    fine_imposed                = COALESCE(fine_imposed, ?),
-                    fine_amount                 = COALESCE(fine_amount, ?),
-                    ransom_paid_amount          = COALESCE(ransom_paid_amount, ?),
-                    recovery_costs_min          = COALESCE(recovery_costs_min, ?),
-                    recovery_costs_max          = COALESCE(recovery_costs_max, ?)
-                WHERE incident_id = ?
-            """, (
-                severity, inst_size, ta_cat, ta_mot, ta_origin, cats_json,
-                recovery_days, from_backup, ir_firm, forensics, mfa_impl,
-                teaching_dis, research_dis, admissions_dis, payroll_dis,
-                classes_can, exams_post, downtime,
-                gdpr, hipaa, ferpa, fine_imp, fine_amt,
-                ransom_paid_amt, recovery_cost_min, recovery_cost_max,
-                incident_id,
-            ))
-            if cur.rowcount:
-                updated += 1
-
-        conn.commit()
-
-        def _count(col):
-            cur.execute(f"SELECT COUNT(*) FROM incident_enrichments_flat WHERE {col} IS NOT NULL AND {col} != 0")
-            return cur.fetchone()[0]
-
-        stats = {
-            "incident_severity": _count("incident_severity"),
-            "institution_size": _count("institution_size"),
-            "threat_actor_category": _count("threat_actor_category"),
-            "threat_actor_motivation": _count("threat_actor_motivation"),
-            "data_categories": _count("data_categories"),
-            "recovery_timeframe_days": _count("recovery_timeframe_days"),
-            "from_backup": _count("from_backup"),
-            "incident_response_firm": _count("incident_response_firm"),
-            "forensics_firm": _count("forensics_firm"),
-            "mfa_implemented": _count("mfa_implemented"),
-            "teaching_disrupted": _count("teaching_disrupted"),
-            "research_disrupted": _count("research_disrupted"),
-            "classes_cancelled": _count("classes_cancelled"),
-            "exams_postponed": _count("exams_postponed"),
-            "downtime_days": _count("downtime_days"),
-            "gdpr_breach": _count("gdpr_breach"),
-            "hipaa_breach": _count("hipaa_breach"),
-            "ferpa_breach": _count("ferpa_breach"),
-            "ransom_paid_amount": _count("ransom_paid_amount"),
-        }
-        cur.execute("SELECT COUNT(*) FROM incident_enrichments_flat")
-        total_flat = cur.fetchone()[0]
-
-        return {
-            "success": True,
-            "enrichments_processed": len(rows),
-            "flat_rows_updated": updated,
-            "parse_failures": failed,
-            "columns_added": added,
-            "population_counts": stats,
-            "total_flat_rows": total_flat,
-        }
-    except Exception as e:
-        logger.error(f"Backfill failed: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=str(e))
-    finally:
-        conn.close()
-
 
 @router.post("/repair-date-corruption")
 async def repair_date_corruption_endpoint(

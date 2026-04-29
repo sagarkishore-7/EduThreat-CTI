@@ -50,14 +50,14 @@ TRACKED_FIELDS = [
     "attack_chain",
     "timeline",           # list — count non-null event_descriptions
     "mitre_attack_techniques",  # list — count fully-populated entries
-    "applicable_regulations",
     "breach_notification_required",
+    "notification_sent_date",
+    "dpa_notified",
     "regulators_notified",
     "ir_firm_engaged",
     "law_enforcement_involved",
     "recovery_method",
     "security_improvements",
-    "key_quotes",
     "ransomware_family",
     "threat_actor_name",
     "institution_name",

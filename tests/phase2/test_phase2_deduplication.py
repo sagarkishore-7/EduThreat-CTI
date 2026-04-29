@@ -546,7 +546,6 @@ class TestDeduplication:
             """
             UPDATE incident_enrichments_flat
             SET timeline_events_count = 3,
-                mitre_techniques_count = 2,
                 attack_category = 'ransomware',
                 threat_actor_name = 'LockBit',
                 data_breached = 1,
@@ -555,6 +554,12 @@ class TestDeduplication:
             """,
             (incident2.incident_id,),
         )
+        # Populate mitre junction table so the subquery score counts correctly
+        for i in range(2):
+            conn.execute(
+                "INSERT INTO incident_mitre_techniques (incident_id, seq_order, technique_id) VALUES (?,?,?)",
+                [incident2.incident_id, i, f"T100{i}"],
+            )
         conn.commit()
 
         stats = deduplicate_by_institution(conn, window_days=14)

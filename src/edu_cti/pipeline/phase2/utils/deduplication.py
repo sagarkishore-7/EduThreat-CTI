@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 _DETAIL_SCORE_SQL = """
 (
     COALESCE(ef.timeline_events_count, 0) * 5 +
-    COALESCE(ef.mitre_techniques_count, 0) * 3 +
+    (SELECT COUNT(*) FROM incident_mitre_techniques mt WHERE mt.incident_id = ef.incident_id) * 3 +
     CASE WHEN i.primary_url IS NOT NULL AND i.primary_url != '' THEN 2 ELSE 0 END +
     CASE WHEN COALESCE(ef.enriched_summary, i.llm_summary) IS NOT NULL
               AND LENGTH(COALESCE(ef.enriched_summary, i.llm_summary)) > 0 THEN 2 ELSE 0 END +
@@ -425,7 +425,7 @@ def _merge_notes(*notes: Optional[str]) -> Optional[str]:
 _COMPARABLE_FLAT_FIELDS = [
     "attack_category", "threat_actor_name", "ransomware_family", "country",
     "records_affected_exact", "ransom_amount", "institution_type",
-    "dwell_time_days", "cve_ids", "malware_families",
+    "dwell_time_days", "primary_cve_id", "malware_families",
 ]
 
 
@@ -598,6 +598,7 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
         "incident_sources",
         "source_events",
         "pipeline_checkpoint",
+        "incident_enrichment_runs",
         "incident_enrichments",
         "incident_enrichments_flat",
     ]

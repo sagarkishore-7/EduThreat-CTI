@@ -53,6 +53,23 @@ def get_api_connection(read_only: bool = True) -> sqlite3.Connection:
     return conn
 
 
+def _parse_json_field(value: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not value:
+        return None
+    try:
+        parsed = json.loads(value)
+        return parsed if isinstance(parsed, dict) else None
+    except Exception:
+        return None
+
+
+def _extract_typed_enrichment(final_payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(final_payload, dict):
+        return None
+    typed = final_payload.get("typed_enrichment")
+    return typed if isinstance(typed, dict) else final_payload
+
+
 # ============================================================
 # Incident Queries
 # ============================================================
@@ -249,18 +266,20 @@ def get_incident_by_id(
     if enrichment_row:
         enrichment = dict(enrichment_row)
         
-        # Parse JSON fields
-        if enrichment.get("timeline_json"):
-            try:
-                incident["timeline"] = json.loads(enrichment["timeline_json"])
-            except Exception:
-                incident["timeline"] = None
-        
-        if enrichment.get("mitre_techniques_json"):
-            try:
-                incident["mitre_attack_techniques"] = json.loads(enrichment["mitre_techniques_json"])
-            except Exception:
-                incident["mitre_attack_techniques"] = None
+        # Read timeline and MITRE from junction tables
+        tl_rows = conn.execute(
+            "SELECT event_date, date_precision, event_type, event_description, actor_attribution "
+            "FROM incident_timeline WHERE incident_id = ? ORDER BY seq_order",
+            (incident_id,),
+        ).fetchall()
+        incident["timeline"] = [dict(r) for r in tl_rows] if tl_rows else None
+
+        mt_rows = conn.execute(
+            "SELECT technique_id, technique_name, tactic, description, sub_techniques "
+            "FROM incident_mitre_techniques WHERE incident_id = ? ORDER BY seq_order",
+            (incident_id,),
+        ).fetchall()
+        incident["mitre_attack_techniques"] = [dict(r) for r in mt_rows] if mt_rows else None
         
         if enrichment.get("systems_affected_codes"):
             try:
@@ -294,23 +313,24 @@ def get_incident_by_id(
         
         # Merge enrichment fields — skip keys already parsed above to prevent
         # the raw DB string from overwriting a deliberately-parsed None.
-        _SKIP_MERGE = {"data_categories", "systems_affected_codes", "timeline_json", "mitre_techniques_json", "regulatory_context"}
+        _SKIP_MERGE = {"data_categories", "systems_affected_codes", "regulatory_context"}
         for key, value in enrichment.items():
             if key in _SKIP_MERGE:
                 continue
             if key not in incident or incident[key] is None:
                 incident[key] = value
     
-    # Get full enrichment JSON for complete data
+    # Get canonical final enrichment JSON for complete data
     cur = conn.execute(
-        "SELECT enrichment_data FROM incident_enrichments WHERE incident_id = ?",
+        "SELECT final_enrichment_json, raw_extraction_json FROM incident_enrichments WHERE incident_id = ?",
         (incident_id,)
     )
     enrichment_json_row = cur.fetchone()
     
     if enrichment_json_row:
         try:
-            full_enrichment = json.loads(enrichment_json_row["enrichment_data"])
+            final_payload = _parse_json_field(enrichment_json_row["final_enrichment_json"])
+            full_enrichment = _extract_typed_enrichment(final_payload) or {}
             # Add any fields not in flat table
             if "attack_dynamics" not in incident and "attack_dynamics" in full_enrichment:
                 ad = full_enrichment.get("attack_dynamics")
@@ -327,6 +347,9 @@ def get_incident_by_id(
                 incident["attack_dynamics"] = ad
             if "education_relevance" in full_enrichment:
                 incident["education_relevance"] = full_enrichment.get("education_relevance")
+            raw_extraction = _parse_json_field(enrichment_json_row["raw_extraction_json"])
+            if raw_extraction:
+                incident["raw_extraction"] = raw_extraction
         except Exception:
             pass
     
@@ -468,8 +491,7 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
         SELECT SUM(
             COALESCE(ef.ransom_amount, 0) +
             COALESCE(ef.recovery_costs_max, COALESCE(ef.recovery_costs_min, 0)) +
-            COALESCE(ef.legal_costs, 0) +
-            COALESCE(ef.notification_costs, 0)
+            COALESCE(ef.legal_costs, 0)
         ) as total
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
@@ -490,7 +512,7 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
         f"""
         SELECT COUNT(*) as count FROM incident_enrichments_flat
         WHERE is_education_related = 1
-          AND mitre_techniques_count IS NOT NULL AND mitre_techniques_count > 0
+          AND (SELECT COUNT(*) FROM incident_mitre_techniques mt WHERE mt.incident_id = incident_enrichments_flat.incident_id) > 0
           AND {_live_incident_exists('incident_enrichments_flat')}
         """
     )
@@ -1157,15 +1179,13 @@ def _normalize_mitre_tactic(raw: str) -> str:
 
 
 def get_mitre_tactics(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
-    """Parse mitre_techniques_json and aggregate by tactic."""
-    # Try flat table first, then fall back to enrichment JSON
+    """Aggregate MITRE ATT&CK techniques by tactic from the junction table."""
     cur = conn.execute(
         f"""
-        SELECT ef.mitre_techniques_json, ie.enrichment_data
-        FROM incident_enrichments_flat ef
-        LEFT JOIN incident_enrichments ie ON ef.incident_id = ie.incident_id
+        SELECT mt.technique_id, mt.technique_name, mt.tactic, mt.description
+        FROM incident_mitre_techniques mt
+        JOIN incident_enrichments_flat ef ON mt.incident_id = ef.incident_id
         WHERE ef.is_education_related = 1
-          AND (ef.mitre_techniques_count > 0 OR ef.mitre_techniques_json IS NOT NULL)
           AND {_live_incident_exists('ef')}
         """
     )
@@ -1176,17 +1196,7 @@ def get_mitre_tactics(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
     for row in cur.fetchall():
         rows_checked += 1
         try:
-            techniques = None
-            # Try flat table JSON first
-            if row["mitre_techniques_json"]:
-                raw_json = row["mitre_techniques_json"]
-                techniques = json.loads(raw_json)
-            # Fall back to enrichment_data JSON if flat is empty
-            if (not techniques or techniques == []) and row["enrichment_data"]:
-                enrichment = json.loads(row["enrichment_data"])
-                techniques = enrichment.get("mitre_attack_techniques", [])
-            if not techniques:
-                continue
+            techniques = [dict(row)]
             rows_with_data += 1
             for t in techniques:
                 # Handle both dict and string entries
@@ -1813,7 +1823,6 @@ def get_financial_impact_by_year(conn: sqlite3.Connection) -> List[Dict[str, Any
             SUM(ef.ransom_amount) as ransom_cost,
             SUM(ef.recovery_costs_max) as recovery_cost,
             SUM(ef.legal_costs) as legal_cost,
-            SUM(ef.notification_costs) as notification_cost,
             COUNT(*) as incident_count
         FROM incident_enrichments_flat ef
         JOIN incidents i ON ef.incident_id = i.incident_id
@@ -2262,7 +2271,7 @@ def get_actor_ttp_profile(
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
-          AND (ef.mitre_techniques_json IS NOT NULL OR ef.mitre_techniques_count > 0)
+          AND (SELECT COUNT(*) FROM incident_mitre_techniques mt WHERE mt.incident_id = ef.incident_id) > 0
           AND {_live_incident_exists('ef')}
         GROUP BY ef.threat_actor_name
         ORDER BY cnt DESC
@@ -2277,24 +2286,25 @@ def get_actor_ttp_profile(
     placeholders = ",".join("?" * len(actors))
     cur = conn.execute(
         f"""
-        SELECT ef.threat_actor_name as actor, ef.mitre_techniques_json
-        FROM incident_enrichments_flat ef
+        SELECT ef.threat_actor_name as actor,
+               mt.technique_id, mt.technique_name, mt.tactic
+        FROM incident_mitre_techniques mt
+        JOIN incident_enrichments_flat ef ON mt.incident_id = ef.incident_id
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IN ({placeholders})
-          AND ef.mitre_techniques_json IS NOT NULL
           AND {_live_incident_exists('ef')}
         """,
         actors
     )
 
-    # Parse techniques and aggregate by actor + tactic
+    # Aggregate by actor + tactic
     actor_tactic_counts: Dict[str, Dict[str, int]] = {}
     for row in cur.fetchall():
         actor = row["actor"]
         if actor not in actor_tactic_counts:
             actor_tactic_counts[actor] = {}
         try:
-            techniques = json.loads(row["mitre_techniques_json"])
+            techniques = [{"technique_id": row["technique_id"], "technique_name": row["technique_name"], "tactic": row["tactic"]}]
             for t in techniques:
                 if isinstance(t, dict):
                     raw_tactic = t.get("tactic")
@@ -2381,7 +2391,7 @@ def get_raw_incident_data(
 ) -> Dict[str, Any]:
     """
     Get raw incident data from both tables for debugging/inspection.
-    Returns data from incident_enrichments_flat + incident_enrichments (JSON blob).
+    Returns data from incident_enrichments_flat + incident_enrichments debug layers.
     """
     conditions = ["ef.is_education_related = 1"]
     params: list = []
@@ -2390,10 +2400,9 @@ def get_raw_incident_data(
         conditions.append("ef.incident_id LIKE ?")
         params.append(f"%{incident_id}%")
     if has_mitre is True:
-        conditions.append("(ef.mitre_techniques_count > 0 OR ef.mitre_techniques_json IS NOT NULL)")
+        conditions.append("(SELECT COUNT(*) FROM incident_mitre_techniques mt WHERE mt.incident_id = ef.incident_id) > 0")
     elif has_mitre is False:
-        conditions.append("(ef.mitre_techniques_count = 0 OR ef.mitre_techniques_count IS NULL)")
-        conditions.append("ef.mitre_techniques_json IS NULL")
+        conditions.append("(SELECT COUNT(*) FROM incident_mitre_techniques mt WHERE mt.incident_id = ef.incident_id) = 0")
     if attack_category:
         conditions.append("ef.attack_category LIKE ?")
         params.append(f"%{attack_category}%")
@@ -2401,9 +2410,9 @@ def get_raw_incident_data(
         conditions.append("ef.country LIKE ?")
         params.append(f"%{country}%")
     if has_enrichment is True:
-        conditions.append("ie.enrichment_data IS NOT NULL")
+        conditions.append("ie.final_enrichment_json IS NOT NULL")
     elif has_enrichment is False:
-        conditions.append("ie.enrichment_data IS NULL")
+        conditions.append("ie.final_enrichment_json IS NULL")
 
     where_clause = " AND ".join(conditions)
 
@@ -2420,7 +2429,21 @@ def get_raw_incident_data(
     data_sql = f"""
         SELECT
             ef.*,
-            ie.enrichment_data,
+            ie.raw_response_payload,
+            ie.raw_extraction_json,
+            ie.final_enrichment_json,
+            ie.storage_metadata,
+            ie.enrichment_version,
+            ie.enrichment_confidence,
+            ie.llm_provider,
+            ie.llm_model,
+            ie.extraction_mode,
+            ie.prompt_version,
+            ie.schema_version,
+            ie.mapper_version,
+            ie.post_processing_version,
+            ie.created_at AS enrichment_created_at,
+            ie.updated_at AS enrichment_updated_at,
             i.incident_date,
             i.title
         FROM incident_enrichments_flat ef
@@ -2434,18 +2457,12 @@ def get_raw_incident_data(
     rows = []
     for row in cur.fetchall():
         r = dict(row)
-        # Parse enrichment_data JSON for display
-        if r.get("enrichment_data"):
-            try:
-                r["enrichment_data"] = json.loads(r["enrichment_data"])
-            except Exception:
-                pass  # leave as string
-        # Parse mitre_techniques_json for display
-        if r.get("mitre_techniques_json"):
-            try:
-                r["mitre_techniques_json"] = json.loads(r["mitre_techniques_json"])
-            except Exception:
-                pass
+        for json_col in ("raw_response_payload", "raw_extraction_json", "final_enrichment_json", "storage_metadata"):
+            if r.get(json_col):
+                try:
+                    r[json_col] = json.loads(r[json_col])
+                except Exception:
+                    pass
         rows.append(r)
 
     return {

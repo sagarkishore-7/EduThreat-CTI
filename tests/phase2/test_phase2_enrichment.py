@@ -306,17 +306,99 @@ class TestEnrichmentDatabase:
         ) is True
 
         row = conn.execute(
-            "SELECT enrichment_data FROM incident_enrichments WHERE incident_id = ?",
+            "SELECT raw_extraction_json, final_enrichment_json FROM incident_enrichments WHERE incident_id = ?",
             (sample_incident.incident_id,),
         ).fetchone()
 
-        payload = json.loads(row["enrichment_data"])
-        assert payload["institution_name"] == "Test University"
-        assert payload["raw_extraction"]["institution_name"] == "Test University"
-        assert payload["raw_extraction"]["notification_sent"] is False
-        assert payload["raw_extraction"]["dpa_notified"] is False
-        assert "business_impact" in payload["raw_extraction"]
-        assert payload["raw_extraction"]["business_impact"] is None
+        raw_extraction = json.loads(row["raw_extraction_json"])
+        assert raw_extraction["institution_name"] == "Test University"
+        assert raw_extraction["notification_sent"] is False
+        assert raw_extraction["dpa_notified"] is False
+        assert "business_impact" in raw_extraction
+        assert raw_extraction["business_impact"] is None
+
+        final_payload = json.loads(row["final_enrichment_json"])
+        assert final_payload["raw_extraction"]["institution_name"] == "Test University"
+
+    def test_save_enrichment_result_stores_debug_artifacts_and_history(
+        self, temp_db, sample_incident
+    ):
+        """Current/latest enrichment rows should store raw responses, raw extraction, final JSON, and history."""
+        conn, _ = temp_db
+        insert_incident(conn, sample_incident)
+
+        enrichment = _sample_enrichment_result(primary_url="https://example.com/article1")
+        raw_json_data = {
+            "institution_name": "Test University",
+            "notification_sent": False,
+            "_storage_debug": {
+                "raw_llm_responses": {
+                    "extraction": "{\"institution_name\":\"Test University\",\"notification_sent\":false}",
+                    "summary": "Test University was hit by ransomware.",
+                },
+                "llm_metadata": {
+                    "provider": "ollama",
+                    "model": "deepseek-test",
+                    "extraction_mode": "single_call",
+                    "prompt_version": "phase2_prompt_v1",
+                    "schema_version": "phase2_schema_v1",
+                    "mapper_version": "phase2_mapper_v1",
+                    "post_processing_version": "phase2_post_processing_v1",
+                },
+            },
+        }
+
+        assert save_enrichment_result(
+            conn,
+            sample_incident.incident_id,
+            enrichment,
+            raw_json_data=raw_json_data,
+        ) is True
+
+        row = conn.execute(
+            """
+            SELECT raw_response_payload, raw_extraction_json, final_enrichment_json,
+                   storage_metadata, enrichment_version, llm_provider, llm_model,
+                   extraction_mode, prompt_version, schema_version, mapper_version,
+                   post_processing_version
+            FROM incident_enrichments WHERE incident_id = ?
+            """,
+            (sample_incident.incident_id,),
+        ).fetchone()
+
+        assert row is not None
+        raw_response_payload = json.loads(row["raw_response_payload"])
+        assert raw_response_payload["extraction"] == "{\"institution_name\":\"Test University\",\"notification_sent\":false}"
+        assert raw_response_payload["summary"] == "Test University was hit by ransomware."
+
+        raw_extraction = json.loads(row["raw_extraction_json"])
+        assert raw_extraction["institution_name"] == "Test University"
+        assert raw_extraction["notification_sent"] is False
+        assert raw_extraction["business_impact"] is None
+
+        final_payload = json.loads(row["final_enrichment_json"])
+        assert final_payload["analytics_projection"]["institution_name"] == "Test University"
+        assert final_payload["raw_extraction"]["notification_sent"] is False
+        assert final_payload["llm_metadata"]["model"] == "deepseek-test"
+
+        assert row["storage_metadata"] is not None
+        assert row["enrichment_version"] == "3.0"
+        assert row["llm_provider"] == "ollama"
+        assert row["llm_model"] == "deepseek-test"
+        assert row["extraction_mode"] == "single_call"
+        assert row["prompt_version"] == "phase2_prompt_v1"
+        assert row["schema_version"] == "phase2_schema_v1"
+        assert row["mapper_version"] == "phase2_mapper_v1"
+        assert row["post_processing_version"] == "phase2_post_processing_v1"
+
+        run_row = conn.execute(
+            """
+            SELECT COUNT(*) AS count FROM incident_enrichment_runs
+            WHERE incident_id = ?
+            """,
+            (sample_incident.incident_id,),
+        ).fetchone()
+        assert run_row["count"] == 1
 
 
 class TestFetchingStrategy:
@@ -506,7 +588,7 @@ class TestFetchingStrategy:
         conn.execute(
             """
             INSERT INTO incident_enrichments
-            (incident_id, enrichment_data, created_at, updated_at)
+            (incident_id, final_enrichment_json, created_at, updated_at)
             VALUES (?, ?, ?, ?)
             """,
             ("orphan_incident_1", "{}", now, now),

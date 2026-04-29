@@ -156,6 +156,7 @@ class RegulatoryImpact(BaseModel):
     breach_notification_required: Optional[bool] = None
     notification_sent: Optional[bool] = None
     notification_sent_date: Optional[str] = None
+    notification_delay_days: Optional[int] = None
     dpa_notified: Optional[bool] = None
     investigation_opened: Optional[bool] = None
     fine_imposed: Optional[bool] = None
@@ -234,6 +235,9 @@ class IncidentDetail(BaseModel):
     incident_severity: Optional[str] = None
     status: str = "suspected"
     source_confidence: str = "medium"
+    academic_period_affected: Optional[str] = None
+    dark_web_posting_confirmed: Optional[bool] = None
+    prior_breach_same_institution: Optional[bool] = None
     
     # Threat actor
     threat_actor_name: Optional[str] = None

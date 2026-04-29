@@ -1,7 +1,7 @@
 """
 Tests for all pipeline fixes:
   - 9 new threat-intelligence fields through mapper → schema → flat DB
-  - 31 new flat columns DDL + idempotent migration
+  - 31 new flat columns present in the canonical DDL + idempotent init
   - Recovery-days fallback chain (recovery_timeframe_days → downtime_days → outage_hours/24)
   - Financial-impact query including ransom_amount
   - CSV export carries new threat-intel columns
@@ -294,11 +294,6 @@ class TestFlattenEnrichmentNewFields:
         flat = _flatten_enrichment_for_db(enrichment)
         assert flat["cloud_provider"] == "AWS"
 
-    def test_infrastructure_type_stored(self):
-        enrichment = _full_enrichment()
-        flat = _flatten_enrichment_for_db(enrichment)
-        assert flat["infrastructure_type"] == "hybrid"
-
     def test_dwell_time_days_stored(self):
         enrichment = _full_enrichment()
         flat = _flatten_enrichment_for_db(enrichment)
@@ -309,33 +304,37 @@ class TestFlattenEnrichmentNewFields:
         flat = _flatten_enrichment_for_db(enrichment)
         assert flat["data_volume_gb"] == 250.5
 
-    def test_cve_ids_extracted_from_vulnerabilities(self):
+    def test_primary_cve_id_from_vulnerabilities(self):
         enrichment = _full_enrichment()
         flat = _flatten_enrichment_for_db(enrichment)
-        assert flat["cve_ids"] is not None
-        parsed = json.loads(flat["cve_ids"])
-        assert "CVE-2023-4966" in parsed
+        assert flat["primary_cve_id"] == "CVE-2023-4966"
 
-    def test_cvss_scores_extracted(self):
+    def test_max_cvss_score_from_vulnerabilities(self):
         enrichment = _full_enrichment()
         flat = _flatten_enrichment_for_db(enrichment)
-        assert flat["cvss_scores"] is not None
-        parsed = json.loads(flat["cvss_scores"])
-        assert 9.4 in parsed
+        assert flat["max_cvss_score"] == 9.4
 
-    def test_vulnerability_names_extracted(self):
-        enrichment = _full_enrichment()
+    def test_primary_cve_highest_cvss_selected(self):
+        """When multiple CVEs present, the one with highest CVSS becomes primary."""
+        enrichment = _full_enrichment(
+            vulnerabilities_exploited=[
+                {"cve_id": "CVE-2021-44228", "vulnerability_name": "Log4Shell", "cvss_score": 10.0},
+                {"cve_id": "CVE-2023-4966", "vulnerability_name": "Citrix Bleed", "cvss_score": 9.4},
+            ]
+        )
         flat = _flatten_enrichment_for_db(enrichment)
-        assert flat["vulnerability_names"] is not None
-        parsed = json.loads(flat["vulnerability_names"])
-        assert "Citrix Bleed" in parsed
+        assert flat["primary_cve_id"] == "CVE-2021-44228"
+        assert flat["max_cvss_score"] == 10.0
 
-    def test_affected_products_extracted(self):
+    def test_primary_mitre_technique_id(self):
         enrichment = _full_enrichment()
         flat = _flatten_enrichment_for_db(enrichment)
-        assert flat["affected_products"] is not None
-        parsed = json.loads(flat["affected_products"])
-        assert "Citrix NetScaler ADC" in parsed
+        assert flat["primary_mitre_technique_id"] == "T1486"
+
+    def test_timeline_events_count(self):
+        enrichment = _full_enrichment()
+        flat = _flatten_enrichment_for_db(enrichment)
+        assert flat["timeline_events_count"] == 1
 
     def test_none_new_fields_stay_none(self):
         """All-None new fields must not crash and must map to None."""
@@ -348,9 +347,9 @@ class TestFlattenEnrichmentNewFields:
         flat = _flatten_enrichment_for_db(minimal)
         for col in (
             "malware_families", "attacker_tools", "threat_actor_aliases",
-            "attack_campaign_name", "cloud_provider", "infrastructure_type",
-            "dwell_time_days", "data_volume_gb", "cve_ids", "cvss_scores",
-            "vulnerability_names", "affected_products",
+            "attack_campaign_name", "cloud_provider",
+            "dwell_time_days", "data_volume_gb",
+            "primary_cve_id", "max_cvss_score", "primary_mitre_technique_id",
         ):
             assert flat[col] is None, f"Expected None for '{col}', got {flat[col]!r}"
 
@@ -363,10 +362,12 @@ class TestFlattenEnrichmentNewFields:
 NEW_FLAT_COLUMNS = [
     "access_vector",
     "malware_families", "attacker_tools", "threat_actor_aliases", "attack_campaign_name",
-    "cloud_provider", "infrastructure_type", "dwell_time_days", "mttd_hours", "mttr_hours",
-    "cve_ids", "cvss_scores", "vulnerability_names", "affected_products",
+    "cloud_provider", "dwell_time_days", "mttd_hours", "mttr_hours",
+    # Convenience columns replacing parallel JSON arrays
+    "primary_cve_id", "max_cvss_score", "primary_mitre_technique_id",
+    "timeline_events_count",
     "total_cost_estimate",
-    "partial_service_days", "clinical_operations_disrupted", "graduation_delayed",
+    "clinical_operations_disrupted", "graduation_delayed",
     "online_learning_disrupted",
     "backup_status", "backup_age_days", "law_enforcement_involved", "law_enforcement_agency",
     "official_statement_url",
@@ -376,10 +377,34 @@ NEW_FLAT_COLUMNS = [
     "data_volume_gb",
 ]
 
+JUNCTION_TABLES = [
+    "incident_vulnerabilities",
+    "incident_mitre_techniques",
+    "incident_timeline",
+]
 
-class TestDDLMigration:
+ENRICHMENT_ARTIFACT_COLUMNS = [
+    "raw_response_payload",
+    "raw_extraction_json",
+    "final_enrichment_json",
+    "storage_metadata",
+    "llm_provider",
+    "llm_model",
+    "extraction_mode",
+    "prompt_version",
+    "schema_version",
+    "mapper_version",
+    "post_processing_version",
+]
+
+
+class TestDDLInit:
     def _get_columns(self, conn: sqlite3.Connection):
         cur = conn.execute("PRAGMA table_info(incident_enrichments_flat)")
+        return {row["name"] for row in cur.fetchall()}
+
+    def _get_enrichment_columns(self, conn: sqlite3.Connection):
+        cur = conn.execute("PRAGMA table_info(incident_enrichments)")
         return {row["name"] for row in cur.fetchall()}
 
     @pytest.mark.parametrize("col", NEW_FLAT_COLUMNS)
@@ -387,12 +412,30 @@ class TestDDLMigration:
         cols = self._get_columns(temp_db)
         assert col in cols, f"Column '{col}' missing from incident_enrichments_flat"
 
-    def test_migration_idempotent(self, temp_db):
+    def test_init_idempotent(self, temp_db):
         """Running init_incident_enrichments_table twice must not raise."""
         init_incident_enrichments_table(temp_db)  # second call
         cols = self._get_columns(temp_db)
         for col in NEW_FLAT_COLUMNS:
             assert col in cols
+
+    @pytest.mark.parametrize("table", JUNCTION_TABLES)
+    def test_junction_table_created(self, temp_db, table):
+        cur = temp_db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?", [table]
+        )
+        assert cur.fetchone() is not None, f"Junction table '{table}' was not created"
+
+    @pytest.mark.parametrize("col", ENRICHMENT_ARTIFACT_COLUMNS)
+    def test_enrichment_artifact_column_exists_after_init(self, temp_db, col):
+        cols = self._get_enrichment_columns(temp_db)
+        assert col in cols, f"Column '{col}' missing from incident_enrichments"
+
+    def test_enrichment_history_table_created(self, temp_db):
+        cur = temp_db.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='incident_enrichment_runs'"
+        )
+        assert cur.fetchone() is not None
 
     def test_all_columns_in_all_columns_list(self, temp_db):
         """Every column in the DDL must also appear in the all_columns insert list.
@@ -446,11 +489,63 @@ class TestSaveEnrichmentNewFields:
         parsed = json.loads(flat["threat_actor_aliases"])
         assert "LockBit" in parsed
 
-    def test_cve_ids_round_trips(self, temp_db):
+    def test_primary_cve_round_trips(self, temp_db):
         iid = self._insert_and_save(temp_db, "cve")
         flat = self._fetch_flat(temp_db, iid)
-        parsed = json.loads(flat["cve_ids"])
-        assert "CVE-2023-4966" in parsed
+        assert flat["primary_cve_id"] == "CVE-2023-4966"
+        assert flat["max_cvss_score"] == 9.4
+
+    def test_vulnerability_junction_table_populated(self, temp_db):
+        iid = self._insert_and_save(temp_db, "vulnjt")
+        cur = temp_db.execute(
+            "SELECT * FROM incident_vulnerabilities WHERE incident_id = ?", [iid]
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        assert len(rows) == 1
+        assert rows[0]["cve_id"] == "CVE-2023-4966"
+        assert rows[0]["vulnerability_name"] == "Citrix Bleed"
+        assert rows[0]["affected_product"] == "Citrix NetScaler ADC"
+        assert rows[0]["cvss_score"] == 9.4
+
+    def test_mitre_junction_table_populated(self, temp_db):
+        iid = self._insert_and_save(temp_db, "mitrejt")
+        cur = temp_db.execute(
+            "SELECT * FROM incident_mitre_techniques WHERE incident_id = ?", [iid]
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        assert len(rows) == 1
+        assert rows[0]["technique_id"] == "T1486"
+        assert rows[0]["technique_name"] == "Data Encrypted for Impact"
+        assert rows[0]["tactic"] == "Impact"
+        assert rows[0]["seq_order"] == 0
+
+    def test_timeline_junction_table_populated(self, temp_db):
+        iid = self._insert_and_save(temp_db, "timelinejt")
+        cur = temp_db.execute(
+            "SELECT * FROM incident_timeline WHERE incident_id = ?", [iid]
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        assert len(rows) == 1
+        assert rows[0]["event_date"] == "2025-01-10"
+        assert rows[0]["event_type"] == "initial_access"
+        assert rows[0]["event_description"] == "Phishing email"
+
+    def test_junction_table_reinsert_on_reenrich(self, temp_db):
+        """Re-enriching an incident must replace junction rows, not duplicate them."""
+        iid = self._insert_and_save(temp_db, "reins")
+        # Re-enrich with a different vulnerability
+        enrichment2 = _full_enrichment(
+            vulnerabilities_exploited=[
+                {"cve_id": "CVE-2021-44228", "vulnerability_name": "Log4Shell", "cvss_score": 10.0}
+            ]
+        )
+        save_enrichment_result(temp_db, iid, enrichment2)
+        cur = temp_db.execute(
+            "SELECT cve_id FROM incident_vulnerabilities WHERE incident_id = ?", [iid]
+        )
+        rows = cur.fetchall()
+        assert len(rows) == 1
+        assert rows[0][0] == "CVE-2021-44228"
 
     def test_dwell_time_round_trips(self, temp_db):
         iid = self._insert_and_save(temp_db, "dwell")
@@ -461,11 +556,6 @@ class TestSaveEnrichmentNewFields:
         iid = self._insert_and_save(temp_db, "cloud")
         flat = self._fetch_flat(temp_db, iid)
         assert flat["cloud_provider"] == "AWS"
-
-    def test_infrastructure_type_round_trips(self, temp_db):
-        iid = self._insert_and_save(temp_db, "infra")
-        flat = self._fetch_flat(temp_db, iid)
-        assert flat["infrastructure_type"] == "hybrid"
 
     def test_attack_campaign_name_round_trips(self, temp_db):
         iid = self._insert_and_save(temp_db, "camp")
@@ -635,8 +725,7 @@ class TestFinancialImpactQuery:
             SELECT SUM(
                 COALESCE(ransom_amount, 0) +
                 COALESCE(recovery_costs_max, COALESCE(recovery_costs_min, 0)) +
-                COALESCE(legal_costs, 0) +
-                COALESCE(notification_costs, 0)
+                COALESCE(legal_costs, 0)
             ) as total
             FROM incident_enrichments_flat
             WHERE is_education_related = 1
@@ -666,10 +755,9 @@ class TestFinancialImpactQuery:
             ransom_amount=100_000.0,
             recovery_costs_max=50_000.0,
             legal_costs=25_000.0,
-            notification_costs=5_000.0,
         )
         total = self._total_financial(temp_db)
-        assert total == pytest.approx(180_000.0)
+        assert total == pytest.approx(175_000.0)
 
     def test_row_with_only_ransom_counted(self, temp_db):
         """Previously, rows with only ransom_amount and no recovery costs were excluded."""

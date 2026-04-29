@@ -343,11 +343,11 @@ def load_enriched_incidents_from_db(conn: sqlite3.Connection, use_flat_table: bo
             ORDER BY i.llm_enriched_at DESC
         """
     else:
-        # Fallback to JSON parsing
+        # Fallback to canonical final-enrichment JSON parsing
         query = """
         SELECT 
             i.*,
-            ie.enrichment_data,
+            ie.final_enrichment_json,
             GROUP_CONCAT(DISTINCT isrc.source) as sources
         FROM incidents i
         INNER JOIN incident_enrichments ie ON i.incident_id = ie.incident_id
@@ -511,20 +511,25 @@ def load_enriched_incidents_from_db(conn: sqlite3.Connection, use_flat_table: bo
             
             institution_from_enrichment = safe_get(row, "institution_name")
         else:
-            # Fallback: Parse JSON (slower but works with old data)
-            enrichment_data = None
-            enrichment_data_str = safe_get(row, "enrichment_data")
-            if enrichment_data_str:
+            # Fallback: Parse canonical final-enrichment JSON
+            typed_enrichment = None
+            final_enrichment_json = None
+            final_enrichment_json_str = safe_get(row, "final_enrichment_json")
+            if final_enrichment_json_str:
                 try:
-                    enrichment_data = json.loads(enrichment_data_str)
+                    final_enrichment_json = json.loads(final_enrichment_json_str)
+                    if isinstance(final_enrichment_json, dict):
+                        typed_enrichment = final_enrichment_json.get("typed_enrichment")
+                        if not isinstance(typed_enrichment, dict):
+                            typed_enrichment = final_enrichment_json
                 except json.JSONDecodeError as e:
-                    logger.warning(f"Error parsing enrichment data for {safe_get(row, 'incident_id')}: {e}")
+                    logger.warning(f"Error parsing final enrichment JSON for {safe_get(row, 'incident_id')}: {e}")
 
             # Extract and flatten enrichment data
             institution_from_enrichment = None
-            if enrichment_data:
+            if typed_enrichment:
                 try:
-                    enrichment = CTIEnrichmentResult.model_validate(enrichment_data)
+                    enrichment = CTIEnrichmentResult.model_validate(typed_enrichment)
                     if enrichment.education_relevance and enrichment.education_relevance.institution_identified:
                         institution_from_enrichment = enrichment.education_relevance.institution_identified
                     flattened = flatten_enrichment_data(enrichment)

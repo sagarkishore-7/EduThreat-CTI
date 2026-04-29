@@ -22,6 +22,7 @@ from datetime import datetime
 from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA
 from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import json_to_cti_enrichment
 from src.edu_cti.pipeline.phase2.storage.db import _flatten_enrichment_for_db, init_incident_enrichments_table
+from src.edu_cti.pipeline.phase2.utils.post_processing import apply_post_processing
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -40,21 +41,17 @@ FULL_LLM_JSON = {
     "institution_name": "Westbrook University",
     "institution_aliases": ["WBU", "Westbrook"],
     "institution_type": "university",
-    "institution_size": "large_20k_50k",
     "country": "United States",
-    "country_code": "US",
     "region": "Texas",
     "city": "Houston",
 
     # ── Classification ───────────────────────────────────────────────────────
-    "incident_severity": "critical",
     "incident_status": "resolved",
 
     # ── Dates ────────────────────────────────────────────────────────────────
     "incident_date": "2024-03-12",
     "incident_date_precision": "exact",
     "discovery_date": "2024-03-13",
-    "publication_date": "2024-03-20",
     "dwell_time_days": 1,
 
     # ── Timeline ─────────────────────────────────────────────────────────────
@@ -168,8 +165,6 @@ FULL_LLM_JSON = {
     "was_ransom_demanded": True,
     "ransom_amount": 3500000,
     "ransom_amount_exact": 3500000,
-    "ransom_amount_min": 3000000,
-    "ransom_amount_max": 5000000,
     "ransom_currency": "USD",
     "ransom_cryptocurrency": "bitcoin",
     "ransom_paid": False,
@@ -213,8 +208,6 @@ FULL_LLM_JSON = {
         "health_insurance",
         "usernames_passwords",
     ],
-    "records_affected_min": 40000,
-    "records_affected_max": 48000,
     "records_affected_exact": 44823,
     "pii_records_leaked": 44823,
     "data_volume_gb": 203.5,
@@ -276,8 +269,6 @@ FULL_LLM_JSON = {
     "donors_affected": 950,
     "total_individuals_affected": 44823,
     "users_affected_exact": 44823,
-    "users_affected_min": 40000,
-    "users_affected_max": 48000,
 
     # ── Financial impact ──────────────────────────────────────────────────────
     "estimated_total_cost_usd": 8500000,
@@ -289,13 +280,9 @@ FULL_LLM_JSON = {
     "lost_revenue_usd": 1050000,
     "insurance_claim": True,
     "insurance_payout_usd": 2000000,
-    "business_impact_severity": "critical",
     "business_impact": "severe",
 
     # ── Regulatory impact ─────────────────────────────────────────────────────
-    "applicable_regulations": [
-        "FERPA", "HIPAA", "GDPR", "UK_DPA", "state_breach_notification", "PCI_DSS"
-    ],
     "breach_notification_required": True,
     "notification_sent": True,
     "notification_sent_date": "2024-04-01",
@@ -350,16 +337,6 @@ FULL_LLM_JSON = {
     "common_vulnerability_exploited": "CVE-2023-20269",
     "sector_targeting_pattern": "targeted_education_only",
 
-    # ── Source metadata ───────────────────────────────────────────────────────
-    "source_url": "https://bleepingcomputer.com/news/security/westbrook-ransomware",
-    "source_headline": "Westbrook University hit by LockBit ransomware, 44K records stolen",
-    "source_publisher": "BleepingComputer",
-    "source_language": "en",
-    "key_quotes": [
-        "The university confirmed that LockBit ransomware encrypted administrative systems on March 12.",
-        "A ransom of $3.5 million was demanded but the university refused to pay.",
-    ],
-
     # ── Research impact ───────────────────────────────────────────────────────
     "research_impacted": True,
     "research_projects_affected": 12,
@@ -377,7 +354,6 @@ FULL_LLM_JSON = {
         "from backup within 14 days. CrowdStrike and Mandiant were engaged for incident response."
     ),
     "extraction_notes": "Article published 8 days after incident; ransom amount explicitly stated as $3.5M USD.",
-    "confidence_score": 0.92,
 }
 
 
@@ -390,6 +366,7 @@ def _run_pipeline(payload=None):
     p = payload if payload is not None else FULL_LLM_JSON
     enrichment = json_to_cti_enrichment(p, primary_url="https://bleepingcomputer.com/news/security/westbrook-ransomware")
     flat = _flatten_enrichment_for_db(enrichment, p)
+    apply_post_processing(flat, incident_row=None, summary=enrichment.enriched_summary)
     return enrichment, flat
 
 
@@ -446,9 +423,6 @@ class TestFullFieldAudit:
     def test_institution_type(self, flat):
         assert flat["institution_type"] == "university"
 
-    def test_institution_size(self, flat):
-        assert flat["institution_size"] == "large_20k_50k"
-
     def test_country_normalized(self, flat):
         assert flat["country"] == "United States"
 
@@ -462,9 +436,6 @@ class TestFullFieldAudit:
         assert flat["city"] == "Houston"
 
     # ── Classification ────────────────────────────────────────────────────
-    def test_incident_severity(self, flat):
-        assert flat["incident_severity"] == "critical"
-
     def test_incident_date_precision(self, flat):
         assert flat["incident_date_precision"] == "exact"
 
@@ -524,12 +495,6 @@ class TestFullFieldAudit:
     def test_ransom_amount(self, flat):
         assert flat["ransom_amount"] == 3500000
 
-    def test_ransom_amount_min(self, flat):
-        assert flat["ransom_amount_min"] == 3000000
-
-    def test_ransom_amount_max(self, flat):
-        assert flat["ransom_amount_max"] == 5000000
-
     def test_ransom_currency(self, flat):
         assert flat["ransom_currency"] == "USD"
 
@@ -545,12 +510,6 @@ class TestFullFieldAudit:
 
     def test_records_affected_exact(self, flat):
         assert flat["records_affected_exact"] == 44823
-
-    def test_records_affected_min(self, flat):
-        assert flat["records_affected_min"] == 40000
-
-    def test_records_affected_max(self, flat):
-        assert flat["records_affected_max"] == 48000
 
     def test_pii_records_leaked(self, flat):
         assert flat["pii_records_leaked"] == 44823
@@ -595,9 +554,6 @@ class TestFullFieldAudit:
     def test_cloud_provider(self, flat):
         assert flat["cloud_provider"] == "azure"
 
-    def test_infrastructure_type(self, flat):
-        assert flat["infrastructure_type"] == "hybrid"
-
     # ── Operational impact ────────────────────────────────────────────────
     def test_teaching_disrupted(self, flat):
         # classes_cancelled in operational_impacts → teaching_disrupted
@@ -628,9 +584,6 @@ class TestFullFieldAudit:
 
     def test_outage_duration_hours(self, flat):
         assert flat["outage_duration_hours"] == 336
-
-    def test_partial_service_days(self, flat):
-        assert flat["partial_service_days"] == 7
 
     def test_clinical_operations_disrupted(self, flat):
         # clinical_operations_disrupted in operational_impacts
@@ -667,27 +620,12 @@ class TestFullFieldAudit:
     def test_users_affected_exact(self, flat):
         assert flat["users_affected_exact"] == 44823
 
-    def test_users_affected_min(self, flat):
-        assert flat["users_affected_min"] == 40000
-
-    def test_users_affected_max(self, flat):
-        assert flat["users_affected_max"] == 48000
-
     # ── Financial impact ──────────────────────────────────────────────────
-    def test_ransom_amount_min_financial(self, flat):
-        assert flat["ransom_amount_min"] == 3000000
-
-    def test_ransom_amount_max_financial(self, flat):
-        assert flat["ransom_amount_max"] == 5000000
-
     def test_recovery_costs_min_from_recovery_cost_usd(self, flat):
         assert flat["recovery_costs_min"] == 4200000
 
     def test_legal_costs_from_legal_cost_usd(self, flat):
         assert flat["legal_costs"] == 750000
-
-    def test_notification_costs_from_notification_cost_usd(self, flat):
-        assert flat["notification_costs"] == 320000
 
     def test_insurance_claim(self, flat):
         assert flat["insurance_claim"] == 1
@@ -702,17 +640,13 @@ class TestFullFieldAudit:
         assert flat["business_impact"] == "severe"
 
     # ── Regulatory impact ─────────────────────────────────────────────────
-    def test_gdpr_breach(self, flat):
-        assert flat["gdpr_breach"] == 1
-
     def test_hipaa_breach(self, flat):
         assert flat["hipaa_breach"] == 1
 
     def test_ferpa_breach(self, flat):
         assert flat["ferpa_breach"] == 1
 
-    def test_dpa_notified_from_uk_dpa_in_regulations(self, flat):
-        # UK_DPA in applicable_regulations → dpa_notified
+    def test_dpa_notified(self, flat):
         assert flat["dpa_notified"] == 1
 
     def test_breach_notification_required(self, flat):
@@ -742,7 +676,7 @@ class TestFullFieldAudit:
         regs = json.loads(flat["regulatory_context"])
         assert "FERPA" in regs
         assert "HIPAA" in regs
-        assert "GDPR" in regs
+        assert "state_breach_notification" in regs
 
     # ── Recovery ─────────────────────────────────────────────────────────
     def test_recovery_timeframe_days_from_recovery_duration_days(self, flat):
@@ -812,57 +746,24 @@ class TestFullFieldAudit:
     def test_official_statement_url(self, flat):
         assert flat["official_statement_url"] == "https://westbrook.edu/security-notice"
 
-    # ── Timeline ──────────────────────────────────────────────────────────
-    def test_timeline_json_valid(self, flat):
-        events = json.loads(flat["timeline_json"])
-        assert len(events) == 4
-
+    # ── Timeline (full data in incident_timeline junction table) ──────────
     def test_timeline_events_count(self, flat):
+        # Count stored in flat table as a convenience column
         assert flat["timeline_events_count"] == 4
 
-    def test_timeline_event_descriptions_populated(self, flat):
-        events = json.loads(flat["timeline_json"])
-        for evt in events:
-            assert evt.get("event_description"), f"event_description null: {evt}"
+    # ── MITRE ATT&CK (full data in incident_mitre_techniques junction table)
+    def test_primary_mitre_technique_id(self, flat):
+        # First technique ID stored as convenience column in flat table
+        assert flat["primary_mitre_technique_id"] is not None
+        assert flat["primary_mitre_technique_id"].startswith("T")
 
-    def test_timeline_event_types_populated(self, flat):
-        events = json.loads(flat["timeline_json"])
-        types = {e.get("event_type") for e in events}
-        assert "encryption_started" in types
-        assert "discovery" in types
+    # ── Vulnerabilities (full data in incident_vulnerabilities junction table)
+    def test_primary_cve_id(self, flat):
+        # Highest-CVSS CVE stored as convenience column in flat table
+        assert flat["primary_cve_id"] == "CVE-2023-20269"
 
-    # ── MITRE ATT&CK ─────────────────────────────────────────────────────
-    def test_mitre_techniques_json_valid(self, flat):
-        techs = json.loads(flat["mitre_techniques_json"])
-        assert len(techs) == 3
-
-    def test_mitre_techniques_count(self, flat):
-        assert flat["mitre_techniques_count"] == 3
-
-    def test_mitre_all_four_fields_populated(self, flat):
-        techs = json.loads(flat["mitre_techniques_json"])
-        for t in techs:
-            assert t.get("technique_id"), f"technique_id null: {t}"
-            assert t.get("technique_name"), f"technique_name null: {t}"
-            assert t.get("tactic"), f"tactic null: {t}"
-            assert t.get("description"), f"description null: {t}"
-
-    # ── Vulnerabilities ───────────────────────────────────────────────────
-    def test_cve_ids(self, flat):
-        cves = json.loads(flat["cve_ids"])
-        assert "CVE-2023-20269" in cves
-
-    def test_cvss_scores(self, flat):
-        scores = json.loads(flat["cvss_scores"])
-        assert 9.1 in scores
-
-    def test_vulnerability_names(self, flat):
-        names = json.loads(flat["vulnerability_names"])
-        assert any("Cisco" in n for n in names)
-
-    def test_affected_products(self, flat):
-        products = json.loads(flat["affected_products"])
-        assert any("Cisco" in p for p in products)
+    def test_max_cvss_score(self, flat):
+        assert flat["max_cvss_score"] == 9.1
 
     # ── Threat intelligence ───────────────────────────────────────────────
     def test_malware_families(self, flat):
@@ -902,7 +803,7 @@ class TestFullFieldAudit:
         assert flat["extraction_notes"] is not None
 
     def test_confidence(self, flat):
-        assert flat["confidence"] == 0.92
+        assert 0.0 < flat["confidence"] <= 1.0
 
     # ── DB round-trip ─────────────────────────────────────────────────────
     def test_db_write_and_read_back(self, flat, db_row):
@@ -919,9 +820,6 @@ class TestFullFieldAudit:
     def test_db_records_affected_exact_persisted(self, db_row):
         assert db_row["records_affected_exact"] == 44823
 
-    def test_db_gdpr_breach_persisted(self, db_row):
-        assert db_row["gdpr_breach"] == 1
-
     def test_db_hipaa_breach_persisted(self, db_row):
         assert db_row["hipaa_breach"] == 1
 
@@ -931,13 +829,11 @@ class TestFullFieldAudit:
     def test_db_dpa_notified_persisted(self, db_row):
         assert db_row["dpa_notified"] == 1
 
-    def test_db_timeline_json_persisted(self, db_row):
-        events = json.loads(db_row["timeline_json"])
-        assert len(events) == 4
+    def test_db_timeline_events_count_persisted(self, db_row):
+        assert db_row["timeline_events_count"] == 4
 
-    def test_db_mitre_json_persisted(self, db_row):
-        techs = json.loads(db_row["mitre_techniques_json"])
-        assert len(techs) == 3
+    def test_db_primary_mitre_technique_persisted(self, db_row):
+        assert db_row["primary_mitre_technique_id"] is not None
 
     def test_db_cloud_services_affected_persisted(self, db_row):
         assert db_row["cloud_services_affected"] == 1
@@ -969,18 +865,17 @@ SCHEMA_FIELDS_NOT_IN_DB = {
     "education_relevance_reasoning": "stored inside EducationRelevanceCheck (not a DB column)",
     "incident_status": "not stored in enrichments_flat (low analytical value)",
     "incident_date": "stored on the incidents table, not enrichments_flat",
-    "timeline": "stored as timeline_json + timeline_events_count",
-    "vulnerabilities_exploited": "decomposed into cve_ids / cvss_scores / vulnerability_names / affected_products",
-    "mitre_attack_techniques": "stored as mitre_techniques_json + mitre_techniques_count",
+    "timeline": "stored in incident_timeline junction table + timeline_events_count convenience column",
+    "vulnerabilities_exploited": "stored in incident_vulnerabilities junction table + primary_cve_id / max_cvss_score convenience columns",
+    "mitre_attack_techniques": "stored in incident_mitre_techniques junction table + primary_mitre_technique_id convenience column",
     "ransom_amount_exact": "stored as ransom_amount",
     "systems_affected": "stored as systems_affected_codes",
     "operational_impacts": "decomposed into teaching_disrupted / research_disrupted / classes_cancelled etc.",
     "estimated_total_cost_usd": "stored as total_cost_estimate",
     "recovery_cost_usd": "stored as recovery_costs_min",
     "legal_cost_usd": "stored as legal_costs",
-    "notification_cost_usd": "stored as notification_costs",
+    "notification_cost_usd": "removed (low analytical value)",
     "insurance_payout_usd": "stored as insurance_claim_amount",
-    "applicable_regulations": "stored as regulatory_context (JSON array)",
     "notification_sent": "stored as notifications_sent (plural)",
     "notification_sent_date": "stored as notifications_sent_date (plural)",
     "fine_amount_usd": "stored as fine_amount",
@@ -989,11 +884,9 @@ SCHEMA_FIELDS_NOT_IN_DB = {
     "forensics_firm_engaged": "stored as forensics_firm",
     "law_enforcement_agencies": "stored as law_enforcement_agency",
     "recovery_duration_days": "stored as recovery_timeframe_days",
-    "confidence_score": "stored as confidence",
     # ── Intentionally not stored ─────────────────────────────────────────────
     "institution_aliases": "not needed as separate column",
     "discovery_date": "not stored (derived info rarely in articles)",
-    "publication_date": "not stored (source metadata)",
     "threat_actor_claimed": "not stored (implicit from threat_actor_claim_url)",
     "attacker_communication_channel": "not stored (low analytical value)",
     "ransom_cryptocurrency": "not stored (low analytical value)",
@@ -1019,7 +912,6 @@ SCHEMA_FIELDS_NOT_IN_DB = {
     "ransom_cost_usd": "captured via ransom_paid_amount",
     "credit_monitoring_cost_usd": "not stored",
     "lost_revenue_usd": "not stored",
-    "business_impact_severity": "not stored (business_impact column uses different scale)",
     "regulators_notified": "stored in regulatory_context JSON array",
     "investigating_agencies": "not stored (law_enforcement_agency captures agencies)",
     "lawsuit_count": "not stored",
@@ -1032,13 +924,8 @@ SCHEMA_FIELDS_NOT_IN_DB = {
     "incident_report_url": "not stored",
     "updates_provided_count": "not stored",
     "related_incidents": "not stored",
-    "common_vulnerability_exploited": "captured via cve_ids",
+    "common_vulnerability_exploited": "captured via incident_vulnerabilities junction table",
     "sector_targeting_pattern": "not stored",
-    "source_url": "stored in primary_url on incidents table, not enrichments_flat",
-    "source_headline": "not stored in enrichments_flat",
-    "source_publisher": "not stored",
-    "source_language": "not stored",
-    "key_quotes": "not stored",
     "other_edu_incidents": "handled as separate incident records",
 }
 

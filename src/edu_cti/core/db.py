@@ -232,6 +232,9 @@ def init_db(conn: sqlite3.Connection) -> None:
             llm_timeline         TEXT,
             llm_mitre_attack     TEXT,
             llm_attack_dynamics   TEXT,
+            llm_excluded         INTEGER DEFAULT 0,
+            llm_excluded_reason  TEXT,
+            discovery_date       TEXT,
 
             -- SERP discovery tracking (Oxylabs Google News search)
             -- Prevents re-spending credits on the same failed search each restart.
@@ -295,153 +298,6 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);
         """
     )
-
-    # Retire dormant experimental tables from older schemas. These were never
-    # wired into the live pipeline and keeping them around causes drift.
-    for legacy_table in (
-        "ioc_enrichments",
-        "incident_iocs",
-        "incident_threat_actors",
-        "iocs",
-        "threat_actors",
-        "translations",
-        "source_health",
-    ):
-        try:
-            conn.execute(f"DROP TABLE IF EXISTS {legacy_table}")
-        except sqlite3.Error as e:
-            logging.getLogger(__name__).debug(
-                "Legacy table cleanup skipped for %s: %s", legacy_table, e
-            )
-    
-    # Migration: Rename university_name → institution_name (SQLite 3.25+)
-    try:
-        cur = conn.execute("PRAGMA table_info(incidents)")
-        columns = [row[1] for row in cur.fetchall()]
-        if "university_name" in columns and "institution_name" not in columns:
-            conn.execute("ALTER TABLE incidents RENAME COLUMN university_name TO institution_name")
-            conn.commit()
-            import logging
-            logging.getLogger(__name__).info("Renamed incidents.university_name → institution_name (migration)")
-    except sqlite3.Error as e:
-        import logging
-        logging.getLogger(__name__).debug(f"Migration rename university_name: {e}")
-
-    # Migration: Add broken_urls column if it doesn't exist (for existing databases)
-    try:
-        cur = conn.execute("PRAGMA table_info(incidents)")
-        columns = [row[1] for row in cur.fetchall()]
-        if "broken_urls" not in columns:
-            conn.execute("ALTER TABLE incidents ADD COLUMN broken_urls TEXT")
-            conn.commit()
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info("Added broken_urls column to incidents table (migration)")
-    except sqlite3.Error as e:
-        # If migration fails, log but don't fail (column might already exist)
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.debug(f"Migration check for broken_urls column: {e}")
-    
-    # Migration: Add country_code column if it doesn't exist (for existing databases)
-    try:
-        cur = conn.execute("PRAGMA table_info(incidents)")
-        columns = [row[1] for row in cur.fetchall()]
-        if "country_code" not in columns:
-            conn.execute("ALTER TABLE incidents ADD COLUMN country_code TEXT")
-            conn.commit()
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info("Added country_code column to incidents table (migration)")
-    except sqlite3.Error as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.debug(f"Migration check for country_code column: {e}")
-
-    # Migration: Add serp_attempt_count column if it doesn't exist
-    try:
-        cur = conn.execute("PRAGMA table_info(incidents)")
-        columns = [row[1] for row in cur.fetchall()]
-        if "serp_attempt_count" not in columns:
-            conn.execute(
-                "ALTER TABLE incidents ADD COLUMN serp_attempt_count INTEGER DEFAULT 0"
-            )
-            conn.commit()
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info("Added serp_attempt_count column to incidents table (migration)")
-    except sqlite3.Error as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.debug(f"Migration check for serp_attempt_count column: {e}")
-
-    # Migration: Add llm_excluded columns for soft-delete support.
-    # Previously, incidents classified as "not education-related" were hard-deleted.
-    # Now we keep them as soft-deleted rows so they can be reviewed / re-enriched
-    # with corrected articles without losing the original ingestion metadata.
-    try:
-        cur = conn.execute("PRAGMA table_info(incidents)")
-        columns = [row[1] for row in cur.fetchall()]
-        if "llm_excluded" not in columns:
-            conn.execute(
-                "ALTER TABLE incidents ADD COLUMN llm_excluded INTEGER DEFAULT 0"
-            )
-            conn.execute(
-                "ALTER TABLE incidents ADD COLUMN llm_excluded_reason TEXT"
-            )
-            conn.commit()
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.info("Added llm_excluded columns to incidents table (migration)")
-    except sqlite3.Error as e:
-        import logging
-        logger = logging.getLogger(__name__)
-        logger.debug(f"Migration check for llm_excluded column: {e}")
-
-    # Migration: Add discovery_date column (LLM-extracted date incident was discovered).
-    try:
-        cur = conn.execute("PRAGMA table_info(incidents)")
-        columns = [row[1] for row in cur.fetchall()]
-        if "discovery_date" not in columns:
-            conn.execute("ALTER TABLE incidents ADD COLUMN discovery_date TEXT")
-            conn.commit()
-            import logging
-            logging.getLogger(__name__).info("Added discovery_date column to incidents table (migration)")
-    except Exception:
-        pass
-
-    # Migration: Backfill data_breached=1 for enriched incidents where the LLM omitted
-    # the boolean but attack_category or data signals clearly imply a breach.
-    # Safe to run on every startup — only touches rows where data_breached IS NULL.
-    try:
-        _breach_cats = (
-            "'data_breach_external'", "'data_breach_internal'",
-            "'data_exposure_misconfiguration'", "'data_leak_accidental'",
-            "'ransomware_double_extortion'", "'ransomware_triple_extortion'",
-            "'ransomware_data_leak_only'",
-        )
-        _breach_cats_sql = ", ".join(_breach_cats)
-        # Check if incident_enrichments_flat table exists before running
-        cur = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='incident_enrichments_flat'"
-        )
-        if cur.fetchone():
-            conn.execute(f"""
-                UPDATE incident_enrichments_flat
-                SET data_breached = 1
-                WHERE data_breached IS NULL
-                  AND is_education_related = 1
-                  AND (
-                    attack_category IN ({_breach_cats_sql})
-                    OR data_exfiltrated = 1
-                    OR data_categories IS NOT NULL
-                    OR records_affected_exact IS NOT NULL
-                    OR records_affected_min IS NOT NULL
-                  )
-            """)
-            conn.commit()
-    except Exception:
-        pass
 
     conn.commit()
 
@@ -962,4 +818,3 @@ def get_incident_sources(
         (incident_id,),
     )
     return [dict(row) for row in cur.fetchall()]
-

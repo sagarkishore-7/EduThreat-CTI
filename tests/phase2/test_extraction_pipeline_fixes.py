@@ -91,12 +91,6 @@ def temp_db(tmp_path):
     init_db(conn)
     init_incident_enrichments_table(conn)
     init_articles_table(conn)
-    # Ensure discovery_date column exists (migration may not have run yet)
-    cur = conn.execute("PRAGMA table_info(incidents)")
-    cols = [r[1] for r in cur.fetchall()]
-    if "discovery_date" not in cols:
-        conn.execute("ALTER TABLE incidents ADD COLUMN discovery_date TEXT")
-        conn.commit()
     yield conn
     conn.close()
 
@@ -168,15 +162,14 @@ class TestExtractionSchemaPatterns:
         assert "pattern" not in tid
 
     def test_date_fields_have_no_pattern(self):
-        for field in ("incident_date", "discovery_date", "publication_date"):
+        for field in ("incident_date", "discovery_date"):
             prop = EXTRACTION_SCHEMA["properties"][field]
             assert "pattern" not in prop, (
                 f"Field '{field}' still has a pattern constraint."
             )
 
-    def test_country_code_has_no_pattern(self):
-        prop = EXTRACTION_SCHEMA["properties"]["country_code"]
-        assert "pattern" not in prop
+    def test_country_code_removed_from_prompt_schema(self):
+        assert "country_code" not in EXTRACTION_SCHEMA["properties"]
 
     def test_cve_id_has_no_pattern(self):
         vuln_items = (
@@ -479,7 +472,7 @@ class TestDiscoveryDatePersistence:
         cols = [r[1] for r in cur.fetchall()]
         assert "discovery_date" in cols, (
             "incidents table is missing the discovery_date column. "
-            "Run init_db() to apply the migration."
+            "The fresh-schema bootstrap should create it directly."
         )
 
     def test_discovery_date_written_on_save(self, temp_db, sample_incident):

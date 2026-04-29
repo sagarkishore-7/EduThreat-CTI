@@ -65,18 +65,17 @@ _COMPLETENESS_FIELDS = [
     "attack_category", "institution_name", "institution_type",
     "incident_date", "country", "ransomware_family",
     "threat_actor_name", "attack_vector", "records_affected_exact",
-    "confidence_score",
 ]
 
 # All fields tracked for per-field fill-rate metrics
 _TRACKED_FIELDS = [
-    "institution_name", "institution_type", "institution_size", "country", "region",
+    "institution_name", "institution_type", "country", "region",
     "incident_date", "attack_category", "attack_vector", "ransomware_family",
     "threat_actor_name", "threat_actor_category", "threat_actor_motivation",
     "threat_actor_origin_country", "records_affected_exact", "users_affected_exact",
     "was_ransom_demanded", "ransom_amount", "ransom_paid",
     "data_breached", "data_exfiltrated", "dwell_time_days", "recovery_duration_days",
-    "mitre_attack_techniques", "timeline", "cve_ids", "confidence_score",
+    "mitre_attack_techniques", "timeline", "cve_ids",
     "enriched_summary", "malware_families", "attacker_tools",
 ]
 

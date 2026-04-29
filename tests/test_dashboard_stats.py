@@ -138,7 +138,7 @@ def test_threat_actor_and_impact_analytics_exclude_orphan_rows(temp_db):
     conn.execute(
         """
         INSERT INTO incident_enrichments
-        (incident_id, enrichment_data, created_at, updated_at)
+        (incident_id, final_enrichment_json, created_at, updated_at)
         VALUES (?, ?, ?, ?)
         """,
         (
@@ -162,7 +162,7 @@ def test_threat_actor_and_impact_analytics_exclude_orphan_rows(temp_db):
     conn.execute(
         """
         INSERT INTO incident_enrichments
-        (incident_id, enrichment_data, created_at, updated_at)
+        (incident_id, final_enrichment_json, created_at, updated_at)
         VALUES (?, ?, ?, ?)
         """,
         (

@@ -30,6 +30,8 @@ from src.edu_cti.core.config import DB_PATH, SERP_MAX_ATTEMPTS
 logger = logging.getLogger(__name__)
 
 _EXTRACTION_SCHEMA_FIELDS = tuple(EXTRACTION_SCHEMA["properties"].keys())
+_STORAGE_DEBUG_KEY = "_storage_debug"
+_ENRICHMENT_STORAGE_VERSION = "3.0"
 
 
 def _first_present(*values: Any) -> Any:
@@ -45,22 +47,109 @@ def _first_present(*values: Any) -> Any:
     return None
 
 
-def _build_enrichment_storage_record(
-    enrichment_result: CTIEnrichmentResult,
-    raw_json_data: Optional[Dict[str, Any]] = None,
-) -> str:
-    """Persist both the typed enrichment result and the raw schema payload with explicit nulls."""
-    record = enrichment_result.model_dump(mode="json", exclude_none=False)
-    raw_snapshot = {field: None for field in _EXTRACTION_SCHEMA_FIELDS}
+def _extract_storage_debug(raw_json_data: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Return internal debug metadata attached by the enrichment layer."""
+    if not raw_json_data or not isinstance(raw_json_data, dict):
+        return {}
+    debug = raw_json_data.get(_STORAGE_DEBUG_KEY)
+    return debug if isinstance(debug, dict) else {}
 
+
+def _strip_storage_debug(raw_json_data: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Remove internal debug metadata before schema/raw-field processing."""
+    if raw_json_data is None:
+        return None
+    if not isinstance(raw_json_data, dict):
+        return raw_json_data
+    return {
+        key: value
+        for key, value in raw_json_data.items()
+        if key != _STORAGE_DEBUG_KEY
+    }
+
+
+def _build_raw_extraction_snapshot(raw_json_data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Build a schema-shaped raw extraction snapshot with explicit nulls."""
+    raw_snapshot = {field: None for field in _EXTRACTION_SCHEMA_FIELDS}
     if raw_json_data:
         for field in _EXTRACTION_SCHEMA_FIELDS:
             if field in raw_json_data:
                 raw_snapshot[field] = raw_json_data[field]
+    return raw_snapshot
 
-    record.update(raw_snapshot)
-    record["raw_extraction"] = raw_snapshot
-    return json.dumps(record, indent=2)
+
+def _extract_typed_enrichment_dict(final_payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Support both wrapped final payloads and bare typed-enrichment JSON."""
+    typed = final_payload.get("typed_enrichment")
+    return typed if isinstance(typed, dict) else final_payload
+
+
+def _build_final_enrichment_record(
+    enrichment_result: CTIEnrichmentResult,
+    raw_snapshot: Dict[str, Any],
+    flat_data: Dict[str, Any],
+    storage_debug: Dict[str, Any],
+) -> str:
+    """Persist the canonical post-processed enrichment record for analytics/debugging."""
+    metadata = storage_debug.get("llm_metadata")
+    final_record = {
+        "storage_version": _ENRICHMENT_STORAGE_VERSION,
+        "typed_enrichment": enrichment_result.model_dump(mode="json", exclude_none=False),
+        "raw_extraction": raw_snapshot,
+        "analytics_projection": flat_data,
+        "llm_metadata": metadata if isinstance(metadata, dict) else None,
+    }
+    return json.dumps(final_record, indent=2)
+
+
+def _derive_extraction_confidence(
+    enrichment_result: CTIEnrichmentResult,
+    raw_json_data: Optional[Dict[str, Any]] = None,
+) -> Optional[float]:
+    """Derive a stable confidence score from core field completeness when the LLM does not provide one."""
+    raw = raw_json_data or {}
+
+    def _present(value: Any) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, str):
+            return value.strip() != ""
+        if isinstance(value, (list, dict, tuple, set)):
+            return len(value) > 0
+        return True
+
+    signals = [
+        _present(raw.get("institution_name"))
+        or _present(enrichment_result.education_relevance.institution_identified if enrichment_result.education_relevance else None),
+        _present(raw.get("institution_type")),
+        _present(raw.get("country")),
+        _present(raw.get("incident_date")),
+        _present(raw.get("attack_category")),
+        _present(raw.get("attack_vector"))
+        or _present(enrichment_result.attack_dynamics.attack_vector if enrichment_result.attack_dynamics else None),
+        _present(raw.get("ransomware_family"))
+        or _present(raw.get("threat_actor_name"))
+        or _present(enrichment_result.attack_dynamics.ransomware_family if enrichment_result.attack_dynamics else None),
+        _present(raw.get("records_affected_exact"))
+        or _present(raw.get("pii_records_leaked"))
+        or _present(raw.get("users_affected_exact")),
+        bool(enrichment_result.timeline),
+        bool(enrichment_result.mitre_attack_techniques),
+        _present(enrichment_result.enriched_summary),
+    ]
+
+    if not signals:
+        return None
+
+    return round(sum(1 for present in signals if present) / len(signals), 2)
+
+
+def _metadata_value(storage_debug: Dict[str, Any], key: str) -> Optional[str]:
+    meta = storage_debug.get("llm_metadata")
+    if not isinstance(meta, dict):
+        return None
+    value = meta.get(key)
+    return str(value) if value is not None else None
 
 _COUNTRY_TEXT_PATTERNS = tuple(
     (
@@ -193,24 +282,70 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
     Initialize the incident_enrichments table with optimized structure.
     
     This table stores:
-    1. Full JSON data for complete record (enrichment_data)
+    1. Canonical debug/reprocessing layers in incident_enrichments
     2. Flattened key fields as columns for fast queries and CSV export
     
     Args:
         conn: Database connection
     """
-    # Create main enrichment table with JSON backup
+    # Create main enrichment table with canonical artifact layers
     conn.execute(
         """
         CREATE TABLE IF NOT EXISTS incident_enrichments (
             incident_id TEXT PRIMARY KEY,
-            enrichment_data TEXT NOT NULL,
-            enrichment_version TEXT DEFAULT '2.0',
+            raw_response_payload TEXT,
+            raw_extraction_json TEXT,
+            final_enrichment_json TEXT,
+            storage_metadata TEXT,
+            enrichment_version TEXT DEFAULT '3.0',
             enrichment_confidence REAL,
+            llm_provider TEXT,
+            llm_model TEXT,
+            extraction_mode TEXT,
+            prompt_version TEXT,
+            schema_version TEXT,
+            mapper_version TEXT,
+            post_processing_version TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             FOREIGN KEY (incident_id) REFERENCES incidents(incident_id) ON DELETE CASCADE
         )
+        """
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS incident_enrichment_runs (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            incident_id TEXT NOT NULL,
+            raw_response_payload TEXT,
+            raw_extraction_json TEXT,
+            final_enrichment_json TEXT,
+            storage_metadata TEXT,
+            enrichment_version TEXT DEFAULT '3.0',
+            enrichment_confidence REAL,
+            llm_provider TEXT,
+            llm_model TEXT,
+            extraction_mode TEXT,
+            prompt_version TEXT,
+            schema_version TEXT,
+            mapper_version TEXT,
+            post_processing_version TEXT,
+            created_at TEXT NOT NULL,
+            FOREIGN KEY (incident_id) REFERENCES incidents(incident_id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_enrichment_runs_incident
+        ON incident_enrichment_runs(incident_id)
+        """
+    )
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_enrichment_runs_created
+        ON incident_enrichment_runs(created_at)
         """
     )
     
@@ -306,7 +441,6 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             ransom_amount_min REAL,
             ransom_amount_max REAL,
             legal_costs REAL,
-            notification_costs REAL,
             insurance_claim INTEGER,
             insurance_claim_amount REAL,
             business_impact TEXT,
@@ -340,34 +474,30 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             disclosure_delay_days REAL,
             transparency_level TEXT,
             
-            -- Timeline & MITRE (stored as JSON for complex structures)
-            timeline_json TEXT,
-            timeline_events_count INTEGER,
-            mitre_techniques_json TEXT,
-            mitre_techniques_count INTEGER,
+            -- Vulnerability convenience columns (full data in incident_vulnerabilities table)
+            primary_cve_id TEXT,             -- highest-CVSS CVE from the list
+            max_cvss_score REAL,             -- highest CVSS score across all exploited CVEs
 
-            -- Threat Intelligence (new)
+            -- MITRE convenience column (full data in incident_mitre_techniques table)
+            primary_mitre_technique_id TEXT, -- first technique_id from the list
+
+            -- Timeline convenience column (full data in incident_timeline table)
+            timeline_events_count INTEGER,   -- count of extracted timeline events
+
+            -- Threat Intelligence
             malware_families TEXT,           -- JSON array
             attacker_tools TEXT,             -- JSON array
             threat_actor_aliases TEXT,       -- JSON array
             attack_campaign_name TEXT,
             cloud_provider TEXT,
-            infrastructure_type TEXT,
             dwell_time_days REAL,
             mttd_hours REAL,
             mttr_hours REAL,
-
-            -- Vulnerabilities (new)
-            cve_ids TEXT,                    -- JSON array of CVE IDs
-            cvss_scores TEXT,                -- JSON array of CVSS scores (REAL)
-            vulnerability_names TEXT,        -- JSON array
-            affected_products TEXT,          -- JSON array
 
             -- Financial (additional)
             total_cost_estimate REAL,
 
             -- Operational (additional)
-            partial_service_days REAL,
             clinical_operations_disrupted INTEGER,
             graduation_delayed INTEGER,
             online_learning_disrupted INTEGER,
@@ -400,6 +530,12 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             incident_date_precision TEXT,      -- exact / approximate / month_only / year_only / unknown
             encryption_extent TEXT,            -- full_encryption / partial_encryption / no_encryption / unknown
             disclosure_source TEXT,            -- institution_statement / media_report / attacker_leak_site / etc.
+
+            -- Education-specific context (new)
+            academic_period_affected TEXT,      -- start_of_semester / finals_week / enrollment_period / etc.
+            dark_web_posting_confirmed INTEGER, -- confirmed posting on leak site/dark web
+            prior_breach_same_institution INTEGER, -- institution was previously breached
+            notification_delay_days INTEGER,    -- days from discovery to victim notification
 
             -- Summary
             enriched_summary TEXT,
@@ -474,109 +610,6 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         """
     )
 
-    # Add columns to existing tables if they don't exist (migration)
-    for col, col_type in [
-        ("country_code", "TEXT"), ("enriched_at", "TEXT"), ("skip_reason", "TEXT"),
-        ("data_categories", "TEXT"),
-        ("incident_severity", "TEXT"), ("institution_size", "TEXT"),
-        ("access_vector", "TEXT"),
-        ("threat_actor_category", "TEXT"), ("threat_actor_motivation", "TEXT"),
-        ("threat_actor_origin_country", "TEXT"),
-        # Threat intelligence
-        ("malware_families", "TEXT"),
-        ("attacker_tools", "TEXT"),
-        ("threat_actor_aliases", "TEXT"),
-        ("attack_campaign_name", "TEXT"),
-        ("cloud_provider", "TEXT"),
-        ("infrastructure_type", "TEXT"),
-        ("dwell_time_days", "REAL"),
-        ("mttd_hours", "REAL"),
-        ("mttr_hours", "REAL"),
-        # Vulnerabilities
-        ("cve_ids", "TEXT"),
-        ("cvss_scores", "TEXT"),
-        ("vulnerability_names", "TEXT"),
-        ("affected_products", "TEXT"),
-        # Financial
-        ("total_cost_estimate", "REAL"),
-        # Operational
-        ("partial_service_days", "REAL"),
-        ("clinical_operations_disrupted", "INTEGER"),
-        ("graduation_delayed", "INTEGER"),
-        ("online_learning_disrupted", "INTEGER"),
-        # Recovery
-        ("backup_status", "TEXT"),
-        ("backup_age_days", "REAL"),
-        ("law_enforcement_involved", "INTEGER"),
-        ("law_enforcement_agency", "TEXT"),
-        # Transparency
-        ("official_statement_url", "TEXT"),
-        # Research impact
-        ("research_projects_affected", "INTEGER"),
-        ("research_data_compromised", "INTEGER"),
-        ("publications_delayed", "INTEGER"),
-        ("grants_affected", "INTEGER"),
-        ("research_area", "TEXT"),
-        # Regulatory
-        ("regulatory_context", "TEXT"),
-        # Data
-        ("data_volume_gb", "REAL"),
-        # Attack classification (additional)
-        ("secondary_attack_categories", "TEXT"),
-        ("attack_chain", "TEXT"),
-        ("incident_date_precision", "TEXT"),
-        ("encryption_extent", "TEXT"),
-        ("disclosure_source", "TEXT"),
-        # User impact (extended demographics)
-        ("alumni_affected", "INTEGER"),
-        ("parents_affected", "INTEGER"),
-        ("applicants_affected", "INTEGER"),
-        ("patients_affected", "INTEGER"),
-        # Financial (range fields)
-        ("ransom_amount_min", "REAL"),
-        ("ransom_amount_max", "REAL"),
-        # Regulatory (extended)
-        ("notifications_sent_date", "TEXT"),
-        ("dpa_notified", "INTEGER"),
-        ("investigation_opened", "INTEGER"),
-    ]:
-        try:
-            conn.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {col_type}")
-        except sqlite3.OperationalError:
-            pass  # Column already exists
-
-    existing_columns = {
-        row[1] for row in conn.execute("PRAGMA table_info(incident_enrichments_flat)").fetchall()
-    }
-    if "access_vector" in existing_columns:
-        if "initial_access_vector" in existing_columns:
-            conn.execute(
-                """
-                UPDATE incident_enrichments_flat
-                SET access_vector = COALESCE(NULLIF(access_vector, ''), NULLIF(initial_access_vector, ''), NULLIF(attack_vector, ''))
-                WHERE access_vector IS NULL OR access_vector = ''
-                """
-            )
-        else:
-            conn.execute(
-                """
-                UPDATE incident_enrichments_flat
-                SET access_vector = attack_vector
-                WHERE (access_vector IS NULL OR access_vector = '')
-                  AND attack_vector IS NOT NULL
-                  AND attack_vector != ''
-                """
-            )
-        for legacy_column in ("initial_access_vector", "detection_source"):
-            if legacy_column in existing_columns:
-                try:
-                    conn.execute(
-                        f"ALTER TABLE incident_enrichments_flat DROP COLUMN {legacy_column}"
-                    )
-                except sqlite3.OperationalError:
-                    # Older SQLite builds may not support DROP COLUMN; harmless to keep legacy columns then.
-                    pass
-
     # Checkpoint table — tracks which incidents have had articles fetched so
     # a crashed pipeline resumes without re-fetching already-processed URLs.
     conn.execute(
@@ -587,6 +620,76 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             completed_at TEXT NOT NULL
         )
         """
+    )
+
+    # ── Junction tables for structured multi-value CTI fields ────────────────
+    # Each row is one item; parent incident linked via incident_id FK.
+    # DELETE + re-insert on re-enrichment keeps data consistent.
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS incident_vulnerabilities (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            incident_id         TEXT NOT NULL,
+            cve_id              TEXT,
+            vulnerability_name  TEXT,
+            affected_product    TEXT,
+            cvss_score          REAL,
+            exploit_in_wild     INTEGER,
+            patch_available     INTEGER,
+            FOREIGN KEY (incident_id) REFERENCES incidents(incident_id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_vulns_incident ON incident_vulnerabilities(incident_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_vulns_cve ON incident_vulnerabilities(cve_id)"
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS incident_mitre_techniques (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            incident_id     TEXT NOT NULL,
+            seq_order       INTEGER NOT NULL DEFAULT 0,
+            technique_id    TEXT,
+            technique_name  TEXT,
+            tactic          TEXT,
+            description     TEXT,
+            sub_techniques  TEXT,   -- JSON array of sub-technique IDs
+            FOREIGN KEY (incident_id) REFERENCES incidents(incident_id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mitre_incident ON incident_mitre_techniques(incident_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_mitre_technique ON incident_mitre_techniques(technique_id)"
+    )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS incident_timeline (
+            id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+            incident_id         TEXT NOT NULL,
+            seq_order           INTEGER NOT NULL DEFAULT 0,
+            event_date          TEXT,
+            date_precision      TEXT,
+            event_type          TEXT,
+            event_description   TEXT,
+            actor_attribution   TEXT,
+            FOREIGN KEY (incident_id) REFERENCES incidents(incident_id) ON DELETE CASCADE
+        )
+        """
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_timeline_incident ON incident_timeline(incident_id)"
+    )
+    conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_timeline_type ON incident_timeline(event_type)"
     )
 
     conn.commit()
@@ -719,6 +822,140 @@ def _get_primary_article_metadata(
         "publish_date": row["publish_date"],
     }
 
+
+# ── Junction-table helper utilities ──────────────────────────────────────────
+
+def _normalize_vuln_list(raw: Any) -> list:
+    """Coerce vulnerabilities_exploited to a plain list of dicts."""
+    if not raw:
+        return []
+    items = [v.model_dump() if hasattr(v, "model_dump") else v for v in raw]
+    return [v for v in items if isinstance(v, dict)]
+
+
+def _vuln_convenience(raw: Any) -> dict:
+    """Return primary_cve_id and max_cvss_score for the flat table."""
+    vulns = _normalize_vuln_list(raw)
+    if not vulns:
+        return {"primary_cve_id": None, "max_cvss_score": None}
+    scored = sorted(
+        [v for v in vulns if v.get("cvss_score") is not None],
+        key=lambda v: v["cvss_score"],
+        reverse=True,
+    )
+    top = scored[0] if scored else vulns[0]
+    return {
+        "primary_cve_id": top.get("cve_id"),
+        "max_cvss_score": top.get("cvss_score"),
+    }
+
+
+def _normalize_mitre_list(raw: Any) -> list:
+    """Coerce mitre_attack_techniques to a plain list of dicts."""
+    if not raw:
+        return []
+    items = [t.model_dump() if hasattr(t, "model_dump") else t for t in raw]
+    return [t for t in items if isinstance(t, dict)]
+
+
+def _primary_mitre_id(raw: Any) -> Optional[str]:
+    techniques = _normalize_mitre_list(raw)
+    if not techniques:
+        return None
+    return techniques[0].get("technique_id")
+
+
+def _normalize_timeline_list(raw: Any) -> list:
+    """Coerce timeline to a plain list of dicts."""
+    if not raw:
+        return []
+    items = [e.model_dump() if hasattr(e, "model_dump") else e for e in raw]
+    return [e for e in items if isinstance(e, dict)]
+
+
+# ── Junction-table save helpers ───────────────────────────────────────────────
+
+def _save_incident_vulnerabilities(
+    conn: sqlite3.Connection, incident_id: str, raw: Any
+) -> None:
+    """Upsert vulnerability rows into incident_vulnerabilities."""
+    conn.execute(
+        "DELETE FROM incident_vulnerabilities WHERE incident_id = ?", [incident_id]
+    )
+    for v in _normalize_vuln_list(raw):
+        conn.execute(
+            """
+            INSERT INTO incident_vulnerabilities
+                (incident_id, cve_id, vulnerability_name, affected_product,
+                 cvss_score, exploit_in_wild, patch_available)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            [
+                incident_id,
+                v.get("cve_id"),
+                v.get("vulnerability_name"),
+                v.get("affected_product"),
+                v.get("cvss_score"),
+                int(bool(v.get("exploit_in_wild"))) if v.get("exploit_in_wild") is not None else None,
+                int(bool(v.get("patch_available"))) if v.get("patch_available") is not None else None,
+            ],
+        )
+
+
+def _save_incident_mitre_techniques(
+    conn: sqlite3.Connection, incident_id: str, raw: Any
+) -> None:
+    """Upsert MITRE ATT&CK technique rows into incident_mitre_techniques."""
+    conn.execute(
+        "DELETE FROM incident_mitre_techniques WHERE incident_id = ?", [incident_id]
+    )
+    for i, t in enumerate(_normalize_mitre_list(raw)):
+        sub = json.dumps(t["sub_techniques"]) if t.get("sub_techniques") else None
+        conn.execute(
+            """
+            INSERT INTO incident_mitre_techniques
+                (incident_id, seq_order, technique_id, technique_name,
+                 tactic, description, sub_techniques)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            [
+                incident_id, i,
+                t.get("technique_id"),
+                t.get("technique_name"),
+                t.get("tactic"),
+                t.get("description"),
+                sub,
+            ],
+        )
+
+
+def _save_incident_timeline(
+    conn: sqlite3.Connection, incident_id: str, raw: Any
+) -> None:
+    """Upsert timeline event rows into incident_timeline."""
+    conn.execute(
+        "DELETE FROM incident_timeline WHERE incident_id = ?", [incident_id]
+    )
+    for i, e in enumerate(_normalize_timeline_list(raw)):
+        conn.execute(
+            """
+            INSERT INTO incident_timeline
+                (incident_id, seq_order, event_date, date_precision,
+                 event_type, event_description, actor_attribution)
+            VALUES (?,?,?,?,?,?,?)
+            """,
+            [
+                incident_id, i,
+                e.get("date"),
+                e.get("date_precision"),
+                e.get("event_type"),
+                e.get("event_description"),
+                e.get("actor_attribution"),
+            ],
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _flatten_enrichment_for_db(
     enrichment: CTIEnrichmentResult,
@@ -938,11 +1175,6 @@ def _flatten_enrichment_for_db(
             raw_get("legal_cost_usd"),
             enrichment.financial_impact.get("legal_costs") if enrichment.financial_impact else None,
         ),
-        'notification_costs': _first_present(
-            raw_get("notification_costs"),
-            raw_get("notification_cost_usd"),
-            enrichment.financial_impact.get("notification_costs") if enrichment.financial_impact else None,
-        ),
         'insurance_claim': raw_get("insurance_claim") if raw_get("insurance_claim") is not None else (enrichment.financial_impact.get("insurance_claim") if enrichment.financial_impact else None),
         'insurance_claim_amount': _first_present(
             raw_get("insurance_claim_amount"),
@@ -1050,11 +1282,25 @@ def _flatten_enrichment_for_db(
         'disclosure_delay_days': raw_get("disclosure_delay_days") or (enrichment.transparency_metrics.get("disclosure_delay_days") if enrichment.transparency_metrics else None),
         'transparency_level': raw_get("transparency_level") or (enrichment.transparency_metrics.get("transparency_level") if enrichment.transparency_metrics else None),
         
-        # Timeline and MITRE - prefer from enrichment result (properly parsed)
-        'timeline_json': json.dumps([e.model_dump() for e in enrichment.timeline]) if enrichment.timeline else (json.dumps(raw_get("timeline")) if raw_get("timeline") else None),
-        'timeline_events_count': len(enrichment.timeline) if enrichment.timeline else (len(raw_get("timeline", [])) if raw_get("timeline") else 0),
-        'mitre_techniques_json': json.dumps([t.model_dump() for t in enrichment.mitre_attack_techniques]) if enrichment.mitre_attack_techniques else (json.dumps(raw_get("mitre_attack_techniques")) if raw_get("mitre_attack_techniques") else None),
-        'mitre_techniques_count': len(enrichment.mitre_attack_techniques) if enrichment.mitre_attack_techniques else (len(raw_get("mitre_attack_techniques", [])) if raw_get("mitre_attack_techniques") else 0),
+        # Timeline convenience: full data stored in incident_timeline junction table
+        'timeline_events_count': (
+            len(enrichment.timeline) if enrichment.timeline
+            else len(raw_get("timeline") or [])
+        ),
+
+        # Vulnerability convenience columns: full data in incident_vulnerabilities junction table
+        **_vuln_convenience(
+            enrichment.vulnerabilities_exploited
+            if isinstance(enrichment.vulnerabilities_exploited, list)
+            else raw_get("vulnerabilities_exploited")
+        ),
+
+        # MITRE convenience: full data stored in incident_mitre_techniques junction table
+        'primary_mitre_technique_id': _primary_mitre_id(
+            enrichment.mitre_attack_techniques
+            if isinstance(enrichment.mitre_attack_techniques, list)
+            else raw_get("mitre_attack_techniques")
+        ),
 
         # Threat intelligence (new fields)
         # Use isinstance guards so MagicMock stubs in tests don't reach json.dumps
@@ -1079,37 +1325,17 @@ def _flatten_enrichment_for_db(
         'cloud_provider': (enrichment.cloud_provider
                            if isinstance(enrichment.cloud_provider, str)
                            else None) or raw_get("cloud_provider"),
-        'infrastructure_type': (enrichment.infrastructure_type
-                                 if isinstance(enrichment.infrastructure_type, str)
-                                 else None) or raw_get("infrastructure_type"),
         'dwell_time_days': (enrichment.dwell_time_days
                             if isinstance(enrichment.dwell_time_days, (int, float))
                             else None) or raw_get("dwell_time_days"),
         'mttd_hours': raw_get("mttd_hours") or (enrichment.recovery_metrics.get("mttd_hours") if isinstance(enrichment.recovery_metrics, dict) else None),
         'mttr_hours': raw_get("mttr_hours") or (enrichment.recovery_metrics.get("mttr_hours") if isinstance(enrichment.recovery_metrics, dict) else None),
 
-        # Vulnerabilities (new fields — flattened from vulnerabilities_exploited list)
-        'cve_ids': (json.dumps([v["cve_id"] for v in enrichment.vulnerabilities_exploited if isinstance(v, dict) and v.get("cve_id")])
-                    if isinstance(enrichment.vulnerabilities_exploited, list) and enrichment.vulnerabilities_exploited
-                    else (json.dumps([v.get("cve_id") for v in raw_get("vulnerabilities_exploited", []) if isinstance(v, dict) and v.get("cve_id")])
-                          if isinstance(raw_get("vulnerabilities_exploited"), list) and raw_get("vulnerabilities_exploited")
-                          else None)),
-        'cvss_scores': (json.dumps([v["cvss_score"] for v in enrichment.vulnerabilities_exploited if isinstance(v, dict) and v.get("cvss_score") is not None])
-                        if isinstance(enrichment.vulnerabilities_exploited, list) and enrichment.vulnerabilities_exploited
-                        else None),
-        'vulnerability_names': (json.dumps([v["vulnerability_name"] for v in enrichment.vulnerabilities_exploited if isinstance(v, dict) and v.get("vulnerability_name")])
-                                 if isinstance(enrichment.vulnerabilities_exploited, list) and enrichment.vulnerabilities_exploited
-                                 else None),
-        'affected_products': (json.dumps([v["affected_product"] for v in enrichment.vulnerabilities_exploited if isinstance(v, dict) and v.get("affected_product")])
-                               if isinstance(enrichment.vulnerabilities_exploited, list) and enrichment.vulnerabilities_exploited
-                               else None),
-
         # Financial (additional)
         'total_cost_estimate': (raw_get("currency_normalized_cost_usd") or raw_get("estimated_total_cost_usd")
                                 or (enrichment.financial_impact.get("total_cost_estimate") if enrichment.financial_impact else None)),
 
         # Operational (additional)
-        'partial_service_days': raw_get("partial_service_days") or (enrichment.operational_impact_metrics.get("partial_service_days") if enrichment.operational_impact_metrics else None),
         'clinical_operations_disrupted': raw_get("clinical_operations_disrupted") if raw_get("clinical_operations_disrupted") is not None else (enrichment.operational_impact_metrics.get("clinical_operations_disrupted") if enrichment.operational_impact_metrics else None),
         'graduation_delayed': raw_get("graduation_delayed") if raw_get("graduation_delayed") is not None else (enrichment.operational_impact_metrics.get("graduation_delayed") if enrichment.operational_impact_metrics else None),
         'online_learning_disrupted': raw_get("online_learning_disrupted") if raw_get("online_learning_disrupted") is not None else (enrichment.operational_impact_metrics.get("online_learning_disrupted") if enrichment.operational_impact_metrics else None),
@@ -1186,10 +1412,20 @@ def _flatten_enrichment_for_db(
             enrichment.transparency_metrics.get("disclosure_source") if enrichment.transparency_metrics else None
         ),
 
+        # Education-specific context
+        'academic_period_affected': raw_get("academic_period_affected"),
+        'dark_web_posting_confirmed': raw_get("dark_web_posting_confirmed"),
+        'prior_breach_same_institution': raw_get("prior_breach_same_institution"),
+        'notification_delay_days': raw_get("notification_delay_days"),
+
         # Summary
         'enriched_summary': enrichment.enriched_summary or raw_get("enriched_summary"),
         'extraction_notes': enrichment.extraction_notes or raw_get("extraction_notes"),
-        'confidence': raw_get("confidence_score") or raw_get("confidence"),
+        'confidence': _first_present(
+            raw_get("confidence_score"),
+            raw_get("confidence"),
+            _derive_extraction_confidence(enrichment, raw),
+        ),
     }
     
     # Columns whose values are intentionally JSON-serialised lists (stored as TEXT).
@@ -1316,7 +1552,7 @@ def save_enrichment_result(
     Save LLM enrichment result to database with optimized structure.
     
     Stores both:
-    1. Full JSON in incident_enrichments table (for complete record)
+    1. Canonical raw/final enrichment layers in incident_enrichments
     2. Flattened fields in incident_enrichments_flat table (for fast queries/CSV)
     
     Args:
@@ -1338,7 +1574,10 @@ def save_enrichment_result(
             logger.info(
                 f"Existing enrichment found for incident {incident_id}, replacing it."
             )
-    
+
+    storage_debug = _extract_storage_debug(raw_json_data)
+    raw_json_data = _strip_storage_debug(raw_json_data)
+
     now = datetime.utcnow().isoformat()
     
     # Get incident data for flattened table (fallback values)
@@ -1693,43 +1932,12 @@ def save_enrichment_result(
             conn.commit()
             return  # Nothing more to do for this incident
 
-    enrichment_json = _build_enrichment_storage_record(enrichment_result, raw_json_data)
-
-    # Save full JSON to incident_enrichments table
-    try:
-        cur = conn.execute(
-            "SELECT incident_id FROM incident_enrichments WHERE incident_id = ?",
-            (incident_id,)
-        )
-        exists = cur.fetchone() is not None
-
-        if exists:
-            conn.execute(
-                """
-                UPDATE incident_enrichments
-                SET enrichment_data = ?, updated_at = ?
-                WHERE incident_id = ?
-                """,
-                (enrichment_json, now, incident_id)
-            )
-        else:
-            conn.execute(
-                """
-                INSERT INTO incident_enrichments
-                (incident_id, enrichment_data, created_at, updated_at)
-                VALUES (?, ?, ?, ?)
-                """,
-                (incident_id, enrichment_json, now, now)
-            )
-    except Exception:
-        conn.execute("ROLLBACK")
-        raise
-
     # Flatten and save to incident_enrichments_flat table
     # Pre-coerce raw_json_data: grammar-constrained LLM may return scalar fields as lists.
     # _flatten_enrichment_for_db also applies a post-pass, but doing it here means
     # the individual _scalar() calls above (country, region, etc.) share the same
     # normalised source without duplicating coercion logic.
+    raw_extraction_payload = dict(raw_json_data) if raw_json_data else None
     _FLAT_ARRAY_KEYS = {
         "timeline", "mitre_attack_techniques", "systems_affected_codes",
         "data_categories_affected", "data_types", "operational_impacts",
@@ -1741,13 +1949,14 @@ def save_enrichment_result(
         "related_incidents", "key_quotes",
         "secondary_attack_categories",
     }
-    if raw_json_data:
-        raw_json_data = {
+    raw_json_data_for_flat = raw_json_data
+    if raw_json_data_for_flat:
+        raw_json_data_for_flat = {
             k: (v[0] if isinstance(v, list) and v and k not in _FLAT_ARRAY_KEYS else
                 (None if isinstance(v, list) and k not in _FLAT_ARRAY_KEYS else v))
-            for k, v in raw_json_data.items()
+            for k, v in raw_json_data_for_flat.items()
         }
-    flat_data = _flatten_enrichment_for_db(enrichment_result, raw_json_data)
+    flat_data = _flatten_enrichment_for_db(enrichment_result, raw_json_data_for_flat)
     flat_data['incident_id'] = incident_id
     if resolved_institution_name:
         flat_data['institution_name'] = resolved_institution_name
@@ -1779,6 +1988,142 @@ def save_enrichment_result(
 
     flat_data['created_at'] = now
     flat_data['updated_at'] = now
+
+    raw_snapshot = _build_raw_extraction_snapshot(raw_extraction_payload)
+    final_enrichment_json = _build_final_enrichment_record(
+        enrichment_result=enrichment_result,
+        raw_snapshot=raw_snapshot,
+        flat_data=flat_data,
+        storage_debug=storage_debug,
+    )
+    raw_llm_responses = storage_debug.get("raw_llm_responses")
+    raw_response_payload = (
+        json.dumps(raw_llm_responses, indent=2)
+        if isinstance(raw_llm_responses, dict) and raw_llm_responses
+        else None
+    )
+    llm_metadata = storage_debug.get("llm_metadata")
+    storage_metadata = (
+        json.dumps(llm_metadata, indent=2)
+        if isinstance(llm_metadata, dict) and llm_metadata
+        else None
+    )
+    enrichment_confidence = flat_data.get("confidence")
+
+    # Save current/latest enrichment snapshots
+    try:
+        cur = conn.execute(
+            "SELECT incident_id FROM incident_enrichments WHERE incident_id = ?",
+            (incident_id,)
+        )
+        exists = cur.fetchone() is not None
+
+        latest_values = (
+            raw_response_payload,
+            json.dumps(raw_snapshot, indent=2),
+            final_enrichment_json,
+            storage_metadata,
+            _ENRICHMENT_STORAGE_VERSION,
+            enrichment_confidence,
+            _metadata_value(storage_debug, "provider"),
+            _metadata_value(storage_debug, "model"),
+            _metadata_value(storage_debug, "extraction_mode"),
+            _metadata_value(storage_debug, "prompt_version"),
+            _metadata_value(storage_debug, "schema_version"),
+            _metadata_value(storage_debug, "mapper_version"),
+            _metadata_value(storage_debug, "post_processing_version"),
+        )
+
+        if exists:
+            conn.execute(
+                """
+                UPDATE incident_enrichments
+                SET raw_response_payload = ?,
+                    raw_extraction_json = ?,
+                    final_enrichment_json = ?,
+                    storage_metadata = ?,
+                    enrichment_version = ?,
+                    enrichment_confidence = ?,
+                    llm_provider = ?,
+                    llm_model = ?,
+                    extraction_mode = ?,
+                    prompt_version = ?,
+                    schema_version = ?,
+                    mapper_version = ?,
+                    post_processing_version = ?,
+                    updated_at = ?
+                WHERE incident_id = ?
+                """,
+                latest_values + (now, incident_id)
+            )
+        else:
+            conn.execute(
+                """
+                INSERT INTO incident_enrichments (
+                    incident_id,
+                    raw_response_payload,
+                    raw_extraction_json,
+                    final_enrichment_json,
+                    storage_metadata,
+                    enrichment_version,
+                    enrichment_confidence,
+                    llm_provider,
+                    llm_model,
+                    extraction_mode,
+                    prompt_version,
+                    schema_version,
+                    mapper_version,
+                    post_processing_version,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (incident_id,) + latest_values + (now, now)
+            )
+
+        conn.execute(
+            """
+            INSERT INTO incident_enrichment_runs (
+                incident_id,
+                raw_response_payload,
+                raw_extraction_json,
+                final_enrichment_json,
+                storage_metadata,
+                enrichment_version,
+                enrichment_confidence,
+                llm_provider,
+                llm_model,
+                extraction_mode,
+                prompt_version,
+                schema_version,
+                mapper_version,
+                post_processing_version,
+                created_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                incident_id,
+                raw_response_payload,
+                json.dumps(raw_snapshot, indent=2),
+                final_enrichment_json,
+                storage_metadata,
+                _ENRICHMENT_STORAGE_VERSION,
+                enrichment_confidence,
+                _metadata_value(storage_debug, "provider"),
+                _metadata_value(storage_debug, "model"),
+                _metadata_value(storage_debug, "extraction_mode"),
+                _metadata_value(storage_debug, "prompt_version"),
+                _metadata_value(storage_debug, "schema_version"),
+                _metadata_value(storage_debug, "mapper_version"),
+                _metadata_value(storage_debug, "post_processing_version"),
+                now,
+            )
+        )
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
     
     # Check if flat record exists
     cur = conn.execute(
@@ -1805,24 +2150,23 @@ def save_enrichment_result(
         'faculty_affected', 'alumni_affected', 'parents_affected', 'applicants_affected', 'patients_affected',
         'users_affected_exact', 'users_affected_min', 'users_affected_max',
         'ransom_amount_min', 'ransom_amount_max',
-        'recovery_costs_min', 'recovery_costs_max', 'legal_costs', 'notification_costs', 'insurance_claim',
+        'recovery_costs_min', 'recovery_costs_max', 'legal_costs', 'insurance_claim',
         'insurance_claim_amount', 'business_impact', 'gdpr_breach', 'hipaa_breach', 'ferpa_breach',
         'breach_notification_required', 'notifications_sent', 'notifications_sent_date',
         'dpa_notified', 'investigation_opened', 'fine_imposed', 'fine_amount',
         'lawsuits_filed', 'class_action', 'recovery_timeframe_days', 'recovery_started_date',
         'recovery_completed_date', 'from_backup', 'mfa_implemented', 'incident_response_firm',
         'forensics_firm', 'public_disclosure', 'public_disclosure_date', 'disclosure_delay_days',
-        'transparency_level', 'timeline_json', 'timeline_events_count', 'mitre_techniques_json',
-        'mitre_techniques_count',
-        # Threat intelligence (new)
+        'transparency_level',
+        # Convenience columns for junction-table data
+        'timeline_events_count', 'primary_cve_id', 'max_cvss_score', 'primary_mitre_technique_id',
+        # Threat intelligence
         'malware_families', 'attacker_tools', 'threat_actor_aliases', 'attack_campaign_name',
-        'cloud_provider', 'infrastructure_type', 'dwell_time_days', 'mttd_hours', 'mttr_hours',
-        # Vulnerabilities (new)
-        'cve_ids', 'cvss_scores', 'vulnerability_names', 'affected_products',
+        'cloud_provider', 'dwell_time_days', 'mttd_hours', 'mttr_hours',
         # Financial (additional)
         'total_cost_estimate',
         # Operational (additional)
-        'partial_service_days', 'clinical_operations_disrupted', 'graduation_delayed', 'online_learning_disrupted',
+        'clinical_operations_disrupted', 'graduation_delayed', 'online_learning_disrupted',
         # Recovery (additional)
         'backup_status', 'backup_age_days', 'law_enforcement_involved', 'law_enforcement_agency',
         # Transparency (additional)
@@ -1837,6 +2181,9 @@ def save_enrichment_result(
         # Attack classification (additional)
         'secondary_attack_categories', 'attack_chain',
         'incident_date_precision', 'encryption_extent', 'disclosure_source',
+        # Education-specific context
+        'academic_period_affected', 'dark_web_posting_confirmed',
+        'prior_breach_same_institution', 'notification_delay_days',
         'enriched_summary', 'extraction_notes', 'confidence',
         'created_at', 'updated_at'
     ]
@@ -1872,8 +2219,37 @@ def save_enrichment_result(
     except Exception:
         conn.execute("ROLLBACK")
         raise
+
+    # Save structured data to junction tables (outside the main transaction so
+    # a junction-table failure never rolls back the flat record).
+    try:
+        vuln_source = (
+            enrichment_result.vulnerabilities_exploited
+            if isinstance(enrichment_result.vulnerabilities_exploited, list)
+            else (raw_json_data or {}).get("vulnerabilities_exploited")
+        )
+        _save_incident_vulnerabilities(conn, incident_id, vuln_source)
+
+        mitre_source = (
+            enrichment_result.mitre_attack_techniques
+            if isinstance(enrichment_result.mitre_attack_techniques, list)
+            else (raw_json_data or {}).get("mitre_attack_techniques")
+        )
+        _save_incident_mitre_techniques(conn, incident_id, mitre_source)
+
+        timeline_source = (
+            enrichment_result.timeline
+            if isinstance(enrichment_result.timeline, list)
+            else (raw_json_data or {}).get("timeline")
+        )
+        _save_incident_timeline(conn, incident_id, timeline_source)
+
+        conn.commit()
+    except Exception as exc:
+        logger.warning("Junction-table save failed for %s (non-fatal): %s", incident_id, exc)
+
     logger.info(
-        f"Saved enrichment result for incident {incident_id} (JSON + flattened)"
+        f"Saved enrichment result for incident {incident_id} (raw/final layers + flattened)"
     )
     return True
 
@@ -1897,7 +2273,7 @@ def get_enrichment_result(
 
     cur = conn.execute(
         """
-        SELECT enrichment_data FROM incident_enrichments
+        SELECT final_enrichment_json FROM incident_enrichments
         WHERE incident_id = ?
         """,
         (incident_id,)
@@ -1908,8 +2284,10 @@ def get_enrichment_result(
         return None
     
     try:
-        enrichment_data = json.loads(row["enrichment_data"])
-        return CTIEnrichmentResult.model_validate(enrichment_data)
+        final_payload = json.loads(row["final_enrichment_json"])
+        return CTIEnrichmentResult.model_validate(
+            _extract_typed_enrichment_dict(final_payload)
+        )
     except Exception as e:
         logger.error(f"Error parsing enrichment data for {incident_id}: {e}")
         return None
@@ -2040,6 +2418,7 @@ def delete_incident(
         for table in [
             "incident_enrichments_flat",
             "incident_enrichments",
+            "incident_enrichment_runs",
             "articles",
         ]:
             try:
@@ -2080,6 +2459,7 @@ def hard_delete_incident(conn: sqlite3.Connection, incident_id: str) -> None:
     for table in [
         "incident_enrichments_flat",
         "incident_enrichments",
+        "incident_enrichment_runs",
         "articles",
         "incident_sources",
         "source_events",
@@ -2131,6 +2511,10 @@ def revert_enrichment_for_incident(
         # Remove from incident_enrichments table
         conn.execute(
             "DELETE FROM incident_enrichments WHERE incident_id = ?",
+            (incident_id,)
+        )
+        conn.execute(
+            "DELETE FROM incident_enrichment_runs WHERE incident_id = ?",
             (incident_id,)
         )
         
@@ -2207,6 +2591,10 @@ def revert_all_enriched_incidents(
         
         # Clear incident_enrichments table
         conn.execute("DELETE FROM incident_enrichments")
+        
+        # Preserve the full enrichment history table only when explicitly desired.
+        # Revert semantics mean "wipe enrichment state", so clear runs too.
+        conn.execute("DELETE FROM incident_enrichment_runs")
         
         # Clear incident_enrichments_flat table
         conn.execute("DELETE FROM incident_enrichments_flat")
@@ -2296,6 +2684,10 @@ def revert_enrichment_before_date(
             incident_ids,
         )
         conn.execute(
+            f"DELETE FROM incident_enrichment_runs WHERE incident_id IN ({placeholders})",
+            incident_ids,
+        )
+        conn.execute(
             f"DELETE FROM incident_enrichments_flat WHERE incident_id IN ({placeholders})",
             incident_ids,
         )
@@ -2336,6 +2728,7 @@ def purge_orphaned_incident_rows(conn: sqlite3.Connection) -> Dict[str, int]:
     tables = [
         "incident_enrichments_flat",
         "incident_enrichments",
+        "incident_enrichment_runs",
         "articles",
         "incident_sources",
         "source_events",
@@ -2412,6 +2805,10 @@ def reset_phantom_enrichments(conn: sqlite3.Connection) -> int:
             incident_ids,
         )
         conn.execute(
+            f"DELETE FROM incident_enrichment_runs WHERE incident_id IN ({placeholders})",
+            incident_ids,
+        )
+        conn.execute(
             f"DELETE FROM incident_enrichments_flat WHERE incident_id IN ({placeholders})",
             incident_ids,
         )
@@ -2484,6 +2881,7 @@ def purge_non_education_incidents(conn: sqlite3.Connection) -> Dict[str, int]:
         for table in [
             "incident_enrichments_flat",
             "incident_enrichments",
+            "incident_enrichment_runs",
             "articles",
             "incident_sources",
         ]:

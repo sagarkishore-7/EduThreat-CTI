@@ -152,6 +152,112 @@ class OllamaLLMClient:
                 raise RateLimitError(f"Ollama API rate limit: {e}") from e
             logger.error(f"Error calling Ollama API: {e}")
             raise
+
+    def _extract_response_content(self, response: Any) -> str:
+        """Return the raw textual content emitted by the model."""
+        content = None
+        if isinstance(response, dict):
+            if 'message' in response:
+                message = response['message']
+                if isinstance(message, dict):
+                    content = message.get('content', '')
+                elif isinstance(message, str):
+                    content = message
+                else:
+                    content = getattr(message, 'content', None) or str(message)
+            elif 'content' in response:
+                content = response['content']
+            else:
+                content = str(response)
+        elif hasattr(response, 'message') and hasattr(response.message, 'content'):
+            content = response.message.content
+        elif hasattr(response, 'content'):
+            content = response.content
+        elif isinstance(response, str):
+            content = response
+        else:
+            content = str(response)
+
+        if content is None:
+            raise ValueError("Empty response from LLM")
+        return content
+
+    def _normalize_json_content(self, content: str) -> str:
+        """Extract the JSON block we want to pass downstream for parsing."""
+        normalized = content
+
+        import re
+        json_match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', normalized, re.DOTALL)
+        if json_match:
+            normalized = json_match.group(1)
+        else:
+            json_match = re.search(r'\{.*\}', normalized, re.DOTALL)
+            if json_match:
+                normalized = json_match.group(0)
+
+        normalized = normalized.strip()
+        if normalized.startswith('{\n'):
+            normalized = '{' + normalized[2:].lstrip()
+        elif normalized.startswith('{\r\n'):
+            normalized = '{' + normalized[3:].lstrip()
+        elif normalized.startswith('{ ') and len(normalized) > 2:
+            pass
+
+        return normalized
+
+    def extract_json_with_metadata(
+        self,
+        system_prompt: str,
+        user_prompt: str,
+        schema: Optional[Dict[str, Any]] = None,
+        max_retries: int = 2,
+    ) -> Dict[str, str]:
+        """
+        Extract JSON plus the exact raw model content used to derive it.
+
+        Returns:
+            Dict with `raw_content` and `normalized_json`.
+        """
+        messages = [
+            {'role': 'system', 'content': system_prompt},
+            {'role': 'user', 'content': user_prompt}
+        ]
+
+        format_param = schema if schema is not None else "json"
+
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                logger.debug(f"Making LLM API call (attempt {attempt + 1}/{max_retries + 1})")
+                response = self.chat(
+                    messages=messages,
+                    format=format_param,
+                    stream=False,
+                    temperature=0.0,
+                )
+                raw_content = self._extract_response_content(response)
+                normalized_json = self._normalize_json_content(raw_content)
+                logger.debug(f"Extracted content length: {len(normalized_json)}")
+                return {
+                    "raw_content": raw_content,
+                    "normalized_json": normalized_json,
+                }
+            except Exception as e:
+                last_error = e
+                if attempt < max_retries:
+                    error_str = str(e).lower()
+                    is_server_error = "500" in error_str or "internal server error" in error_str
+                    wait = 30.0 if is_server_error else (2.0 * (2 ** attempt))
+                    logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait:.1f}s...")
+                    import time
+                    time.sleep(wait)
+                else:
+                    raise
+
+        if last_error:
+            raise last_error
+
+        raise ValueError("Failed to get response from LLM")
     
     def extract_json(
         self,
@@ -174,100 +280,12 @@ class OllamaLLMClient:
         Returns:
             Raw JSON string response
         """
-        messages = [
-            {'role': 'system', 'content': system_prompt},
-            {'role': 'user', 'content': user_prompt}
-        ]
-
-        # Use the provided schema for grammar-constrained generation, or fall back to "json"
-        # Schema-based format enforces enum values at token level — the model cannot output
-        # values outside the enum, preventing hallucinated field values.
-        format_param = schema if schema is not None else "json"
-
-        last_error = None
-        for attempt in range(max_retries + 1):
-            try:
-                logger.debug(f"Making LLM API call (attempt {attempt + 1}/{max_retries + 1})")
-                response = self.chat(
-                    messages=messages,
-                    format=format_param,
-                    stream=False,
-                    temperature=0.0,
-                )
-                
-                # Extract content from response
-                content = None
-                if isinstance(response, dict):
-                    if 'message' in response:
-                        message = response['message']
-                        if isinstance(message, dict):
-                            content = message.get('content', '')
-                        elif isinstance(message, str):
-                            content = message
-                        else:
-                            # Try attribute access (Pydantic Message object)
-                            content = getattr(message, 'content', None) or str(message)
-                    elif 'content' in response:
-                        content = response['content']
-                    else:
-                        content = str(response)
-                elif hasattr(response, 'message') and hasattr(response.message, 'content'):
-                    # Ollama ChatResponse object: response.message.content
-                    content = response.message.content
-                elif hasattr(response, 'content'):
-                    content = response.content
-                elif isinstance(response, str):
-                    content = response
-                else:
-                    content = str(response)
-                
-                if content:
-                    # Try to extract JSON from markdown code blocks if present
-                    import re
-                    json_match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', content, re.DOTALL)
-                    if json_match:
-                        content = json_match.group(1)
-                    else:
-                        # Try to find JSON object in the content
-                        json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                        if json_match:
-                            content = json_match.group(0)
-                    
-                    # Clean up: strip whitespace
-                    content = content.strip()
-                    # If JSON starts with { followed by newline/whitespace, normalize it
-                    # JSON allows whitespace, but some parsers are strict
-                    if content.startswith('{\n'):
-                        # Replace {\n with { and remove leading whitespace from next line
-                        content = '{' + content[2:].lstrip()
-                    elif content.startswith('{\r\n'):
-                        content = '{' + content[3:].lstrip()
-                    elif content.startswith('{ ') and len(content) > 2:
-                        # Keep the space if it's followed by a quote
-                        pass  # This is valid JSON
-                    
-                    logger.debug(f"Extracted content length: {len(content)}")
-                    return content
-                else:
-                    raise ValueError("Empty response from LLM")
-                    
-            except Exception as e:
-                last_error = e
-                if attempt < max_retries:
-                    error_str = str(e).lower()
-                    # Server errors (500) need longer backoff — the model endpoint may be restarting
-                    is_server_error = "500" in error_str or "internal server error" in error_str
-                    wait = 30.0 if is_server_error else (2.0 * (2 ** attempt))  # 30s for 500, else 2s/4s
-                    logger.warning(f"API call failed (attempt {attempt + 1}/{max_retries + 1}): {e}. Retrying in {wait:.1f}s...")
-                    import time
-                    time.sleep(wait)
-                else:
-                    raise
-        
-        if last_error:
-            raise last_error
-        
-        raise ValueError("Failed to get response from LLM")
+        return self.extract_json_with_metadata(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            schema=schema,
+            max_retries=max_retries,
+        )["normalized_json"]
     
     def _normalize_llm_response(self, response: Dict[str, Any], schema_model: type[BaseModel]) -> Dict[str, Any]:
         """

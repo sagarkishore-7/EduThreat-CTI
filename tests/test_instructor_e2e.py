@@ -165,8 +165,8 @@ def _write_enrichment(
     )
     conn.execute(
         """INSERT OR REPLACE INTO incident_enrichments
-           (incident_id, enrichment_data, created_at, updated_at)
-           VALUES (?, ?, ?, ?)""",
+       (incident_id, final_enrichment_json, created_at, updated_at)
+       VALUES (?, ?, ?, ?)""",
         (incident.incident_id, json.dumps(raw_json), now, now),
     )
     conn.commit()

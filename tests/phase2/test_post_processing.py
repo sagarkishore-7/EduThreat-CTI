@@ -986,7 +986,7 @@ class TestApiAttackDynamicsOverride:
         """Insert raw LLM JSON blob (pre-post-processing values)."""
         conn.execute(
             """INSERT INTO incident_enrichments
-               (incident_id, enrichment_data, created_at, updated_at)
+               (incident_id, final_enrichment_json, created_at, updated_at)
                VALUES (?,?,?,?)""",
             (incident_id, json.dumps(raw_blob), "2024-01-02T00:00:00Z", "2024-01-02T00:00:00Z"),
         )

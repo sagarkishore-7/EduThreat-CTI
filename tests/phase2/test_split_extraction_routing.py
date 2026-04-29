@@ -279,7 +279,7 @@ class TestSplitMerge:
             "attack_category": "ransomware_encryption",
             "attack_chain": ["initial_access", "impact"],
             "timeline": None,
-            "applicable_regulations": None,
+            "breach_notification_required": None,
         }
         part2_json = {
             "timeline": [
@@ -290,7 +290,7 @@ class TestSplitMerge:
                     "date_precision": "day",
                 }
             ],
-            "applicable_regulations": ["FERPA", "state_breach_notification"],
+            "breach_notification_required": True,
         }
 
         # Simulate the merge logic from _enrich_article_split
@@ -302,7 +302,7 @@ class TestSplitMerge:
         assert merged["timeline"] is not None
         assert len(merged["timeline"]) == 1
         assert merged["timeline"][0]["event_description"] == "Ransomware encrypted servers campus-wide."
-        assert merged["applicable_regulations"] == ["FERPA", "state_breach_notification"]
+        assert merged["breach_notification_required"] is True
         # Part 1 fields still present
         assert merged["attack_chain"] == ["initial_access", "impact"]
         assert merged["institution_name"] == "Test University"
@@ -314,7 +314,6 @@ class TestSplitMerge:
             "data_categories": ["student_pii", "employee_ssn"],
         }
         part2_json = {
-            "applicable_regulations": [],  # empty list — should not overwrite
             "timeline": [],               # empty list — should not overwrite
         }
 
@@ -323,8 +322,6 @@ class TestSplitMerge:
             if val is not None and val != [] and val != {}:
                 merged[key] = val
 
-        # Empty Part 2 lists should not appear in merged
-        assert "applicable_regulations" not in merged or merged.get("applicable_regulations") != []
         assert merged["attack_chain"] == ["initial_access", "exfiltration", "impact"]
 
     def test_part2_null_does_not_overwrite_part1_value(self):
@@ -380,9 +377,9 @@ class TestSplitSchemas:
         from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA_PART2
         assert "mitre_attack_techniques" in EXTRACTION_SCHEMA_PART2["properties"]
 
-    def test_part2_has_applicable_regulations(self):
+    def test_part2_does_not_contain_applicable_regulations(self):
         from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA_PART2
-        assert "applicable_regulations" in EXTRACTION_SCHEMA_PART2["properties"]
+        assert "applicable_regulations" not in EXTRACTION_SCHEMA_PART2["properties"]
 
     def test_part2_timeline_requires_event_description(self):
         from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA_PART2

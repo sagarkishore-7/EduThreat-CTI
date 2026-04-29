@@ -267,12 +267,6 @@ class TestFinancialFields:
         ))
         assert flat["legal_costs"] == 150000
 
-    def test_notification_cost_usd_maps_to_notification_costs(self):
-        _, flat = _enrich_and_flatten(_base_payload(
-            was_ransom_demanded=True, notification_cost_usd=75000
-        ))
-        assert flat["notification_costs"] == 75000
-
     def test_insurance_payout_usd_maps_to_insurance_claim_amount(self):
         _, flat = _enrich_and_flatten(_base_payload(
             insurance_claim=True, insurance_payout_usd=1000000

@@ -157,15 +157,25 @@ CREATE TABLE source_state (
 
 ### 5. `incident_enrichments` Table
 
-**Purpose**: Stores full LLM enrichment data as JSON
+**Purpose**: Stores canonical enrichment artifacts and provenance for each incident
 
 **Schema**:
 ```sql
 CREATE TABLE incident_enrichments (
     incident_id          TEXT PRIMARY KEY,
-    enrichment_data      TEXT NOT NULL,      -- Full JSON enrichment data
-    enrichment_version   TEXT DEFAULT '2.0',
-    enrichment_confidence REAL,              -- LLM confidence score
+    raw_response_payload  TEXT,              -- Exact raw model response(s)
+    raw_extraction_json   TEXT,              -- Parsed schema payload with explicit nulls
+    final_enrichment_json TEXT,              -- Final post-processed canonical enrichment record
+    storage_metadata      TEXT,              -- Provider/model/prompt/schema metadata
+    enrichment_version    TEXT DEFAULT '3.0',
+    enrichment_confidence REAL,              -- Pipeline confidence score
+    llm_provider          TEXT,
+    llm_model             TEXT,
+    extraction_mode       TEXT,
+    prompt_version        TEXT,
+    schema_version        TEXT,
+    mapper_version        TEXT,
+    post_processing_version TEXT,
     created_at           TEXT NOT NULL,
     updated_at            TEXT NOT NULL,
     FOREIGN KEY (incident_id) REFERENCES incidents(incident_id) ON DELETE CASCADE
@@ -173,11 +183,44 @@ CREATE TABLE incident_enrichments (
 ```
 
 **How it works**:
-- Stores complete enrichment data as JSON for flexibility
-- Allows schema evolution without migration
-- Used for detailed incident views and CTI reports
+- `raw_response_payload` preserves the exact model output for debugging
+- `raw_extraction_json` preserves the schema field surface for mapper audits
+- `final_enrichment_json` is the canonical post-processed full record used by the API
+- Keeps provenance metadata so enrichments can be compared across model/prompt versions
 
-### 6. `incident_enrichments_flat` Table
+### 6. `incident_enrichment_runs` Table
+
+**Purpose**: Stores immutable enrichment history for auditing, reruns, and debugging
+
+**Schema**:
+```sql
+CREATE TABLE incident_enrichment_runs (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    incident_id          TEXT NOT NULL,
+    raw_response_payload  TEXT,
+    raw_extraction_json   TEXT,
+    final_enrichment_json TEXT,
+    storage_metadata      TEXT,
+    enrichment_version    TEXT DEFAULT '3.0',
+    enrichment_confidence REAL,
+    llm_provider          TEXT,
+    llm_model             TEXT,
+    extraction_mode       TEXT,
+    prompt_version        TEXT,
+    schema_version        TEXT,
+    mapper_version        TEXT,
+    post_processing_version TEXT,
+    created_at           TEXT NOT NULL,
+    FOREIGN KEY (incident_id) REFERENCES incidents(incident_id) ON DELETE CASCADE
+);
+```
+
+**How it works**:
+- Each enrichment execution inserts a new immutable row
+- Keeps raw model outputs and final canonical outputs for comparison across reruns
+- Lets us audit mapper/post-processing changes without losing earlier artifacts
+
+### 7. `incident_enrichments_flat` Table
 
 **Purpose**: Stores flattened enrichment fields for fast queries and CSV export
 
@@ -388,9 +431,9 @@ This enables:
 
 ### Migration
 
-- Schema migrations are handled automatically
-- New columns are added via migration checks in `init_db()`
-- See `src/edu_cti/core/db.py` for migration logic
+- Fresh deployments build the full current schema directly from `init_db()` and `init_incident_enrichments_table()`
+- If the schema changes in the future, rebuild from an empty DB or add a one-off upgrade script deliberately
+- See `src/edu_cti/core/db.py` and `src/edu_cti/pipeline/phase2/storage/db.py` for the canonical table definitions
 
 ## Production Considerations
 
