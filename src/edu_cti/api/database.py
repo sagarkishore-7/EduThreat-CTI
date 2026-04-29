@@ -275,6 +275,13 @@ def get_incident_by_id(
                 incident["data_categories"] = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, str) and parsed else None)
             except Exception:
                 incident["data_categories"] = None
+
+        if enrichment.get("regulatory_context"):
+            try:
+                parsed = json.loads(enrichment["regulatory_context"])
+                incident["regulatory_context"] = parsed if isinstance(parsed, list) else ([parsed] if isinstance(parsed, str) and parsed else None)
+            except Exception:
+                incident["regulatory_context"] = None
         
         # Use enrichment institution_name as primary (LLM-extracted name)
         if enrichment.get("institution_name"):
@@ -287,7 +294,7 @@ def get_incident_by_id(
         
         # Merge enrichment fields — skip keys already parsed above to prevent
         # the raw DB string from overwriting a deliberately-parsed None.
-        _SKIP_MERGE = {"data_categories", "systems_affected_codes", "timeline_json", "mitre_techniques_json"}
+        _SKIP_MERGE = {"data_categories", "systems_affected_codes", "timeline_json", "mitre_techniques_json", "regulatory_context"}
         for key, value in enrichment.items():
             if key in _SKIP_MERGE:
                 continue
@@ -779,12 +786,12 @@ def get_attack_vectors(
     cur = conn.execute(
         f"""
         SELECT
-            COALESCE(ef.initial_access_vector, ef.attack_vector) as category,
+            COALESCE(ef.access_vector, ef.attack_vector) as category,
             COUNT(*) as count
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
-          AND COALESCE(ef.initial_access_vector, ef.attack_vector) IS NOT NULL
-          AND COALESCE(ef.initial_access_vector, ef.attack_vector) != ''
+          AND COALESCE(ef.access_vector, ef.attack_vector) IS NOT NULL
+          AND COALESCE(ef.access_vector, ef.attack_vector) != ''
           AND {_live_incident_exists('ef')}
         GROUP BY category
         ORDER BY count DESC
@@ -1241,16 +1248,16 @@ def get_initial_access_methods(
         f"""
         SELECT
             CASE
-                WHEN COALESCE(ef.initial_access_vector, ef.attack_vector) IN ('unknown', 'other', 'Unknown', 'Other')
+                WHEN COALESCE(ef.access_vector, ef.attack_vector) IN ('unknown', 'other', 'Unknown', 'Other')
                     THEN 'Unknown / Other'
-                WHEN ef.initial_access_vector IS NULL AND ef.attack_vector IS NULL
+                WHEN ef.access_vector IS NULL AND ef.attack_vector IS NULL
                     THEN 'Unknown / Other'
-                ELSE COALESCE(ef.initial_access_vector, ef.attack_vector)
+                ELSE COALESCE(ef.access_vector, ef.attack_vector)
             END as category,
             COUNT(*) as count
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
-          AND (ef.initial_access_vector IS NOT NULL OR ef.attack_vector IS NOT NULL)
+          AND (ef.access_vector IS NOT NULL OR ef.attack_vector IS NOT NULL)
           AND {_live_incident_exists('ef')}
         GROUP BY category
         ORDER BY count DESC
@@ -2554,7 +2561,7 @@ def get_attack_flow(conn: sqlite3.Connection) -> Dict[str, Any]:
         f"""
         SELECT
             COALESCE(
-                NULLIF(ef.initial_access_vector, ''),
+                NULLIF(ef.access_vector, ''),
                 NULLIF(ef.attack_vector, '')
             ) as vector,
             NULLIF(ef.attack_category, '') as category,

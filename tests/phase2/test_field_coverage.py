@@ -472,3 +472,31 @@ class TestDeadCodeRemoved:
         assert not hasattr(mapper_module, "map_initial_access_vector"), (
             "map_initial_access_vector() was dead code and must be removed"
         )
+
+    def test_fresh_db_does_not_create_retired_tables_or_legacy_columns(self, temp_db):
+        conn, _ = temp_db
+
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")
+        }
+        assert "pipeline_runs" in tables
+        assert not tables.intersection(
+            {
+                "iocs",
+                "incident_iocs",
+                "ioc_enrichments",
+                "threat_actors",
+                "incident_threat_actors",
+                "translations",
+                "source_health",
+            }
+        )
+
+        flat_columns = {
+            row[1]
+            for row in conn.execute("PRAGMA table_info(incident_enrichments_flat)")
+        }
+        assert "access_vector" in flat_columns
+        assert "initial_access_vector" not in flat_columns
+        assert "detection_source" not in flat_columns

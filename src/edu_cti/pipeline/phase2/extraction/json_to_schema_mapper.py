@@ -680,7 +680,9 @@ def _coerce_llm_scalars(json_data: Dict[str, Any]) -> Dict[str, Any]:
         "applicable_regulations", "security_improvements", "third_parties_involved",
         "other_edu_incidents", "iocs", "target_demographics", "attack_chain",
         "vulnerabilities_exploited", "malware_families", "attacker_tools",
-        "threat_actor_aliases",
+        "threat_actor_aliases", "institution_aliases", "law_enforcement_agencies",
+        "regulators_notified", "investigating_agencies", "related_incidents",
+        "key_quotes",
     }
     result = {}
     for key, value in json_data.items():
@@ -891,8 +893,19 @@ def json_to_cti_enrichment(
         ransom_amt = json_data.get("ransom_amount_exact") or json_data.get("ransom_amount")
         ransom_amt_str = str(ransom_amt) if ransom_amt is not None else None
         
-        # Business impact - normalize to valid enum
+        # Business impact - prefer canonical field, then derive from legacy severity scale.
         business_impact = normalize_business_impact(json_data.get("business_impact"))
+        if business_impact is None:
+            severity_val = json_data.get("business_impact_severity")
+            if isinstance(severity_val, str):
+                business_impact = {
+                    "catastrophic": "critical",
+                    "critical": "critical",
+                    "major": "severe",
+                    "moderate": "moderate",
+                    "minor": "limited",
+                    "negligible": "minimal",
+                }.get(severity_val.strip().lower())
         
         # Attack chain from extraction schema - NORMALIZE to valid enum values
         raw_attack_chain = json_data.get("attack_chain")
@@ -972,8 +985,12 @@ def json_to_cti_enrichment(
                                          or "research_systems" in _mapped_sac,
             "hospital_systems_affected": bool({"hospital_systems", "ehr_emr", "medical_devices", "pharmacy_system"} & _sac)
                                          or "hospital_systems" in _mapped_sac,
-            # Schema uses specific cloud terms in vendor names, not a standalone enum
-            "cloud_services_affected": False,
+            # Infer cloud involvement from cloud_provider field or cloud-related attack vectors
+            "cloud_services_affected": bool(
+                (json_data.get("cloud_provider") and str(json_data.get("cloud_provider", "")).lower() not in ("none", "unknown", ""))
+                or bool({"cloud_misconfiguration", "api_key_exposure", "storage_bucket_exposure"} & set(json_data.get("attack_vector", []) if isinstance(json_data.get("attack_vector"), list) else [json_data.get("attack_vector", "")]))
+                or bool({"cloud_services", "cloud_storage", "cloud_provider"} & _sac)
+            ),
             "third_party_vendor_impact": json_data.get("third_parties_involved") is not None and len(json_data.get("third_parties_involved", [])) > 0,
             "vendor_name": ", ".join(json_data.get("third_parties_involved", [])) if json_data.get("third_parties_involved") else None
         }
@@ -1012,6 +1029,8 @@ def json_to_cti_enrichment(
         
         # Calculate users_affected_exact if not provided
         users_exact = json_data.get("users_affected_exact")
+        if users_exact is None:
+            users_exact = json_data.get("total_individuals_affected")
         if users_exact is None:
             # Sum up known affected counts
             total = 0
@@ -1162,13 +1181,18 @@ def json_to_cti_enrichment(
             dpa_notified = "UK_DPA" in _regs_set or None
 
         notification_dates = json_data.get("notification_dates") or {}
-        notifications_sent_date = json_data.get("notifications_sent_date") or notification_dates.get("data_subjects_notified_date")
+        # Schema field: notification_sent_date (singular); accept plural alias too
+        notifications_sent_date = (json_data.get("notification_sent_date")
+                                   or json_data.get("notifications_sent_date")
+                                   or notification_dates.get("data_subjects_notified_date"))
         regulators_notified_date = json_data.get("regulators_notified_date") or notification_dates.get("regulator_notified_date")
 
         regulatory_impact = {
             "breach_notification_required": json_data.get("breach_notification_required"),
             # Schema uses "notification_sent" (singular); legacy alias "notifications_sent"
-            "notifications_sent": json_data.get("notification_sent") or json_data.get("notifications_sent"),
+            "notifications_sent": (json_data.get("notification_sent")
+                                   if json_data.get("notification_sent") is not None
+                                   else json_data.get("notifications_sent")),
             "notifications_sent_date": notifications_sent_date,
             "regulators_notified": json_data.get("regulators_notified") or applicable_regs,
             "regulators_notified_date": regulators_notified_date,
@@ -1251,10 +1275,11 @@ def json_to_cti_enrichment(
             "security_training_conducted": json_data.get("security_training_conducted"),
             "response_measures": json_data.get("response_measures"),
             "law_enforcement_involved": _agency_to_bool(json_data.get("law_enforcement_involved")),
-            "law_enforcement_agency": (lambda v: [v] if isinstance(v, str) and v else v)(
-                json_data.get("law_enforcement_agencies") or json_data.get("law_enforcement_agency")
+            "law_enforcement_agency": (
+                ", ".join(v for v in (json_data.get("law_enforcement_agencies") or []) if isinstance(v, str) and v.strip())
+                if isinstance(json_data.get("law_enforcement_agencies"), list)
+                else json_data.get("law_enforcement_agencies") or json_data.get("law_enforcement_agency")
             ),
-            "detection_source": json_data.get("detection_source"),
             "mttd_hours": json_data.get("mttd_hours"),
             "mttr_hours": json_data.get("mttr_hours"),
         }

@@ -126,6 +126,12 @@ class UserImpact(BaseModel):
     staff_affected: Optional[int] = None
     faculty_affected: Optional[int] = None
     alumni_affected: Optional[int] = None
+    parents_affected: Optional[int] = None
+    applicants_affected: Optional[int] = None
+    patients_affected: Optional[int] = None
+    users_affected_min: Optional[int] = None
+    users_affected_max: Optional[int] = None
+    users_affected_exact: Optional[int] = None
     total_individuals_affected: Optional[int] = None
 
 
@@ -135,8 +141,10 @@ class FinancialImpact(BaseModel):
     ransom_cost_usd: Optional[float] = None
     recovery_cost_usd: Optional[float] = None
     legal_cost_usd: Optional[float] = None
+    notification_cost_usd: Optional[float] = None
     insurance_claim: Optional[bool] = None
     insurance_payout_usd: Optional[float] = None
+    business_impact: Optional[str] = None
 
 
 class RegulatoryImpact(BaseModel):
@@ -147,6 +155,9 @@ class RegulatoryImpact(BaseModel):
     ferpa_breach: Optional[bool] = None
     breach_notification_required: Optional[bool] = None
     notification_sent: Optional[bool] = None
+    notification_sent_date: Optional[str] = None
+    dpa_notified: Optional[bool] = None
+    investigation_opened: Optional[bool] = None
     fine_imposed: Optional[bool] = None
     fine_amount_usd: Optional[float] = None
     lawsuits_filed: Optional[bool] = None
@@ -158,11 +169,23 @@ class RecoveryMetrics(BaseModel):
     recovery_method: Optional[str] = None
     recovery_duration_days: Optional[float] = None
     from_backup: Optional[bool] = None
+    backup_status: Optional[str] = None
+    backup_age_days: Optional[float] = None
     mfa_implemented: Optional[bool] = None
     law_enforcement_involved: Optional[bool] = None
+    law_enforcement_agency: Optional[str] = None
     ir_firm_engaged: Optional[str] = None
     forensics_firm: Optional[str] = None
     security_improvements: Optional[List[str]] = None
+
+
+class ResearchImpact(BaseModel):
+    """Research-specific impact metrics."""
+    research_projects_affected: Optional[int] = None
+    research_data_compromised: Optional[bool] = None
+    publications_delayed: Optional[bool] = None
+    grants_affected: Optional[bool] = None
+    research_area: Optional[str] = None
 
 
 class TransparencyMetrics(BaseModel):
@@ -230,6 +253,7 @@ class IncidentDetail(BaseModel):
     user_impact: Optional[UserImpact] = None
     financial_impact: Optional[FinancialImpact] = None
     regulatory_impact: Optional[RegulatoryImpact] = None
+    research_impact: Optional[ResearchImpact] = None
     
     # Recovery & transparency
     recovery_metrics: Optional[RecoveryMetrics] = None

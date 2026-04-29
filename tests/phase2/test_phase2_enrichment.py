@@ -1,6 +1,7 @@
 """Tests for Phase 2 enrichment, storage, and recovery behavior."""
 
 import importlib
+import json
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Optional
@@ -282,6 +283,40 @@ class TestEnrichmentDatabase:
             )
 
         assert saved is True
+
+    def test_save_enrichment_result_preserves_raw_schema_nulls_and_false_values(
+        self, temp_db, sample_incident
+    ):
+        """Raw extraction JSON should retain explicit null/false values for schema fields."""
+        conn, _ = temp_db
+        insert_incident(conn, sample_incident)
+
+        enrichment = _sample_enrichment_result(primary_url="https://example.com/article1")
+        raw_json_data = {
+            "institution_name": "Test University",
+            "notification_sent": False,
+            "dpa_notified": False,
+        }
+
+        assert save_enrichment_result(
+            conn,
+            sample_incident.incident_id,
+            enrichment,
+            raw_json_data=raw_json_data,
+        ) is True
+
+        row = conn.execute(
+            "SELECT enrichment_data FROM incident_enrichments WHERE incident_id = ?",
+            (sample_incident.incident_id,),
+        ).fetchone()
+
+        payload = json.loads(row["enrichment_data"])
+        assert payload["institution_name"] == "Test University"
+        assert payload["raw_extraction"]["institution_name"] == "Test University"
+        assert payload["raw_extraction"]["notification_sent"] is False
+        assert payload["raw_extraction"]["dpa_notified"] is False
+        assert "business_impact" in payload["raw_extraction"]
+        assert payload["raw_extraction"]["business_impact"] is None
 
 
 class TestFetchingStrategy:

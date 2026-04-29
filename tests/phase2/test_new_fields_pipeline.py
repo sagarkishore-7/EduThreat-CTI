@@ -361,6 +361,7 @@ class TestFlattenEnrichmentNewFields:
 
 
 NEW_FLAT_COLUMNS = [
+    "access_vector",
     "malware_families", "attacker_tools", "threat_actor_aliases", "attack_campaign_name",
     "cloud_provider", "infrastructure_type", "dwell_time_days", "mttd_hours", "mttr_hours",
     "cve_ids", "cvss_scores", "vulnerability_names", "affected_products",
@@ -368,7 +369,6 @@ NEW_FLAT_COLUMNS = [
     "partial_service_days", "clinical_operations_disrupted", "graduation_delayed",
     "online_learning_disrupted",
     "backup_status", "backup_age_days", "law_enforcement_involved", "law_enforcement_agency",
-    "detection_source",
     "official_statement_url",
     "research_projects_affected", "research_data_compromised", "publications_delayed",
     "grants_affected", "research_area",

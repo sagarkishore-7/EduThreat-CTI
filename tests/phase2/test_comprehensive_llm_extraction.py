@@ -172,8 +172,7 @@ EXPECTED_JSON_OUTPUT = {
     # Attack mechanics
     "attack_category": "ransomware",
     "secondary_categories": ["data_breach", "extortion"],
-    "attack_vector": "spear_phishing",
-    "initial_access_vector": "malicious_attachment",
+    "attack_vector": "malicious_attachment",
     "vulnerabilities": ["CVE-2024-38077"],
     
     # Threat actor

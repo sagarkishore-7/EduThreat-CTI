@@ -22,11 +22,45 @@ from src.edu_cti.core.countries import (
 from src.edu_cti.core.db import get_connection
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
 from src.edu_cti.pipeline.phase2.utils.deduplication import choose_best_institution_name, clean_institution_name
+from src.edu_cti.pipeline.phase2.extraction.extraction_schema import EXTRACTION_SCHEMA
 from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import normalize_institution_type
 from src.edu_cti.pipeline.phase2.utils.post_processing import apply_post_processing, infer_confirmed_status, is_headline_format
 from src.edu_cti.core.config import DB_PATH, SERP_MAX_ATTEMPTS
 
 logger = logging.getLogger(__name__)
+
+_EXTRACTION_SCHEMA_FIELDS = tuple(EXTRACTION_SCHEMA["properties"].keys())
+
+
+def _first_present(*values: Any) -> Any:
+    """Return the first non-empty value while preserving False/0."""
+    for value in values:
+        if value is None:
+            continue
+        if isinstance(value, str) and value == "":
+            continue
+        if isinstance(value, (list, dict, tuple, set)) and not value:
+            continue
+        return value
+    return None
+
+
+def _build_enrichment_storage_record(
+    enrichment_result: CTIEnrichmentResult,
+    raw_json_data: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Persist both the typed enrichment result and the raw schema payload with explicit nulls."""
+    record = enrichment_result.model_dump(mode="json", exclude_none=False)
+    raw_snapshot = {field: None for field in _EXTRACTION_SCHEMA_FIELDS}
+
+    if raw_json_data:
+        for field in _EXTRACTION_SCHEMA_FIELDS:
+            if field in raw_json_data:
+                raw_snapshot[field] = raw_json_data[field]
+
+    record.update(raw_snapshot)
+    record["raw_extraction"] = raw_snapshot
+    return json.dumps(record, indent=2)
 
 _COUNTRY_TEXT_PATTERNS = tuple(
     (
@@ -202,7 +236,7 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             -- Attack Details
             attack_category TEXT,
             attack_vector TEXT,
-            initial_access_vector TEXT,
+            access_vector TEXT,
             initial_access_description TEXT,
             ransomware_family TEXT,
             threat_actor_name TEXT,
@@ -258,25 +292,34 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             students_affected INTEGER,
             staff_affected INTEGER,
             faculty_affected INTEGER,
+            alumni_affected INTEGER,
+            parents_affected INTEGER,
+            applicants_affected INTEGER,
+            patients_affected INTEGER,
             users_affected_exact INTEGER,
             users_affected_min INTEGER,
             users_affected_max INTEGER,
-            
+
             -- Financial Impact
             recovery_costs_min REAL,
             recovery_costs_max REAL,
+            ransom_amount_min REAL,
+            ransom_amount_max REAL,
             legal_costs REAL,
             notification_costs REAL,
             insurance_claim INTEGER,
             insurance_claim_amount REAL,
             business_impact TEXT,
-            
+
             -- Regulatory Impact
             gdpr_breach INTEGER,
             hipaa_breach INTEGER,
             ferpa_breach INTEGER,
             breach_notification_required INTEGER,
             notifications_sent INTEGER,
+            notifications_sent_date TEXT,
+            dpa_notified INTEGER,
+            investigation_opened INTEGER,
             fine_imposed INTEGER,
             fine_amount REAL,
             lawsuits_filed INTEGER,
@@ -334,7 +377,6 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             backup_age_days REAL,
             law_enforcement_involved INTEGER,
             law_enforcement_agency TEXT,
-            detection_source TEXT,
 
             -- Transparency (additional)
             official_statement_url TEXT,
@@ -437,6 +479,7 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         ("country_code", "TEXT"), ("enriched_at", "TEXT"), ("skip_reason", "TEXT"),
         ("data_categories", "TEXT"),
         ("incident_severity", "TEXT"), ("institution_size", "TEXT"),
+        ("access_vector", "TEXT"),
         ("threat_actor_category", "TEXT"), ("threat_actor_motivation", "TEXT"),
         ("threat_actor_origin_country", "TEXT"),
         # Threat intelligence
@@ -466,7 +509,6 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         ("backup_age_days", "REAL"),
         ("law_enforcement_involved", "INTEGER"),
         ("law_enforcement_agency", "TEXT"),
-        ("detection_source", "TEXT"),
         # Transparency
         ("official_statement_url", "TEXT"),
         # Research impact
@@ -485,11 +527,55 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         ("incident_date_precision", "TEXT"),
         ("encryption_extent", "TEXT"),
         ("disclosure_source", "TEXT"),
+        # User impact (extended demographics)
+        ("alumni_affected", "INTEGER"),
+        ("parents_affected", "INTEGER"),
+        ("applicants_affected", "INTEGER"),
+        ("patients_affected", "INTEGER"),
+        # Financial (range fields)
+        ("ransom_amount_min", "REAL"),
+        ("ransom_amount_max", "REAL"),
+        # Regulatory (extended)
+        ("notifications_sent_date", "TEXT"),
+        ("dpa_notified", "INTEGER"),
+        ("investigation_opened", "INTEGER"),
     ]:
         try:
             conn.execute(f"ALTER TABLE incident_enrichments_flat ADD COLUMN {col} {col_type}")
         except sqlite3.OperationalError:
             pass  # Column already exists
+
+    existing_columns = {
+        row[1] for row in conn.execute("PRAGMA table_info(incident_enrichments_flat)").fetchall()
+    }
+    if "access_vector" in existing_columns:
+        if "initial_access_vector" in existing_columns:
+            conn.execute(
+                """
+                UPDATE incident_enrichments_flat
+                SET access_vector = COALESCE(NULLIF(access_vector, ''), NULLIF(initial_access_vector, ''), NULLIF(attack_vector, ''))
+                WHERE access_vector IS NULL OR access_vector = ''
+                """
+            )
+        else:
+            conn.execute(
+                """
+                UPDATE incident_enrichments_flat
+                SET access_vector = attack_vector
+                WHERE (access_vector IS NULL OR access_vector = '')
+                  AND attack_vector IS NOT NULL
+                  AND attack_vector != ''
+                """
+            )
+        for legacy_column in ("initial_access_vector", "detection_source"):
+            if legacy_column in existing_columns:
+                try:
+                    conn.execute(
+                        f"ALTER TABLE incident_enrichments_flat DROP COLUMN {legacy_column}"
+                    )
+                except sqlite3.OperationalError:
+                    # Older SQLite builds may not support DROP COLUMN; harmless to keep legacy columns then.
+                    pass
 
     # Checkpoint table — tracks which incidents have had articles fetched so
     # a crashed pipeline resumes without re-fetching already-processed URLs.
@@ -702,10 +788,22 @@ def _flatten_enrichment_for_db(
 
         # Attack details - prefer raw JSON data for direct fields
         'attack_category': raw_get("attack_category"),
-        'attack_vector': raw_get("attack_vector") or (enrichment.attack_dynamics.attack_vector if enrichment.attack_dynamics else None),
-        'initial_access_vector': raw_get("initial_access_vector"),
+        'attack_vector': _first_present(
+            raw_get("attack_vector"),
+            raw_get("access_vector"),
+            enrichment.attack_dynamics.attack_vector if enrichment.attack_dynamics else None,
+        ),
+        'access_vector': _first_present(
+            raw_get("access_vector"),
+            raw_get("attack_vector"),
+            enrichment.attack_dynamics.attack_vector if enrichment.attack_dynamics else None,
+        ),
         'initial_access_description': enrichment.initial_access_description or raw_get("initial_access_description"),
-        'ransomware_family': raw_get("ransomware_family_or_group") or raw_get("ransomware_family") or (enrichment.attack_dynamics.ransomware_family if enrichment.attack_dynamics else None),
+        'ransomware_family': _first_present(
+            raw_get("ransomware_family"),
+            raw_get("ransomware_family_or_group"),
+            enrichment.attack_dynamics.ransomware_family if enrichment.attack_dynamics else None,
+        ),
 
         # Threat actor
         'threat_actor_name': raw_get("threat_actor_name"),
@@ -716,8 +814,11 @@ def _flatten_enrichment_for_db(
         
         # Ransom - use raw JSON data for exact values
         'was_ransom_demanded': raw_get("was_ransom_demanded") if raw_get("was_ransom_demanded") is not None else (enrichment.attack_dynamics.ransom_demanded if enrichment.attack_dynamics else None),
-        'ransom_amount': (raw_get("ransom_amount") or raw_get("ransom_amount_exact")
-                         or (enrichment.attack_dynamics.ransom_amount if enrichment.attack_dynamics else None)),
+        'ransom_amount': _first_present(
+            raw_get("ransom_amount"),
+            raw_get("ransom_amount_exact"),
+            enrichment.attack_dynamics.ransom_amount if enrichment.attack_dynamics else None,
+        ),
         'ransom_currency': raw_get("ransom_currency"),
         'ransom_paid': raw_get("ransom_paid") if raw_get("ransom_paid") is not None else (enrichment.attack_dynamics.ransom_paid if enrichment.attack_dynamics else None),
         'ransom_paid_amount': raw_get("ransom_paid_amount"),
@@ -725,9 +826,19 @@ def _flatten_enrichment_for_db(
         # Data impact
         'data_breached': _derived_data_breached,
         'data_exfiltrated': raw_get("data_exfiltrated") if raw_get("data_exfiltrated") is not None else (enrichment.attack_dynamics.data_exfiltration if enrichment.attack_dynamics else (enrichment.data_impact.get("data_exfiltrated") if enrichment.data_impact else None)),
-        'records_affected_exact': raw_get("records_affected_exact") or raw_get("pii_records_leaked") or (enrichment.data_impact.get("records_affected_exact") if enrichment.data_impact else None),
-        'records_affected_min': raw_get("records_affected_min") or (enrichment.data_impact.get("records_affected_min") if enrichment.data_impact else None),
-        'records_affected_max': raw_get("records_affected_max") or (enrichment.data_impact.get("records_affected_max") if enrichment.data_impact else None),
+        'records_affected_exact': _first_present(
+            raw_get("records_affected_exact"),
+            raw_get("pii_records_leaked"),
+            enrichment.data_impact.get("records_affected_exact") if enrichment.data_impact else None,
+        ),
+        'records_affected_min': _first_present(
+            raw_get("records_affected_min"),
+            enrichment.data_impact.get("records_affected_min") if enrichment.data_impact else None,
+        ),
+        'records_affected_max': _first_present(
+            raw_get("records_affected_max"),
+            enrichment.data_impact.get("records_affected_max") if enrichment.data_impact else None,
+        ),
         'pii_records_leaked': raw_get("pii_records_leaked"),
         'data_categories': json.dumps(
             raw_get("data_categories")
@@ -742,9 +853,16 @@ def _flatten_enrichment_for_db(
         'student_portal_affected': raw_get("student_portal_affected") if raw_get("student_portal_affected") is not None else (enrichment.system_impact.get("student_portal_affected") if enrichment.system_impact else None),
         'research_systems_affected': raw_get("research_systems_affected") if raw_get("research_systems_affected") is not None else (enrichment.system_impact.get("research_systems_affected") if enrichment.system_impact else None),
         'hospital_systems_affected': raw_get("hospital_systems_affected") if raw_get("hospital_systems_affected") is not None else (enrichment.system_impact.get("hospital_systems_affected") if enrichment.system_impact else None),
-        'cloud_services_affected': raw_get("cloud_services_affected") if raw_get("cloud_services_affected") is not None else (enrichment.system_impact.get("cloud_services_affected") if enrichment.system_impact else None),
+        'cloud_services_affected': (
+            raw_get("cloud_services_affected") if raw_get("cloud_services_affected") is not None
+            else (enrichment.system_impact.get("cloud_services_affected") if enrichment.system_impact else None)
+            or (True if (raw_get("cloud_provider") and str(raw_get("cloud_provider", "")).lower() not in ("none", "unknown", "")) else None)
+        ),
         'third_party_vendor_impact': raw_get("third_party_vendor_impact") if raw_get("third_party_vendor_impact") is not None else (enrichment.system_impact.get("third_party_vendor_impact") if enrichment.system_impact else None),
-        'vendor_name': raw_get("vendor_name") or (enrichment.system_impact.get("vendor_name") if enrichment.system_impact else None),
+        'vendor_name': _first_present(
+            raw_get("vendor_name"),
+            enrichment.system_impact.get("vendor_name") if enrichment.system_impact else None,
+        ),
         
         # Operational impact - use raw JSON data
         'teaching_impacted': raw_get("teaching_impacted"),
@@ -756,31 +874,85 @@ def _flatten_enrichment_for_db(
         'payroll_disrupted': raw_get("payroll_disrupted") if raw_get("payroll_disrupted") is not None else (enrichment.operational_impact_metrics.get("payroll_disrupted") if enrichment.operational_impact_metrics else None),
         'classes_cancelled': raw_get("classes_cancelled") if raw_get("classes_cancelled") is not None else (enrichment.operational_impact_metrics.get("classes_cancelled") if enrichment.operational_impact_metrics else None),
         'exams_postponed': raw_get("exams_postponed") if raw_get("exams_postponed") is not None else (enrichment.operational_impact_metrics.get("exams_postponed") if enrichment.operational_impact_metrics else None),
-        'downtime_days': raw_get("downtime_days") or (enrichment.operational_impact_metrics.get("downtime_days") if enrichment.operational_impact_metrics else None),
+        'downtime_days': _first_present(
+            raw_get("downtime_days"),
+            enrichment.operational_impact_metrics.get("downtime_days") if enrichment.operational_impact_metrics else None,
+        ),
         'outage_duration_hours': raw_get("outage_duration_hours"),
         
         # User impact - use raw JSON data for exact counts
         'students_affected': raw_get("students_affected"),
         'staff_affected': raw_get("staff_affected"),
         'faculty_affected': raw_get("faculty_affected") if raw_get("faculty_affected") is not None else (enrichment.user_impact.get("faculty_affected") if enrichment.user_impact else None),
-        'users_affected_exact': raw_get("users_affected_exact") or (enrichment.user_impact.get("users_affected_exact") if enrichment.user_impact else None),
-        'users_affected_min': raw_get("users_affected_min") or (enrichment.user_impact.get("users_affected_min") if enrichment.user_impact else None),
-        'users_affected_max': raw_get("users_affected_max") or (enrichment.user_impact.get("users_affected_max") if enrichment.user_impact else None),
-        
+        'alumni_affected': _first_present(
+            raw_get("alumni_affected"),
+            enrichment.user_impact.get("alumni_affected") if enrichment.user_impact else None,
+        ),
+        'parents_affected': _first_present(
+            raw_get("parents_affected"),
+            enrichment.user_impact.get("parents_affected") if enrichment.user_impact else None,
+        ),
+        'applicants_affected': _first_present(
+            raw_get("applicants_affected"),
+            enrichment.user_impact.get("applicants_affected") if enrichment.user_impact else None,
+        ),
+        'patients_affected': _first_present(
+            raw_get("patients_affected"),
+            enrichment.user_impact.get("patients_affected") if enrichment.user_impact else None,
+        ),
+        'users_affected_exact': _first_present(
+            raw_get("users_affected_exact"),
+            raw_get("total_individuals_affected"),
+            enrichment.user_impact.get("users_affected_exact") if enrichment.user_impact else None,
+        ),
+        'users_affected_min': _first_present(
+            raw_get("users_affected_min"),
+            enrichment.user_impact.get("users_affected_min") if enrichment.user_impact else None,
+        ),
+        'users_affected_max': _first_present(
+            raw_get("users_affected_max"),
+            enrichment.user_impact.get("users_affected_max") if enrichment.user_impact else None,
+        ),
+
         # Financial impact - use raw JSON data
         # Schema uses *_usd suffixed names; legacy aliases kept for raw_get
-        'recovery_costs_min': (raw_get("recovery_costs_min") or raw_get("recovery_cost_usd")
-                               or (enrichment.financial_impact.get("recovery_costs_min") if enrichment.financial_impact else None)),
-        'recovery_costs_max': (raw_get("recovery_costs_max")
-                               or (enrichment.financial_impact.get("recovery_costs_max") if enrichment.financial_impact else None)),
-        'legal_costs': (raw_get("legal_costs") or raw_get("legal_cost_usd")
-                        or (enrichment.financial_impact.get("legal_costs") if enrichment.financial_impact else None)),
-        'notification_costs': (raw_get("notification_costs") or raw_get("notification_cost_usd")
-                               or (enrichment.financial_impact.get("notification_costs") if enrichment.financial_impact else None)),
+        'ransom_amount_min': _first_present(
+            raw_get("ransom_amount_min"),
+            enrichment.financial_impact.get("ransom_amount_min") if enrichment.financial_impact else None,
+        ),
+        'ransom_amount_max': _first_present(
+            raw_get("ransom_amount_max"),
+            enrichment.financial_impact.get("ransom_amount_max") if enrichment.financial_impact else None,
+        ),
+        'recovery_costs_min': _first_present(
+            raw_get("recovery_costs_min"),
+            raw_get("recovery_cost_usd"),
+            enrichment.financial_impact.get("recovery_costs_min") if enrichment.financial_impact else None,
+        ),
+        'recovery_costs_max': _first_present(
+            raw_get("recovery_costs_max"),
+            enrichment.financial_impact.get("recovery_costs_max") if enrichment.financial_impact else None,
+        ),
+        'legal_costs': _first_present(
+            raw_get("legal_costs"),
+            raw_get("legal_cost_usd"),
+            enrichment.financial_impact.get("legal_costs") if enrichment.financial_impact else None,
+        ),
+        'notification_costs': _first_present(
+            raw_get("notification_costs"),
+            raw_get("notification_cost_usd"),
+            enrichment.financial_impact.get("notification_costs") if enrichment.financial_impact else None,
+        ),
         'insurance_claim': raw_get("insurance_claim") if raw_get("insurance_claim") is not None else (enrichment.financial_impact.get("insurance_claim") if enrichment.financial_impact else None),
-        'insurance_claim_amount': (raw_get("insurance_claim_amount") or raw_get("insurance_payout_usd")
-                                   or (enrichment.financial_impact.get("insurance_claim_amount") if enrichment.financial_impact else None)),
-        'business_impact': raw_get("business_impact") or (enrichment.attack_dynamics.business_impact if enrichment.attack_dynamics else None),
+        'insurance_claim_amount': _first_present(
+            raw_get("insurance_claim_amount"),
+            raw_get("insurance_payout_usd"),
+            enrichment.financial_impact.get("insurance_claim_amount") if enrichment.financial_impact else None,
+        ),
+        'business_impact': _first_present(
+            raw_get("business_impact"),
+            enrichment.attack_dynamics.business_impact if enrichment.attack_dynamics else None,
+        ),
         
         # Regulatory impact - use raw JSON data
         # Schema: gdpr/hipaa/ferpa_breach not standalone — derived from applicable_regulations
@@ -799,13 +971,31 @@ def _flatten_enrichment_for_db(
                          (enrichment.regulatory_impact.get("ferpa_breach") if enrichment.regulatory_impact else None)),
         'breach_notification_required': raw_get("breach_notification_required") if raw_get("breach_notification_required") is not None else (enrichment.regulatory_impact.get("breach_notification_required") if enrichment.regulatory_impact else None),
         # Schema uses "notification_sent" (singular)
-        'notifications_sent': (raw_get("notification_sent") or raw_get("notifications_sent")
-                               if (raw_get("notification_sent") is not None or raw_get("notifications_sent") is not None)
-                               else (enrichment.regulatory_impact.get("notifications_sent") if enrichment.regulatory_impact else None)),
+        'notifications_sent': (
+            raw_get("notification_sent")
+            if raw_get("notification_sent") is not None
+            else (
+                raw_get("notifications_sent")
+                if raw_get("notifications_sent") is not None
+                else (enrichment.regulatory_impact.get("notifications_sent") if enrichment.regulatory_impact else None)
+            )
+        ),
+        'notifications_sent_date': _first_present(
+            raw_get("notification_sent_date"),
+            raw_get("notifications_sent_date"),
+            enrichment.regulatory_impact.get("notifications_sent_date") if enrichment.regulatory_impact else None,
+        ),
+        'dpa_notified': (raw_get("dpa_notified") if raw_get("dpa_notified") is not None
+                         else (enrichment.regulatory_impact.get("dpa_notified") if enrichment.regulatory_impact else None)),
+        'investigation_opened': (raw_get("investigation_opened") if raw_get("investigation_opened") is not None
+                                 else (enrichment.regulatory_impact.get("investigation_opened") if enrichment.regulatory_impact else None)),
         'fine_imposed': raw_get("fine_imposed") if raw_get("fine_imposed") is not None else (enrichment.regulatory_impact.get("fine_imposed") if enrichment.regulatory_impact else None),
         # Schema uses "fine_amount_usd"
-        'fine_amount': (raw_get("fine_amount_usd") or raw_get("fine_amount")
-                        or (enrichment.regulatory_impact.get("fine_amount") if enrichment.regulatory_impact else None)),
+        'fine_amount': _first_present(
+            raw_get("fine_amount_usd"),
+            raw_get("fine_amount"),
+            enrichment.regulatory_impact.get("fine_amount") if enrichment.regulatory_impact else None,
+        ),
         'lawsuits_filed': raw_get("lawsuits_filed") if raw_get("lawsuits_filed") is not None else (enrichment.regulatory_impact.get("lawsuits_filed") if enrichment.regulatory_impact else None),
         # Schema uses "class_action_filed"
         'class_action': (raw_get("class_action_filed") if raw_get("class_action_filed") is not None
@@ -814,13 +1004,21 @@ def _flatten_enrichment_for_db(
         
         # Recovery - use raw JSON data for dates and metrics
         # Schema uses "recovery_duration_days"; legacy alias "recovery_timeframe_days"
-        'recovery_timeframe_days': (
-            raw_get("recovery_duration_days") or raw_get("recovery_timeframe_days")
-            or (enrichment.attack_dynamics.recovery_timeframe_days if enrichment.attack_dynamics else None)
-            or (enrichment.recovery_metrics.get("recovery_timeframe_days") if enrichment.recovery_metrics else None)
+        'recovery_timeframe_days': _first_present(
+            raw_get("recovery_duration_days"),
+            raw_get("recovery_timeframe_days"),
+            enrichment.attack_dynamics.recovery_timeframe_days if enrichment.attack_dynamics else None,
+            enrichment.recovery_metrics.get("recovery_timeframe_days") if enrichment.recovery_metrics else None,
         ),
-        'recovery_started_date': raw_get("recovery_started_date") or (enrichment.recovery_metrics.get("recovery_started_date") if enrichment.recovery_metrics else None),
-        'recovery_completed_date': raw_get("recovery_completed_date") or raw_get("service_restoration_date") or (enrichment.recovery_metrics.get("recovery_completed_date") if enrichment.recovery_metrics else None),
+        'recovery_started_date': _first_present(
+            raw_get("recovery_started_date"),
+            enrichment.recovery_metrics.get("recovery_started_date") if enrichment.recovery_metrics else None,
+        ),
+        'recovery_completed_date': _first_present(
+            raw_get("recovery_completed_date"),
+            raw_get("service_restoration_date"),
+            enrichment.recovery_metrics.get("recovery_completed_date") if enrichment.recovery_metrics else None,
+        ),
         'from_backup': (
             raw_get("from_backup")
             if raw_get("from_backup") is not None else (
@@ -835,13 +1033,15 @@ def _flatten_enrichment_for_db(
                                        or "mfa_expanded" in (raw_get("security_improvements") or [])
                                   else (enrichment.recovery_metrics.get("mfa_implemented") if enrichment.recovery_metrics else None))),
         # Schema uses "ir_firm_engaged" / "forensics_firm_engaged"; legacy aliases kept
-        'incident_response_firm': (
-            raw_get("ir_firm_engaged") or raw_get("incident_response_firm")
-            or (enrichment.recovery_metrics.get("incident_response_firm") if enrichment.recovery_metrics else None)
+        'incident_response_firm': _first_present(
+            raw_get("ir_firm_engaged"),
+            raw_get("incident_response_firm"),
+            enrichment.recovery_metrics.get("incident_response_firm") if enrichment.recovery_metrics else None,
         ),
-        'forensics_firm': (
-            raw_get("forensics_firm_engaged") or raw_get("forensics_firm")
-            or (enrichment.recovery_metrics.get("forensics_firm") if enrichment.recovery_metrics else None)
+        'forensics_firm': _first_present(
+            raw_get("forensics_firm_engaged"),
+            raw_get("forensics_firm"),
+            enrichment.recovery_metrics.get("forensics_firm") if enrichment.recovery_metrics else None,
         ),
         
         # Transparency - use raw JSON data
@@ -915,23 +1115,51 @@ def _flatten_enrichment_for_db(
         'online_learning_disrupted': raw_get("online_learning_disrupted") if raw_get("online_learning_disrupted") is not None else (enrichment.operational_impact_metrics.get("online_learning_disrupted") if enrichment.operational_impact_metrics else None),
 
         # Recovery (additional)
-        'backup_status': raw_get("backup_status") or (enrichment.recovery_metrics.get("backup_status") if enrichment.recovery_metrics else None),
-        'backup_age_days': raw_get("backup_age_days") or (enrichment.recovery_metrics.get("backup_age_days") if enrichment.recovery_metrics else None),
+        'backup_status': _first_present(
+            raw_get("backup_status"),
+            enrichment.recovery_metrics.get("backup_status") if enrichment.recovery_metrics else None,
+        ),
+        'backup_age_days': _first_present(
+            raw_get("backup_age_days"),
+            enrichment.recovery_metrics.get("backup_age_days") if enrichment.recovery_metrics else None,
+        ),
         'law_enforcement_involved': raw_get("law_enforcement_involved") if raw_get("law_enforcement_involved") is not None else (enrichment.recovery_metrics.get("law_enforcement_involved") if enrichment.recovery_metrics else None),
-        'law_enforcement_agency': (raw_get("law_enforcement_agency") or raw_get("law_enforcement_agencies")
-                                   or (enrichment.recovery_metrics.get("law_enforcement_agency") if enrichment.recovery_metrics else None)),
-        'detection_source': raw_get("detection_source") or (enrichment.recovery_metrics.get("detection_source") if enrichment.recovery_metrics else None),
+        'law_enforcement_agency': _first_present(
+            ", ".join(v for v in raw_get("law_enforcement_agencies", []) if isinstance(v, str) and v.strip())
+            if isinstance(raw_get("law_enforcement_agencies"), list) else None,
+            raw_get("law_enforcement_agency"),
+            enrichment.recovery_metrics.get("law_enforcement_agency") if enrichment.recovery_metrics else None,
+        ),
 
         # Transparency (additional)
         'official_statement_url': (raw_get("official_statement_url")
                                    or (enrichment.transparency_metrics.get("official_statement_url") if enrichment.transparency_metrics else None)),
 
         # Research impact (new fields)
-        'research_projects_affected': raw_get("research_projects_affected") if raw_get("research_projects_affected") is not None else (enrichment.research_impact.get("research_projects_affected") if enrichment.research_impact else None),
-        'research_data_compromised': raw_get("research_data_compromised") if raw_get("research_data_compromised") is not None else (enrichment.research_impact.get("research_data_compromised") if enrichment.research_impact else None),
-        'publications_delayed': raw_get("publications_delayed") if raw_get("publications_delayed") is not None else (enrichment.research_impact.get("publications_delayed") if enrichment.research_impact else None),
-        'grants_affected': raw_get("grants_affected") if raw_get("grants_affected") is not None else (enrichment.research_impact.get("grants_affected") if enrichment.research_impact else None),
-        'research_area': raw_get("research_area") or (enrichment.research_impact.get("research_area") if enrichment.research_impact else None),
+        'research_projects_affected': (
+            raw_get("research_projects_affected")
+            if raw_get("research_projects_affected") is not None
+            else (enrichment.research_impact.get("research_projects_affected") if enrichment.research_impact else None)
+        ),
+        'research_data_compromised': (
+            raw_get("research_data_compromised")
+            if raw_get("research_data_compromised") is not None
+            else (enrichment.research_impact.get("research_data_compromised") if enrichment.research_impact else None)
+        ),
+        'publications_delayed': (
+            raw_get("publications_delayed")
+            if raw_get("publications_delayed") is not None
+            else (enrichment.research_impact.get("publications_delayed") if enrichment.research_impact else None)
+        ),
+        'grants_affected': (
+            raw_get("grants_affected")
+            if raw_get("grants_affected") is not None
+            else (enrichment.research_impact.get("grants_affected") if enrichment.research_impact else None)
+        ),
+        'research_area': _first_present(
+            raw_get("research_area"),
+            enrichment.research_impact.get("research_area") if enrichment.research_impact else None,
+        ),
 
         # Regulatory (additional)
         'regulatory_context': json.dumps(raw_get("applicable_regulations")) if raw_get("applicable_regulations") else (json.dumps(enrichment.regulatory_impact.get("regulatory_context")) if enrichment.regulatory_impact and enrichment.regulatory_impact.get("regulatory_context") else None),
@@ -1112,9 +1340,6 @@ def save_enrichment_result(
             )
     
     now = datetime.utcnow().isoformat()
-    
-    # Convert enrichment result to JSON for storage
-    enrichment_json = enrichment_result.model_dump_json(indent=2)
     
     # Get incident data for flattened table (fallback values)
     cur = conn.execute(
@@ -1468,6 +1693,8 @@ def save_enrichment_result(
             conn.commit()
             return  # Nothing more to do for this incident
 
+    enrichment_json = _build_enrichment_storage_record(enrichment_result, raw_json_data)
+
     # Save full JSON to incident_enrichments table
     try:
         cur = conn.execute(
@@ -1509,7 +1736,9 @@ def save_enrichment_result(
         "security_improvements", "third_parties_involved", "other_edu_incidents",
         "iocs", "target_demographics", "attack_chain",
         "vulnerabilities_exploited", "malware_families", "attacker_tools",
-        "threat_actor_aliases", "applicable_regulations",
+        "threat_actor_aliases", "applicable_regulations", "institution_aliases",
+        "law_enforcement_agencies", "regulators_notified", "investigating_agencies",
+        "related_incidents", "key_quotes",
         "secondary_attack_categories",
     }
     if raw_json_data:
@@ -1562,7 +1791,7 @@ def save_enrichment_result(
     all_columns = [
         'incident_id', 'is_education_related', 'institution_name', 'institution_type', 'institution_size',
         'incident_severity',
-        'country', 'country_code', 'region', 'city', 'attack_category', 'attack_vector', 'initial_access_vector',
+        'country', 'country_code', 'region', 'city', 'attack_category', 'attack_vector', 'access_vector',
         'initial_access_description', 'ransomware_family',
         'threat_actor_name', 'threat_actor_category', 'threat_actor_motivation', 'threat_actor_origin_country', 'threat_actor_claim_url',
         'was_ransom_demanded', 'ransom_amount', 'ransom_currency', 'ransom_paid', 'ransom_paid_amount',
@@ -1573,10 +1802,13 @@ def save_enrichment_result(
         'teaching_impacted', 'teaching_disrupted', 'research_impacted', 'research_disrupted',
         'admissions_disrupted', 'enrollment_disrupted', 'payroll_disrupted', 'classes_cancelled',
         'exams_postponed', 'downtime_days', 'outage_duration_hours', 'students_affected', 'staff_affected',
-        'faculty_affected', 'users_affected_exact', 'users_affected_min', 'users_affected_max',
+        'faculty_affected', 'alumni_affected', 'parents_affected', 'applicants_affected', 'patients_affected',
+        'users_affected_exact', 'users_affected_min', 'users_affected_max',
+        'ransom_amount_min', 'ransom_amount_max',
         'recovery_costs_min', 'recovery_costs_max', 'legal_costs', 'notification_costs', 'insurance_claim',
         'insurance_claim_amount', 'business_impact', 'gdpr_breach', 'hipaa_breach', 'ferpa_breach',
-        'breach_notification_required', 'notifications_sent', 'fine_imposed', 'fine_amount',
+        'breach_notification_required', 'notifications_sent', 'notifications_sent_date',
+        'dpa_notified', 'investigation_opened', 'fine_imposed', 'fine_amount',
         'lawsuits_filed', 'class_action', 'recovery_timeframe_days', 'recovery_started_date',
         'recovery_completed_date', 'from_backup', 'mfa_implemented', 'incident_response_firm',
         'forensics_firm', 'public_disclosure', 'public_disclosure_date', 'disclosure_delay_days',
@@ -1592,7 +1824,7 @@ def save_enrichment_result(
         # Operational (additional)
         'partial_service_days', 'clinical_operations_disrupted', 'graduation_delayed', 'online_learning_disrupted',
         # Recovery (additional)
-        'backup_status', 'backup_age_days', 'law_enforcement_involved', 'law_enforcement_agency', 'detection_source',
+        'backup_status', 'backup_age_days', 'law_enforcement_involved', 'law_enforcement_agency',
         # Transparency (additional)
         'official_statement_url',
         # Research impact (new)
@@ -1852,8 +2084,6 @@ def hard_delete_incident(conn: sqlite3.Connection, incident_id: str) -> None:
         "incident_sources",
         "source_events",
         "pipeline_checkpoint",
-        "incident_iocs",
-        "incident_threat_actors",
     ]:
         try:
             conn.execute(f"DELETE FROM {table} WHERE incident_id = ?", (incident_id,))
@@ -2110,8 +2340,6 @@ def purge_orphaned_incident_rows(conn: sqlite3.Connection) -> Dict[str, int]:
         "incident_sources",
         "source_events",
         "pipeline_checkpoint",
-        "incident_iocs",
-        "incident_threat_actors",
     ]
 
     for table in tables:

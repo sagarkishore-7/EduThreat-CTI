@@ -206,9 +206,9 @@ incidents = response.json()["incidents"]
 # Count attack vectors
 from collections import Counter
 vectors = Counter([
-    inc["enrichment"]["initial_access_vector"]
+    inc["enrichment"]["access_vector"]
     for inc in incidents
-    if inc.get("enrichment", {}).get("initial_access_vector")
+    if inc.get("enrichment", {}).get("access_vector")
 ])
 
 print("Most common initial access vectors:")

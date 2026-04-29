@@ -117,8 +117,9 @@ def generate_cti_report(incident: Dict[str, Any]) -> str:
         report_lines.append(f"- **Attack Category:** {incident.get('attack_category', '').replace('_', ' ').title()}")
     if incident.get('attack_vector'):
         report_lines.append(f"- **Attack Vector:** {incident.get('attack_vector', '').replace('_', ' ').title()}")
-    if incident.get('initial_access_vector'):
-        report_lines.append(f"- **Initial Access:** {incident.get('initial_access_vector', '').replace('_', ' ').title()}")
+    if incident.get('access_vector') or incident.get('attack_vector'):
+        access_vector = incident.get('access_vector') or incident.get('attack_vector')
+        report_lines.append(f"- **Initial Access:** {str(access_vector).replace('_', ' ').title()}")
     if incident.get('initial_access_description'):
         report_lines.append(f"- **Initial Access Description:** {incident.get('initial_access_description')}")
     if incident.get('ransomware_family'):

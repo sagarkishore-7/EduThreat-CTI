@@ -904,6 +904,7 @@ EXTRACTION_SCHEMA = {
         "records_affected_min": {"type": "integer", "description": "Minimum records affected — only from an explicitly stated number in the article. Null if not stated."},
         "records_affected_max": {"type": "integer", "description": "Maximum records affected — only from an explicitly stated number in the article. Null if not stated."},
         "records_affected_exact": {"type": "integer", "description": "Exact records affected — only from an explicitly stated number in the article. Null if not stated."},
+        "pii_records_leaked": {"type": "integer", "description": "Number of PII records specifically confirmed as leaked, published, or exfiltrated externally (e.g. posted on a leak site, sold, or confirmed stolen). Distinct from records_affected_exact which counts all exposed records. Only from explicitly stated numbers. Null if not stated."},
         "data_volume_gb": {"type": "number", "description": "Data volume in GB — only if explicitly stated in the article. Null if not stated."},
         
         # ========== SYSTEM IMPACT (EXTENSIVE) ==========
@@ -1043,6 +1044,24 @@ EXTRACTION_SCHEMA = {
         "outage_duration_hours": {"type": "number", "description": "Total outage duration in hours. Only from explicitly stated figures. Null if not stated."},
         "downtime_days": {"type": "number", "description": "Days the institution was fully down or systems were completely unavailable. Only from explicitly stated figures. Null if not stated."},
         "partial_service_days": {"type": "number", "description": "Days operating in degraded/partial capacity after the initial outage. Only from explicitly stated figures. Null if not stated."},
+        "teaching_impacted": {
+            "type": "boolean",
+            "description": (
+                "Set to true if teaching, classes, or academic instruction was disrupted by the incident — "
+                "e.g. classes cancelled, moved online, exams postponed, semester extended. "
+                "Set to false only if the article explicitly states teaching continued normally. "
+                "Null if not mentioned."
+            )
+        },
+        "research_impacted": {
+            "type": "boolean",
+            "description": (
+                "Set to true if research operations were disrupted — e.g. research computing unavailable, "
+                "HPC clusters down, research data inaccessible, lab instruments offline, grants delayed. "
+                "Set to false only if the article explicitly states research was unaffected. "
+                "Null if not mentioned."
+            )
+        },
         "operational_impacts": {
             "description": "Operational disruptions caused by the attack. Select all that apply based on article text.",
             "type": "array",
@@ -1083,10 +1102,14 @@ EXTRACTION_SCHEMA = {
         "staff_affected": {"type": "integer", "description": "Number of staff/employees whose data was affected. Null if not stated."},
         "faculty_affected": {"type": "integer", "description": "Number of faculty members whose data was affected. Null if not stated."},
         "alumni_affected": {"type": "integer", "description": "Number of alumni whose data was affected. Null if not stated."},
+        "parents_affected": {"type": "integer", "description": "Number of parents or guardians whose data was affected (common in K-12 breaches where parent contact info is stored). Null if not stated."},
         "applicants_affected": {"type": "integer", "description": "Number of applicants or prospective students affected. Null if not stated."},
-        "patients_affected": {"type": "integer", "description": "Number of patients affected (for university hospitals). Null if not stated."},
+        "patients_affected": {"type": "integer", "description": "Number of patients affected (for university hospitals and medical schools). Null if not stated."},
         "donors_affected": {"type": "integer", "description": "Number of donors whose data was affected. Null if not stated."},
         "total_individuals_affected": {"type": "integer", "description": "Total number of individuals affected across all categories. Null if not stated."},
+        "users_affected_min": {"type": "integer", "description": "Minimum total users affected across all groups. Only from explicitly stated figures. Null if not stated."},
+        "users_affected_max": {"type": "integer", "description": "Maximum total users affected across all groups. Only from explicitly stated figures. Null if not stated."},
+        "users_affected_exact": {"type": "integer", "description": "Exact total users affected across all groups. Only from explicitly stated figures. Null if not stated."},
 
         # ========== FINANCIAL IMPACT ==========
         "estimated_total_cost_usd": {"type": "number", "description": "Total estimated cost in USD — only from explicitly stated figures. Null if not stated."},
@@ -1105,6 +1128,11 @@ EXTRACTION_SCHEMA = {
             "type": "string",
             "enum": ["catastrophic", "critical", "major", "moderate", "minor", "negligible"],
             "description": "How severely operations were disrupted: catastrophic — complete operational shutdown, major data loss; critical — major systems down for weeks; major — significant multi-day disruption; moderate — notable but limited scope; minor — quickly resolved; negligible — near-zero impact."
+        },
+        "business_impact": {
+            "type": "string",
+            "enum": ["critical", "severe", "moderate", "limited", "minimal"],
+            "description": "Canonical business impact label used by the dataset and dashboard. critical — existential or campus-wide shutdown; severe — major multi-day disruption; moderate — notable but contained impact; limited — short-lived or localized impact; minimal — very small business impact. Null if not stated."
         },
         
         # ========== REGULATORY IMPACT ==========
@@ -1150,6 +1178,10 @@ EXTRACTION_SCHEMA = {
             "description": "Set to true if the institution sent breach notifications to affected individuals or regulators. Look for: 'notified affected individuals', 'sent letters to', 'offering credit monitoring', 'emailed affected'. Null if not mentioned."
         },
         "notification_sent_date": {"type": "string", "description": "ISO 8601 date the breach notification was sent to affected individuals. Null if not stated."},
+        "dpa_notified": {
+            "type": "boolean",
+            "description": "Set to true if a Data Protection Authority or equivalent privacy regulator was explicitly notified (for example ICO, CNIL, or another national/state privacy regulator). Null if not mentioned."
+        },
         "regulators_notified": {
             "type": "array",
             "items": {"type": "string"},
@@ -1224,6 +1256,15 @@ EXTRACTION_SCHEMA = {
                 "unknown"
             ]
         },
+        "backup_status": {
+            "type": "string",
+            "enum": ["available_and_used", "available_not_used", "unavailable", "compromised", "unknown"],
+            "description": "Status of the victim's backups during recovery. available_and_used — backups existed and were used; available_not_used — backups existed but another recovery method was used; unavailable — no usable backups existed; compromised — backups existed but were encrypted, deleted, or otherwise unusable due to the attack; unknown — backup status not stated."
+        },
+        "backup_age_days": {
+            "type": "number",
+            "description": "Age in days of the backup used for restoration. Only from explicitly stated figures. Null if not stated."
+        },
         "recovery_started_date": {"type": "string", "description": "ISO 8601 date recovery operations began"},
         "recovery_completed_date": {"type": "string", "description": "ISO 8601 date recovery was completed"},
         "recovery_duration_days": {"type": "number", "description": "Total days from incident to full recovery. Only from explicitly stated figures. Null if not stated."},
@@ -1292,6 +1333,28 @@ EXTRACTION_SCHEMA = {
         "official_statement_url": {"type": "string", "description": "URL of the institution's official public statement about the incident. Null if not linked in the article."},
         "incident_report_url": {"type": "string", "description": "URL of a formal incident report or regulatory filing. Null if not linked in the article."},
         "updates_provided_count": {"type": "integer", "description": "Number of public updates the institution issued about this incident. Null if not stated."},
+        
+        # ========== RESEARCH IMPACT ==========
+        "research_projects_affected": {
+            "type": "integer",
+            "description": "Number of research projects directly impacted. Only from explicitly stated figures. Null if not stated."
+        },
+        "research_data_compromised": {
+            "type": "boolean",
+            "description": "Set to true if research datasets, unpublished results, intellectual property, or lab data were stolen, exposed, encrypted, or made unavailable. Null if not mentioned."
+        },
+        "publications_delayed": {
+            "type": "boolean",
+            "description": "Set to true if papers, dissertations, or other academic publications were delayed because of the incident. Null if not mentioned."
+        },
+        "grants_affected": {
+            "type": "boolean",
+            "description": "Set to true if funded research grants, grant reporting, or sponsored projects were delayed or disrupted. Null if not mentioned."
+        },
+        "research_area": {
+            "type": "string",
+            "description": "Research domain affected, such as biomedical, genomics, AI, defense, chemistry, or climate science. Null if not stated."
+        },
         
         # ========== CROSS-INCIDENT ANALYSIS FIELDS ==========
         "attack_campaign_name": {
@@ -1644,9 +1707,20 @@ EXTRACTION_SCHEMA_PART1 = {
                 ],
             },
         },
+        "teaching_impacted": {"type": "boolean", "description": "True if teaching/classes were disrupted. Null if not mentioned."},
+        "research_impacted": {"type": "boolean", "description": "True if research operations were disrupted. Null if not mentioned."},
         "students_affected": {"type": "integer"},
         "staff_affected": {"type": "integer"},
+        "faculty_affected": {"type": "integer"},
+        "alumni_affected": {"type": "integer"},
+        "parents_affected": {"type": "integer", "description": "Number of parents/guardians affected (common in K-12 breaches). Null if not stated."},
+        "applicants_affected": {"type": "integer"},
+        "patients_affected": {"type": "integer", "description": "Number of patients affected (university hospitals). Null if not stated."},
+        "pii_records_leaked": {"type": "integer", "description": "PII records confirmed leaked/published externally. Null if not stated."},
         "total_individuals_affected": {"type": "integer"},
+        "users_affected_min": {"type": "integer"},
+        "users_affected_max": {"type": "integer"},
+        "users_affected_exact": {"type": "integer"},
         "confidence_score": {"type": "number", "minimum": 0, "maximum": 1.0},
         "extraction_notes": {"type": "string"},
         "other_edu_incidents": {
@@ -1840,10 +1914,15 @@ EXTRACTION_SCHEMA_PART2 = {
         "legal_cost_usd": {"type": "number"},
         "insurance_claim": {"type": "boolean"},
         "insurance_payout_usd": {"type": "number"},
+        "business_impact": {
+            "type": "string",
+            "enum": ["critical", "severe", "moderate", "limited", "minimal"],
+        },
         "dwell_time_days": {"type": "number"},
         "incident_response_activated": {"type": "boolean"},
         "ir_firm_engaged": {"type": "string"},
         "forensics_firm_engaged": {"type": "string"},
+        "dpa_notified": {"type": "boolean"},
         "law_enforcement_involved": {
             "type": "boolean",
             "description": (
@@ -1866,6 +1945,11 @@ EXTRACTION_SCHEMA_PART2 = {
                 "clean_rebuild", "partial_backup_partial_rebuild", "ongoing", "unknown",
             ],
         },
+        "backup_status": {
+            "type": "string",
+            "enum": ["available_and_used", "available_not_used", "unavailable", "compromised", "unknown"],
+        },
+        "backup_age_days": {"type": "number"},
         "recovery_duration_days": {"type": "number"},
         "security_improvements": {
             "type": "array",
@@ -1900,6 +1984,11 @@ EXTRACTION_SCHEMA_PART2 = {
             "type": "string",
             "enum": ["excellent", "good", "adequate", "poor", "none"],
         },
+        "research_projects_affected": {"type": "integer"},
+        "research_data_compromised": {"type": "boolean"},
+        "publications_delayed": {"type": "boolean"},
+        "grants_affected": {"type": "boolean"},
+        "research_area": {"type": "string"},
         "attack_campaign_name": {"type": "string"},
         "sector_targeting_pattern": {
             "type": "string",

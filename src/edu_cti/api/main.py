@@ -37,6 +37,7 @@ from .models import (
     UserImpact,
     FinancialImpact,
     RegulatoryImpact,
+    ResearchImpact,
     RecoveryMetrics,
     TransparencyMetrics,
     # Advanced analytics models
@@ -673,33 +674,59 @@ async def get_incident(incident_id: str):
             students_affected=incident_data.get("students_affected"),
             staff_affected=incident_data.get("staff_affected"),
             faculty_affected=incident_data.get("faculty_affected"),
+            alumni_affected=incident_data.get("alumni_affected"),
+            parents_affected=incident_data.get("parents_affected"),
+            applicants_affected=incident_data.get("applicants_affected"),
+            patients_affected=incident_data.get("patients_affected"),
+            users_affected_min=incident_data.get("users_affected_min"),
+            users_affected_max=incident_data.get("users_affected_max"),
+            users_affected_exact=incident_data.get("users_affected_exact"),
             total_individuals_affected=incident_data.get("users_affected_exact"),
         )
         
         financial_impact = FinancialImpact(
+            estimated_total_cost_usd=incident_data.get("total_cost_estimate"),
             ransom_cost_usd=incident_data.get("ransom_amount"),
             recovery_cost_usd=incident_data.get("recovery_costs_max"),
             legal_cost_usd=incident_data.get("legal_costs"),
+            notification_cost_usd=incident_data.get("notification_costs"),
             insurance_claim=incident_data.get("insurance_claim"),
             insurance_payout_usd=incident_data.get("insurance_claim_amount"),
+            business_impact=incident_data.get("business_impact"),
         )
         
         regulatory_impact = RegulatoryImpact(
+            applicable_regulations=incident_data.get("regulatory_context") if isinstance(incident_data.get("regulatory_context"), list) else None,
             gdpr_breach=incident_data.get("gdpr_breach"),
             hipaa_breach=incident_data.get("hipaa_breach"),
             ferpa_breach=incident_data.get("ferpa_breach"),
             breach_notification_required=incident_data.get("breach_notification_required"),
             notification_sent=incident_data.get("notifications_sent"),
+            notification_sent_date=incident_data.get("notifications_sent_date"),
+            dpa_notified=incident_data.get("dpa_notified"),
+            investigation_opened=incident_data.get("investigation_opened"),
             fine_imposed=incident_data.get("fine_imposed"),
             fine_amount_usd=incident_data.get("fine_amount"),
             lawsuits_filed=incident_data.get("lawsuits_filed"),
             class_action_filed=incident_data.get("class_action"),
         )
 
+        research_impact = ResearchImpact(
+            research_projects_affected=incident_data.get("research_projects_affected"),
+            research_data_compromised=incident_data.get("research_data_compromised"),
+            publications_delayed=incident_data.get("publications_delayed"),
+            grants_affected=incident_data.get("grants_affected"),
+            research_area=incident_data.get("research_area"),
+        )
+
         recovery_metrics = RecoveryMetrics(
             recovery_duration_days=incident_data.get("recovery_timeframe_days"),
             from_backup=incident_data.get("from_backup"),
+            backup_status=incident_data.get("backup_status"),
+            backup_age_days=incident_data.get("backup_age_days"),
             mfa_implemented=incident_data.get("mfa_implemented"),
+            law_enforcement_involved=incident_data.get("law_enforcement_involved"),
+            law_enforcement_agency=incident_data.get("law_enforcement_agency"),
             ir_firm_engaged=incident_data.get("incident_response_firm"),
             forensics_firm=incident_data.get("forensics_firm"),
         )
@@ -747,6 +774,7 @@ async def get_incident(incident_id: str):
             user_impact=user_impact,
             financial_impact=financial_impact,
             regulatory_impact=regulatory_impact,
+            research_impact=research_impact,
             recovery_metrics=recovery_metrics,
             transparency_metrics=transparency_metrics,
             llm_enriched=bool(incident_data.get("llm_enriched")),

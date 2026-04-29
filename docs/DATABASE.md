@@ -198,7 +198,7 @@ CREATE TABLE incident_enrichments_flat (
     -- Attack Details (88+ fields)
     attack_category TEXT,
     attack_vector TEXT,
-    initial_access_vector TEXT,
+    access_vector TEXT,
     ransomware_family TEXT,
     threat_actor_name TEXT,
     -- ... (see full schema in phase2/storage/db.py)
