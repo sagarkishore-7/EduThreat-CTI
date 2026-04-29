@@ -2,6 +2,42 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.8.0 (2026-04-29)
+
+**Focus**: Instructor-Based LLM Self-Correction Layer
+
+### Key Features
+
+- **Instructor correction pass** (`src/edu_cti/pipeline/phase2/extraction/instructor_corrector.py`) — after the main GBNF-constrained extraction, a targeted second LLM call fires when ≥2 critical fields (attack_category, institution_type, attack_vector, country) are null/unknown. Uses the `instructor` library's Pydantic retry loop: if the LLM returns an invalid enum value, Pydantic raises a `ValueError` with the full list of valid options; Instructor sends that error back as a follow-up message and retries automatically (up to 3 times).
+
+- **Pydantic validators on `CriticalFieldsCorrection`** — `@field_validator` on `attack_category`, `institution_type`, and `attack_vector` normalize the LLM response (lowercase, strip, replace spaces with underscores) and validate against frozenset enum tables. Error messages enumerate valid choices so the LLM self-corrects in the retry.
+
+- **Cost model** — fires for ~20% of incidents; each correction call is ~3s on DeepSeek V3.1; net overhead ~0.6s per incident on average.
+
+- **Graceful degradation on Python 3.9** — `instructor>=1.0.0` uses Python 3.10+ union syntax (`str | Path`) that raises `TypeError` during module evaluation on 3.9. The module catches both `ImportError` and `TypeError`, sets `INSTRUCTOR_AVAILABLE = False`, and makes the correction pass a no-op. Production (Railway, Python 3.11+) runs the full path.
+
+- **`instructor_correction_applied_total` metric** — counter incremented in `enrichment.py` when corrections are applied; exposed in `metrics.research_summary()`.
+
+- **Wired into both enrichment paths** — correction is called in `_enrich_article()` (single-chunk) and `_enrich_article_split()` (multi-chunk, after merge), before `json_to_cti_enrichment()`.
+
+### Tests
+
+- `tests/phase2/test_instructor_corrector.py` — 38 unit tests covering validators, null-field detection, trigger threshold, and the full `apply_instructor_corrections()` function.
+- `tests/test_instructor_e2e.py` — 24 E2E tests covering: no-correction path, correction filling null fields, Pydantic validation retry flow, mapper/DB integration after correction, validator error messages, realistic incident payloads, and metric tracking.
+- All 800 tests pass (18 skipped) on Python 3.9.
+
+### Dependencies
+
+```
+instructor>=1.0.0; python_version >= "3.10"
+```
+
+### Breaking Changes
+
+None.
+
+---
+
 ## Version 2.7.1 (2026-04-23)
 
 **Focus**: Exception Handling Hardening

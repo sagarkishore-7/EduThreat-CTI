@@ -522,6 +522,7 @@ class MetricsCollector:
                 "llm_edu_relevance_fail": _counter_total("llm_education_relevance_fail_total"),
                 "llm_duration_seconds": _histogram_summary("llm_duration_seconds"),
                 "llm_confidence_score": _histogram_summary("llm_confidence_score"),
+                "instructor_corrections_applied": _counter_total("instructor_correction_applied_total"),
             },
             "dataset_completeness": {
                 "incident_completeness_score": _histogram_summary("incident_completeness_score"),

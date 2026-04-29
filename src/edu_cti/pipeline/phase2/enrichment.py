@@ -12,6 +12,10 @@ import time as _time_module
 from typing import Optional, Dict, List, Tuple, Any
 
 from src.edu_cti.core import metrics as _metrics
+from src.edu_cti.pipeline.phase2.extraction.instructor_corrector import (
+    should_trigger_correction,
+    apply_instructor_corrections,
+)
 
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
@@ -567,7 +571,7 @@ class IncidentEnricher:
                         ],
                         format=None,
                         stream=False,
-                        temperature=0.1,
+                        temperature=0.0,
                     )
                     # Extract plain-text content from Ollama response
                     _summary_text: Optional[str] = None
@@ -595,6 +599,20 @@ class IncidentEnricher:
                 except Exception as _e:
                     logger.warning(f"Summary LLM call failed (non-fatal): {_e}")
             # ─────────────────────────────────────────────────────────────────
+
+            # ── Instructor correction pass (targeted retry for null critical fields) ──
+            # Fires only when ≥2 of {attack_category, institution_type, attack_vector,
+            # country} are null/unknown. Makes ONE additional LLM call; never blocks
+            # the main pipeline on failure.
+            if coerced_edu is not False and should_trigger_correction(json_data):
+                json_data, _corrected = apply_instructor_corrections(
+                    json_data=json_data,
+                    article_text=combined_text,
+                    institution_name=json_data.get("institution_name") or "Unknown institution",
+                    ollama_client=self.llm_client,
+                )
+                if _corrected:
+                    _metrics.increment("instructor_correction_applied_total")
 
             # Map to CTIEnrichmentResult
             result = json_to_cti_enrichment(json_data, primary_url, incident)
@@ -1006,7 +1024,7 @@ class IncidentEnricher:
                     ],
                     format=None,
                     stream=False,
-                    temperature=0.1,
+                    temperature=0.0,
                 )
                 _summary_text: Optional[str] = None
                 if hasattr(_chat_resp, "message") and hasattr(_chat_resp.message, "content"):
@@ -1029,6 +1047,17 @@ class IncidentEnricher:
                         merged["enriched_summary"] = _summary_text
             except Exception as _e:
                 logger.warning(f"Split extraction summary call failed (non-fatal): {_e}")
+
+        # ── Instructor correction pass (split path) ────────────────────────────
+        if should_trigger_correction(merged):
+            merged, _corrected = apply_instructor_corrections(
+                json_data=merged,
+                article_text=combined_text,
+                institution_name=merged.get("institution_name") or "Unknown institution",
+                ollama_client=self.llm_client,
+            )
+            if _corrected:
+                _metrics.increment("instructor_correction_applied_total")
 
         # ── Map to CTIEnrichmentResult ────────────────────────────────────────
         result = json_to_cti_enrichment(merged, primary_url, incident)

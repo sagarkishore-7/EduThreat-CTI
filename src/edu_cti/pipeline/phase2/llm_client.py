@@ -111,7 +111,7 @@ class OllamaLLMClient:
         messages: List[Dict[str, str]],
         format: Optional[Dict[str, Any]] = None,
         stream: bool = False,
-        temperature: float = 0.1,  # Low temperature for deterministic structured output
+        temperature: float = 0.0,  # Zero temperature for fully deterministic structured output
     ) -> Any:
         """
         Send chat request to Ollama.
@@ -192,7 +192,7 @@ class OllamaLLMClient:
                     messages=messages,
                     format=format_param,
                     stream=False,
-                    temperature=0.1,  # Low for deterministic structured output
+                    temperature=0.0,
                 )
                 
                 # Extract content from response

@@ -24,6 +24,7 @@ googlenewsdecoder>=0.1.7
 
 # LLM enrichment
 ollama>=0.3.0
+instructor>=1.0.0; python_version >= "3.10"
 
 # API Server
 fastapi>=0.109.0
