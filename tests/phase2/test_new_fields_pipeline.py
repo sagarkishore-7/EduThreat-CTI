@@ -468,6 +468,7 @@ class TestDDLInit:
             CREATE TABLE incident_enrichment_runs (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 incident_id TEXT NOT NULL,
+                enrichment_data TEXT NOT NULL,
                 created_at TEXT NOT NULL
             )
             """
@@ -504,6 +505,55 @@ class TestDDLInit:
         assert "final_enrichment_json" in run_cols
         assert "access_vector" in flat_cols
         assert "notification_delay_days" in flat_cols
+        conn.close()
+
+    def test_save_enrichment_result_writes_into_legacy_not_null_enrichment_tables(self, tmp_path):
+        db_path = tmp_path / "legacy_enrichment_write.db"
+        conn = get_connection(db_path)
+        init_db(conn)
+        init_incident_enrichments_table(conn)
+        conn.execute("DROP TABLE IF EXISTS incident_enrichments")
+        conn.execute("DROP TABLE IF EXISTS incident_enrichment_runs")
+        conn.execute(
+            """
+            CREATE TABLE incident_enrichments (
+                incident_id TEXT PRIMARY KEY,
+                enrichment_data TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
+            CREATE TABLE incident_enrichment_runs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                incident_id TEXT NOT NULL,
+                enrichment_data TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )
+            """
+        )
+        init_incident_enrichments_table(conn)
+
+        incident = _make_incident("legacy-save")
+        insert_incident(conn, incident)
+        assert save_enrichment_result(conn, incident.incident_id, _full_enrichment()) is True
+
+        latest_row = conn.execute(
+            "SELECT enrichment_data, final_enrichment_json FROM incident_enrichments WHERE incident_id = ?",
+            (incident.incident_id,),
+        ).fetchone()
+        run_row = conn.execute(
+            "SELECT enrichment_data, final_enrichment_json FROM incident_enrichment_runs WHERE incident_id = ?",
+            (incident.incident_id,),
+        ).fetchone()
+        assert latest_row is not None
+        assert latest_row["enrichment_data"] is not None
+        assert latest_row["final_enrichment_json"] is not None
+        assert run_row is not None
+        assert run_row["enrichment_data"] is not None
+        assert run_row["final_enrichment_json"] is not None
         conn.close()
 
     def test_init_db_repairs_legacy_incidents_table_in_place(self, tmp_path):

@@ -277,6 +277,12 @@ def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
     return row is not None
 
 
+def _table_columns(conn: sqlite3.Connection, table_name: str) -> set:
+    return {
+        row[1] for row in conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+    }
+
+
 def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
     """
     Initialize the incident_enrichments table with optimized structure.
@@ -2117,6 +2123,10 @@ def save_enrichment_result(
 
     # Save current/latest enrichment snapshots
     try:
+        enrichment_columns = _table_columns(conn, "incident_enrichments")
+        run_columns = _table_columns(conn, "incident_enrichment_runs")
+        legacy_shadow_json = final_enrichment_json
+
         cur = conn.execute(
             "SELECT incident_id FROM incident_enrichments WHERE incident_id = ?",
             (incident_id,)
@@ -2140,91 +2150,118 @@ def save_enrichment_result(
         )
 
         if exists:
+            update_fields = [
+                "raw_response_payload = ?",
+                "raw_extraction_json = ?",
+                "final_enrichment_json = ?",
+                "storage_metadata = ?",
+                "enrichment_version = ?",
+                "enrichment_confidence = ?",
+                "llm_provider = ?",
+                "llm_model = ?",
+                "extraction_mode = ?",
+                "prompt_version = ?",
+                "schema_version = ?",
+                "mapper_version = ?",
+                "post_processing_version = ?",
+            ]
+            update_params = list(latest_values)
+            if "enrichment_data" in enrichment_columns:
+                update_fields.append("enrichment_data = ?")
+                update_params.append(legacy_shadow_json)
+            update_fields.append("updated_at = ?")
+            update_params.extend([now, incident_id])
             conn.execute(
-                """
+                f"""
                 UPDATE incident_enrichments
-                SET raw_response_payload = ?,
-                    raw_extraction_json = ?,
-                    final_enrichment_json = ?,
-                    storage_metadata = ?,
-                    enrichment_version = ?,
-                    enrichment_confidence = ?,
-                    llm_provider = ?,
-                    llm_model = ?,
-                    extraction_mode = ?,
-                    prompt_version = ?,
-                    schema_version = ?,
-                    mapper_version = ?,
-                    post_processing_version = ?,
-                    updated_at = ?
+                SET {', '.join(update_fields)}
                 WHERE incident_id = ?
                 """,
-                latest_values + (now, incident_id)
+                tuple(update_params)
             )
         else:
+            insert_columns = [
+                "incident_id",
+                "raw_response_payload",
+                "raw_extraction_json",
+                "final_enrichment_json",
+                "storage_metadata",
+                "enrichment_version",
+                "enrichment_confidence",
+                "llm_provider",
+                "llm_model",
+                "extraction_mode",
+                "prompt_version",
+                "schema_version",
+                "mapper_version",
+                "post_processing_version",
+                "created_at",
+                "updated_at",
+            ]
+            insert_values = [
+                incident_id,
+                *latest_values,
+                now,
+                now,
+            ]
+            if "enrichment_data" in enrichment_columns:
+                insert_columns.insert(1, "enrichment_data")
+                insert_values.insert(1, legacy_shadow_json)
             conn.execute(
-                """
+                f"""
                 INSERT INTO incident_enrichments (
-                    incident_id,
-                    raw_response_payload,
-                    raw_extraction_json,
-                    final_enrichment_json,
-                    storage_metadata,
-                    enrichment_version,
-                    enrichment_confidence,
-                    llm_provider,
-                    llm_model,
-                    extraction_mode,
-                    prompt_version,
-                    schema_version,
-                    mapper_version,
-                    post_processing_version,
-                    created_at,
-                    updated_at
+                    {', '.join(insert_columns)}
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES ({', '.join(['?'] * len(insert_columns))})
                 """,
-                (incident_id,) + latest_values + (now, now)
+                tuple(insert_values)
             )
 
+        run_insert_columns = [
+            "incident_id",
+            "raw_response_payload",
+            "raw_extraction_json",
+            "final_enrichment_json",
+            "storage_metadata",
+            "enrichment_version",
+            "enrichment_confidence",
+            "llm_provider",
+            "llm_model",
+            "extraction_mode",
+            "prompt_version",
+            "schema_version",
+            "mapper_version",
+            "post_processing_version",
+            "created_at",
+        ]
+        run_insert_values = [
+            incident_id,
+            raw_response_payload,
+            json.dumps(raw_snapshot, indent=2),
+            final_enrichment_json,
+            storage_metadata,
+            _ENRICHMENT_STORAGE_VERSION,
+            enrichment_confidence,
+            _metadata_value(storage_debug, "provider"),
+            _metadata_value(storage_debug, "model"),
+            _metadata_value(storage_debug, "extraction_mode"),
+            _metadata_value(storage_debug, "prompt_version"),
+            _metadata_value(storage_debug, "schema_version"),
+            _metadata_value(storage_debug, "mapper_version"),
+            _metadata_value(storage_debug, "post_processing_version"),
+            now,
+        ]
+        if "enrichment_data" in run_columns:
+            run_insert_columns.insert(1, "enrichment_data")
+            run_insert_values.insert(1, legacy_shadow_json)
         conn.execute(
-            """
+            f"""
             INSERT INTO incident_enrichment_runs (
-                incident_id,
-                raw_response_payload,
-                raw_extraction_json,
-                final_enrichment_json,
-                storage_metadata,
-                enrichment_version,
-                enrichment_confidence,
-                llm_provider,
-                llm_model,
-                extraction_mode,
-                prompt_version,
-                schema_version,
-                mapper_version,
-                post_processing_version,
-                created_at
+                {', '.join(run_insert_columns)}
             )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES ({', '.join(['?'] * len(run_insert_columns))})
             """,
-            (
-                incident_id,
-                raw_response_payload,
-                json.dumps(raw_snapshot, indent=2),
-                final_enrichment_json,
-                storage_metadata,
-                _ENRICHMENT_STORAGE_VERSION,
-                enrichment_confidence,
-                _metadata_value(storage_debug, "provider"),
-                _metadata_value(storage_debug, "model"),
-                _metadata_value(storage_debug, "extraction_mode"),
-                _metadata_value(storage_debug, "prompt_version"),
-                _metadata_value(storage_debug, "schema_version"),
-                _metadata_value(storage_debug, "mapper_version"),
-                _metadata_value(storage_debug, "post_processing_version"),
-                now,
-            )
+            tuple(run_insert_values)
         )
     except Exception:
         conn.execute("ROLLBACK")
