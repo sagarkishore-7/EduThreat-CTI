@@ -2060,6 +2060,23 @@ def save_enrichment_result(
     if not flat_data.get('city'):
         flat_data['city'] = city
     _apply_curated_note_fallbacks(flat_data, notes_fallback)
+
+    # Inject timeline into flat_data so _fill_timeline_dates() can operate on it.
+    # Without this, flat_data["timeline_json"] is never set and the date-fill is a no-op.
+    _pre_pp_timeline = (
+        enrichment_result.timeline
+        if isinstance(enrichment_result.timeline, list)
+        else (raw_json_data or {}).get("timeline")
+    )
+    if _pre_pp_timeline:
+        try:
+            _tl_dicts = (
+                [e.model_dump() if hasattr(e, "model_dump") else dict(e) for e in _pre_pp_timeline]
+            )
+            flat_data["timeline_json"] = json.dumps(_tl_dicts)
+        except Exception:
+            pass
+
     apply_post_processing(flat_data, incident_row, summary=summary)
 
     # Promote status to "confirmed" when enriched summary contains confirmation language.
@@ -2356,11 +2373,24 @@ def save_enrichment_result(
         )
         _save_incident_mitre_techniques(conn, incident_id, mitre_source)
 
-        timeline_source = (
-            enrichment_result.timeline
-            if isinstance(enrichment_result.timeline, list)
-            else (raw_json_data or {}).get("timeline")
-        )
+        # Use post-processed timeline from flat_data if available (dates may have been
+        # filled by _fill_timeline_dates); otherwise fall back to original enrichment data.
+        _timeline_json_str = flat_data.get("timeline_json")
+        if _timeline_json_str:
+            try:
+                timeline_source = json.loads(_timeline_json_str)
+            except (json.JSONDecodeError, TypeError):
+                timeline_source = (
+                    enrichment_result.timeline
+                    if isinstance(enrichment_result.timeline, list)
+                    else (raw_json_data or {}).get("timeline")
+                )
+        else:
+            timeline_source = (
+                enrichment_result.timeline
+                if isinstance(enrichment_result.timeline, list)
+                else (raw_json_data or {}).get("timeline")
+            )
         _save_incident_timeline(conn, incident_id, timeline_source)
 
         conn.commit()
