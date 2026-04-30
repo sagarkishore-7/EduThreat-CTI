@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import re
+from datetime import datetime
 from typing import Any, Dict, Optional
 
 # ── Ransomware family keyword scan ───────────────────────────────────────────────
@@ -1108,6 +1109,81 @@ def _fill_timeline_dates(flat_data: Dict[str, Any]) -> None:
         flat_data["timeline_json"] = json.dumps(events)
 
 
+def _fill_transparency_from_timeline(flat_data: Dict[str, Any]) -> None:
+    """
+    Derive transparency fields from timeline disclosure/notification events.
+
+    If public_disclosure_date is not already set by the LLM, scan timeline events
+    for disclosure/notification/public_statement events with dates and use the
+    earliest as the disclosure date. Then calculate disclosure_delay_days and
+    transparency_level from the gap to incident_date.
+
+    Thresholds:
+      0–3 days  → 'full'    (GDPR-grade rapid disclosure)
+      4–30 days → 'partial' (within standard notification window)
+      31–90 days→ 'minimal' (delayed but eventual)
+      >90 days  → 'none'    (very delayed)
+    """
+    if flat_data.get("public_disclosure_date"):
+        return  # LLM already filled — never overwrite
+
+    timeline_raw = flat_data.get("timeline_json")
+    if not timeline_raw:
+        return
+
+    try:
+        events = json.loads(timeline_raw) if isinstance(timeline_raw, str) else list(timeline_raw)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not isinstance(events, list):
+        return
+
+    _DISCLOSURE_TYPES = {"disclosure", "public_statement", "notification"}
+
+    earliest_dt = None
+    for event in events:
+        if not isinstance(event, dict):
+            continue
+        if event.get("event_type") not in _DISCLOSURE_TYPES:
+            continue
+        date_str = event.get("date")
+        if not date_str:
+            continue
+        try:
+            event_dt = datetime.strptime(str(date_str)[:10], "%Y-%m-%d")
+            if earliest_dt is None or event_dt < earliest_dt:
+                earliest_dt = event_dt
+        except (ValueError, TypeError):
+            continue
+
+    if earliest_dt is None:
+        return
+
+    flat_data["public_disclosure_date"] = earliest_dt.strftime("%Y-%m-%d")
+
+    if flat_data.get("public_disclosure") is None:
+        flat_data["public_disclosure"] = True
+
+    incident_date_str = flat_data.get("incident_date")
+    if incident_date_str and flat_data.get("disclosure_delay_days") is None:
+        try:
+            incident_dt = datetime.strptime(str(incident_date_str)[:10], "%Y-%m-%d")
+            delay_days = max(0, (earliest_dt - incident_dt).days)
+            if delay_days < 3650:  # sanity: ignore implausible gaps > 10 years
+                flat_data["disclosure_delay_days"] = float(delay_days)
+                if not flat_data.get("transparency_level"):
+                    if delay_days <= 3:
+                        flat_data["transparency_level"] = "full"
+                    elif delay_days <= 30:
+                        flat_data["transparency_level"] = "partial"
+                    elif delay_days <= 90:
+                        flat_data["transparency_level"] = "minimal"
+                    else:
+                        flat_data["transparency_level"] = "none"
+        except (ValueError, TypeError):
+            pass
+
+
 def apply_post_processing(
     flat_data: Dict[str, Any],
     incident_row: Optional[Any],
@@ -1201,6 +1277,10 @@ def apply_post_processing(
     # 11b. Fill null timeline dates using incident_date / source_published_date as anchors.
     # Runs after the guard so we never re-fill a date that was just nulled out.
     _fill_timeline_dates(flat_data)
+
+    # 11c. Derive transparency_metrics fields from dated disclosure/notification timeline events.
+    # Runs after 11b so timeline events have their best-available dates before we scan them.
+    _fill_transparency_from_timeline(flat_data)
 
     # 12b. law_enforcement_involved: infer from agencies array or enriched_summary
     # when LLM left the boolean null despite mentioning an agency.
