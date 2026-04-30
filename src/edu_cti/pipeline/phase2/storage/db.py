@@ -1867,62 +1867,39 @@ def save_enrichment_result(
 
     # Update incident with enrichment data
     summary = enrichment_result.enriched_summary
-    
-    # Build timeline JSON (handle None/empty)
-    timeline_json = None
-    if enrichment_result.timeline:
-        timeline_json = json.dumps([event.model_dump() for event in enrichment_result.timeline])
-    
-    # Build MITRE ATT&CK JSON (handle None/empty)
-    mitre_json = None
-    if enrichment_result.mitre_attack_techniques:
-        mitre_json = json.dumps([tech.model_dump() for tech in enrichment_result.mitre_attack_techniques])
-    
-    # Build attack dynamics JSON
-    attack_dynamics_json = None
-    if enrichment_result.attack_dynamics:
-        attack_dynamics_json = enrichment_result.attack_dynamics.model_dump_json(indent=2)
-    
-    # Extract incident_date from LLM response (timeline first event or direct field)
+
+    # Extract incident_date from raw JSON or timeline fallback
     llm_incident_date = None
     llm_date_precision = None
-    
-    # Try to get incident_date and discovery_date from raw JSON data (direct extraction)
     llm_discovery_date = None
     if raw_json_data:
         llm_incident_date = _scalar(raw_json_data.get("incident_date"))
         llm_date_precision = _scalar(raw_json_data.get("incident_date_precision"))
         llm_discovery_date = _scalar(raw_json_data.get("discovery_date"))
-    
-    # Fallback: Try to extract from timeline (earliest event)
+
     if not llm_incident_date and enrichment_result.timeline:
-        # Get the earliest date from timeline events
         dated_events = [e for e in enrichment_result.timeline if e.date]
         if dated_events:
-            # Sort by date and get earliest
             earliest_event = min(dated_events, key=lambda e: e.date)
             llm_incident_date = earliest_event.date
             llm_date_precision = earliest_event.date_precision or "approximate"
-    
-    # Update incident record - include incident_date and country if LLM extracted them
+
+    # Structured data (timeline, MITRE, attack_dynamics) is now stored exclusively in
+    # junction tables (incident_timeline, incident_mitre_techniques, incident_vulnerabilities).
+    # llm_timeline / llm_mitre_attack / llm_attack_dynamics columns on incidents are legacy;
+    # we no longer write to them so the authoritative copy stays in junction tables only.
     update_fields = """
         llm_enriched = 1,
         llm_enriched_at = ?,
         primary_url = ?,
         llm_summary = ?,
-        llm_timeline = ?,
-        llm_mitre_attack = ?,
-        llm_attack_dynamics = ?,
         last_updated_at = ?
     """
-    
+
     update_params = [
         now,
         primary_url,
         summary,
-        timeline_json,
-        mitre_json,
-        attack_dynamics_json,
         now,
     ]
     

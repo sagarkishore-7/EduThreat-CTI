@@ -17,7 +17,6 @@ from src.edu_cti.core.models import BaseIncident
 # Import curated source builders (sources with dedicated education sector sections)
 from src.edu_cti.sources.curated import (
     build_konbriefing_base_incidents,
-    build_ransomwarelive_incidents,
     build_databreach_incidents,
     build_comparitech_incidents,
 )
@@ -45,6 +44,7 @@ from src.edu_cti.sources.rss import (
 
 # Import API-based source builders (free APIs, no scraping)
 from src.edu_cti.sources.api.ransomwatch import build_ransomlook_incidents
+from src.edu_cti.sources.api.ransomware_live import build_ransomwarelive_incidents
 # NOTE: threatfox, urlhaus, otx_alienvault, cisa_kev moved to sources/future_work/
 # They provide IOC/malware hashes — not news articles about education sector incidents.
 # Re-enable if you want to build a broader threat intelligence dataset in future.
@@ -53,10 +53,9 @@ from src.edu_cti.sources.api.ransomwatch import build_ransomlook_incidents
 from src.edu_cti.sources.rss.cisa_rss import build_cisa_rss_incidents
 from src.edu_cti.sources.rss.international_rss import build_international_rss_incidents
 
-# Curated sources registry (sources with dedicated education sector endpoints/sections)
+# Curated sources registry (HTML-scraped sites with dedicated education sector sections)
 CURATED_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "konbriefing": build_konbriefing_base_incidents,
-    "ransomwarelive": build_ransomwarelive_incidents,
     "databreach": build_databreach_incidents,
     "comparitech": build_comparitech_incidents,
 }
@@ -86,9 +85,10 @@ PAID_RSS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "oxylabs_news": build_oxylabs_news_incidents,
 }
 
-# API-based sources registry (free APIs, no web scraping needed)
+# API-based sources registry (free REST APIs, no web scraping needed)
 API_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "ransomlook": build_ransomlook_incidents,
+    "ransomwarelive": build_ransomwarelive_incidents,
     # threatfox, urlhaus, otx_alienvault, cisa_kev removed — see sources/future_work/
 }
 

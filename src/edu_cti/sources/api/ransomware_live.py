@@ -1,10 +1,35 @@
+"""
+Ransomware.live API source for EduThreat-CTI.
+
+Fetches education-sector victims from the ransomware.live v2 API.
+API endpoint: https://api.ransomware.live/v2/sectorvictims/Education
+
+Key fields from API:
+  victim       – victim name
+  domain       – victim domain
+  group        – ransomware group
+  attackdate   – estimated attack date (ISO datetime, when group claims attack occurred)
+  discovered   – when the claim was posted on the leak site (disclosure/discovery date)
+  claim_url    – .onion link to the ransomware group's claim post
+  screenshot   – screenshot of the claim page
+  press        – list of press article URLs (used for enrichment)
+  infostealer  – dict with {employees, users, thirdparties, infostealer_stats} counts
+  description  – brief victim description from the group
+  country      – ISO-2 country code
+  data_size    – claimed data exfiltrated (string)
+  ransom       – ransom demand info
+"""
+
+import json
+import logging
 import time
-from typing import Callable, List, Dict, Any, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from src.edu_cti.core.http import HttpClient, build_http_client
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.utils import now_utc_iso, parse_date_with_precision
 
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.ransomware.live/v2"
 MAX_RETRIES = 3
@@ -18,106 +43,45 @@ def _safe_str(x: Any) -> str:
 
 
 def _get_json(path: str, client: Optional[HttpClient] = None) -> Any:
-    """
-    Fetch JSON from ransomware.live API using HttpClient.
-    Note: This is an API endpoint, so Selenium fallback is not needed,
-    but we use HttpClient for consistent retry/backoff handling.
-    """
     http_client = client or build_http_client()
     url = BASE_URL + path
-    attempt = 0
-    while True:
-        attempt += 1
+    for attempt in range(1, MAX_RETRIES + 1):
         try:
-            # Use HttpClient.get for API calls (not get_soup since it's JSON)
             resp = http_client.get(url, allow_status=[429], to_soup=False)
             if resp is None:
                 raise Exception(f"Failed to fetch {url}")
-            
-            # Handle rate limiting (429)
             if resp.status_code == 429 and attempt < MAX_RETRIES:
                 time.sleep(BACKOFF_SECONDS * attempt)
                 continue
-            
-            # Check for other errors
             if resp.status_code >= 400:
-                raise Exception(f"HTTP {resp.status_code} error for {url}")
-            
-            # Parse JSON from response text
-            import json
+                raise Exception(f"HTTP {resp.status_code} for {url}")
             return json.loads(resp.text)
-        except Exception as e:
+        except Exception as exc:
             if attempt >= MAX_RETRIES:
                 raise
+            logger.debug(f"ransomware.live fetch attempt {attempt} failed: {exc}")
             time.sleep(BACKOFF_SECONDS * attempt)
 
 
 def _guess_institution_type(name: str, description: str = "") -> Optional[str]:
-    """
-    Very rough guess based on name/description.
-    Refined later in the LLM enrichment phase.
-    """
     base = f"{name} {description}".lower()
-
     if any(k in base for k in ["school district", "county schools", "high school"]):
         return "School"
-
-    if any(
-        k in base
-        for k in [
-            "school",
-            "schule",
-            "école",
-            "escuela",
-            "colegio",
-            "scuola",
-            "skola",
-        ]
-    ):
+    if any(k in base for k in ["school", "schule", "école", "escuela", "colegio", "scuola", "skola"]):
         return "School"
-
-    if any(
-        k in base
-        for k in [
-            "university",
-            "universität",
-            "universidade",
-            "universidad",
-            "université",
-            "università",
-        ]
-    ):
+    if any(k in base for k in ["university", "universität", "universidade", "universidad", "université", "università"]):
         return "University"
-
-    if any(
-        k in base
-        for k in [
-            "institute",
-            "instituto",
-            "institut",
-            "research",
-            "academy",
-            "akademie",
-            "akademia",
-        ]
-    ):
+    if any(k in base for k in ["institute", "instituto", "institut", "research", "academy", "akademie", "akademia"]):
         return "Research Institute"
-
     return "Unknown"
 
 
 def _extract_press_article_urls(press_field: Any) -> List[str]:
-    """
-    For enrichment we ONLY want real articles / external sources.
-    - Ignore ransomware.live internal IDs.
-    - Ignore screenshots/images.
-    """
     urls: List[str] = []
     if not press_field:
         return urls
 
     candidates: List[str] = []
-
     if isinstance(press_field, dict):
         for key in ("source", "url", "link"):
             val = _safe_str(press_field.get(key))
@@ -133,71 +97,48 @@ def _extract_press_article_urls(press_field: Any) -> List[str]:
                     if val:
                         candidates.append(val)
 
+    seen, uniq = set(), []
     for u in candidates:
         u = u.strip()
         if not u.startswith(("http://", "https://")):
             continue
-        # Skip ransomware.live internal pages
         if "ransomware.live" in u:
             continue
-        # Skip obvious images
         if u.lower().endswith((".png", ".jpg", ".jpeg", ".gif", ".webp")):
             continue
-        urls.append(u)
-
-    # uniquify
-    seen, uniq = set(), []
-    for u in urls:
         if u not in seen:
             seen.add(u)
             uniq.append(u)
     return uniq
 
 
-def fetch_sector_education_victims(client: Optional[HttpClient] = None) -> List[Dict[str, Any]]:
-    """
-    Uses /sectorvictims/Education to get education-sector victims.
-    Response (per your sample) is a list of dicts.
-    """
-    data = _get_json("/sectorvictims/Education", client=client)
-    if isinstance(data, list):
-        victims = data
-    elif isinstance(data, dict):
-        victims = data.get("victims") or data.get("data") or []
-    else:
-        victims = []
-    return victims
+def _build_infostealer_note(infostealer: Any) -> Optional[str]:
+    """Summarise the infostealer dict into a compact note fragment."""
+    if not isinstance(infostealer, dict) or not infostealer:
+        return None
+    parts = []
+    for key in ("employees", "users", "thirdparties"):
+        if key in infostealer:
+            parts.append(f"{key}={infostealer[key]}")
+    # Top-3 stealer families by count
+    stats = infostealer.get("infostealer_stats")
+    if isinstance(stats, dict) and stats:
+        top = sorted(stats.items(), key=lambda x: x[1], reverse=True)[:3]
+        families = ",".join(f"{k}({v})" for k, v in top)
+        parts.append(f"stealers={families}")
+    return "infostealer(" + "; ".join(parts) + ")" if parts else None
 
 
 def _dedup_raw_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """
-    Dedup raw ransomware.live API records before creating BaseIncidents.
-
-    Same victim, same date, different groups (e.g. "Salford City College" from
-    Qilin + "salfordcc.ac.uk" from Dragonforce) → merge into one record.
-
-    Merge key: (domain_root, attackdate_day)
-      - domain_root = first label of domain field, e.g. "salfordcc" from "salfordcc.ac.uk"
-      - attackdate_day = first 10 chars of attackdate ("YYYY-MM-DD")
-
-    The merged record keeps the entry with the most human-readable victim name,
-    and records all claiming groups in a synthetic "all_groups" key.
-    """
-    import logging
-    log = logging.getLogger(__name__)
-
     from collections import defaultdict
     groups: dict = defaultdict(list)
-
     for row in records:
         domain = _safe_str(row.get("domain") or "").lower().strip()
         domain_root = domain.split(".")[0] if domain else ""
         date_key = _safe_str(row.get("attackdate") or "")[:10]
-
         if domain_root and date_key:
             groups[(domain_root, date_key)].append(row)
         else:
-            # No domain or date — can't group, keep as-is with a unique placeholder
             groups[(id(row), date_key)].append(row)
 
     merged: List[Dict[str, Any]] = []
@@ -205,48 +146,53 @@ def _dedup_raw_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         if len(group) == 1:
             merged.append(group[0])
             continue
-
-        # Multiple entries for same domain+date — pick best name, combine groups
         primary = next(
             (r for r in group if "." not in _safe_str(r.get("victim") or r.get("name") or "")),
             group[0],
         )
         all_groups = sorted({_safe_str(r.get("group") or "") for r in group} - {""})
-        primary = dict(primary)  # copy so we don't mutate the original
+        primary = dict(primary)
         primary["all_groups"] = all_groups
-
-        log.info(
-            f"RansomwareLive pre-dedup: merged {len(group)} entries for domain "
-            f"'{key[0]}' on {key[1]} — groups: {all_groups}"
+        logger.info(
+            "RansomwareLive pre-dedup: merged %d entries for domain '%s' on %s — groups: %s",
+            len(group), key[0], key[1], all_groups,
         )
         merged.append(primary)
-
     return merged
+
+
+def fetch_sector_education_victims(client: Optional[HttpClient] = None) -> List[Dict[str, Any]]:
+    data = _get_json("/sectorvictims/Education", client=client)
+    if isinstance(data, list):
+        return data
+    if isinstance(data, dict):
+        return data.get("victims") or data.get("data") or []
+    return []
 
 
 def build_ransomwarelive_incidents(
     client: Optional[HttpClient] = None,
     save_callback: Optional[Callable[[List[BaseIncident]], None]] = None,
+    incremental: bool = True,
 ) -> List[BaseIncident]:
     """
     Map ransomware.live Education victims to BaseIncident.
-    Supports incremental saving via save_callback - saves after processing all API records.
 
-    Sample fields from the API:
-      activity, attackdate, discovered, domain, claim_url, url, group,
-      country, description, infostealer, press, screenshot, victim
-    
-    Args:
-        save_callback: Optional callback to save incidents incrementally.
-                      Called after processing all records from API.
+    Key data preservation:
+    - attackdate  → incident_date  (when the group claims the attack occurred)
+    - discovered  → discovery_date (when the claim was posted on the leak site)
+    - claim_url   → leak_site_url  (.onion CTI reference)
+    - screenshot  → screenshot_url
+    - press       → all_urls       (real article URLs for Phase 2 enrichment)
+    - infostealer → notes          (credentials/records stats as structured hint)
+    - data_size   → notes          (claimed exfil size)
     """
     ingested_at = now_utc_iso()
     incidents: List[BaseIncident] = []
 
     records = fetch_sector_education_victims(client=client)
-    # Dedup raw records by (domain-root, date) before creating BaseIncidents
     records = _dedup_raw_records(records)
-    seen_keys = set()
+    seen_keys: set = set()
 
     for row in records:
         activity = _safe_str(row.get("activity"))
@@ -254,10 +200,10 @@ def build_ransomwarelive_incidents(
             continue
 
         victim_name = _safe_str(row.get("victim") or row.get("name") or row.get("company"))
-        description = _safe_str(row.get("description") or "")
         if not victim_name:
             continue
 
+        description = _safe_str(row.get("description") or "")
         group = _safe_str(row.get("group") or "")
         raw_attackdate = _safe_str(row.get("attackdate") or "")
         raw_discovered = _safe_str(row.get("discovered") or "")
@@ -269,60 +215,58 @@ def build_ransomwarelive_incidents(
             continue
         seen_keys.add(uniq_key)
 
-        # Incident date (attackdate -> date part)
-        incident_date, date_prec = (None, "unknown")
+        # incident_date = attackdate (when attack allegedly occurred — "day" precision)
+        incident_date, date_prec = None, "unknown"
         if raw_attackdate:
-            attack_date_part = raw_attackdate.split(" ", 1)[0]
-            d, p = parse_date_with_precision(attack_date_part)
-            incident_date, date_prec = (d or None, p)
+            d, p = parse_date_with_precision(raw_attackdate.split("T", 1)[0].split(" ", 1)[0])
+            incident_date, date_prec = d or None, p
 
-        # Source published date (discovered -> date part, fallback incident_date)
-        source_published_date = None
+        # discovery_date = discovered (when claim was published on leak site)
+        discovery_date: Optional[str] = None
         if raw_discovered:
-            disc_date_part = raw_discovered.split(" ", 1)[0]
-            d2, _ = parse_date_with_precision(disc_date_part)
-            source_published_date = d2 or None
-        if not source_published_date:
-            source_published_date = incident_date
+            d2, _ = parse_date_with_precision(raw_discovered.split("T", 1)[0].split(" ", 1)[0])
+            discovery_date = d2 or None
 
-        # URLs
-        press_urls = _extract_press_article_urls(row.get("press"))
-        # Phase 1: primary_url=None, all URLs in all_urls (Phase 2 will select best URL)
-        all_urls = press_urls  # ONLY real article URLs for enrichment
+        # source_published_date = discovery_date (closest to "publication" semantics)
+        source_published_date = discovery_date or incident_date
 
-        # Infra URLs kept separately for CTI
+        # Press article URLs for Phase 2 enrichment
+        all_urls = _extract_press_article_urls(row.get("press"))
+
+        # CTI infrastructure URLs
         detail_url = _safe_str(row.get("url") or "")
         claim_url = _safe_str(row.get("claim_url") or "")
         screenshot_url = _safe_str(row.get("screenshot") or "")
 
-        # Source-native event id = slug from ransomware.live detail URL, if present
         source_event_id = ""
         if detail_url:
             source_event_id = detail_url.rstrip("/").rsplit("/", 1)[-1]
         elif claim_url:
             source_event_id = claim_url.rstrip("/").rsplit("/", 1)[-1]
 
-        # Notes: group(s) + infostealer brief summary
+        # Build structured notes: group, infostealer, data_size
         note_parts = []
-        all_groups = row.get("all_groups")  # set by _dedup_raw_records when merged
+        all_groups = row.get("all_groups")
         if all_groups:
             note_parts.append(f"groups={','.join(all_groups)};multi_claimed=true")
         elif group:
             note_parts.append(f"group={group}")
 
-        infostealer = row.get("infostealer")
-        if isinstance(infostealer, dict) and infostealer:
-            brief_elems = []
-            for key in ("employees", "users", "thirdparties"):
-                if key in infostealer:
-                    brief_elems.append(f"{key}={infostealer[key]}")
-            if brief_elems:
-                note_parts.append("infostealer(" + ", ".join(brief_elems) + ")")
+        is_note = _build_infostealer_note(row.get("infostealer"))
+        if is_note:
+            note_parts.append(is_note)
+
+        data_size = _safe_str(row.get("data_size") or "").strip()
+        if data_size and data_size.lower() not in {"null", "none", "n/a", ""}:
+            note_parts.append(f"data_size={data_size}")
+
+        ransom = row.get("ransom")
+        if ransom and isinstance(ransom, (str, int, float)):
+            note_parts.append(f"ransom={ransom}")
 
         notes = "; ".join(note_parts) if note_parts else None
 
         institution_type = _guess_institution_type(victim_name, description)
-
         incident_id = make_incident_id(
             SOURCE_NAME,
             f"{victim_name}|{domain}|{incident_date or ''}|{group}|{country}",
@@ -332,58 +276,36 @@ def build_ransomwarelive_incidents(
             incident_id=incident_id,
             source=SOURCE_NAME,
             source_event_id=source_event_id or None,
-
-            # naming
             institution_name=victim_name,
             victim_raw_name=victim_name,
-
-            # location
             institution_type=institution_type,
             country=country or None,
             region=None,
             city=None,
-
-            # dates
             incident_date=incident_date,
             date_precision=date_prec,
             source_published_date=source_published_date,
+            discovery_date=discovery_date,
             ingested_at=ingested_at,
-
-            # text
             title=victim_name,
             subtitle=description[:200] or None,
-
-            # enrichment URLs
-            # Phase 1: primary_url=None, all URLs in all_urls (Phase 2 will select best URL)
             primary_url=None,
             all_urls=all_urls,
-
-            # CTI URLs
             leak_site_url=claim_url or None,
             source_detail_url=detail_url or None,
             screenshot_url=screenshot_url or None,
-
-            # classification
             attack_type_hint="ransomware",
             status="suspected",
             source_confidence="medium",
-
-            # misc
             notes=notes,
         )
         incidents.append(incident)
 
-    # Save all incidents if callback provided (API source, save after processing all records)
     if save_callback is not None and incidents:
         try:
             save_callback(incidents)
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.debug(f"RansomwareLive: Saved {len(incidents)} incidents")
-        except Exception as e:
-            import logging
-            logger = logging.getLogger(__name__)
-            logger.error(f"RansomwareLive: Error saving incidents: {e}", exc_info=True)
-            # Continue even if save fails
+            logger.debug("RansomwareLive: saved %d incidents", len(incidents))
+        except Exception as exc:
+            logger.error("RansomwareLive: error saving incidents: %s", exc, exc_info=True)
 
     return incidents

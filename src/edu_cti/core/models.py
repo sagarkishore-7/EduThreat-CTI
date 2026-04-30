@@ -47,6 +47,11 @@ class BaseIncident:
     # Free-form notes (short)
     notes: Optional[str] = None
 
+    # Discovery / disclosure date — when the incident/claim was publicly disclosed
+    # For ransomware.live: the date the group posted on their leak site ("discovered" field)
+    # Distinct from incident_date (when attack happened) and source_published_date (article date)
+    discovery_date: Optional[str] = None
+
     def to_dict(self) -> dict:
         """
         Flatten to dict for CSV writing.

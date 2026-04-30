@@ -8,7 +8,7 @@ incident with the highest source confidence and merge metadata.
 """
 
 import logging
-from typing import Dict, List, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 from src.edu_cti.core.models import BaseIncident
@@ -21,6 +21,34 @@ SOURCE_CONFIDENCE_RANK = {
     "medium": 2,
     "low": 1,
 }
+
+# Date precision ranking (higher = more precise)
+_DATE_PRECISION_RANK = {
+    "day": 5,
+    "week": 4,
+    "month": 3,
+    "year": 2,
+    "approximate": 1,
+    "unknown": 0,
+}
+
+
+def _pick_better_date(
+    date1: Optional[str],
+    prec1: str,
+    date2: Optional[str],
+    prec2: str,
+) -> Tuple[Optional[str], str]:
+    """Return whichever (date, precision) pair is more precise.
+
+    If both are equally precise, prefer the non-null one. Falls back to
+    (date1, prec1) when tied or date2 is absent.
+    """
+    rank1 = _DATE_PRECISION_RANK.get(prec1 or "unknown", 0)
+    rank2 = _DATE_PRECISION_RANK.get(prec2 or "unknown", 0)
+    if date2 and rank2 > rank1:
+        return date2, prec2
+    return date1, prec1
 
 
 def normalize_url(url: str) -> str:
@@ -112,6 +140,32 @@ def extract_urls_from_incident(incident: BaseIncident) -> Set[str]:
     return urls
 
 
+def _merge_dates(sorted_incidents: List[BaseIncident]) -> dict:
+    """Return the best incident_date, date_precision, source_published_date, and
+    discovery_date across all incidents in confidence-sorted order."""
+    best_date: Optional[str] = None
+    best_prec: str = "unknown"
+    best_pubdate: Optional[str] = None
+    best_discovery: Optional[str] = None
+
+    for inc in sorted_incidents:
+        best_date, best_prec = _pick_better_date(
+            best_date, best_prec,
+            inc.incident_date, inc.date_precision or "unknown",
+        )
+        if not best_pubdate and inc.source_published_date:
+            best_pubdate = inc.source_published_date
+        if not best_discovery and getattr(inc, "discovery_date", None):
+            best_discovery = inc.discovery_date
+
+    return {
+        "incident_date": best_date,
+        "date_precision": best_prec,
+        "source_published_date": best_pubdate,
+        "discovery_date": best_discovery,
+    }
+
+
 def merge_incidents(incidents: List[BaseIncident]) -> BaseIncident:
     """
     Merge multiple incidents into one, keeping the best information.
@@ -186,21 +240,11 @@ def merge_incidents(incidents: List[BaseIncident]) -> BaseIncident:
             None
         ),
         
-        # Dates: prefer most precise
-        incident_date=primary.incident_date or next(
-            (inc.incident_date for inc in sorted_incidents if inc.incident_date),
-            None
-        ),
-        date_precision=primary.date_precision if primary.incident_date else next(
-            (inc.date_precision for inc in sorted_incidents if inc.incident_date),
-            "unknown"
-        ),
-        source_published_date=primary.source_published_date or next(
-            (inc.source_published_date for inc in sorted_incidents if inc.source_published_date),
-            None
-        ),
-        ingested_at=primary.ingested_at,  # Keep primary's ingestion time
-        
+        # Dates: pick the most precise incident_date across all sources.
+        # e.g. ransomware.live "day" precision beats konbriefing "approximate".
+        **_merge_dates(sorted_incidents),
+        ingested_at=primary.ingested_at,
+
         # Text: prefer non-empty
         title=primary.title or next(
             (inc.title for inc in sorted_incidents if inc.title),

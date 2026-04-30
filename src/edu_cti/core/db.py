@@ -364,7 +364,7 @@ def insert_incident(conn: sqlite3.Connection, incident: BaseIncident, preserve_e
     enrichment_fields = None
     if preserve_enrichment:
         cur = conn.execute(
-            "SELECT llm_enriched, llm_enriched_at, llm_summary, llm_timeline, llm_mitre_attack, llm_attack_dynamics, primary_url FROM incidents WHERE incident_id = ?",
+            "SELECT llm_enriched, llm_enriched_at, llm_summary, primary_url FROM incidents WHERE incident_id = ?",
             (incident.incident_id,)
         )
         existing = cur.fetchone()
@@ -374,9 +374,6 @@ def insert_incident(conn: sqlite3.Connection, incident: BaseIncident, preserve_e
                 "llm_enriched": existing["llm_enriched"],
                 "llm_enriched_at": existing["llm_enriched_at"],
                 "llm_summary": existing["llm_summary"],
-                "llm_timeline": existing["llm_timeline"],
-                "llm_mitre_attack": existing["llm_mitre_attack"],
-                "llm_attack_dynamics": existing["llm_attack_dynamics"],
                 # Preserve primary_url if it was set by enrichment and new incident doesn't have it
                 "primary_url": existing["primary_url"] if existing["primary_url"] and not incident.primary_url else incident.primary_url,
             }
@@ -394,6 +391,7 @@ def insert_incident(conn: sqlite3.Connection, incident: BaseIncident, preserve_e
         "incident_date",
         "date_precision",
         "source_published_date",
+        "discovery_date",
         "ingested_at",
         "last_updated_at",
         "title",
@@ -407,17 +405,19 @@ def insert_incident(conn: sqlite3.Connection, incident: BaseIncident, preserve_e
         "status",
         "source_confidence",
         "notes",
-        # Enrichment fields
+        # Enrichment fields (llm_timeline/mitre/dynamics are legacy — written by phase2 separately)
         "llm_enriched",
         "llm_enriched_at",
         "llm_summary",
-        "llm_timeline",
-        "llm_mitre_attack",
-        "llm_attack_dynamics",
     ]
 
-    values = [data.get(f) for f in fields[:24]]  # Base fields (including country_code)
-    
+    # Build base values; discovery_date comes from the model's to_dict() or directly
+    base_data = data.copy()
+    if "discovery_date" not in base_data:
+        base_data["discovery_date"] = getattr(incident, "discovery_date", None)
+
+    values = [base_data.get(f) for f in fields[:25]]  # Base fields through notes
+
     # Handle enrichment fields (append to values list)
     if enrichment_fields:
         # Preserve existing enrichment
@@ -425,9 +425,6 @@ def insert_incident(conn: sqlite3.Connection, incident: BaseIncident, preserve_e
             enrichment_fields.get("llm_enriched", 0),
             enrichment_fields.get("llm_enriched_at"),
             enrichment_fields.get("llm_summary"),
-            enrichment_fields.get("llm_timeline"),
-            enrichment_fields.get("llm_mitre_attack"),
-            enrichment_fields.get("llm_attack_dynamics"),
         ])
         # Update primary_url with preserved value if applicable
         primary_url_idx = fields.index("primary_url")
@@ -435,7 +432,7 @@ def insert_incident(conn: sqlite3.Connection, incident: BaseIncident, preserve_e
             values[primary_url_idx] = enrichment_fields.get("primary_url")
     else:
         # No enrichment to preserve - use defaults
-        values.extend([0, None, None, None, None, None])
+        values.extend([0, None, None])
     
     # Set last_updated_at
     values[fields.index("last_updated_at")] = now

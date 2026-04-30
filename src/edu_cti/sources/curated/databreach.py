@@ -40,8 +40,31 @@ SOURCE_NAME = config.SOURCE_DATABREACHES
 logger = logging.getLogger(__name__)
 
 
+def _fetch_with_oxylabs(url: str) -> Optional[BeautifulSoup]:
+    """Fallback HTML fetch via Oxylabs Universal Scraper (bypasses anti-bot 403)."""
+    try:
+        from src.edu_cti.core.oxylabs import OxylabsClient
+        client = OxylabsClient()
+        html = client.fetch_url(url, render_js=False)
+        if html and len(html) > 500:
+            from bs4 import BeautifulSoup as _BS
+            return _BS(html, "html.parser")
+    except Exception as exc:
+        logger.debug("Oxylabs fallback failed for %s: %s", url, exc)
+    return None
+
+
+def _fetch_page(url: str, client: HttpClient, allow_404: bool = False) -> Optional[BeautifulSoup]:
+    """Fetch a databreaches.net page, falling back to Oxylabs on 403/None."""
+    soup = fetch_html(url, client=client, allow_404=allow_404)
+    if soup is None:
+        logger.debug("Standard fetch returned None for %s — trying Oxylabs", url)
+        soup = _fetch_with_oxylabs(url)
+    return soup
+
+
 def _discover_last_page(client: HttpClient) -> int:
-    soup = fetch_html(BASE_URL, client=client)
+    soup = _fetch_page(BASE_URL, client=client)
     if not soup:
         return 1
     pagination = soup.select_one("ul.page-numbers")
@@ -69,7 +92,7 @@ def _iter_pages(
     page = 1
     next_url = _page_url(page)
     while page <= target_last:
-        soup = fetch_html(next_url, client=client, allow_404=True)
+        soup = _fetch_page(next_url, client=client, allow_404=True)
         logger.debug("DataBreaches fetching page %s -> %s", page, next_url)
         yield page, soup
         if soup is None:
