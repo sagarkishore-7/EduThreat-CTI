@@ -1247,7 +1247,26 @@ def apply_post_processing(
     # 7. MITRE technique name/tactic from static lookup when technique_id is known
     _fill_mitre_technique_names(flat_data)
 
-    # 8. data_breached: infer from exfiltration or ransom payment signals in flat_data
+    # 8. data_exfiltrated: infer from attack_category or summary keywords when LLM left it null.
+    if flat_data.get("data_exfiltrated") is None:
+        _attack_cat = (flat_data.get("attack_category") or "").lower()
+        _exfil_kws = ("exfiltrat", "data_leak", "data_exposure", "data_theft", "stolen data",
+                      "data stolen", "data leaked", "data published", "data posted",
+                      "published on dark web", "leaked online", "ransomware")
+        if any(kw in _attack_cat for kw in ("exfiltration", "data_leak", "data_exposure")) or \
+           any(kw in (_summary or "").lower() for kw in _exfil_kws):
+            flat_data["data_exfiltrated"] = True
+
+    # 8b. was_ransom_demanded: infer when ransom_amount is set or summary mentions demand.
+    if flat_data.get("was_ransom_demanded") is None:
+        _ransom_amount = flat_data.get("ransom_amount") or flat_data.get("ransom_amount_usd")
+        _ransom_kws = ("ransom demand", "demanded ransom", "ransom of $", "paid ransom",
+                       "ransom payment", "ransom note", "ransom was demanded", "demanded a ransom",
+                       "ransomware group demanded", "demanded $", "threatened to publish")
+        if _ransom_amount or any(kw in (_summary or "").lower() for kw in _ransom_kws):
+            flat_data["was_ransom_demanded"] = True
+
+    # 8c. data_breached: infer from exfiltration or ransom payment signals in flat_data
     if flat_data.get("data_breached") is None:
         _attack_cat = (flat_data.get("attack_category") or "").lower()
         if flat_data.get("ransom_paid") or flat_data.get("data_exfiltrated"):
