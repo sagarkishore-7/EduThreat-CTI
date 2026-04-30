@@ -227,8 +227,10 @@ class IncidentDetail(BaseModel):
     # URLs
     primary_url: Optional[str] = None
     all_urls: List[str] = []
-    leak_site_url: Optional[str] = None
-    
+    leak_site_url: Optional[str] = None        # dark web claim URL (.onion) — directly from ransomware group
+    source_detail_url: Optional[str] = None    # CTI platform page (e.g. ransomware.live/id/...)
+    screenshot_url: Optional[str] = None       # screenshot of the claim/leak page
+
     # Classification
     attack_type_hint: Optional[str] = None
     attack_category: Optional[str] = None
@@ -238,11 +240,13 @@ class IncidentDetail(BaseModel):
     academic_period_affected: Optional[str] = None
     dark_web_posting_confirmed: Optional[bool] = None
     prior_breach_same_institution: Optional[bool] = None
-    
-    # Threat actor
+
+    # Threat actor — raw ingestion field (group name from ransomware.live; use as fallback if LLM name absent)
+    threat_actor: Optional[str] = None
     threat_actor_name: Optional[str] = None
     threat_actor_category: Optional[str] = None
     threat_actor_motivation: Optional[str] = None
+    threat_actor_origin_country: Optional[str] = None
     
     # Timeline & MITRE
     timeline: Optional[List[TimelineEvent]] = None
