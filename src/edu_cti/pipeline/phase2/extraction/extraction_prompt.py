@@ -259,6 +259,16 @@ CRITICAL OUTPUT REQUIREMENTS:
    Bad (omit): {{date: "2023-04-01", event_type: "disclosure", event_description: null}}
    Good: {{date: "2023-04-01", event_type: "disclosure", event_description: "District sent letters to families notifying them of the data breach."}}
 
+   DATE ANCHORING FOR TIMELINE EVENTS — when the article does not state an explicit date
+   for an event but its type is identifiable, use these anchors rather than leaving date null:
+   - Breach occurrence events (initial_access, exploitation, data_exfiltration,
+     encryption_started, ransom_demand, impact): use the incident_date you extracted.
+   - Response / disclosure events (notification, disclosure, public_statement,
+     containment, recovery, investigation): use the Article Publish Date from the
+     metadata block above (it is the best available proxy for when the disclosure occurred).
+   - Set date_precision to "approximate" for all anchor-inferred dates.
+   - Only leave date null when event_type is also genuinely unknown and no anchor applies.
+
 17. ROUNDUP / MULTI-INCIDENT ARTICLES:
     If this article covers MULTIPLE separate education sector incidents (digest, weekly roundup,
     breach summary, "Week in Breach", "ransomware attacks in 2023", etc.):

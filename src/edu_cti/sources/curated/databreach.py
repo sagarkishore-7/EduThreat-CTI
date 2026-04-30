@@ -45,7 +45,7 @@ def _fetch_with_oxylabs(url: str) -> Optional[BeautifulSoup]:
     try:
         from src.edu_cti.core.oxylabs import OxylabsClient
         client = OxylabsClient()
-        html = client.fetch_url(url, render_js=False)
+        html = client.fetch_url(url, render_js=True)
         if html and len(html) > 500:
             from bs4 import BeautifulSoup as _BS
             return _BS(html, "html.parser")

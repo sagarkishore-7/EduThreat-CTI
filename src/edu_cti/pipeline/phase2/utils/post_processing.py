@@ -76,6 +76,103 @@ _RANSOMWARE_KEYWORDS: list[tuple[str, str]] = [
     ("prometheus ransomware", "prometheus"),
 ]
 
+# ── Canadian city → province (unambiguous only) ─────────────────────────────────
+_CA_CITY_TO_PROVINCE: dict[str, str] = {
+    # Ontario
+    "toronto": "Ontario", "north york": "Ontario", "scarborough": "Ontario",
+    "etobicoke": "Ontario", "mississauga": "Ontario", "brampton": "Ontario",
+    "hamilton": "Ontario", "london": "Ontario", "windsor": "Ontario",
+    "kitchener": "Ontario", "waterloo": "Ontario", "guelph": "Ontario",
+    "barrie": "Ontario", "kingston": "Ontario", "sudbury": "Ontario",
+    "thunder bay": "Ontario", "oshawa": "Ontario", "st. catharines": "Ontario",
+    "ottawa": "Ontario", "kanata": "Ontario",
+    # Quebec
+    "montreal": "Quebec", "québec city": "Quebec", "laval": "Quebec",
+    "gatineau": "Quebec", "longueuil": "Quebec", "sherbrooke": "Quebec",
+    "trois-rivières": "Quebec", "saguenay": "Quebec",
+    # British Columbia
+    "vancouver": "British Columbia", "burnaby": "British Columbia",
+    "surrey": "British Columbia", "richmond": "British Columbia",
+    "kelowna": "British Columbia", "abbotsford": "British Columbia",
+    "victoria": "British Columbia", "nanaimo": "British Columbia",
+    "kamloops": "British Columbia", "prince george": "British Columbia",
+    # Alberta
+    "calgary": "Alberta", "edmonton": "Alberta", "red deer": "Alberta",
+    "lethbridge": "Alberta", "medicine hat": "Alberta", "grande prairie": "Alberta",
+    # Manitoba
+    "winnipeg": "Manitoba", "brandon": "Manitoba", "steinbach": "Manitoba",
+    # Saskatchewan
+    "regina": "Saskatchewan", "saskatoon": "Saskatchewan",
+    # Nova Scotia
+    "halifax": "Nova Scotia", "dartmouth": "Nova Scotia", "sydney": "Nova Scotia",
+    "truro": "Nova Scotia",
+    # New Brunswick
+    "fredericton": "New Brunswick", "moncton": "New Brunswick",
+    "saint john": "New Brunswick",
+    # Newfoundland and Labrador
+    "st. john's": "Newfoundland and Labrador", "corner brook": "Newfoundland and Labrador",
+    # PEI
+    "charlottetown": "Prince Edward Island",
+    # Nova Scotia
+    "cape breton": "Nova Scotia",
+}
+
+# ── UK city → nation ─────────────────────────────────────────────────────────────
+_UK_CITY_TO_NATION: dict[str, str] = {
+    # England
+    "london": "England", "birmingham": "England", "manchester": "England",
+    "leeds": "England", "liverpool": "England", "sheffield": "England",
+    "bristol": "England", "newcastle": "England", "nottingham": "England",
+    "leicester": "England", "coventry": "England", "bradford": "England",
+    "exeter": "England", "cambridge": "England", "oxford": "England",
+    "brighton": "England", "southampton": "England", "portsmouth": "England",
+    "reading": "England", "wolverhampton": "England", "sunderland": "England",
+    "middlesbrough": "England", "hull": "England", "kingston upon hull": "England",
+    "stoke-on-trent": "England", "derby": "England", "plymouth": "England",
+    "norwich": "England", "bath": "England", "york": "England",
+    "huddersfield": "England", "lincoln": "England", "peterborough": "England",
+    "gloucester": "England", "shrewsbury": "England", "worcester": "England",
+    "kent": "England", "essex": "England", "hertford": "England",
+    "hatfield": "England", "colchester": "England",
+    # Scotland
+    "edinburgh": "Scotland", "glasgow": "Scotland", "aberdeen": "Scotland",
+    "dundee": "Scotland", "inverness": "Scotland", "stirling": "Scotland",
+    "perth": "Scotland", "paisley": "Scotland", "livingston": "Scotland",
+    # Wales
+    "cardiff": "Wales", "swansea": "Wales", "newport": "Wales",
+    "wrexham": "Wales", "bangor": "Wales",
+    # Northern Ireland
+    "belfast": "Northern Ireland", "derry": "Northern Ireland",
+    "londonderry": "Northern Ireland", "lisburn": "Northern Ireland",
+}
+
+# ── Australian city → state ──────────────────────────────────────────────────────
+_AU_CITY_TO_STATE: dict[str, str] = {
+    # New South Wales
+    "sydney": "New South Wales", "wollongong": "New South Wales",
+    "newcastle": "New South Wales", "canberra": "New South Wales",
+    "bathurst": "New South Wales", "albury": "New South Wales",
+    "tamworth": "New South Wales", "wagga wagga": "New South Wales",
+    # Victoria
+    "melbourne": "Victoria", "geelong": "Victoria", "ballarat": "Victoria",
+    "bendigo": "Victoria", "shepparton": "Victoria", "mildura": "Victoria",
+    # Queensland
+    "brisbane": "Queensland", "gold coast": "Queensland", "cairns": "Queensland",
+    "townsville": "Queensland", "toowoomba": "Queensland", "sunshine coast": "Queensland",
+    "rockhampton": "Queensland", "mackay": "Queensland",
+    # Western Australia
+    "perth": "Western Australia", "fremantle": "Western Australia",
+    "bunbury": "Western Australia", "geraldton": "Western Australia",
+    # South Australia
+    "adelaide": "South Australia", "mount gambier": "South Australia",
+    # ACT
+    "act": "Australian Capital Territory",
+    # Tasmania
+    "hobart": "Tasmania", "launceston": "Tasmania",
+    # Northern Territory
+    "darwin": "Northern Territory", "alice springs": "Northern Territory",
+}
+
 # ── US state lookup by city (unambiguous only) ───────────────────────────────────
 _US_CITY_TO_STATE: dict[str, str] = {
     "boston": "Massachusetts", "cambridge": "Massachusetts", "worcester": "Massachusetts",
@@ -369,6 +466,23 @@ def infer_us_region(city: Optional[str], country_code: Optional[str]) -> Optiona
     if not city or country_code != "US":
         return None
     return _US_CITY_TO_STATE.get(city.lower().strip())
+
+
+def infer_region_from_city(city: Optional[str], country_code: Optional[str]) -> Optional[str]:
+    """Return region/state/province/nation for the given city across US, CA, GB, AU."""
+    if not city or not country_code:
+        return None
+    key = city.lower().strip()
+    cc = country_code.upper()
+    if cc == "US":
+        return _US_CITY_TO_STATE.get(key)
+    if cc == "CA":
+        return _CA_CITY_TO_PROVINCE.get(key)
+    if cc == "GB":
+        return _UK_CITY_TO_NATION.get(key)
+    if cc == "AU":
+        return _AU_CITY_TO_STATE.get(key)
+    return None
 
 
 def infer_regulatory_impact(flat_data: Dict[str, Any]) -> None:
@@ -812,25 +926,37 @@ def infer_data_volume_gb(summary: Optional[str]) -> Optional[float]:
 
 def infer_region_from_institution_name(name: Optional[str], country_code: Optional[str]) -> Optional[str]:
     """
-    Extract US state from 'University of X at City' or 'City University' patterns
-    when city lookup can then resolve to state.
+    Extract region from 'University of X at City' or 'City University' patterns.
+    Covers US, CA, GB, and AU via the respective city→region lookups.
     """
-    if not name or country_code != "US":
+    if not name or not country_code:
         return None
-    # "University of X at City" / "X at City, State"
+    cc = country_code.upper()
+
+    def _lookup(city_str: str) -> Optional[str]:
+        return infer_region_from_city(city_str, cc)
+
+    # "University of X at City" / "X at City"
     m = re.search(r'\bat\s+([A-Z][a-z]+(?:[\s-][A-Z][a-z]+)?)', name)
     if m:
-        city = m.group(1).strip().lower()
-        state = _US_CITY_TO_STATE.get(city)
-        if state:
-            return state
+        region = _lookup(m.group(1).strip())
+        if region:
+            return region
+
     # "City University" / "City College" — city is first word(s)
-    m = re.search(r'^([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+(?:University|College|School)', name)
+    m = re.search(r'^([A-Z][a-z]+(?:\s[A-Z][a-z]+)?)\s+(?:University|College|School|Institute)', name)
     if m:
-        city = m.group(1).strip().lower()
-        state = _US_CITY_TO_STATE.get(city)
-        if state:
-            return state
+        region = _lookup(m.group(1).strip())
+        if region:
+            return region
+
+    # "University of Guelph", "University of Manitoba" etc. — extract city after "of"
+    m = re.search(r'\bof\s+([A-Z][a-z]+(?:[\s-][A-Z][a-z]+)?)', name)
+    if m:
+        region = _lookup(m.group(1).strip())
+        if region:
+            return region
+
     return None
 
 
@@ -908,6 +1034,80 @@ def _guard_timeline_dates(flat_data: Dict[str, Any], incident_row: Optional[Any]
         flat_data["timeline_json"] = json.dumps(events)
 
 
+def _fill_timeline_dates(flat_data: Dict[str, Any]) -> None:
+    """
+    Fill null timeline event dates using known incident anchors.
+
+    Two reliable anchors exist even when articles don't give per-event timestamps:
+    - incident_date  → when the attack / breach actually occurred
+    - source_published_date → when the article / notification was published
+                              (proxy for disclosure / notification events)
+
+    Rules:
+    - Occurrence events (initial_access, exploitation, data_exfiltration,
+      encryption_started, ransom_demand, impact) → incident_date
+    - Response / disclosure events (notification, disclosure, public_statement,
+      containment, recovery, remediation, law_enforcement_contact,
+      systems_restored, investigation) → source_published_date
+    - Events with null event_type → incident_date as approximate fallback
+    Never overwrites a date the LLM already populated.
+    """
+    timeline_raw = flat_data.get("timeline_json")
+    if not timeline_raw:
+        return
+
+    incident_date = flat_data.get("incident_date")
+    published_date = flat_data.get("source_published_date")
+
+    if not incident_date and not published_date:
+        return
+
+    try:
+        events = json.loads(timeline_raw) if isinstance(timeline_raw, str) else list(timeline_raw)
+    except (json.JSONDecodeError, TypeError):
+        return
+    if not isinstance(events, list):
+        return
+
+    _OCCURRENCE_TYPES = {
+        "initial_access", "reconnaissance", "exploitation",
+        "lateral_movement", "privilege_escalation",
+        "data_exfiltration", "encryption_started",
+        "ransom_demand", "impact", "operational_impact",
+    }
+    _RESPONSE_TYPES = {
+        "discovery", "containment", "eradication", "recovery",
+        "notification", "disclosure", "public_statement",
+        "investigation", "remediation", "law_enforcement_contact",
+        "systems_restored", "response_action", "security_improvement",
+    }
+
+    changed = False
+    for event in events:
+        if not isinstance(event, dict) or event.get("date"):
+            continue  # already has a date — never overwrite
+        etype = event.get("event_type")
+        if etype in _OCCURRENCE_TYPES and incident_date:
+            event["date"] = str(incident_date)[:10]
+            event["date_precision"] = "approximate"
+            changed = True
+        elif etype in _RESPONSE_TYPES:
+            anchor = published_date or incident_date
+            if anchor:
+                event["date"] = str(anchor)[:10]
+                event["date_precision"] = "approximate"
+                changed = True
+        elif etype is None or etype == "other":
+            # Unknown type — use incident_date as best-effort fallback
+            if incident_date:
+                event["date"] = str(incident_date)[:10]
+                event["date_precision"] = "approximate"
+                changed = True
+
+    if changed:
+        flat_data["timeline_json"] = json.dumps(events)
+
+
 def apply_post_processing(
     flat_data: Dict[str, Any],
     incident_row: Optional[Any],
@@ -943,13 +1143,13 @@ def apply_post_processing(
         if inferred and inferred != current_type:
             flat_data["institution_type"] = inferred
 
-    # 3. US state (region) from city lookup
+    # 3. Region from city lookup — covers US, CA, GB, AU
     if not flat_data.get("region") and flat_data.get("city"):
-        state = infer_us_region(flat_data.get("city"), flat_data.get("country_code"))
-        if state:
-            flat_data["region"] = state
+        region = infer_region_from_city(flat_data.get("city"), flat_data.get("country_code"))
+        if region:
+            flat_data["region"] = region
 
-    # 3b. US state from institution name ("University of X at City" pattern)
+    # 3b. Region from institution name patterns (city embedded in name, all countries)
     if not flat_data.get("region"):
         region = infer_region_from_institution_name(
             flat_data.get("institution_name"), flat_data.get("country_code")
@@ -997,6 +1197,10 @@ def apply_post_processing(
     # after source_published_date (LLM confuses current processing date with
     # article date when the article content couldn't be fetched).
     _guard_timeline_dates(flat_data, incident_row)
+
+    # 11b. Fill null timeline dates using incident_date / source_published_date as anchors.
+    # Runs after the guard so we never re-fill a date that was just nulled out.
+    _fill_timeline_dates(flat_data)
 
     # 12b. law_enforcement_involved: infer from agencies array or enriched_summary
     # when LLM left the boolean null despite mentioning an agency.
