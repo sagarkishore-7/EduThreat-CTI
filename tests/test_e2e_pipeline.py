@@ -224,6 +224,45 @@ class TestHappyPath:
         assert incident["records_affected_exact"] == 52000
         assert incident["records_affected_min"] == 40000
 
+    def test_timeline_dates_reach_api_detail(self):
+        conn = _create_db()
+        _insert_incident(conn, "test_timeline_001")
+        _write_flat(conn, "test_timeline_001", {
+            "attack_category": "ransomware",
+        })
+        conn.execute(
+            """
+            INSERT INTO incident_timeline
+                (incident_id, seq_order, event_date, date_precision, event_type, event_description, actor_attribution)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                "test_timeline_001",
+                0,
+                "2024-02-20",
+                "day",
+                "initial_access",
+                "Suspicious network activity detected",
+                None,
+            ),
+        )
+        conn.commit()
+
+        incident = get_incident_by_id(conn, "test_timeline_001")
+        assert incident["timeline"] == [
+            {
+                "date": "2024-02-20",
+                "date_precision": "day",
+                "event_type": "initial_access",
+                "event_description": "Suspicious network activity detected",
+                "actor_attribution": None,
+            }
+        ]
+
+        detail = IncidentDetail(**incident)
+        assert detail.timeline is not None
+        assert detail.timeline[0].date == "2024-02-20"
+
 
 # ---------------------------------------------------------------------------
 # String-vs-list bug (the regression that caused 500s)

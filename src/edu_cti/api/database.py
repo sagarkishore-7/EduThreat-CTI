@@ -268,7 +268,7 @@ def get_incident_by_id(
         
         # Read timeline and MITRE from junction tables
         tl_rows = conn.execute(
-            "SELECT event_date, date_precision, event_type, event_description, actor_attribution "
+            "SELECT event_date AS date, date_precision, event_type, event_description, actor_attribution "
             "FROM incident_timeline WHERE incident_id = ? ORDER BY seq_order",
             (incident_id,),
         ).fetchall()
