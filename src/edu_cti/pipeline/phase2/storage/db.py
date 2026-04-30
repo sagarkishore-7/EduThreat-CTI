@@ -2077,6 +2077,21 @@ def save_enrichment_result(
         except Exception:
             pass
 
+    # Inject incident_date and source_published_date so _fill_timeline_dates() has anchors.
+    # These live in the incidents table, not in the enrichments flat dict.
+    if not flat_data.get("incident_date"):
+        try:
+            _row_inc_date = incident_row["incident_date"] if incident_row else None
+        except (IndexError, KeyError, TypeError):
+            _row_inc_date = None
+        _inc_date = llm_incident_date or _row_inc_date
+        if _inc_date:
+            flat_data["incident_date"] = str(_inc_date)[:10]
+    if not flat_data.get("source_published_date"):
+        _pub_date = source_published_date_fallback or publication_date
+        if _pub_date:
+            flat_data["source_published_date"] = str(_pub_date)[:10]
+
     apply_post_processing(flat_data, incident_row, summary=summary)
 
     # Promote status to "confirmed" when enriched summary contains confirmation language.
