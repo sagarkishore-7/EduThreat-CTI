@@ -8,7 +8,7 @@ incident with the highest source confidence and merge metadata.
 """
 
 import logging
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from urllib.parse import urlparse, urlunparse, parse_qs, urlencode
 
 from src.edu_cti.core.models import BaseIncident
@@ -30,6 +30,40 @@ _DATE_PRECISION_RANK = {
     "year": 2,
     "approximate": 1,
     "unknown": 0,
+}
+
+# Source type classification — determines field-level merge authority
+_SOURCE_TYPE: Dict[str, str] = {
+    # API sources: structured data direct from group/vendor infrastructure
+    "ransomwarelive": "api",
+    "ransomlook": "api",
+    # Curated sources: HTML-scraped sites with dedicated education sections
+    "konbriefing": "curated",
+    "databreach": "curated",
+    "comparitech": "curated",
+    # News sources: keyword-searched security news sites
+    "krebsonsecurity": "news",
+    "thehackernews": "news",
+    "therecord": "news",
+    "securityweek": "news",
+    "darkreading": "news",
+    # RSS sources: feed-based aggregators
+    "databreaches_rss": "rss",
+    "bleepingcomputer": "rss",
+    "cisa_rss": "rss",
+    "international_rss": "rss",
+    "googlenews_rss": "rss",
+    "oxylabs_news": "rss",
+}
+
+# Fields where API sources are ground truth — data comes directly from the threat
+# actor's own infrastructure (ransomware.live claim pages, leak sites, etc.)
+_API_PREFERRED_FIELDS: Set[str] = {
+    "attack_type_hint",  # API = definitively ransomware (we got this from the group itself)
+    "threat_actor",      # API = group name published by the group, not LLM-guessed
+    "leak_site_url",     # API = .onion URL direct from group post
+    "screenshot_url",    # API = screenshot of the group's own claim page
+    "source_detail_url", # API = CTI platform detail page (not a news article)
 }
 
 
@@ -166,6 +200,32 @@ def _merge_dates(sorted_incidents: List[BaseIncident]) -> dict:
     }
 
 
+def _pick_field(field: str, sorted_incidents: List[BaseIncident]) -> Any:
+    """Pick the best non-null value for a field using source-type-aware priority.
+
+    API sources win for structured CTI fields (data from group infrastructure).
+    Curated/news sources win for descriptive fields (institution details, text).
+    sorted_incidents must be pre-sorted by source confidence (highest first).
+    """
+    if field in _API_PREFERRED_FIELDS:
+        type_order = ["api", "curated", "news", "rss"]
+    else:
+        type_order = ["curated", "news", "rss", "api"]
+
+    by_type: Dict[str, List[BaseIncident]] = {t: [] for t in type_order}
+    for inc in sorted_incidents:
+        stype = _SOURCE_TYPE.get(inc.source, "news")
+        if stype in by_type:
+            by_type[stype].append(inc)
+
+    for stype in type_order:
+        for inc in by_type[stype]:
+            val = getattr(inc, field, None)
+            if val:
+                return val
+    return None
+
+
 def merge_incidents(incidents: List[BaseIncident]) -> BaseIncident:
     """
     Merge multiple incidents into one, keeping the best information.
@@ -206,82 +266,54 @@ def merge_incidents(incidents: List[BaseIncident]) -> BaseIncident:
         all_urls_set.update(urls)
         sources_seen.add(inc.source)
     
-    # Merge metadata: prefer non-empty values from higher confidence sources
+    # Merge metadata using field-level source-type priority:
+    # - API sources (ransomware.live) win for structured CTI fields (threat actor,
+    #   attack type, claim URLs, screenshots) — ground truth from group infrastructure
+    # - Curated/news sources win for descriptive fields (institution name, location,
+    #   institution type, text) — LLM-extracted or editorial, better for these
+    # - Dates use precision-aware selection regardless of source type
     merged_incident = BaseIncident(
-        incident_id=primary.incident_id,  # Keep primary's ID
-        source=primary.source,  # Keep primary source
+        incident_id=primary.incident_id,
+        source=primary.source,
         source_event_id=primary.source_event_id,
-        
-        # Victim naming: prefer non-empty
-        institution_name=primary.institution_name or next(
-            (inc.institution_name for inc in sorted_incidents if inc.institution_name),
-            ""
-        ),
-        victim_raw_name=primary.victim_raw_name or next(
-            (inc.victim_raw_name for inc in sorted_incidents if inc.victim_raw_name),
-            None
-        ),
-        
-        # Location: prefer non-empty
-        institution_type=primary.institution_type or next(
-            (inc.institution_type for inc in sorted_incidents if inc.institution_type),
-            None
-        ),
-        country=primary.country or next(
-            (inc.country for inc in sorted_incidents if inc.country),
-            None
-        ),
-        region=primary.region or next(
-            (inc.region for inc in sorted_incidents if inc.region),
-            None
-        ),
-        city=primary.city or next(
-            (inc.city for inc in sorted_incidents if inc.city),
-            None
-        ),
-        
-        # Dates: pick the most precise incident_date across all sources.
-        # e.g. ransomware.live "day" precision beats konbriefing "approximate".
+
+        # Victim naming: curated/news preferred (full institution name)
+        institution_name=_pick_field("institution_name", sorted_incidents) or "",
+        victim_raw_name=_pick_field("victim_raw_name", sorted_incidents),
+
+        # Location: curated/news preferred (more granular for region/city)
+        institution_type=_pick_field("institution_type", sorted_incidents),
+        country=_pick_field("country", sorted_incidents),
+        region=_pick_field("region", sorted_incidents),
+        city=_pick_field("city", sorted_incidents),
+
+        # Dates: precision-aware — most precise date wins regardless of source type
+        # e.g. ransomware.live "day" precision beats konbriefing "approximate"
         **_merge_dates(sorted_incidents),
         ingested_at=primary.ingested_at,
 
-        # Text: prefer non-empty
-        title=primary.title or next(
-            (inc.title for inc in sorted_incidents if inc.title),
-            None
-        ),
-        subtitle=primary.subtitle or next(
-            (inc.subtitle for inc in sorted_incidents if inc.subtitle),
-            None
-        ),
-        
-        # URLs: merge all
+        # Text: curated/news preferred (richer article context)
+        title=_pick_field("title", sorted_incidents),
+        subtitle=_pick_field("subtitle", sorted_incidents),
+
+        # URLs: always merge all sources
         primary_url=None,  # Phase 1: always None
         all_urls=list(all_urls_set),
-        
-        # CTI URLs: prefer non-empty
-        leak_site_url=primary.leak_site_url or next(
-            (inc.leak_site_url for inc in sorted_incidents if inc.leak_site_url),
-            None
-        ),
-        source_detail_url=primary.source_detail_url or next(
-            (inc.source_detail_url for inc in sorted_incidents if inc.source_detail_url),
-            None
-        ),
-        screenshot_url=primary.screenshot_url or next(
-            (inc.screenshot_url for inc in sorted_incidents if inc.screenshot_url),
-            None
-        ),
-        
-        # Classification: keep primary's
-        attack_type_hint=primary.attack_type_hint or next(
-            (inc.attack_type_hint for inc in sorted_incidents if inc.attack_type_hint),
-            None
-        ),
-        status=primary.status,  # Keep primary's status
-        source_confidence=primary.source_confidence,  # Keep primary's confidence
-        
-        # Notes: combine sources
+
+        # CTI URLs: API preferred — .onion, screenshots come from group infrastructure
+        leak_site_url=_pick_field("leak_site_url", sorted_incidents),
+        source_detail_url=_pick_field("source_detail_url", sorted_incidents),
+        screenshot_url=_pick_field("screenshot_url", sorted_incidents),
+
+        # Classification: API preferred — attack type is authoritative from the group itself
+        attack_type_hint=_pick_field("attack_type_hint", sorted_incidents),
+        # Threat actor: API preferred — group name from group's own post, not LLM guess
+        threat_actor=_pick_field("threat_actor", sorted_incidents),
+
+        status=primary.status,
+        source_confidence=primary.source_confidence,
+
+        # Notes: combine all source notes
         notes=f"merged_from={','.join(sorted(sources_seen))};{primary.notes or ''}".strip(";"),
     )
     

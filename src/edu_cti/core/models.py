@@ -52,6 +52,10 @@ class BaseIncident:
     # Distinct from incident_date (when attack happened) and source_published_date (article date)
     discovery_date: Optional[str] = None
 
+    # Threat actor name (ransomware group, APT, etc.) — populated by API sources directly
+    # from the group's own infrastructure; more reliable than LLM-extracted names
+    threat_actor: Optional[str] = None
+
     def to_dict(self) -> dict:
         """
         Flatten to dict for CSV writing.

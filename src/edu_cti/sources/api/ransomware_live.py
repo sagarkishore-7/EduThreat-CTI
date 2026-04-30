@@ -295,6 +295,7 @@ def build_ransomwarelive_incidents(
             source_detail_url=detail_url or None,
             screenshot_url=screenshot_url or None,
             attack_type_hint="ransomware",
+            threat_actor=group or None,
             status="suspected",
             source_confidence="medium",
             notes=notes,

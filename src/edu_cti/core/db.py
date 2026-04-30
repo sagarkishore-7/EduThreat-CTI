@@ -220,6 +220,7 @@ def init_db(conn: sqlite3.Connection) -> None:
             screenshot_url        TEXT,
 
             attack_type_hint     TEXT,
+            threat_actor         TEXT,  -- Ransomware group / APT name (from API sources)
             status               TEXT,
             source_confidence    TEXT,  -- Highest confidence from sources
 
@@ -299,6 +300,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("llm_excluded", "INTEGER DEFAULT 0"),
         ("llm_excluded_reason", "TEXT"),
         ("discovery_date", "TEXT"),
+        ("threat_actor", "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE incidents ADD COLUMN {col} {col_type}")
@@ -402,6 +404,7 @@ def insert_incident(conn: sqlite3.Connection, incident: BaseIncident, preserve_e
         "source_detail_url",
         "screenshot_url",
         "attack_type_hint",
+        "threat_actor",
         "status",
         "source_confidence",
         "notes",
@@ -411,12 +414,14 @@ def insert_incident(conn: sqlite3.Connection, incident: BaseIncident, preserve_e
         "llm_summary",
     ]
 
-    # Build base values; discovery_date comes from the model's to_dict() or directly
+    # Build base values; optional fields not in older BaseIncident versions get None
     base_data = data.copy()
     if "discovery_date" not in base_data:
         base_data["discovery_date"] = getattr(incident, "discovery_date", None)
+    if "threat_actor" not in base_data:
+        base_data["threat_actor"] = getattr(incident, "threat_actor", None)
 
-    values = [base_data.get(f) for f in fields[:25]]  # Base fields through notes
+    values = [base_data.get(f) for f in fields[:26]]  # Base fields through notes
 
     # Handle enrichment fields (append to values list)
     if enrichment_fields:
