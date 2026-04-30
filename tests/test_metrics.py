@@ -87,6 +87,29 @@ class TestMetricsCollectorCore:
         assert len(m.gauges) == 0
         assert len(m.histograms) == 0
 
+    def test_clear_persistence_removes_stored_metrics(self, tmp_path):
+        m = _fresh()
+        db_path = tmp_path / "metrics.db"
+        m.configure(db_path, flush_interval_seconds=3600)
+        m.increment("fetch_total", value=3)
+        m.flush_to_db()
+
+        conn = sqlite3.connect(db_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM pipeline_metrics").fetchone()[0]
+            assert count > 0
+        finally:
+            conn.close()
+
+        m.clear_persistence()
+
+        conn = sqlite3.connect(db_path)
+        try:
+            count = conn.execute("SELECT COUNT(*) FROM pipeline_metrics").fetchone()[0]
+            assert count == 0
+        finally:
+            conn.close()
+
 
 # ---------------------------------------------------------------------------
 # 2. _percentile helper

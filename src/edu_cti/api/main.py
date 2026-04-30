@@ -152,7 +152,7 @@ async def lifespan(app: FastAPI):
     # Initialize database on startup
     try:
         from src.edu_cti.core.db import get_connection, init_db
-        from src.edu_cti.core.config import DB_PATH
+        from src.edu_cti.core.config import DB_PATH, METRICS_DB_PATH
         from src.edu_cti.pipeline.phase2.storage.article_storage import init_articles_table
         from src.edu_cti.pipeline.phase2.storage.db import init_incident_enrichments_table
 
@@ -177,7 +177,7 @@ async def lifespan(app: FastAPI):
         # Start persistent metrics — load cumulative counters/histograms from DB
         # so they survive container restarts and redeploys.
         from src.edu_cti.core import metrics as _metrics_module
-        _metrics_module.get_metrics().configure(DB_PATH)
+        _metrics_module.get_metrics().configure(METRICS_DB_PATH)
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}", exc_info=True)
         # Don't fail startup - let it try again on first request

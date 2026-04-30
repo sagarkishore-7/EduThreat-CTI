@@ -57,6 +57,21 @@ def _append_url_to_incident(conn: sqlite3.Connection, incident_id: str, url: str
     )
 
 
+def _save_fetch_attempt(
+    conn: sqlite3.Connection,
+    incident_id: str,
+    url: str,
+    article: ArticleContent,
+) -> None:
+    """Persist both successful and failed article fetch attempts for auditability."""
+    save_article(
+        conn,
+        incident_id=incident_id,
+        url=url,
+        article=article,
+    )
+
+
 def is_internal_placeholder_url(url: str) -> bool:
     """
     Return True for internal/non-fetchable placeholder URLs.
@@ -643,28 +658,26 @@ class SmartArticleFetchingStrategy:
                     success = article_content.fetch_successful
                     self.rate_limiter.record_fetch(domain, success=success)
 
+                    try:
+                        _save_fetch_attempt(
+                            self.conn,
+                            incident_id=incident_id,
+                            url=url,
+                            article=article_content,
+                        )
+                    except Exception as save_error:
+                        logger.error(
+                            f"Failed to save fetch attempt for {url}: {str(save_error)[:100]}",
+                            exc_info=True
+                        )
+
                     if success:
                         self.fetched_urls.add(url)
                         incident_articles.append(article_content)
-
-                        # Save to database
-                        try:
-                            save_article(
-                                self.conn,
-                                incident_id=incident_id,
-                                url=url,
-                                article=article_content,
-                            )
-                            logger.info(
-                                f"Fetched article from {domain} "
-                                f"({len(article_content.content)} chars)"
-                            )
-                        except Exception as save_error:
-                            logger.error(
-                                f"Failed to save article for {url}: {str(save_error)[:100]}",
-                                exc_info=True
-                            )
-                            # Still count as fetched even if save failed
+                        logger.info(
+                            f"Fetched article from {domain} "
+                            f"({len(article_content.content)} chars)"
+                        )
                     else:
                         error_msg = article_content.error_message or "Unknown error"
                         content_len = article_content.content_length or 0
@@ -690,6 +703,25 @@ class SmartArticleFetchingStrategy:
                     logger.error(f"Fetch exception {incident_id} {domain}: {str(e)[:200]}")
                     self.rate_limiter.record_fetch(domain, success=False)
                     newly_failed_urls.append(url)
+                    try:
+                        _save_fetch_attempt(
+                            self.conn,
+                            incident_id=incident_id,
+                            url=url,
+                            article=ArticleContent(
+                                url=url,
+                                title="",
+                                content="",
+                                fetch_successful=False,
+                                error_message=str(e),
+                                content_length=0,
+                            ),
+                        )
+                    except Exception as save_error:
+                        logger.error(
+                            f"Failed to save exception fetch attempt for {url}: {str(save_error)[:100]}",
+                            exc_info=True,
+                        )
 
             # Persist newly-failed URLs so they are skipped on the next pipeline run
             if newly_failed_urls:
@@ -717,19 +749,44 @@ class SmartArticleFetchingStrategy:
                     try:
                         article_content = self.article_fetcher.fetch_article(serp_url)
                         self.rate_limiter.record_fetch(domain, success=article_content.fetch_successful)
+                        try:
+                            _save_fetch_attempt(
+                                self.conn,
+                                incident_id=incident_id,
+                                url=serp_url,
+                                article=article_content,
+                            )
+                        except Exception as save_error:
+                            logger.error(
+                                f"SERP fallback save error {serp_url}: {save_error}"
+                            )
                         if article_content.fetch_successful:
                             self.fetched_urls.add(serp_url)
                             incident_articles.append(article_content)
-                            try:
-                                save_article(self.conn, incident_id=incident_id, url=serp_url, article=article_content)
-                                logger.info(f"SERP fallback: fetched {domain} ({len(article_content.content)} chars)")
-                                # Register the SERP URL in all_urls so save_enrichment_result
-                                # won't reject it as the primary_url.
-                                _append_url_to_incident(self.conn, incident_id, serp_url)
-                            except Exception as se:
-                                logger.error(f"SERP fallback save error {serp_url}: {se}")
+                            logger.info(f"SERP fallback: fetched {domain} ({len(article_content.content)} chars)")
+                            # Register the SERP URL in all_urls so save_enrichment_result
+                            # won't reject it as the primary_url.
+                            _append_url_to_incident(self.conn, incident_id, serp_url)
                     except Exception as e:
                         logger.debug(f"SERP fallback fetch error {serp_url}: {e}")
+                        try:
+                            _save_fetch_attempt(
+                                self.conn,
+                                incident_id=incident_id,
+                                url=serp_url,
+                                article=ArticleContent(
+                                    url=serp_url,
+                                    title="",
+                                    content="",
+                                    fetch_successful=False,
+                                    error_message=str(e),
+                                    content_length=0,
+                                ),
+                            )
+                        except Exception as save_error:
+                            logger.error(
+                                f"SERP fallback exception save error {serp_url}: {save_error}"
+                            )
 
             results[incident_id] = incident_articles
 

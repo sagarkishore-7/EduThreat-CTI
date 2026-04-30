@@ -580,6 +580,19 @@ class MetricsCollector:
         self._label_registry.clear()
         self._hist_baseline.clear()
 
+    def clear_persistence(self) -> None:
+        """Clear persisted metric rows from the configured SQLite store."""
+        if not self._db_path:
+            return
+        with self._db_lock:
+            conn = self._db_conn()
+            try:
+                conn.execute(_METRICS_TABLE_DDL)
+                conn.execute("DELETE FROM pipeline_metrics")
+                conn.commit()
+            finally:
+                conn.close()
+
 
 # ---------------------------------------------------------------------------
 # Global singleton

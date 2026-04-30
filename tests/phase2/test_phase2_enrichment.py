@@ -318,6 +318,8 @@ class TestEnrichmentDatabase:
         assert raw_extraction["business_impact"] is None
 
         final_payload = json.loads(row["final_enrichment_json"])
+        assert final_payload["institution_name"] == "Test University"
+        assert final_payload["canonical"]["institution_name"] == "Test University"
         assert final_payload["raw_extraction"]["institution_name"] == "Test University"
 
     def test_save_enrichment_result_stores_debug_artifacts_and_history(
@@ -377,12 +379,16 @@ class TestEnrichmentDatabase:
         assert raw_extraction["business_impact"] is None
 
         final_payload = json.loads(row["final_enrichment_json"])
+        assert final_payload["institution_name"] == "Test University"
+        assert final_payload["incident_date"] == "2025-01-15"
+        assert final_payload["timeline"][0]["event_type"] == "discovery"
+        assert final_payload["canonical"]["institution_name"] == "Test University"
         assert final_payload["analytics_projection"]["institution_name"] == "Test University"
         assert final_payload["raw_extraction"]["notification_sent"] is False
         assert final_payload["llm_metadata"]["model"] == "deepseek-test"
 
         assert row["storage_metadata"] is not None
-        assert row["enrichment_version"] == "3.0"
+        assert row["enrichment_version"] == "3.1"
         assert row["llm_provider"] == "ollama"
         assert row["llm_model"] == "deepseek-test"
         assert row["extraction_mode"] == "single_call"
@@ -501,6 +507,58 @@ class TestFetchingStrategy:
         fetcher.fetch_article.assert_called_once_with("https://therecord.media/penncrest-ransomware")
         assert results[incident["incident_id"]]
         assert results[incident["incident_id"]][0].url == "https://therecord.media/penncrest-ransomware"
+
+    def test_fetch_articles_persists_failed_fetch_attempts(self, temp_db, sample_incident):
+        conn, _ = temp_db
+        insert_incident(conn, sample_incident)
+
+        fetcher = Mock()
+        fetcher.fetch_article.return_value = ArticleContent(
+            url="https://example.com/article1",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="403 Forbidden",
+            content_length=0,
+        )
+        strategy = SmartArticleFetchingStrategy(conn, article_fetcher=fetcher)
+        strategy.rate_limiter.wait_if_needed = Mock()
+
+        incident = {
+            "incident_id": sample_incident.incident_id,
+            "all_urls": ["https://example.com/article1"],
+            "institution_name": sample_incident.institution_name,
+            "victim_raw_name": sample_incident.victim_raw_name,
+            "title": sample_incident.title,
+            "source_published_date": sample_incident.source_published_date,
+            "attack_type_hint": sample_incident.attack_type_hint,
+            "notes": sample_incident.notes,
+            "incident_date": sample_incident.incident_date,
+            "city": sample_incident.city,
+            "region": sample_incident.region,
+            "country": sample_incident.country,
+            "has_articles": False,
+        }
+
+        with patch(
+            "src.edu_cti.pipeline.phase2.utils.fetching_strategy.discover_articles_via_serp",
+            return_value=[],
+        ):
+            results = strategy.fetch_articles_for_incidents([incident])
+
+        assert results[sample_incident.incident_id] == []
+        row = conn.execute(
+            """
+            SELECT fetch_successful, fetch_error, content_length
+            FROM articles
+            WHERE incident_id = ? AND url = ?
+            """,
+            (sample_incident.incident_id, "https://example.com/article1"),
+        ).fetchone()
+        assert row is not None
+        assert row["fetch_successful"] == 0
+        assert row["fetch_error"] == "403 Forbidden"
+        assert row["content_length"] == 0
 
     def test_save_enrichment_result_replaces_existing_entry(self, temp_db, sample_incident):
         """Later saves should replace the existing enrichment snapshot."""
@@ -704,6 +762,33 @@ class TestFetchingStrategy:
     ):
         conn, _ = temp_db
         sample_incident.source_published_date = None
+        insert_incident(conn, sample_incident)
+        _save_sample_article(
+            conn,
+            sample_incident.incident_id,
+            "https://example.com/article1",
+            publish_date="2025-01-20",
+        )
+
+        assert save_enrichment_result(
+            conn,
+            sample_incident.incident_id,
+            _sample_enrichment_result(primary_url="https://example.com/article1"),
+            raw_json_data={"institution_name": "Test University"},
+        ) is True
+
+        row = conn.execute(
+            "SELECT source_published_date FROM incidents WHERE incident_id = ?",
+            (sample_incident.incident_id,),
+        ).fetchone()
+
+        assert row["source_published_date"] == "2025-01-20"
+
+    def test_save_enrichment_result_refreshes_stale_source_published_date_from_primary_article(
+        self, temp_db, sample_incident
+    ):
+        conn, _ = temp_db
+        sample_incident.source_published_date = "2025-01-10"
         insert_incident(conn, sample_incident)
         _save_sample_article(
             conn,

@@ -2089,8 +2089,11 @@ async def clear_all_incidents(
         # Vacuum to reclaim space
         conn.execute("VACUUM")
 
-        # Reset in-memory metrics so /metrics immediately reflects the clean slate
-        get_metrics().reset()
+        # Reset in-memory metrics and the dedicated metrics store so /metrics
+        # reflects the clean slate immediately and after restarts.
+        metrics = get_metrics()
+        metrics.reset()
+        metrics.clear_persistence()
 
         total = sum(deleted_counts.values())
         cache_invalidate()  # Clear cached dashboard/analytics data

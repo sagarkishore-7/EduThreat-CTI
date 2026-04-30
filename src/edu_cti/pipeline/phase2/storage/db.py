@@ -31,7 +31,23 @@ logger = logging.getLogger(__name__)
 
 _EXTRACTION_SCHEMA_FIELDS = tuple(EXTRACTION_SCHEMA["properties"].keys())
 _STORAGE_DEBUG_KEY = "_storage_debug"
-_ENRICHMENT_STORAGE_VERSION = "3.0"
+_ENRICHMENT_STORAGE_VERSION = "3.1"
+_FINAL_JSON_TEXT_FIELDS = {
+    "systems_affected_codes",
+    "timeline_json",
+    "mitre_techniques_json",
+    "malware_families",
+    "attacker_tools",
+    "threat_actor_aliases",
+    "cve_ids",
+    "cvss_scores",
+    "vulnerability_names",
+    "affected_products",
+    "data_categories",
+    "regulatory_context",
+    "secondary_attack_categories",
+    "attack_chain",
+}
 
 
 def _first_present(*values: Any) -> Any:
@@ -92,14 +108,41 @@ def _build_final_enrichment_record(
 ) -> str:
     """Persist the canonical post-processed enrichment record for analytics/debugging."""
     metadata = storage_debug.get("llm_metadata")
+    canonical = _build_canonical_enrichment_record(flat_data)
     final_record = {
         "storage_version": _ENRICHMENT_STORAGE_VERSION,
+        **canonical,
+        "canonical": canonical,
         "typed_enrichment": enrichment_result.model_dump(mode="json", exclude_none=False),
         "raw_extraction": raw_snapshot,
         "analytics_projection": flat_data,
         "llm_metadata": metadata if isinstance(metadata, dict) else None,
     }
     return json.dumps(final_record, indent=2)
+
+
+def _build_canonical_enrichment_record(flat_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert the SQLite-shaped flat projection into a readable canonical JSON record."""
+    canonical = dict(flat_data)
+
+    for key in _FINAL_JSON_TEXT_FIELDS:
+        value = canonical.get(key)
+        if not isinstance(value, str):
+            continue
+        try:
+            canonical[key] = json.loads(value)
+        except Exception:
+            continue
+
+    timeline = canonical.get("timeline_json")
+    if isinstance(timeline, list):
+        canonical["timeline"] = timeline
+
+    mitre = canonical.get("mitre_techniques_json")
+    if isinstance(mitre, list):
+        canonical["mitre_attack_techniques"] = mitre
+
+    return canonical
 
 
 def _derive_extraction_confidence(
@@ -303,7 +346,7 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             raw_extraction_json TEXT,
             final_enrichment_json TEXT,
             storage_metadata TEXT,
-            enrichment_version TEXT DEFAULT '3.0',
+            enrichment_version TEXT DEFAULT '3.1',
             enrichment_confidence REAL,
             llm_provider TEXT,
             llm_model TEXT,
@@ -323,7 +366,7 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         ("raw_extraction_json", "TEXT"),
         ("final_enrichment_json", "TEXT"),
         ("storage_metadata", "TEXT"),
-        ("enrichment_version", "TEXT DEFAULT '3.0'"),
+        ("enrichment_version", "TEXT DEFAULT '3.1'"),
         ("enrichment_confidence", "REAL"),
         ("llm_provider", "TEXT"),
         ("llm_model", "TEXT"),
@@ -349,7 +392,7 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
             raw_extraction_json TEXT,
             final_enrichment_json TEXT,
             storage_metadata TEXT,
-            enrichment_version TEXT DEFAULT '3.0',
+            enrichment_version TEXT DEFAULT '3.1',
             enrichment_confidence REAL,
             llm_provider TEXT,
             llm_model TEXT,
@@ -368,7 +411,7 @@ def init_incident_enrichments_table(conn: sqlite3.Connection) -> None:
         ("raw_extraction_json", "TEXT"),
         ("final_enrichment_json", "TEXT"),
         ("storage_metadata", "TEXT"),
-        ("enrichment_version", "TEXT DEFAULT '3.0'"),
+        ("enrichment_version", "TEXT DEFAULT '3.1'"),
         ("enrichment_confidence", "REAL"),
         ("llm_provider", "TEXT"),
         ("llm_model", "TEXT"),
@@ -1916,9 +1959,15 @@ def save_enrichment_result(
         if not victim_name_fallback:
             update_fields += ",\n        victim_raw_name = ?"
             update_params.append(resolved_institution_name)
-    if publication_date and not source_published_date_fallback:
+    normalized_publication_date = str(publication_date)[:10] if publication_date else None
+    normalized_source_published_date = (
+        str(source_published_date_fallback)[:10]
+        if source_published_date_fallback
+        else None
+    )
+    if normalized_publication_date and normalized_publication_date != normalized_source_published_date:
         update_fields += ",\n        source_published_date = ?"
-        update_params.append(publication_date)
+        update_params.append(normalized_publication_date)
     
     # Update incident_date if LLM extracted it — but guard against the LLM picking
     # a repost/mirror date that is far AFTER the article's source_published_date.
@@ -2087,10 +2136,10 @@ def save_enrichment_result(
         _inc_date = llm_incident_date or _row_inc_date
         if _inc_date:
             flat_data["incident_date"] = str(_inc_date)[:10]
-    if not flat_data.get("source_published_date"):
-        _pub_date = source_published_date_fallback or publication_date
-        if _pub_date:
-            flat_data["source_published_date"] = str(_pub_date)[:10]
+    if normalized_publication_date:
+        flat_data["source_published_date"] = normalized_publication_date
+    elif not flat_data.get("source_published_date") and normalized_source_published_date:
+        flat_data["source_published_date"] = normalized_source_published_date
 
     apply_post_processing(flat_data, incident_row, summary=summary)
 

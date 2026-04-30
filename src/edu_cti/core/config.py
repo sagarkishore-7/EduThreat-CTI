@@ -482,6 +482,7 @@ def _get_data_dir() -> Path:
 # Set data directory and database path
 DATA_DIR = _get_data_dir()
 DB_PATH = DATA_DIR / os.getenv("EDU_CTI_DB_PATH", "eduthreat.db")
+METRICS_DB_PATH = DATA_DIR / os.getenv("EDU_CTI_METRICS_DB_PATH", "eduthreat_metrics.db")
 
 # Logging configuration
 LOG_LEVEL = os.getenv("EDU_CTI_LOG_LEVEL", "INFO")
@@ -506,6 +507,7 @@ try:
     if _logger.isEnabledFor(logging.INFO):
         _logger.info(f"Data directory: {DATA_DIR.absolute()}")
         _logger.info(f"Database path: {DB_PATH.absolute()}")
+        _logger.info(f"Metrics database path: {METRICS_DB_PATH.absolute()}")
         if _detect_railway():
             _logger.info("Railway environment detected - using persistent storage")
 except Exception:

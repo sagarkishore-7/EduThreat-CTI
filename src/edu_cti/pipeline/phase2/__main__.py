@@ -647,7 +647,14 @@ def fetch_articles_phase(
                 from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
                 from src.edu_cti.pipeline.phase2.storage.article_storage import save_article, get_all_articles_for_incident
                 existing_articles = get_all_articles_for_incident(conn, incident_id)
-                if not existing_articles:
+                usable_existing_articles = [
+                    article
+                    for article in existing_articles
+                    if article.get("fetch_successful")
+                    and article.get("content")
+                    and len(article["content"].strip()) > 50
+                ]
+                if not usable_existing_articles:
                     serp_urls = discover_articles_via_serp(incident)
                     fetched_any = False
                     for serp_url in serp_urls:
@@ -658,13 +665,27 @@ def fetch_articles_phase(
                         try:
                             ac = fetching_strategy.article_fetcher.fetch_article(serp_url)
                             fetching_strategy.rate_limiter.record_fetch(domain, success=ac.fetch_successful)
+                            save_article(conn, incident_id=incident_id, url=serp_url, article=ac)
                             if ac.fetch_successful:
-                                save_article(conn, incident_id=incident_id, url=serp_url, article=ac)
                                 conn.commit()
                                 fetched_any = True
                                 break
                         except Exception as _e:
                             logger.debug(f"SERP fetch error {serp_url}: {_e}")
+                            from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
+                            save_article(
+                                conn,
+                                incident_id=incident_id,
+                                url=serp_url,
+                                article=ArticleContent(
+                                    url=serp_url,
+                                    title="",
+                                    content="",
+                                    fetch_successful=False,
+                                    error_message=str(_e),
+                                    content_length=0,
+                                ),
+                            )
                     if fetched_any:
                         incident_queue.put({**incident, "incident_id": incident_id})
                         stats["articles_fetched"] += 1
@@ -692,7 +713,14 @@ def fetch_articles_phase(
                 # Check if incident already has articles in database
                 from src.edu_cti.pipeline.phase2.storage.article_storage import get_all_articles_for_incident
                 existing_articles = get_all_articles_for_incident(conn, incident_id)
-                has_existing_articles = len(existing_articles) > 0
+                usable_existing_articles = [
+                    article
+                    for article in existing_articles
+                    if article.get("fetch_successful")
+                    and article.get("content")
+                    and len(article["content"].strip()) > 50
+                ]
+                has_existing_articles = len(usable_existing_articles) > 0
                 
                 # Fetch articles for this single incident
                 results = fetching_strategy.fetch_articles_for_incidents([incident])
@@ -734,7 +762,7 @@ def fetch_articles_phase(
                     # come from a stale URL set and will produce misaligned enrichment
                     # (wrong primary_url vs all_urls, wrong article content).
                     current_urls = set(incident.get("all_urls") or [])
-                    existing_urls = {a["url"] for a in existing_articles if a.get("url")}
+                    existing_urls = {a["url"] for a in usable_existing_articles if a.get("url")}
                     aligned = current_urls & existing_urls if current_urls else existing_urls
                     if current_urls and not aligned:
                         # No overlap — stale articles from a different URL set.  Delete
@@ -760,6 +788,7 @@ def fetch_articles_phase(
                     if not incident_urls:
                         from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
                         from src.edu_cti.pipeline.phase2.storage.article_storage import save_article
+                        from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
                         serp_urls = discover_articles_via_serp(incident)
 
                         # Filter out the roundup URL that spawned this stub so SERP
@@ -783,8 +812,8 @@ def fetch_articles_phase(
                             try:
                                 ac = fetching_strategy.article_fetcher.fetch_article(serp_url)
                                 fetching_strategy.rate_limiter.record_fetch(s_domain, success=ac.fetch_successful)
+                                save_article(conn, incident_id=incident_id, url=serp_url, article=ac)
                                 if ac.fetch_successful:
-                                    save_article(conn, incident_id=incident_id, url=serp_url, article=ac)
                                     conn.commit()
                                     serp_found = True
                                     stats["articles_fetched"] += 1
@@ -793,6 +822,19 @@ def fetch_articles_phase(
                                     break
                             except Exception as _se:
                                 logger.debug(f"SERP fetch error {serp_url}: {_se}")
+                                save_article(
+                                    conn,
+                                    incident_id=incident_id,
+                                    url=serp_url,
+                                    article=ArticleContent(
+                                        url=serp_url,
+                                        title="",
+                                        content="",
+                                        fetch_successful=False,
+                                        error_message=str(_se),
+                                        content_length=0,
+                                    ),
+                                )
 
                     if not serp_found:
                         source = incident_id.split("_")[0]
