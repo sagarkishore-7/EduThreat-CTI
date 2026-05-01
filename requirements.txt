@@ -32,6 +32,9 @@ stix2>=3.0.0
 # GLiNER zero-shot NER pre-pass (Priority 2)
 gliner>=0.2.0
 
+# IntelEX-style MITRE RAG — semantic technique retrieval (Priority 3)
+sentence-transformers>=3.0.0
+
 # API Server
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0

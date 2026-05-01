@@ -559,17 +559,24 @@ class IncidentEnricher:
         article_metadata_block = ("\n" + "\n".join(article_metadata_lines)) if article_metadata_lines else "\n- Article Metadata: unknown"
 
         # ── GLiNER NER pre-pass ────────────────────────────────────────────────
-        # Run fast zero-shot NER over the article to surface institution name,
-        # location, and threat-actor hints before the main LLM call. The hint
-        # block is appended to the user prompt so the LLM has grounding evidence
-        # for the fields most likely to be missed or hallucinated.
         try:
             from src.edu_cti.pipeline.phase2.extraction.ner_preprocessor import build_ner_hint_block
             _ner_hint = build_ner_hint_block(combined_text, title)
         except Exception:
             _ner_hint = None
 
-        _ner_block = f"\n\n{_ner_hint}" if _ner_hint else ""
+        # ── IntelEX RAG: retrieve top-5 MITRE technique candidates ────────────
+        try:
+            from src.edu_cti.pipeline.phase2.extraction.mitre_rag import build_mitre_rag_block
+            _rag_block = build_mitre_rag_block(combined_text)
+        except Exception:
+            _rag_block = None
+
+        _extra = ""
+        if _ner_hint:
+            _extra += f"\n\n{_ner_hint}"
+        if _rag_block:
+            _extra += f"\n\n{_rag_block}"
 
         user_prompt = PROMPT_TEMPLATE.format(
             url=primary_url,
@@ -577,7 +584,7 @@ class IncidentEnricher:
             target_institution_line=target_institution_line,
             article_metadata_block=article_metadata_block,
             text=combined_text
-        ) + _ner_block
+        ) + _extra
 
         try:
             # Call LLM — pass EXTRACTION_SCHEMA as format so Ollama builds a GBNF grammar
@@ -1069,6 +1076,14 @@ class IncidentEnricher:
             return str(v)
 
         part2_text = combined_text[:60_000]  # smaller cap — model is focused
+
+        # ── IntelEX RAG: retrieve top-5 MITRE techniques for grounding ────────
+        try:
+            from src.edu_cti.pipeline.phase2.extraction.mitre_rag import build_mitre_rag_block
+            _rag_block = build_mitre_rag_block(combined_text)
+        except Exception:
+            _rag_block = None
+
         part2_prompt = PART2_PROMPT_TEMPLATE.format(
             institution_name=_fmt(json_part1.get("institution_name")),
             institution_type=_fmt(json_part1.get("institution_type")),
@@ -1082,7 +1097,7 @@ class IncidentEnricher:
             url=primary_url,
             title=title,
             text=part2_text,
-        )
+        ) + (f"\n\n{_rag_block}" if _rag_block else "")
 
         json_part2: Dict[str, Any] = {}
         raw_part2_text: Optional[str] = None
