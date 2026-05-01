@@ -136,9 +136,6 @@ INSTITUTION_TYPE_NORMALIZATION = {
     "r1 university": "university",
     "r2 university": "university",
     # Backward-compat: old enum values the LLM may still output → new values
-    "k12_public_school": "k12_school",
-    "k12_private_school": "k12_school",
-    "k12_charter_school": "k12_school",
     "college": "community_college",
     "junior college": "community_college",
     "2-year college": "community_college",
@@ -280,7 +277,6 @@ def normalize_institution_type(value: Any) -> Optional[str]:
     if normalized in _VALID_INSTITUTION_TYPES:
         return normalized
     # Try normalized form (hyphens/spaces → underscores) in the normalization map
-    # e.g. "university-public" → "university_public" → "university"
     if normalized in INSTITUTION_TYPE_NORMALIZATION:
         return INSTITUTION_TYPE_NORMALIZATION[normalized]
     # Try direct lookup in normalization map (key already lowercased+stripped)

@@ -103,7 +103,7 @@ EXTRACTION_SCHEMA = {
                 "research_institute / research_center — standalone research organisation, not degree-granting. "
                 "edtech_platform — software/SaaS vendors serving education (e.g. PowerSchool, Illuminate, Blackbaud). "
                 "tutoring_service — online tutoring/test-prep companies (e.g. Chegg). "
-                "library — public or academic libraries. "
+                "library — libraries (school, academic, or public). "
                 "tribal_college — tribal/first-nations colleges. "
                 "military_academy — military service academies. "
                 "Use unknown ONLY when no classification is possible from the article text."
