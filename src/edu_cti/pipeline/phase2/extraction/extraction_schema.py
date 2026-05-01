@@ -95,10 +95,10 @@ EXTRACTION_SCHEMA = {
             ],
             "description": (
                 "Canonical institution type. Choose the most specific match. "
-                "university — any degree-granting higher education institution (all universities regardless of public/private/research status: state universities, Ivy League, liberal arts colleges, polytechnics). "
+                "university — any degree-granting higher education institution (state universities, Ivy League, liberal arts colleges, polytechnics). "
                 "community_college — two-year community or junior college. "
                 "technical_college — technical/vocational two-year college. "
-                "k12_school — single K-12 school of any type (public, private, charter, elementary, middle, or high school). "
+                "k12_school — single K-12 school (elementary, middle, or high school). "
                 "school_district — district-level organization ('school district', 'unified school district', 'ISD', 'USD', 'county schools', 'public schools' at city/county level). "
                 "research_institute / research_center — standalone research organisation, not degree-granting. "
                 "edtech_platform — software/SaaS vendors serving education (e.g. PowerSchool, Illuminate, Blackbaud). "
@@ -1461,8 +1461,8 @@ EXTRACTION_SCHEMA_PART1 = {
                 "education_nonprofit", "education_vendor", "unknown",
             ],
             "description": (
-                "university — any degree-granting higher education institution (all universities: public, private, research, liberal arts). "
-                "k12_school — single K-12 school (public, private, or charter). "
+                "university — any degree-granting higher education institution. "
+                "k12_school — single K-12 school (elementary, middle, or high school). "
                 "school_district — district-level organization ('school district', 'ISD', 'USD', 'county schools'). "
                 "community_college — two-year community/junior college. technical_college — technical/vocational two-year college."
             ),

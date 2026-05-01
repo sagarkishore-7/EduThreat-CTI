@@ -136,9 +136,6 @@ INSTITUTION_TYPE_NORMALIZATION = {
     "r1 university": "university",
     "r2 university": "university",
     # Backward-compat: old enum values the LLM may still output → new values
-    "university_public": "university",
-    "university_private": "university",
-    "university_research": "university",
     "k12_public_school": "k12_school",
     "k12_private_school": "k12_school",
     "k12_charter_school": "k12_school",
