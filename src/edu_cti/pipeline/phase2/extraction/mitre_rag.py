@@ -25,6 +25,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -38,7 +39,8 @@ _INDEX_CACHE_FILENAME = "mitre_embeddings_index.json"  # tid → array row
 _MAX_ARTICLE_CHARS = 2_000   # first ~400 words — where attack context is densest
 _TOP_K = 5                   # number of candidate techniques to surface per article
 
-# Runtime cache
+# Runtime cache — protected by _model_lock to prevent concurrent loads
+_model_lock = threading.Lock()
 _embed_model = None
 _embed_model_load_failed = False
 _technique_embeddings: Optional[np.ndarray] = None   # shape (N, 384)
@@ -63,22 +65,22 @@ def _get_hf_cache_dir() -> str:
 
 def _load_embed_model():
     global _embed_model, _embed_model_load_failed
-    if _embed_model_load_failed:
-        return None
-    if _embed_model is not None:
+    if _embed_model is not None or _embed_model_load_failed:
         return _embed_model
-    try:
-        os.environ.setdefault("HF_HOME", _get_hf_cache_dir())
-        os.environ.setdefault("TRANSFORMERS_CACHE", _get_hf_cache_dir())
-        from sentence_transformers import SentenceTransformer
-        logger.info("MITRE RAG: loading embedding model %s", _EMBED_MODEL_ID)
-        _embed_model = SentenceTransformer(_EMBED_MODEL_ID)
-        logger.info("MITRE RAG: embedding model loaded")
-        return _embed_model
-    except Exception as exc:
-        logger.warning("MITRE RAG: embedding model load failed — RAG disabled: %s", exc)
-        _embed_model_load_failed = True
-        return None
+    with _model_lock:
+        if _embed_model is not None or _embed_model_load_failed:
+            return _embed_model
+        try:
+            os.environ.setdefault("HF_HOME", _get_hf_cache_dir())
+            os.environ.setdefault("TRANSFORMERS_CACHE", _get_hf_cache_dir())
+            from sentence_transformers import SentenceTransformer
+            logger.info("MITRE RAG: loading embedding model %s", _EMBED_MODEL_ID)
+            _embed_model = SentenceTransformer(_EMBED_MODEL_ID)
+            logger.info("MITRE RAG: embedding model loaded")
+        except Exception as exc:
+            logger.warning("MITRE RAG: embedding model load failed — RAG disabled: %s", exc)
+            _embed_model_load_failed = True
+    return _embed_model
 
 
 def _build_technique_corpus() -> List[Dict]:
@@ -163,23 +165,23 @@ def build_mitre_index(force: bool = False) -> bool:
 
 
 def _load_index() -> Tuple[Optional[np.ndarray], Optional[List[Dict]]]:
-    """Load embeddings and metadata index from disk into runtime cache."""
+    """Load embeddings and metadata index from disk into runtime cache. Thread-safe."""
     global _technique_embeddings, _technique_index
     if _technique_embeddings is not None and _technique_index is not None:
         return _technique_embeddings, _technique_index
-
-    if not _embeddings_are_valid():
-        if not build_mitre_index():
-            return None, None
-
-    try:
-        _technique_embeddings = np.load(str(_embed_path()))
-        with open(_index_path(), "r", encoding="utf-8") as f:
-            _technique_index = json.load(f)
-        return _technique_embeddings, _technique_index
-    except Exception as exc:
-        logger.warning("MITRE RAG: failed to load index: %s", exc)
-        return None, None
+    with _model_lock:
+        if _technique_embeddings is not None and _technique_index is not None:
+            return _technique_embeddings, _technique_index
+        if not _embeddings_are_valid():
+            if not build_mitre_index():
+                return None, None
+        try:
+            _technique_embeddings = np.load(str(_embed_path()))
+            with open(_index_path(), "r", encoding="utf-8") as f:
+                _technique_index = json.load(f)
+        except Exception as exc:
+            logger.warning("MITRE RAG: failed to load index: %s", exc)
+    return _technique_embeddings, _technique_index
 
 
 # ── Public API ────────────────────────────────────────────────────────────────

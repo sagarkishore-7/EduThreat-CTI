@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -53,7 +54,8 @@ _LABEL_TO_FIELD: Dict[str, str] = {
     "ransomware family": "ransomware_family",
 }
 
-# Runtime cache
+# Runtime cache — protected by _model_lock to prevent concurrent loads
+_model_lock = threading.Lock()
 _gliner_model = None
 _gliner_load_failed = False
 
@@ -70,28 +72,27 @@ def _get_hf_cache_dir() -> Optional[str]:
 
 
 def _load_model():
-    """Load GLiNER model (once per process). Sets _gliner_load_failed on error."""
+    """Load GLiNER model once per process. Thread-safe via double-checked locking."""
     global _gliner_model, _gliner_load_failed
-    if _gliner_load_failed:
-        return None
-    if _gliner_model is not None:
+    if _gliner_model is not None or _gliner_load_failed:
         return _gliner_model
+    with _model_lock:
+        if _gliner_model is not None or _gliner_load_failed:
+            return _gliner_model
+        try:
+            hf_cache = _get_hf_cache_dir()
+            if hf_cache:
+                os.environ.setdefault("HF_HOME", hf_cache)
+                os.environ.setdefault("TRANSFORMERS_CACHE", hf_cache)
 
-    try:
-        hf_cache = _get_hf_cache_dir()
-        if hf_cache:
-            os.environ.setdefault("HF_HOME", hf_cache)
-            os.environ.setdefault("TRANSFORMERS_CACHE", hf_cache)
-
-        from gliner import GLiNER
-        logger.info("GLiNER: loading model %s (first use — may download ~150 MB)", _MODEL_ID)
-        _gliner_model = GLiNER.from_pretrained(_MODEL_ID)
-        logger.info("GLiNER: model loaded successfully")
-        return _gliner_model
-    except Exception as exc:
-        logger.warning("GLiNER: model load failed — NER pre-pass disabled: %s", exc)
-        _gliner_load_failed = True
-        return None
+            from gliner import GLiNER
+            logger.info("GLiNER: loading model %s (first use — may download ~150 MB)", _MODEL_ID)
+            _gliner_model = GLiNER.from_pretrained(_MODEL_ID)
+            logger.info("GLiNER: model loaded successfully")
+        except Exception as exc:
+            logger.warning("GLiNER: model load failed — NER pre-pass disabled: %s", exc)
+            _gliner_load_failed = True
+    return _gliner_model
 
 
 def _clean_text(text: str) -> str:
