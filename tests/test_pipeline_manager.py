@@ -200,3 +200,78 @@ def test_scheduler_enrichment_does_not_request_csv_export():
         "enrich",
         {"rate_limit_delay": 2.0, "export_csv": False},
     )
+
+
+def test_auto_resume_interrupted_historical_run():
+    with patch(
+        "src.edu_cti.pipeline.manager._recover_interrupted_runs",
+        return_value=[
+            {
+                "run_id": "old-run",
+                "phase": "historical",
+                "params": {"max_pages": 25},
+                "started_at": "2026-05-01T10:00:00",
+            }
+        ],
+    ), patch(
+        "src.edu_cti.core.config.AUTO_RESUME_INTERRUPTED_PIPELINES",
+        True,
+        create=True,
+    ), patch.object(
+        PipelineManager,
+        "start_phase",
+        return_value=PipelineRun("new-run", "historical", {}),
+    ) as mock_start:
+        PipelineManager()
+
+    mock_start.assert_called_once_with(
+        "historical",
+        {
+            "max_pages": 25,
+            "auto_resumed": True,
+            "resumed_from_run_id": "old-run",
+        },
+    )
+
+
+def test_run_historical_reduces_workers_after_memory_pause():
+    manager = PipelineManager()
+    run = PipelineRun("historical-run", "historical", {"workers": 3})
+    worker_counts = []
+
+    def _fake_run_enrich(_run, params, **_kwargs):
+        worker_counts.append(params["workers"])
+        if len(worker_counts) == 1:
+            return {
+                "memory_pause_requested": True,
+                "memory_pause_reason": "RSS 2900 MB exceeded hard limit 2600 MB",
+                "run_stats": {"enriched": 2},
+                "enrichment_stats": {"ready_for_enrichment": 5, "unenriched_incidents": 5},
+            }
+        return {
+            "memory_pause_requested": False,
+            "run_stats": {"enriched": 1},
+            "enrichment_stats": {"ready_for_enrichment": 0, "unenriched_incidents": 0},
+        }
+
+    stats_sequence = [
+        {"unenriched_incidents": 5, "ready_for_enrichment": 5},
+        {"unenriched_incidents": 5, "ready_for_enrichment": 5},
+        {"unenriched_incidents": 0, "ready_for_enrichment": 0},
+    ]
+
+    with patch("src.edu_cti.pipeline.manager.threading.Thread", _ImmediateThread), patch.object(
+        manager, "_run_ingest", return_value={"new_incidents": 0}
+    ), patch.object(
+        manager, "_run_enrich", side_effect=_fake_run_enrich
+    ), patch(
+        "src.edu_cti.pipeline.manager._load_enrichment_stats",
+        side_effect=stats_sequence,
+    ), patch(
+        "src.edu_cti.pipeline.manager.time.sleep"
+    ):
+        result = manager._run_historical(run, {"workers": 3})
+
+    assert worker_counts == [3, 2]
+    assert result["memory_pause_requested"] is False
+    assert result["enrich_rounds"] == 2

@@ -15,7 +15,7 @@ import time
 import queue
 import threading
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.enrichment import IncidentEnricher
@@ -43,6 +43,13 @@ from src.edu_cti.core.config import (
     ENRICHMENT_SKIP_SOURCES,
     FETCH_IMPOSSIBLE_SOURCES,
     SERP_MAX_ATTEMPTS,
+    PHASE2_MEMORY_MONITOR_ENABLED,
+    PHASE2_MEMORY_CHECK_INTERVAL,
+    PHASE2_MEMORY_GC_INTERVAL,
+    PHASE2_MEMORY_SOFT_LIMIT_MB,
+    PHASE2_MEMORY_HARD_LIMIT_MB,
+    PHASE2_MEMORY_SOFT_LIMIT_PCT,
+    PHASE2_MEMORY_HARD_LIMIT_PCT,
 )
 from src.edu_cti.core.logging_utils import configure_logging
 from src.edu_cti.core.db import get_connection, init_db
@@ -59,6 +66,18 @@ _cancel_event = threading.Event()
 # incident simultaneously when the queue is fed from multiple sources.
 _in_progress: set = set()
 _in_progress_lock = threading.Lock()
+
+_memory_policy_lock = threading.Lock()
+_memory_policy: Optional[Dict[str, Any]] = None
+_memory_guard_state_lock = threading.Lock()
+_memory_guard_state: Dict[str, Any] = {
+    "pause_requested": False,
+    "reason": None,
+    "rss_mb": None,
+    "soft_limit_logged": False,
+    "hard_limit_mb": None,
+    "container_limit_mb": None,
+}
 
 # --- Critical fields used to compute per-incident completeness score (0-10) ---
 _COMPLETENESS_FIELDS = [
@@ -209,6 +228,192 @@ def _clear_watchdog() -> None:
     _watchdog = None
 
 
+def _reset_memory_policy_cache() -> None:
+    global _memory_policy
+    with _memory_policy_lock:
+        _memory_policy = None
+
+
+def _reset_memory_guard_state() -> None:
+    with _memory_guard_state_lock:
+        _memory_guard_state.update(
+            {
+                "pause_requested": False,
+                "reason": None,
+                "rss_mb": None,
+                "soft_limit_logged": False,
+                "hard_limit_mb": None,
+                "container_limit_mb": None,
+            }
+        )
+
+
+def _get_memory_guard_state() -> Dict[str, Any]:
+    with _memory_guard_state_lock:
+        return dict(_memory_guard_state)
+
+
+def _detect_container_memory_limit_bytes() -> Optional[int]:
+    """Read the container memory limit from cgroups when available."""
+    candidates = (
+        "/sys/fs/cgroup/memory.max",
+        "/sys/fs/cgroup/memory/memory.limit_in_bytes",
+    )
+    for path in candidates:
+        try:
+            raw = Path(path).read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if not raw or raw.lower() == "max":
+            continue
+        try:
+            value = int(raw)
+        except ValueError:
+            continue
+        # Ignore absurd sentinel values that effectively mean "unlimited".
+        if value <= 0 or value >= (1 << 60):
+            continue
+        return value
+    return None
+
+
+def _resolve_memory_policy() -> Optional[Dict[str, Any]]:
+    """Resolve the effective memory thresholds for this Phase 2 run."""
+    if not PHASE2_MEMORY_MONITOR_ENABLED:
+        return None
+
+    soft_mb = PHASE2_MEMORY_SOFT_LIMIT_MB if PHASE2_MEMORY_SOFT_LIMIT_MB > 0 else None
+    hard_mb = PHASE2_MEMORY_HARD_LIMIT_MB if PHASE2_MEMORY_HARD_LIMIT_MB > 0 else None
+    limit_bytes = _detect_container_memory_limit_bytes()
+    limit_mb = (
+        int(limit_bytes / (1024 * 1024))
+        if limit_bytes and limit_bytes > 0
+        else None
+    )
+
+    if limit_mb is not None:
+        if soft_mb is None:
+            soft_mb = max(1, int(limit_mb * PHASE2_MEMORY_SOFT_LIMIT_PCT))
+        if hard_mb is None:
+            hard_mb = max(soft_mb + 1 if soft_mb is not None else 1, int(limit_mb * PHASE2_MEMORY_HARD_LIMIT_PCT))
+    elif hard_mb is not None and soft_mb is None:
+        soft_mb = max(1, int(hard_mb * 0.85))
+
+    if hard_mb is None:
+        return None
+
+    if soft_mb is None:
+        soft_mb = max(1, hard_mb - 128)
+    if soft_mb >= hard_mb:
+        soft_mb = max(1, hard_mb - 1)
+
+    return {
+        "soft_limit_mb": soft_mb,
+        "hard_limit_mb": hard_mb,
+        "container_limit_mb": limit_mb,
+        "check_interval": max(1, PHASE2_MEMORY_CHECK_INTERVAL),
+        "gc_interval": max(1, PHASE2_MEMORY_GC_INTERVAL),
+    }
+
+
+def _get_memory_policy() -> Optional[Dict[str, Any]]:
+    global _memory_policy
+    with _memory_policy_lock:
+        if _memory_policy is None:
+            _memory_policy = _resolve_memory_policy()
+        return dict(_memory_policy) if _memory_policy else None
+
+
+def _request_memory_pause(*, rss_mb: float, hard_limit_mb: int, container_limit_mb: Optional[int]) -> bool:
+    """Signal a graceful pause when memory pressure exceeds the hard threshold."""
+    with _memory_guard_state_lock:
+        if _memory_guard_state["pause_requested"]:
+            return False
+        reason = (
+            f"RSS {rss_mb:.0f} MB exceeded hard limit {hard_limit_mb} MB"
+            + (
+                f" (container limit {container_limit_mb} MB)"
+                if container_limit_mb
+                else ""
+            )
+        )
+        _memory_guard_state.update(
+            {
+                "pause_requested": True,
+                "reason": reason,
+                "rss_mb": rss_mb,
+                "hard_limit_mb": hard_limit_mb,
+                "container_limit_mb": container_limit_mb,
+            }
+        )
+
+    _progress["step"] = "Pausing for memory pressure"
+    _progress["detail"] = reason
+    _cancel_event.set()
+    if _watchdog:
+        _watchdog.heartbeat()
+    _metrics.increment("pipeline_memory_pause_total")
+    logger.warning("[MEM] %s — requesting graceful Phase 2 pause", reason)
+    return True
+
+
+def _check_memory_pressure(items_processed: int) -> bool:
+    """Return True when the Phase 2 run should pause for memory pressure."""
+    policy = _get_memory_policy()
+    if not policy:
+        return False
+
+    gc_interval = policy["gc_interval"]
+    if items_processed > 0 and items_processed % gc_interval == 0:
+        import gc
+
+        gc.collect()
+        logger.debug(f"[MEM] gc.collect() after {items_processed} items")
+
+    if items_processed <= 0 or items_processed % policy["check_interval"] != 0:
+        return _get_memory_guard_state()["pause_requested"]
+
+    try:
+        import gc
+        import psutil
+    except ImportError:
+        return False
+
+    rss_mb = psutil.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+    _metrics.observe("pipeline_rss_mb", float(rss_mb))
+
+    soft_mb = policy["soft_limit_mb"]
+    hard_mb = policy["hard_limit_mb"]
+    container_limit_mb = policy.get("container_limit_mb")
+
+    if rss_mb >= hard_mb:
+        _request_memory_pause(
+            rss_mb=rss_mb,
+            hard_limit_mb=hard_mb,
+            container_limit_mb=container_limit_mb,
+        )
+        return True
+
+    state = _get_memory_guard_state()
+    if rss_mb >= soft_mb:
+        if not state["soft_limit_logged"]:
+            with _memory_guard_state_lock:
+                _memory_guard_state["soft_limit_logged"] = True
+            _metrics.increment("pipeline_memory_soft_limit_total")
+            logger.warning(
+                "[MEM] RSS %.0f MB reached soft limit %s MB%s — forcing GC and continuing",
+                rss_mb,
+                soft_mb,
+                f" (container limit {container_limit_mb} MB)" if container_limit_mb else "",
+            )
+        gc.collect()
+    elif state["soft_limit_logged"] and rss_mb < (soft_mb * 0.90):
+        with _memory_guard_state_lock:
+            _memory_guard_state["soft_limit_logged"] = False
+
+    return state["pause_requested"]
+
+
 def _record_serp_failure(conn, incident_id: str) -> bool:
     """
     Increment serp_attempt_count for an incident after a failed SERP search.
@@ -249,6 +454,26 @@ def _record_serp_failure(conn, incident_id: str) -> bool:
         f"SERP attempt {count}/{SERP_MAX_ATTEMPTS} for {incident_id} — will retry next run"
     )
     return False
+
+
+def _mark_curated_incident_stub(conn, incident_id: str) -> None:
+    """Clear stale articles for curated incidents using the standard SQLite retry helper."""
+    from src.edu_cti.core.db import run_with_sqlite_lock_retry
+
+    def _apply() -> None:
+        conn.execute("DELETE FROM articles WHERE incident_id = ?", (incident_id,))
+        conn.execute(
+            "UPDATE incidents SET llm_enriched = 1, "
+            "llm_enriched_at = datetime('now') WHERE incident_id = ?",
+            (incident_id,),
+        )
+        conn.commit()
+
+    run_with_sqlite_lock_retry(
+        conn,
+        _apply,
+        operation=f"clear stale curated articles for {incident_id}",
+    )
 
 # Module-level progress dict — updated during execution, read by pipeline manager
 # Uses two sub-phases: "Fetching articles" (0-30%) and "LLM Enrichment" (30-100%)
@@ -1281,15 +1506,7 @@ def enrich_articles_phase(
                                 # Delete stale articles so they don't cause wrong classification again.
                                 # Mark llm_enriched=1 so SERP doesn't retry this incident forever —
                                 # the source metadata (institution, attack type, date) is already good.
-                                conn.execute(
-                                    "DELETE FROM articles WHERE incident_id = ?", (incident_id,)
-                                )
-                                conn.execute(
-                                    "UPDATE incidents SET llm_enriched = 1, "
-                                    "llm_enriched_at = datetime('now') WHERE incident_id = ?",
-                                    (incident_id,)
-                                )
-                                conn.commit()
+                                _mark_curated_incident_stub(conn, incident_id)
                                 stats["skipped"] += 1
                                 checkpoint_clear(conn, incident_id)
                                 logger.warning(
@@ -1337,27 +1554,12 @@ def enrich_articles_phase(
                 if _watchdog:
                     _watchdog.heartbeat()
 
-                # Memory management: gc every 1,000 items; hard exit if RSS > 600 MB.
-                # os._exit(1) triggers Railway ON_FAILURE restart policy to bring the container back up.
-                if items_processed % 1000 == 0:
-                    import gc
-                    gc.collect()
-                    logger.debug(f"[MEM] gc.collect() after {items_processed} items")
-                if items_processed % 100 == 0:
-                    try:
-                        import psutil, os as _os
-                        rss_mb = psutil.Process(_os.getpid()).memory_info().rss / (1024 * 1024)
-                        if rss_mb > 600:
-                            logger.warning(
-                                f"[MEM] RSS {rss_mb:.0f} MB > 600 MB threshold — "
-                                "triggering restart to reclaim memory"
-                            )
-                            _metrics.increment("pipeline_memory_restart_total")
-                            _os._exit(1)  # exit(1) so Railway ON_FAILURE policy restarts the container
-                        elif rss_mb > 400:
-                            logger.info(f"[MEM] RSS {rss_mb:.0f} MB (approaching threshold)")
-                    except ImportError:
-                        pass  # psutil not installed — memory monitoring disabled
+                if _check_memory_pressure(items_processed):
+                    logger.info(
+                        "Memory pause requested — worker stopping after %s processed queue item(s)",
+                        items_processed,
+                    )
+                    break
 
             except Exception as e:
                 stats["errors"] += 1
@@ -1368,6 +1570,12 @@ def enrich_articles_phase(
                 items_processed += 1
                 if _watchdog:
                     _watchdog.heartbeat()
+                if _check_memory_pressure(items_processed):
+                    logger.info(
+                        "Memory pause requested after error path — worker stopping after %s processed queue item(s)",
+                        items_processed,
+                    )
+                    break
                 # Don't mark as processed - will retry on next run
 
         except Exception as e:
@@ -1459,16 +1667,31 @@ Examples:
     return parser.parse_args()
 
 
-def main() -> None:
+def main() -> Optional[Dict[str, Any]]:
     """Main entry point for Phase 2 enrichment pipeline."""
     args = parse_args()
     _clear_watchdog()
+    _reset_memory_policy_cache()
+    _reset_memory_guard_state()
     
     # Setup logging
     from pathlib import Path as PathLib
     log_file_path = PathLib(args.log_file) if args.log_file else None
     configure_logging(args.log_level, log_file=log_file_path)
     logger = logging.getLogger(__name__)
+
+    memory_policy = _get_memory_policy()
+    if memory_policy:
+        container_limit_mb = memory_policy.get("container_limit_mb")
+        limit_detail = f", container={container_limit_mb} MB" if container_limit_mb else ""
+        logger.info(
+            "Phase 2 memory policy enabled: soft=%s MB, hard=%s MB%s",
+            memory_policy["soft_limit_mb"],
+            memory_policy["hard_limit_mb"],
+            limit_detail,
+        )
+    else:
+        logger.info("Phase 2 memory policy disabled or no container memory limit detected")
     
     # Initialize database
     conn = get_connection()
@@ -1500,7 +1723,13 @@ def main() -> None:
 
         if not unenriched:
             logger.info("No incidents ready for processing")
-            return
+            return {
+                "fetch_stats": {"processed": 0, "articles_fetched": 0, "errors": 0},
+                "run_stats": {"processed": 0, "enriched": 0, "skipped": 0, "errors": 0},
+                "enrichment_stats": stats,
+                "memory_pause_requested": False,
+                "memory_pause_reason": None,
+            }
 
         # PHASE 1 & 2: Concurrent producer-consumer pattern
         already_e = stats.get("enriched_incidents", 0)
@@ -1654,6 +1883,8 @@ def main() -> None:
         skipped = enrich_stats.get("skipped", 0)
         errors = fetch_stats.get("errors", 0) + enrich_stats.get("errors", 0)
         
+        memory_state = _get_memory_guard_state()
+
         # Final pipeline stats
         logger.info("=" * 60)
         logger.info("Phase 2 Pipeline Complete")
@@ -1661,6 +1892,8 @@ def main() -> None:
         logger.info(f"  LLM Enriched: {enriched}")
         logger.info(f"  Skipped: {skipped}")
         logger.info(f"  Errors: {errors}")
+        if memory_state["pause_requested"]:
+            logger.warning(f"  Memory Pause: {memory_state['reason']}")
         logger.info("=" * 60)
         
         # Post-enrichment deduplication by institution name (if enrichment occurred)
@@ -1696,6 +1929,22 @@ def main() -> None:
                     logger.info("No enriched incidents to export")
             except Exception as e:
                 logger.error(f"Error exporting enriched dataset: {e}", exc_info=True)
+        return {
+            "fetch_stats": fetch_stats,
+            "run_stats": {
+                "processed": processed,
+                "enriched": enriched,
+                "skipped": skipped,
+                "errors": errors,
+                "articles_fetched": fetch_stats["articles_fetched"],
+            },
+            "enrichment_stats": final_stats,
+            "memory_pause_requested": bool(memory_state["pause_requested"]),
+            "memory_pause_reason": memory_state["reason"],
+            "memory_rss_mb": memory_state["rss_mb"],
+            "memory_hard_limit_mb": memory_state["hard_limit_mb"],
+            "memory_container_limit_mb": memory_state["container_limit_mb"],
+        }
     finally:
         _clear_watchdog()
         conn.close()

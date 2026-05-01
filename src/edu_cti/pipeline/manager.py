@@ -75,7 +75,7 @@ def _recover_interrupted_runs() -> List[Dict]:
         conn = get_connection()
         init_db(conn)
         rows = conn.execute(
-            "SELECT run_id, phase, started_at FROM pipeline_runs WHERE status = 'running'"
+            "SELECT run_id, phase, params, started_at FROM pipeline_runs WHERE status = 'running'"
         ).fetchall()
         now = datetime.utcnow().isoformat()
         for row in rows:
@@ -85,7 +85,12 @@ def _recover_interrupted_runs() -> List[Dict]:
                    WHERE run_id = ?""",
                 (now, row[0]),
             )
-            recovered.append({"run_id": row[0], "phase": row[1], "started_at": row[2]})
+            recovered.append({
+                "run_id": row[0],
+                "phase": row[1],
+                "params": json.loads(row[2]) if row[2] else {},
+                "started_at": row[3],
+            })
         if recovered:
             conn.commit()
             logger.warning(
@@ -105,6 +110,7 @@ class RunStatus(str, Enum):
     FAILED = "failed"
     CANCELLED = "cancelled"
     INTERRUPTED = "interrupted"  # Container restarted while running
+    PAUSED = "paused"  # Gracefully paused due to memory pressure or operator action
 
 
 class PipelineRun:
@@ -203,6 +209,7 @@ class PipelineManager:
             "daily": None,
         }
         self._scheduler_total_new: int = 0
+        self._auto_resume_interrupted_runs()
 
     @property
     def current_run(self) -> Optional[PipelineRun]:
@@ -341,7 +348,11 @@ class PipelineManager:
         try:
             result = self._dispatch_phase(run)
             run.result = result or {}
-            run.status = RunStatus.CANCELLED if run._cancel_requested else RunStatus.COMPLETED
+            if run.result.get("memory_pause_requested"):
+                run.status = RunStatus.PAUSED
+                run.error = run.result.get("memory_pause_reason")
+            else:
+                run.status = RunStatus.CANCELLED if run._cancel_requested else RunStatus.COMPLETED
         except Exception as e:
             run.status = RunStatus.FAILED
             run.error = str(e)
@@ -387,6 +398,42 @@ class PipelineManager:
             return self._run_weekly(run, params)
         else:
             raise ValueError(f"Unknown pipeline phase: {phase}")
+
+    def _auto_resume_interrupted_runs(self) -> None:
+        """Auto-resume the newest interrupted long-running pipeline on Railway."""
+        from src.edu_cti.core.config import AUTO_RESUME_INTERRUPTED_PIPELINES
+
+        if not AUTO_RESUME_INTERRUPTED_PIPELINES or not self._interrupted_runs:
+            return
+
+        resumable_phases = {"historical", "daily", "enrich"}
+        candidates = [
+            run for run in self._interrupted_runs
+            if run.get("phase") in resumable_phases
+        ]
+        if not candidates:
+            return
+
+        latest = max(candidates, key=lambda r: r.get("started_at") or "")
+        params = dict(latest.get("params") or {})
+        params["auto_resumed"] = True
+        params["resumed_from_run_id"] = latest["run_id"]
+
+        try:
+            resumed = self.start_phase(latest["phase"], params)
+            logger.warning(
+                "Auto-resumed interrupted %s pipeline %s as new run %s",
+                latest["phase"],
+                latest["run_id"],
+                resumed.run_id,
+            )
+        except Exception as e:
+            logger.warning(
+                "Failed to auto-resume interrupted pipeline %s (%s): %s",
+                latest["run_id"],
+                latest["phase"],
+                e,
+            )
 
     # ------------------------------------------------------------------
     # Phase implementations
@@ -497,12 +544,13 @@ class PipelineManager:
 
         # Run phase2 in a sub-thread so we can poll progress from this thread
         phase2_error = [None]  # mutable container for thread result
+        phase2_result = [None]
 
         def _run_phase2():
             nonlocal original_argv
             try:
                 from src.edu_cti.pipeline.phase2.__main__ import main as phase2_main
-                phase2_main()
+                phase2_result[0] = phase2_main()
             except Exception as e:
                 phase2_error[0] = e
             finally:
@@ -528,6 +576,16 @@ class PipelineManager:
         if phase2_error[0] is not None:
             raise phase2_error[0]
 
+        if isinstance(phase2_result[0], dict):
+            result = phase2_result[0]
+            if result.get("memory_pause_requested"):
+                run.progress = {
+                    "step": f"{step_prefix}Paused for memory pressure",
+                    "detail": result.get("memory_pause_reason", ""),
+                    "percent": max(run.progress.get("percent", pmin), pmin),
+                }
+                return result
+
         # Get enrichment stats
         from src.edu_cti.core.db import get_connection, init_db
         from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_stats
@@ -538,6 +596,9 @@ class PipelineManager:
         conn.close()
 
         run.progress = {"step": f"{step_prefix}Enrichment complete", "detail": "", "percent": pmax}
+        if isinstance(phase2_result[0], dict):
+            phase2_result[0]["enrichment_stats"] = stats
+            return phase2_result[0]
         return {"enrichment_stats": stats}
 
     def _run_historical(self, run: PipelineRun, params: Dict) -> Dict:
@@ -552,7 +613,7 @@ class PipelineManager:
         enrich_limit = params.get("enrich_limit")
         export_csv = params.get("export_csv", False)
         max_pages = params.get("max_pages", 50)  # Default 50 pages per search term (1000 articles)
-        from src.edu_cti.core.config import ENABLE_OXYLABS_NEWS_HISTORICAL
+        from src.edu_cti.core.config import ENABLE_OXYLABS_NEWS_HISTORICAL, ENRICHMENT_WORKERS
 
         ingest_params = {
             "full_historical": True,
@@ -561,6 +622,7 @@ class PipelineManager:
             "max_pages": max_pages,
             "include_paid_rss": params.get("include_paid_rss", ENABLE_OXYLABS_NEWS_HISTORICAL),
         }
+        current_workers = max(1, int(params.get("workers", ENRICHMENT_WORKERS)))
 
         if skip_enrich:
             # Sequential: just ingest
@@ -601,6 +663,8 @@ class PipelineManager:
         enrich_result = None
         total_enriched = 0
         enrich_rounds = 0
+        memory_pause_requested = False
+        memory_pause_reason = None
 
         while True:
             if run._cancel_requested:
@@ -653,11 +717,31 @@ class PipelineManager:
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
                 "export_csv": False,  # Only export on final round
+                "workers": current_workers,
             }, progress_range=(30, 100), step_prefix="Enriching: ")
 
             if enrich_result and isinstance(enrich_result, dict):
-                es = enrich_result.get("enrichment_stats", {})
-                total_enriched += es.get("enriched_incidents", 0)
+                total_enriched += enrich_result.get("run_stats", {}).get("enriched", 0)
+                if enrich_result.get("memory_pause_requested"):
+                    if current_workers > 1:
+                        next_workers = current_workers - 1
+                        logger.warning(
+                            "Historical pipeline hit memory pressure with %s worker(s); reducing to %s and resuming from checkpoints",
+                            current_workers,
+                            next_workers,
+                        )
+                        current_workers = next_workers
+                        time.sleep(5)
+                        continue
+                    memory_pause_requested = True
+                    memory_pause_reason = enrich_result.get("memory_pause_reason")
+                    run._cancel_requested = True
+                    try:
+                        from src.edu_cti.sources.news.common import _cancel_event as news_cancel
+                        news_cancel.set()
+                    except ImportError:
+                        pass
+                    break
 
             # If ingestion is still running, loop to pick up new incidents
             if not ingest_done.is_set():
@@ -683,7 +767,7 @@ class PipelineManager:
             logger.error(f"Ingestion had an error: {ingest_error_box[0]}")
 
         # Export is opt-in so routine historical runs do not write CSVs implicitly.
-        if export_csv and not run._cancel_requested:
+        if export_csv and not run._cancel_requested and not memory_pause_requested:
             try:
                 from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
                 export_enriched_dataset()
@@ -691,13 +775,22 @@ class PipelineManager:
             except Exception as e:
                 logger.warning(f"CSV export failed: {e}")
 
-        run.progress = {"step": "Complete", "detail": f"Enriched {total_enriched} incidents across {enrich_rounds} rounds", "percent": 100}
+        if memory_pause_requested:
+            run.progress = {
+                "step": "Paused for memory pressure",
+                "detail": memory_pause_reason or "Historical pipeline paused gracefully",
+                "percent": max(run.progress.get("percent", 0), 30),
+            }
+        else:
+            run.progress = {"step": "Complete", "detail": f"Enriched {total_enriched} incidents across {enrich_rounds} rounds", "percent": 100}
         return {
             "ingest": ingest_result_box[0],
             "enrich": enrich_result,
             "total_enriched": total_enriched,
             "enrich_rounds": enrich_rounds,
             "cancelled": run._cancel_requested,
+            "memory_pause_requested": memory_pause_requested,
+            "memory_pause_reason": memory_pause_reason,
         }
 
     def _run_daily(self, run: PipelineRun, params: Dict) -> Dict:
@@ -705,7 +798,7 @@ class PipelineManager:
         skip_enrich = params.get("skip_enrich", False)
         enrich_limit = params.get("enrich_limit")
         export_csv = params.get("export_csv", False)
-        from src.edu_cti.core.config import ENABLE_OXYLABS_NEWS_DAILY
+        from src.edu_cti.core.config import ENABLE_OXYLABS_NEWS_DAILY, ENRICHMENT_WORKERS
 
         ingest_params = {
             "full_historical": False,
@@ -714,6 +807,7 @@ class PipelineManager:
             "max_pages": params.get("max_pages", 20),
             "include_paid_rss": params.get("include_paid_rss", ENABLE_OXYLABS_NEWS_DAILY),
         }
+        current_workers = max(1, int(params.get("workers", ENRICHMENT_WORKERS)))
 
         if skip_enrich:
             ingest_result = self._run_ingest(
@@ -750,6 +844,8 @@ class PipelineManager:
         enrich_result = None
         total_enriched = 0
         enrich_rounds = 0
+        memory_pause_requested = False
+        memory_pause_reason = None
 
         while not run._cancel_requested:
             stats = _load_enrichment_stats()
@@ -785,11 +881,31 @@ class PipelineManager:
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
                 "export_csv": False,
+                "workers": current_workers,
             }, progress_range=(30, 100), step_prefix="Enriching: ")
 
             if enrich_result and isinstance(enrich_result, dict):
-                es = enrich_result.get("enrichment_stats", {})
-                total_enriched += es.get("enriched_incidents", 0)
+                total_enriched += enrich_result.get("run_stats", {}).get("enriched", 0)
+                if enrich_result.get("memory_pause_requested"):
+                    if current_workers > 1:
+                        next_workers = current_workers - 1
+                        logger.warning(
+                            "Daily pipeline hit memory pressure with %s worker(s); reducing to %s and resuming from checkpoints",
+                            current_workers,
+                            next_workers,
+                        )
+                        current_workers = next_workers
+                        time.sleep(5)
+                        continue
+                    memory_pause_requested = True
+                    memory_pause_reason = enrich_result.get("memory_pause_reason")
+                    run._cancel_requested = True
+                    try:
+                        from src.edu_cti.sources.news.common import _cancel_event as news_cancel
+                        news_cancel.set()
+                    except ImportError:
+                        pass
+                    break
 
             if ingest_done.is_set():
                 # Final check for stragglers
@@ -802,19 +918,28 @@ class PipelineManager:
         ingest_thread.join(timeout=10)
 
         # Export is opt-in so daily/scheduled runs stay lightweight by default.
-        if export_csv and not run._cancel_requested:
+        if export_csv and not run._cancel_requested and not memory_pause_requested:
             try:
                 from src.edu_cti.pipeline.phase2.csv_export import export_enriched_dataset
                 export_enriched_dataset()
             except Exception:
                 pass
 
-        run.progress = {"step": "Complete", "detail": f"Enriched {total_enriched} incidents", "percent": 100}
+        if memory_pause_requested:
+            run.progress = {
+                "step": "Paused for memory pressure",
+                "detail": memory_pause_reason or "Daily pipeline paused gracefully",
+                "percent": max(run.progress.get("percent", 0), 30),
+            }
+        else:
+            run.progress = {"step": "Complete", "detail": f"Enriched {total_enriched} incidents", "percent": 100}
         return {
             "ingest": ingest_result_box[0],
             "enrich": enrich_result,
             "total_enriched": total_enriched,
             "enrich_rounds": enrich_rounds,
+            "memory_pause_requested": memory_pause_requested,
+            "memory_pause_reason": memory_pause_reason,
         }
 
     def _run_ingest_source(self, run: PipelineRun, params: Dict) -> Dict:

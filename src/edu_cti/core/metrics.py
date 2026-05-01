@@ -544,6 +544,8 @@ class MetricsCollector:
                 "throughput_per_hour": _gauge_value("pipeline_throughput_per_hour"),
                 "queue_depth": _gauge_value("pipeline_queue_depth"),
                 "memory_restarts": _counter_total("pipeline_memory_restart_total"),
+                "memory_pauses": _counter_total("pipeline_memory_pause_total"),
+                "memory_soft_limit_hits": _counter_total("pipeline_memory_soft_limit_total"),
                 "cost_per_incident_usd": _histogram_summary("enrichment_cost_per_incident_usd"),
             },
         }

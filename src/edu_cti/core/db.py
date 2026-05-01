@@ -274,7 +274,7 @@ def init_db(conn: sqlite3.Connection) -> None:
         CREATE TABLE IF NOT EXISTS pipeline_runs (
             run_id          TEXT PRIMARY KEY,
             phase           TEXT NOT NULL,
-            status          TEXT NOT NULL DEFAULT 'running',  -- running, completed, failed, cancelled, interrupted
+            status          TEXT NOT NULL DEFAULT 'running',  -- running, completed, failed, cancelled, interrupted, paused
             params          TEXT,           -- JSON blob
             started_at      TEXT,
             finished_at     TEXT,
