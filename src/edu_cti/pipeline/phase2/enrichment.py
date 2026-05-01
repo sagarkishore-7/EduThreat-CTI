@@ -558,13 +558,26 @@ class IncidentEnricher:
             article_metadata_lines.append(f"- Article Author: {primary_article.author}")
         article_metadata_block = ("\n" + "\n".join(article_metadata_lines)) if article_metadata_lines else "\n- Article Metadata: unknown"
 
+        # ── GLiNER NER pre-pass ────────────────────────────────────────────────
+        # Run fast zero-shot NER over the article to surface institution name,
+        # location, and threat-actor hints before the main LLM call. The hint
+        # block is appended to the user prompt so the LLM has grounding evidence
+        # for the fields most likely to be missed or hallucinated.
+        try:
+            from src.edu_cti.pipeline.phase2.extraction.ner_preprocessor import build_ner_hint_block
+            _ner_hint = build_ner_hint_block(combined_text, title)
+        except Exception:
+            _ner_hint = None
+
+        _ner_block = f"\n\n{_ner_hint}" if _ner_hint else ""
+
         user_prompt = PROMPT_TEMPLATE.format(
             url=primary_url,
             title=title,
             target_institution_line=target_institution_line,
             article_metadata_block=article_metadata_block,
             text=combined_text
-        )
+        ) + _ner_block
 
         try:
             # Call LLM — pass EXTRACTION_SCHEMA as format so Ollama builds a GBNF grammar
@@ -1002,13 +1015,21 @@ class IncidentEnricher:
             article_metadata_lines.append(f"- Article Publish Date: {primary_article.publish_date}")
         article_metadata_block = ("\n" + "\n".join(article_metadata_lines)) if article_metadata_lines else "\n- Article Metadata: unknown"
 
+        # ── GLiNER NER pre-pass ────────────────────────────────────────────────
+        try:
+            from src.edu_cti.pipeline.phase2.extraction.ner_preprocessor import build_ner_hint_block
+            _ner_hint = build_ner_hint_block(combined_text, title)
+        except Exception:
+            _ner_hint = None
+        _ner_block = f"\n\n{_ner_hint}" if _ner_hint else ""
+
         part1_prompt = PROMPT_TEMPLATE.format(
             url=primary_url,
             title=title,
             target_institution_line=target_institution_line,
             article_metadata_block=article_metadata_block,
             text=combined_text,
-        )
+        ) + _ner_block
 
         try:
             _t0 = _time_module.time()

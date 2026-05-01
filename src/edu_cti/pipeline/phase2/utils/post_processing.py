@@ -831,7 +831,11 @@ _MITRE_TECHNIQUE_INFO: dict[str, tuple[str, str]] = {
 
 
 def _fill_mitre_technique_names(flat_data: Dict[str, Any]) -> None:
-    """Fill null technique_name and tactic from static lookup when technique_id is known."""
+    """
+    Fill null technique_name, tactic, and description from the MITRE ATT&CK STIX
+    bundle (697 active techniques, cached locally). Falls back to the static
+    hand-curated table (_MITRE_TECHNIQUE_INFO) for any technique not found in STIX.
+    """
     raw = flat_data.get("mitre_techniques_json")
     if not raw:
         return
@@ -842,7 +846,15 @@ def _fill_mitre_technique_names(flat_data: Dict[str, Any]) -> None:
     if not isinstance(techniques, list):
         return
 
-    changed = False
+    # Try STIX-based lookup first
+    try:
+        from src.edu_cti.pipeline.phase2.extraction.mitre_stix import hydrate_mitre_techniques
+        changed = hydrate_mitre_techniques(techniques)
+    except Exception as exc:
+        logger.debug("MITRE STIX hydration skipped: %s", exc)
+        changed = False
+
+    # Static fallback for any technique still missing name/tactic after STIX
     for tech in techniques:
         if not isinstance(tech, dict):
             continue

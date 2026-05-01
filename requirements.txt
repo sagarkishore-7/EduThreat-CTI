@@ -26,6 +26,12 @@ googlenewsdecoder>=0.1.7
 ollama>=0.3.0
 instructor>=1.0.0; python_version >= "3.10"
 
+# MITRE ATT&CK STIX lookup (Priority 3)
+stix2>=3.0.0
+
+# GLiNER zero-shot NER pre-pass (Priority 2)
+gliner>=0.2.0
+
 # API Server
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
