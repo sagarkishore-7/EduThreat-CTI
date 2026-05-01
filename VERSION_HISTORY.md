@@ -2,6 +2,49 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.9.0 (2026-05-01)
+
+**Focus**: Grounded Intelligence Extraction — STIX Lookup, GLiNER NER Pre-pass, IntelEX RAG
+
+Three complementary techniques that address the same root cause: the LLM extracting fields from parametric memory rather than article evidence. Together they reduce null rates for MITRE technique metadata, institution names, and geographic fields, while improving technique_id selection accuracy.
+
+### Key Features
+
+- **STIX-based MITRE technique lookup** (`src/edu_cti/pipeline/phase2/extraction/mitre_stix.py`) — downloads the full MITRE ATT&CK Enterprise STIX bundle (697 active techniques) and caches it to `DATA_DIR/mitre_attack_cache.json`. Provides `get_technique_info(id)` returning canonical `{name, tactic, description}` for any technique or subtechnique, with fallback to the base technique when subtechniques are absent. Normalises internal STIX phase names (e.g. `"stealth"` → `"Defense Evasion"`) to ATT&CK display names. Cache refreshes every 30 days; degrades gracefully to the existing static lookup table if the download fails.
+
+- **Wired into `_fill_mitre_technique_names()`** (`post_processing.py`) — STIX lookup runs first as primary source; the hand-curated static dict (`_MITRE_TECHNIQUE_INFO`, ~100 entries) remains as secondary fallback. Now also fills the `description` field (first sentence of the ATT&CK technique description) which was previously always null.
+
+- **GLiNER zero-shot NER pre-pass** (`src/edu_cti/pipeline/phase2/extraction/ner_preprocessor.py`) — runs `urchade/gliner_small-v2.1` (~150 MB) over the first 8 000 chars of each article before the main LLM call. Detects six entity types: educational institution, city, country, US state/Canadian province, threat actor group, ransomware family. Formats extracted entities as a `=== NER PRE-EXTRACTION HINTS ===` block injected into the LLM user prompt. Model cached in `DATA_DIR/hf_cache` via `HF_HOME` override so it survives Railway container restarts. Gracefully no-ops if GLiNER is not installed or the model fails to load.
+
+- **IntelEX-style MITRE RAG** (`src/edu_cti/pipeline/phase2/extraction/mitre_rag.py`) — embeds all 697 ATT&CK technique descriptions using `all-MiniLM-L6-v2` (~90 MB, 384-dim vectors) and caches them to `DATA_DIR/mitre_embeddings.npy` + `mitre_embeddings_index.json`. At extraction time, encodes the first 2 000 chars of each article and retrieves the top-5 most semantically similar techniques by cosine similarity (~10ms on CPU). Formats results as a `=== MITRE ATT&CK CANDIDATE TECHNIQUES ===` block injected into the LLM prompt, giving the model grounded candidates instead of relying on training memory. Inspired by IntelEX (arxiv 2406.01560).
+
+- **Enrichment path wiring** (`enrichment.py`) — both prompts in `_enrich_article()` and `_enrich_article_split()` now append the NER hint block and RAG block. In the split path, the RAG block is injected specifically into Part 2 (the MITRE-focused call) for targeted grounding. Total extra prompt context: ~1 300 chars per article, well within the 180 K char budget.
+
+### Expected Impact
+
+| Field | Before | After |
+|-------|--------|-------|
+| `technique_name` / `tactic` | Null for ~60% of MITRE entries | Filled by STIX for all 697 active techniques |
+| `description` (per technique) | Always null | Filled by STIX (first sentence) |
+| `institution_name` | 15–20% headline-copying errors | GLiNER surfaces correct name as hint |
+| `city` / `region` | Null for ~40% of incidents | GLiNER extracts from article text |
+| `ransomware_family` | Null when mentioned indirectly | GLiNER + RAG both surface candidates |
+| `technique_id` accuracy | Hallucinated from memory | RAG retrieves top-5 evidence-grounded candidates |
+
+### Dependencies Added
+
+```
+stix2>=3.0.0
+gliner>=0.2.0
+sentence-transformers>=3.0.0
+```
+
+### Breaking Changes
+
+None. All three features degrade gracefully — if any dependency is missing or a network call fails, the pipeline continues without the enhancement.
+
+---
+
 ## Version 2.8.0 (2026-04-29)
 
 **Focus**: Instructor-Based LLM Self-Correction Layer

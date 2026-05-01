@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.9.0] - 2026-05-01
+
+### Grounded Intelligence Extraction — STIX Lookup, GLiNER NER, IntelEX RAG
+
+#### Added
+
+- **`src/edu_cti/pipeline/phase2/extraction/mitre_stix.py`** — MITRE ATT&CK STIX bundle lookup. Downloads and caches all 697 active Enterprise techniques (`DATA_DIR/mitre_attack_cache.json`, refreshed every 30 days). `get_technique_info(id)` returns `{name, tactic, description}` with subtechnique fallback. Phase-name normalisation map converts STIX internal names (e.g. `stealth`) to ATT&CK display names (`Defense Evasion`). Falls back to static dict on download failure.
+
+- **`src/edu_cti/pipeline/phase2/extraction/ner_preprocessor.py`** — GLiNER zero-shot NER pre-pass. Loads `urchade/gliner_small-v2.1` once per process; detects educational institution, city, country, state/province, threat actor, ransomware family from the first 8 000 chars of each article. Formats results as a structured hint block injected into the LLM prompt. Model cached in `DATA_DIR/hf_cache`.
+
+- **`src/edu_cti/pipeline/phase2/extraction/mitre_rag.py`** — IntelEX-style semantic MITRE retrieval. Encodes all 697 technique descriptions with `all-MiniLM-L6-v2` (384-dim, cached to `DATA_DIR/mitre_embeddings.npy`). `retrieve_similar_techniques(text, top_k=5)` returns semantically closest techniques via normalised dot-product cosine similarity in ~10ms. `build_mitre_rag_block()` formats a prompt context block with technique ID, name, tactic, and description snippet.
+
+#### Changed
+
+- **`post_processing.py` `_fill_mitre_technique_names()`** — STIX lookup now runs as primary source before the static dict fallback; also fills the `description` field (previously always null).
+
+- **`enrichment.py` `_enrich_article()`** — appends NER hint block and MITRE RAG block to user prompt before the LLM call (~1 300 extra chars of grounding context).
+
+- **`enrichment.py` `_enrich_article_split()`** — NER block appended to Part 1 prompt; RAG block appended to Part 2 prompt (MITRE-focused call) for targeted technique grounding.
+
+- **`requirements.txt`** — added `stix2>=3.0.0`, `gliner>=0.2.0`, `sentence-transformers>=3.0.0`.
+
+---
+
 ## [2.7.1] - 2026-04-23
 
 ### Exception Handling Hardening
