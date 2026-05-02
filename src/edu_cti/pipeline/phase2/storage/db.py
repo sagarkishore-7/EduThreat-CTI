@@ -2067,7 +2067,7 @@ def save_enrichment_result(
             )
             hard_delete_incident(conn, incident_id)
             conn.commit()
-            return  # Nothing more to do for this incident
+            return True  # Incident handled — deleted as post-enrich duplicate
 
     # Flatten and save to incident_enrichments_flat table
     # Pre-coerce raw_json_data: grammar-constrained LLM may return scalar fields as lists.

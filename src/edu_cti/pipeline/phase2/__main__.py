@@ -1490,7 +1490,7 @@ def enrich_articles_phase(
                             )
                     else:
                         stats["skipped"] += 1
-                        logger.warning(f"~ SKIPPED   {incident_id} | save rejected (lower confidence)")
+                        logger.warning(f"~ SKIPPED   {incident_id} | save_enrichment_result returned falsy (unexpected)")
                 else:
                     # Check what kind of failure we have
                     if raw_json_data and isinstance(raw_json_data, dict):
