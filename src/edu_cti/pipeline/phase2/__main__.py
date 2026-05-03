@@ -7,6 +7,7 @@ and comprehensive CTI extraction.
 """
 
 import argparse
+import gc
 import logging
 import os
 import random

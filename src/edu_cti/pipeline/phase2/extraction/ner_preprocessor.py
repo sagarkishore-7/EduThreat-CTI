@@ -127,7 +127,9 @@ def extract_entities(text: str, title: str = "") -> Dict[str, List[str]]:
     combined = _clean_text(combined)[:_MAX_NER_CHARS]
 
     try:
-        raw_entities = model.predict_entities(combined, _ENTITY_TYPES, threshold=0.5)
+        import torch
+        with torch.no_grad():
+            raw_entities = model.predict_entities(combined, _ENTITY_TYPES, threshold=0.5)
     except Exception as exc:
         logger.debug("GLiNER prediction error: %s", exc)
         return {}
