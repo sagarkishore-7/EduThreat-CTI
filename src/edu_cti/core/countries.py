@@ -101,6 +101,16 @@ COUNTRY_CODE_TO_NAME = {
     "BD": "Bangladesh",
     "TW": "Taiwan",
     "HK": "Hong Kong",
+    "KZ": "Kazakhstan",
+    "IR": "Iran",
+    "CU": "Cuba",
+    "SY": "Syria",
+    "SD": "Sudan",
+    "PY": "Paraguay",
+    "KG": "Kyrgyzstan",
+    "GG": "Guernsey",
+    "DO": "Dominican Republic",
+    "BY": "Belarus",
 }
 
 # Reverse mapping: full name to code (for flag lookup)
