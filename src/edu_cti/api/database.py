@@ -1618,7 +1618,7 @@ def get_ransomware_timeline(
 ) -> List[Dict[str, Any]]:
     """Get ransomware family activity periods (first/last seen + count)."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             {_ransomware_family_fallback_expr('ef')} as family,
             COUNT(*) as incident_count,
@@ -1662,7 +1662,7 @@ def get_ransomware_families_detail(
 ) -> List[Dict[str, Any]]:
     """Enhanced stats per ransomware family."""
     cur = conn.execute(
-        """
+        f"""
         SELECT
             {_ransomware_family_fallback_expr('ef')} as family,
             COUNT(*) as incident_count,
