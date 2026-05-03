@@ -1830,6 +1830,21 @@ def main() -> Optional[Dict[str, Any]]:
             finally:
                 thread_conn.close()
 
+        # Pre-warm ML models in the main thread before workers start.
+        # Loading them here (sequential, low-memory moment) prevents the race
+        # where all workers try to load 150 MB + 90 MB simultaneously mid-run.
+        if not os.environ.get("DISABLE_ML_FEATURES", "").lower() in ("1", "true", "yes"):
+            try:
+                from src.edu_cti.pipeline.phase2.extraction.ner_preprocessor import _load_model as _ner_load
+                from src.edu_cti.pipeline.phase2.extraction.mitre_rag import _load_embed_model as _rag_load, _load_index as _rag_index
+                logger.info("Pre-warming ML models before enrichment workers start...")
+                _ner_load()
+                _rag_load()
+                _rag_index()
+                logger.info("ML model pre-warm complete.")
+            except Exception as _pw_err:
+                logger.warning("ML model pre-warm failed (non-fatal): %s", _pw_err)
+
         # Start consumer threads
         consumers = []
         for i in range(num_workers):
