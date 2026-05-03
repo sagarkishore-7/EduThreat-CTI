@@ -1032,7 +1032,7 @@ class TestApiAttackDynamicsOverride:
 
         assert result is not None
         ad = result.get("attack_dynamics", {})
-        assert ad.get("ransomware_family") == "lockbit"
+        assert ad.get("ransomware_family") == "LockBit"
         assert ad.get("attack_vector") == "phishing_email"
 
     def test_blob_value_kept_when_flat_has_none(self):
@@ -1059,7 +1059,7 @@ class TestApiAttackDynamicsOverride:
 
         ad = result.get("attack_dynamics", {})
         # flat has None → blob value is kept
-        assert ad.get("ransomware_family") == "akira"
+        assert ad.get("ransomware_family") == "Akira"
         assert ad.get("attack_vector") == "exposed_vpn"
 
     def test_flat_overrides_wrong_blob_ransomware(self):
@@ -1085,7 +1085,7 @@ class TestApiAttackDynamicsOverride:
         result = get_incident_detail(conn, iid)
 
         ad = result.get("attack_dynamics", {})
-        assert ad.get("ransomware_family") == "rhysida"
+        assert ad.get("ransomware_family") == "Rhysida"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

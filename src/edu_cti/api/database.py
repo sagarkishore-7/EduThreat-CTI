@@ -121,12 +121,22 @@ def get_incidents_paginated(
         params.append(f"%{attack_category}%")
     
     if ransomware_family:
-        conditions.append("ef.ransomware_family = ?")
-        params.append(ransomware_family)
+        _append_canonical_lookup_filter(
+            conditions,
+            params,
+            columns=["ef.ransomware_family", "ef.threat_actor_name"],
+            value=ransomware_family,
+            normalizer=_normalize_ransomware_family,
+        )
     
     if threat_actor:
-        conditions.append("ef.threat_actor_name = ?")
-        params.append(threat_actor)
+        _append_canonical_lookup_filter(
+            conditions,
+            params,
+            columns=["ef.threat_actor_name"],
+            value=threat_actor,
+            normalizer=_normalize_threat_actor_name,
+        )
     
     if institution_type:
         conditions.append("(i.institution_type = ? OR ef.institution_type = ?)")
@@ -197,7 +207,11 @@ def get_incidents_paginated(
             ef.enriched_summary,
             i.attack_type_hint,
             ef.attack_category,
-            ef.ransomware_family,
+            CASE
+                WHEN ef.attack_category LIKE '%ransomware%'
+                    THEN {_ransomware_family_fallback_expr('ef')}
+                ELSE ef.ransomware_family
+            END as ransomware_family,
             ef.threat_actor_name,
             i.status,
             i.source_confidence,
@@ -229,6 +243,7 @@ def get_incidents_paginated(
             sources_map.setdefault(s_row["incident_id"], []).append(s_row["source"])
         for inc in incidents:
             inc["sources"] = sources_map.get(inc["incident_id"], [])
+            _normalize_incident_display_fields(inc)
 
     return incidents, total
 
@@ -363,8 +378,8 @@ def get_incident_by_id(
         (incident_id,)
     )
     incident["sources"] = [dict(s) for s in source_cur.fetchall()]
-    
-    return incident
+
+    return _normalize_incident_display_fields(incident)
 
 
 # ============================================================
@@ -426,19 +441,23 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
     # Unique threat actors
     cur = conn.execute(
         f"""
-        SELECT COUNT(DISTINCT ef.threat_actor_name) as count
+        SELECT DISTINCT ef.threat_actor_name as actor
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
           AND {_live_incident_exists('ef')}
         """
     )
-    stats["unique_threat_actors"] = cur.fetchone()["count"]
+    stats["unique_threat_actors"] = len({
+        canonical
+        for row in cur.fetchall()
+        if (canonical := _normalize_threat_actor_name(row["actor"])) is not None
+    })
 
     # Unique ransomware families
     cur = conn.execute(
         f"""
-        SELECT COUNT(DISTINCT COALESCE(ef.ransomware_family, ef.threat_actor_name)) as count
+        SELECT DISTINCT {_ransomware_family_fallback_expr('ef')} as family
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.attack_category LIKE '%ransomware%'
@@ -449,7 +468,11 @@ def get_dashboard_stats(conn: sqlite3.Connection) -> Dict[str, Any]:
           AND {_live_incident_exists('ef')}
         """
     )
-    stats["unique_ransomware_families"] = cur.fetchone()["count"]
+    stats["unique_ransomware_families"] = len({
+        canonical
+        for row in cur.fetchall()
+        if (canonical := _normalize_ransomware_family(row["family"])) is not None
+    })
 
     # Data sources count
     cur = conn.execute(
@@ -638,7 +661,7 @@ def get_incidents_by_ransomware_family(
     cur = conn.execute(
         f"""
         SELECT 
-            COALESCE(ef.ransomware_family, ef.threat_actor_name) as category,
+            {_ransomware_family_fallback_expr('ef')} as category,
             COUNT(*) as count
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
@@ -650,9 +673,7 @@ def get_incidents_by_ransomware_family(
           AND {_live_incident_exists('ef')}
         GROUP BY category
         ORDER BY count DESC
-        LIMIT ?
         """,
-        (limit,)
     )
     rows = cur.fetchall()
 
@@ -672,7 +693,7 @@ def get_incidents_by_ransomware_family(
             "percentage": round(count / total * 100, 1) if total > 0 else 0,
         }
         for name, count in sorted(merged.items(), key=lambda x: -x[1])
-    ]
+    ][:limit]
     return result
 
 
@@ -709,13 +730,17 @@ def get_recent_incidents(
 ) -> List[Dict[str, Any]]:
     """Get most recent incidents - only education-related."""
     cur = conn.execute(
-        """
+        f"""
         SELECT 
             i.incident_id,
             COALESCE(ef.institution_name, i.institution_name, 'Unknown') as institution_name,
             COALESCE(ef.country, i.country) as country,
             ef.attack_category,
-            ef.ransomware_family,
+            CASE
+                WHEN ef.attack_category LIKE '%ransomware%'
+                    THEN {_ransomware_family_fallback_expr('ef')}
+                ELSE ef.ransomware_family
+            END as ransomware_family,
             i.incident_date,
             i.title,
             ef.enriched_summary,
@@ -729,47 +754,101 @@ def get_recent_incidents(
         (limit,)
     )
     rows = cur.fetchall()
-    
-    return [dict(row) for row in rows]
+
+    incidents = [dict(row) for row in rows]
+    for incident in incidents:
+        _normalize_incident_display_fields(incident)
+    return incidents
 
 
 def get_threat_actors(
     conn: sqlite3.Connection,
     limit: int = 20,
-) -> List[Dict[str, Any]]:
+) -> Dict[str, Any]:
     """Get threat actor summary with their activity."""
     cur = conn.execute(
-        """
+        f"""
         SELECT 
             ef.threat_actor_name as name,
             COUNT(*) as incident_count,
             GROUP_CONCAT(DISTINCT COALESCE(ef.country, i.country)) as countries,
-            GROUP_CONCAT(DISTINCT ef.ransomware_family) as ransomware_families,
+            GROUP_CONCAT(DISTINCT {_ransomware_family_fallback_expr('ef')}) as ransomware_families,
             MIN(i.incident_date) as first_seen,
             MAX(i.incident_date) as last_seen
         FROM incident_enrichments_flat ef
         JOIN incidents i ON ef.incident_id = i.incident_id
-        WHERE ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND {_live_incident_exists('ef')}
         GROUP BY ef.threat_actor_name
         ORDER BY incident_count DESC
-        LIMIT ?
-        """,
-        (limit,)
+        """
     )
     rows = cur.fetchall()
-    
-    result = []
+
+    merged: Dict[str, Dict[str, Any]] = {}
+    all_countries: set[str] = set()
+
     for row in rows:
-        result.append({
-            "name": row["name"],
-            "incident_count": row["incident_count"],
-            "countries_targeted": [c for c in (row["countries"] or "").split(",") if c],
-            "ransomware_families": [r for r in (row["ransomware_families"] or "").split(",") if r],
-            "first_seen": row["first_seen"],
-            "last_seen": row["last_seen"],
-        })
-    
-    return result
+        canonical = _normalize_threat_actor_name(row["name"])
+        if not canonical:
+            continue
+
+        entry = merged.setdefault(
+            canonical,
+            {
+                "name": canonical,
+                "incident_count": 0,
+                "countries_targeted": set(),
+                "ransomware_families": set(),
+                "first_seen": None,
+                "last_seen": None,
+            },
+        )
+        entry["incident_count"] += row["incident_count"]
+
+        for country in (row["countries"] or "").split(","):
+            cleaned = country.strip()
+            if cleaned:
+                entry["countries_targeted"].add(cleaned)
+                all_countries.add(cleaned)
+
+        for family in (row["ransomware_families"] or "").split(","):
+            cleaned = _display_ransomware_family(family)
+            if cleaned:
+                entry["ransomware_families"].add(cleaned)
+
+        first_seen = row["first_seen"]
+        if first_seen and (entry["first_seen"] is None or first_seen < entry["first_seen"]):
+            entry["first_seen"] = first_seen
+
+        last_seen = row["last_seen"]
+        if last_seen and (entry["last_seen"] is None or last_seen > entry["last_seen"]):
+            entry["last_seen"] = last_seen
+
+    ranked = sorted(
+        merged.values(),
+        key=lambda item: (-item["incident_count"], item["name"]),
+    )
+    result = [
+        {
+            "name": item["name"],
+            "incident_count": item["incident_count"],
+            "countries_targeted": sorted(item["countries_targeted"]),
+            "ransomware_families": sorted(item["ransomware_families"]),
+            "first_seen": item["first_seen"],
+            "last_seen": item["last_seen"],
+        }
+        for item in ranked[:limit]
+    ]
+
+    return {
+        "threat_actors": result,
+        "total": len(merged),
+        "returned": len(result),
+        "total_incidents": sum(item["incident_count"] for item in ranked),
+        "countries_targeted_total": len(all_countries),
+    }
 
 
 # ============================================================
@@ -948,6 +1027,37 @@ _UNKNOWN_FAMILY_VALUES = {
     "not applicable", "not_applicable", "unspecified", "undetermined", "",
 }
 
+_THREAT_ACTOR_DESCRIPTOR_SUFFIXES = (
+    "ransomware",
+    "gang",
+    "group",
+    "operation",
+    "operations",
+    "operator",
+    "operators",
+    "collective",
+    "crew",
+)
+
+_CANONICAL_ALIAS_SUFFIXES = (
+    "",
+    "_ransomware",
+    "_ransomware_gang",
+    "_ransomware_group",
+    "_ransomware_operation",
+    "_ransomware_operations",
+    "_ransomware_operator",
+    "_ransomware_operators",
+    "_gang",
+    "_group",
+    "_operation",
+    "_operations",
+    "_operator",
+    "_operators",
+    "_collective",
+    "_crew",
+)
+
 _RANSOMWARE_CANONICAL: Dict[str, str] = {
     # Cl0p
     "cl0p": "Cl0p", "clop": "Cl0p", "cl0p_clop": "Cl0p", "cl0p/clop": "Cl0p",
@@ -959,7 +1069,8 @@ _RANSOMWARE_CANONICAL: Dict[str, str] = {
     # BlackCat / ALPHV
     "blackcat": "BlackCat/ALPHV", "alphv": "BlackCat/ALPHV",
     "blackcat_alphv": "BlackCat/ALPHV", "alphv_blackcat": "BlackCat/ALPHV",
-    "blackcat/alphv": "BlackCat/ALPHV",
+    "blackcat/alphv": "BlackCat/ALPHV", "black cat": "BlackCat/ALPHV",
+    "black_cat": "BlackCat/ALPHV",
     # Black Basta
     "blackbasta": "Black Basta", "black_basta": "Black Basta",
     "black basta": "Black Basta",
@@ -973,6 +1084,7 @@ _RANSOMWARE_CANONICAL: Dict[str, str] = {
     "rorschach": "BabLock/Rorschach",
     # REvil / Sodinokibi
     "revil": "REvil", "sodinokibi": "REvil", "r_evil": "REvil",
+    "revil_sodinokibi": "REvil",
     # NetWalker
     "netwalker": "NetWalker", "net_walker": "NetWalker",
     # TrickBot
@@ -983,6 +1095,7 @@ _RANSOMWARE_CANONICAL: Dict[str, str] = {
     "avoslocker": "AvosLocker", "avos_locker": "AvosLocker",
     # INC Ransom
     "inc": "INC Ransom", "inc_ransom": "INC Ransom", "inc ransom": "INC Ransom",
+    "inc_ransomware": "INC Ransom",
     # GandCrab
     "gandcrab": "GandCrab", "gand_crab": "GandCrab",
     # Straight capitalisation (single canonical form)
@@ -992,23 +1105,210 @@ _RANSOMWARE_CANONICAL: Dict[str, str] = {
     "interlock": "Interlock", "funksec": "FunkSec", "avaddon": "Avaddon",
     "blacksuit": "BlackSuit", "black_suit": "BlackSuit",
     "sinobi": "Sinobi", "ako": "AKO", "cuba": "Cuba",
+    "bianlian": "BianLian", "blacklock": "BlackLock", "darkbit": "DarkBit",
+    "dopplerpaymer": "DoppelPaymer", "meow": "Meow", "noescape": "NoEscape",
+    "nova": "Nova", "phobos": "Phobos", "pysa": "PYSA",
+    "radiant": "Radiant", "ransomhouse": "RansomHouse", "safepay": "SafePay",
+    "trigona": "Trigona",
 }
+
+
+def _normalized_lookup_key(name: str) -> str:
+    """Normalize a name into a stable lookup key used for alias matching."""
+    normalized = (
+        name.strip()
+        .lower()
+        .replace("/", "_")
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    return "_".join(part for part in normalized.split("_") if part)
+
+
+def _lookup_candidate_keys(name: Optional[str], *, strip_actor_suffixes: bool = True) -> List[str]:
+    """Generate candidate alias keys for canonical lookups."""
+    if not name or not name.strip():
+        return []
+
+    candidates: list[str] = []
+    seen: set[str] = set()
+
+    def _add(value: Optional[str]) -> None:
+        if value and value not in seen:
+            seen.add(value)
+            candidates.append(value)
+
+    stripped = name.strip()
+    _add(stripped.lower())
+
+    normalized_key = _normalized_lookup_key(stripped)
+    _add(normalized_key)
+
+    if strip_actor_suffixes and normalized_key:
+        tokens = normalized_key.split("_")
+        while tokens and tokens[-1] in _THREAT_ACTOR_DESCRIPTOR_SUFFIXES:
+            tokens = tokens[:-1]
+            _add("_".join(tokens))
+
+    return candidates
 
 
 def _normalize_ransomware_family(name: Optional[str]) -> Optional[str]:
     """Return the canonical display name for a ransomware family, or None if unknown/excluded."""
     if not name:
         return None
-    normalized_key = name.strip().lower().replace(" ", "_").replace("/", "_").replace("-", "_")
-    # Also try without underscores for slash-joined variants stored literally
-    alt_key = name.strip().lower()
-    if alt_key in _UNKNOWN_FAMILY_VALUES or normalized_key in _UNKNOWN_FAMILY_VALUES:
+    for candidate in _lookup_candidate_keys(name):
+        if candidate in _UNKNOWN_FAMILY_VALUES:
+            return None
+        canonical = _RANSOMWARE_CANONICAL.get(candidate)
+        if canonical:
+            return canonical
+    stripped = name.strip()
+    return stripped if stripped else None
+
+
+def _normalize_threat_actor_name(name: Optional[str]) -> Optional[str]:
+    """Canonicalize common threat-actor aliases without forcing unknown actors into a taxonomy."""
+    if not name or not name.strip():
         return None
+    stripped = name.strip()
+    for candidate in _lookup_candidate_keys(stripped):
+        canonical = _RANSOMWARE_CANONICAL.get(candidate)
+        if canonical:
+            return canonical
+    return stripped
+
+
+def _display_ransomware_family(name: Optional[str]) -> Optional[str]:
+    """Normalize family names for display while preserving raw unknowns."""
+    if not name or not name.strip():
+        return None
+    return _normalize_ransomware_family(name) or name.strip()
+
+
+def _normalize_incident_display_fields(record: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply display-safe canonicalization to actor/family labels in API payloads."""
+    if record.get("threat_actor_name"):
+        record["threat_actor_name"] = _normalize_threat_actor_name(record["threat_actor_name"])
+    if record.get("threat_actor"):
+        record["threat_actor"] = _normalize_threat_actor_name(record["threat_actor"])
+    if record.get("ransomware_family"):
+        record["ransomware_family"] = _display_ransomware_family(record["ransomware_family"])
+
+    attack_dynamics = record.get("attack_dynamics")
+    if isinstance(attack_dynamics, dict) and attack_dynamics.get("ransomware_family"):
+        attack_dynamics["ransomware_family"] = _display_ransomware_family(
+            attack_dynamics["ransomware_family"]
+        )
+
+    return record
+
+
+def _canonical_alias_lookup_values(
+    canonical_name: str,
+    *,
+    normalizer,
+) -> List[str]:
+    """Return normalized lookup variants that should map to the same canonical label."""
+    canonical = normalizer(canonical_name)
+    if not canonical:
+        return []
+
+    base_values = {_normalized_lookup_key(canonical_name), _normalized_lookup_key(canonical)}
+    for alias, alias_canonical in _RANSOMWARE_CANONICAL.items():
+        if alias_canonical == canonical:
+            for candidate in _lookup_candidate_keys(alias):
+                if candidate:
+                    base_values.add(candidate)
+
+    expanded = set()
+    for base in base_values:
+        for suffix in _CANONICAL_ALIAS_SUFFIXES:
+            expanded.add(f"{base}{suffix}")
+
+    return sorted(expanded)
+
+
+def _sql_normalized_lookup_expr(column: str) -> str:
+    """SQLite expression that mirrors _normalized_lookup_key for exact filtering."""
     return (
-        _RANSOMWARE_CANONICAL.get(alt_key)
-        or _RANSOMWARE_CANONICAL.get(normalized_key)
-        or name.strip()  # keep raw value if not in map (preserves new families)
+        f"LOWER(REPLACE(REPLACE(REPLACE(TRIM({column}), '/', '_'), '-', '_'), ' ', '_'))"
     )
+
+
+def _ransomware_family_fallback_expr(alias: str = "ef") -> str:
+    """SQL expression that falls back to threat_actor_name when family is missing or unknown."""
+    unknown_values = ", ".join(f"'{value}'" for value in sorted(v for v in _UNKNOWN_FAMILY_VALUES if v))
+    return (
+        f"CASE "
+        f"WHEN {alias}.ransomware_family IS NULL "
+        f"  OR TRIM({alias}.ransomware_family) = '' "
+        f"  OR LOWER(TRIM({alias}.ransomware_family)) IN ({unknown_values}) "
+        f"THEN {alias}.threat_actor_name "
+        f"ELSE {alias}.ransomware_family "
+        f"END"
+    )
+
+
+def _append_canonical_lookup_filter(
+    conditions: List[str],
+    params: List[Any],
+    *,
+    columns: List[str],
+    value: str,
+    normalizer,
+) -> None:
+    """Append a canonicalized equality filter that matches raw alias variants too."""
+    lookup_values = _canonical_alias_lookup_values(value, normalizer=normalizer)
+    if not lookup_values:
+        conditions.append("1 = 0")
+        return
+
+    column_clauses = []
+    for column in columns:
+        placeholders = ",".join("?" * len(lookup_values))
+        column_clauses.append(
+            f"({column} IS NOT NULL AND TRIM({column}) != '' "
+            f"AND {_sql_normalized_lookup_expr(column)} IN ({placeholders}))"
+        )
+        params.extend(lookup_values)
+
+    conditions.append("(" + " OR ".join(column_clauses) + ")")
+
+
+def _get_top_canonical_threat_actors(
+    conn: sqlite3.Connection,
+    *,
+    limit: int,
+    require_mitre: bool = False,
+) -> List[str]:
+    """Return top canonical threat actors after merging raw alias variants."""
+    mitre_clause = (
+        "AND (SELECT COUNT(*) FROM incident_mitre_techniques mt WHERE mt.incident_id = ef.incident_id) > 0"
+        if require_mitre
+        else ""
+    )
+    cur = conn.execute(
+        f"""
+        SELECT ef.threat_actor_name as actor, COUNT(*) as cnt
+        FROM incident_enrichments_flat ef
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND {_live_incident_exists('ef')}
+          {mitre_clause}
+        GROUP BY ef.threat_actor_name
+        """
+    )
+
+    merged: Dict[str, int] = {}
+    for row in cur.fetchall():
+        canonical = _normalize_threat_actor_name(row["actor"])
+        if not canonical:
+            continue
+        merged[canonical] = merged.get(canonical, 0) + row["cnt"]
+
+    ranked = sorted(merged.items(), key=lambda item: (-item[1], item[0]))
+    return [actor for actor, _ in ranked[:limit]]
 
 
 _ATTACK_CATEGORY_CANONICAL: Dict[str, str] = {
@@ -1320,7 +1620,7 @@ def get_ransomware_timeline(
     cur = conn.execute(
         """
         SELECT
-            COALESCE(ef.ransomware_family, ef.threat_actor_name) as family,
+            {_ransomware_family_fallback_expr('ef')} as family,
             COUNT(*) as incident_count,
             MIN(i.incident_date) as first_seen,
             MAX(i.incident_date) as last_seen
@@ -1364,7 +1664,7 @@ def get_ransomware_families_detail(
     cur = conn.execute(
         """
         SELECT
-            COALESCE(ef.ransomware_family, ef.threat_actor_name) as family,
+            {_ransomware_family_fallback_expr('ef')} as family,
             COUNT(*) as incident_count,
             SUM(CASE WHEN ef.data_exfiltrated = 1 THEN 1 ELSE 0 END) as exfiltration_count,
             AVG(ef.ransom_amount) as avg_ransom,
@@ -1486,7 +1786,7 @@ def get_ransomware_geo(
     # Get top families first
     cur = conn.execute(
         f"""
-        SELECT COALESCE(ef.ransomware_family, ef.threat_actor_name) as family
+        SELECT {_ransomware_family_fallback_expr('ef')} as family
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.attack_category LIKE '%ransomware%'
@@ -1600,6 +1900,10 @@ def get_threat_actor_timeline(
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
     """Monthly activity per threat actor (scatter chart)."""
+    top_actors = set(_get_top_canonical_threat_actors(conn, limit=limit))
+    if not top_actors:
+        return []
+
     cur = conn.execute(
         f"""
         SELECT
@@ -1611,22 +1915,24 @@ def get_threat_actor_timeline(
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
           AND i.incident_date IS NOT NULL
-          AND ef.threat_actor_name IN (
-            SELECT ef2.threat_actor_name
-            FROM incident_enrichments_flat ef2
-            WHERE ef2.is_education_related = 1
-              AND ef2.threat_actor_name IS NOT NULL AND ef2.threat_actor_name != ''
-              AND {_live_incident_exists('ef2')}
-            GROUP BY ef2.threat_actor_name
-            ORDER BY COUNT(*) DESC
-            LIMIT ?
-          )
+          AND {_live_incident_exists('ef')}
         GROUP BY actor, month
         ORDER BY month ASC
-        """,
-        (limit,)
+        """
     )
-    return [dict(row) for row in cur.fetchall()]
+
+    merged: Dict[Tuple[str, str], int] = {}
+    for row in cur.fetchall():
+        canonical = _normalize_threat_actor_name(row["actor"])
+        if not canonical or canonical not in top_actors or not row["month"]:
+            continue
+        key = (canonical, row["month"])
+        merged[key] = merged.get(key, 0) + row["count"]
+
+    return [
+        {"actor": actor, "month": month, "count": count}
+        for (actor, month), count in sorted(merged.items(), key=lambda item: (item[0][1], item[0][0]))
+    ]
 
 
 def get_actor_ransomware_matrix(
@@ -1635,75 +1941,51 @@ def get_actor_ransomware_matrix(
     limit_families: int = 8,
 ) -> Dict[str, Any]:
     """Actor-to-ransomware-family cross-tabulation."""
-    # Get top actors
-    cur = conn.execute(
-        f"""
-        SELECT ef.threat_actor_name
-        FROM incident_enrichments_flat ef
-        WHERE ef.is_education_related = 1
-          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
-          AND {_live_incident_exists('ef')}
-        GROUP BY ef.threat_actor_name ORDER BY COUNT(*) DESC LIMIT ?
-        """,
-        (limit_actors,)
-    )
-    actors = [row["threat_actor_name"] for row in cur.fetchall()]
+    actors = _get_top_canonical_threat_actors(conn, limit=limit_actors)
+    if not actors:
+        return {"actors": [], "families": [], "matrix": []}
 
-    # Get top families
-    cur = conn.execute(
-        f"""
-        SELECT ef.ransomware_family as family
-        FROM incident_enrichments_flat ef
-        WHERE ef.is_education_related = 1 AND ef.attack_category LIKE '%ransomware%'
-          AND ef.ransomware_family IS NOT NULL AND ef.ransomware_family != ''
-          AND {_live_incident_exists('ef')}
-        GROUP BY family ORDER BY COUNT(*) DESC LIMIT ?
-        """,
-        (limit_families * 3,)  # fetch extra to account for normalization merges
-    )
-    seen_fam: set[str] = set()
-    families: list[str] = []
-    raw_family_map: Dict[str, str] = {}
-    for row in cur.fetchall():
-        canonical = _normalize_ransomware_family(row["family"])
-        if canonical and canonical not in seen_fam:
-            seen_fam.add(canonical)
-            families.append(canonical)
-            if len(families) >= limit_families:
-                break
-        if canonical:
-            raw_family_map[row["family"]] = canonical
-
-    if not actors or not families:
-        return {"actors": actors, "families": families, "matrix": []}
-
-    # Build matrix — query raw variants, normalize in Python
-    actor_placeholders = ",".join("?" * len(actors))
-    raw_variants = list(raw_family_map.keys()) or families
-    family_placeholders = ",".join("?" * len(raw_variants))
     cur = conn.execute(
         f"""
         SELECT
             ef.threat_actor_name as actor,
-            ef.ransomware_family as family,
+            {_ransomware_family_fallback_expr('ef')} as family,
             COUNT(*) as count
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
-          AND ef.threat_actor_name IN ({actor_placeholders})
-          AND ef.ransomware_family IN ({family_placeholders})
+          AND ef.attack_category LIKE '%ransomware%'
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+          AND (
+            (ef.ransomware_family IS NOT NULL AND ef.ransomware_family != '')
+            OR (ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != '')
+          )
           AND {_live_incident_exists('ef')}
         GROUP BY actor, family
-        """,
-        actors + raw_variants,
+        """
     )
-    # Merge rows whose raw family normalizes to the same canonical name
-    merged_matrix: dict[tuple, int] = {}
+
+    family_counts: Dict[str, int] = {}
+    merged_matrix: Dict[Tuple[str, str], int] = {}
     for row in cur.fetchall():
-        canonical = raw_family_map.get(row["family"]) or _normalize_ransomware_family(row["family"])
-        if canonical and canonical in families:
-            key = (row["actor"], canonical)
-            merged_matrix[key] = merged_matrix.get(key, 0) + row["count"]
-    matrix = [{"actor": k[0], "family": k[1], "count": v} for k, v in merged_matrix.items()]
+        actor = _normalize_threat_actor_name(row["actor"])
+        family = _normalize_ransomware_family(row["family"])
+        if not actor or actor not in actors or not family:
+            continue
+        family_counts[family] = family_counts.get(family, 0) + row["count"]
+        key = (actor, family)
+        merged_matrix[key] = merged_matrix.get(key, 0) + row["count"]
+
+    families = [
+        family for family, _ in sorted(family_counts.items(), key=lambda item: (-item[1], item[0]))[:limit_families]
+    ]
+    if not families:
+        return {"actors": actors, "families": [], "matrix": []}
+
+    matrix = [
+        {"actor": actor, "family": family, "count": count}
+        for (actor, family), count in merged_matrix.items()
+        if family in families
+    ]
     return {"actors": actors, "families": families, "matrix": matrix}
 
 
@@ -1712,6 +1994,10 @@ def get_actor_targeting(
     limit: int = 10,
 ) -> List[Dict[str, Any]]:
     """Per-actor country distribution (stacked horizontal bars)."""
+    top_actors = set(_get_top_canonical_threat_actors(conn, limit=limit))
+    if not top_actors:
+        return []
+
     cur = conn.execute(
         f"""
         SELECT
@@ -1721,24 +2007,17 @@ def get_actor_targeting(
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
-          AND ef.threat_actor_name IN (
-            SELECT ef2.threat_actor_name
-            FROM incident_enrichments_flat ef2
-            WHERE ef2.is_education_related = 1
-              AND ef2.threat_actor_name IS NOT NULL AND ef2.threat_actor_name != ''
-              AND {_live_incident_exists('ef2')}
-            GROUP BY ef2.threat_actor_name ORDER BY COUNT(*) DESC LIMIT ?
-          )
           AND {_live_incident_exists('ef')}
         GROUP BY actor, country
         ORDER BY actor, count DESC
-        """,
-        (limit,)
+        """
     )
     # Group by actor
     actors_map: Dict[str, list] = {}
     for row in cur.fetchall():
-        actor = row["actor"]
+        actor = _normalize_threat_actor_name(row["actor"])
+        if not actor or actor not in top_actors:
+            continue
         if actor not in actors_map:
             actors_map[actor] = []
         actors_map[actor].append({"country": row["country"], "count": row["count"]})
@@ -2152,7 +2431,7 @@ def get_ransomware_family_trend(
     """Top N ransomware families by month (stacked area chart)."""
     cur = conn.execute(
         f"""
-        SELECT COALESCE(ef.ransomware_family, ef.threat_actor_name) as family, COUNT(*) as cnt
+        SELECT {_ransomware_family_fallback_expr('ef')} as family, COUNT(*) as cnt
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.attack_category LIKE '%ransomware%'
@@ -2190,12 +2469,12 @@ def get_ransomware_family_trend(
         f"""
         SELECT
             strftime('%Y-%m', i.incident_date) as month,
-            COALESCE(ef.ransomware_family, ef.threat_actor_name) as family,
+            {_ransomware_family_fallback_expr('ef')} as family,
             COUNT(*) as count
         FROM incidents i
         JOIN incident_enrichments_flat ef ON i.incident_id = ef.incident_id
         WHERE ef.is_education_related = 1
-          AND COALESCE(ef.ransomware_family, ef.threat_actor_name) IN ({placeholders})
+          AND {_ransomware_family_fallback_expr('ef')} IN ({placeholders})
           AND i.incident_date IS NOT NULL
         GROUP BY month, family
         ORDER BY month ASC
@@ -2221,24 +2500,9 @@ def get_actor_institution_targeting(
     limit: int = 12,
 ) -> Dict[str, Any]:
     """Top actors × institution type cross-tabulation."""
-    cur = conn.execute(
-        f"""
-        SELECT ef.threat_actor_name, COUNT(*) as cnt
-        FROM incident_enrichments_flat ef
-        WHERE ef.is_education_related = 1
-          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
-          AND {_live_incident_exists('ef')}
-        GROUP BY ef.threat_actor_name
-        ORDER BY cnt DESC
-        LIMIT ?
-        """,
-        (limit,)
-    )
-    actors = [row["threat_actor_name"] for row in cur.fetchall()]
+    actors = _get_top_canonical_threat_actors(conn, limit=limit)
     if not actors:
         return {"actors": [], "institution_types": [], "data": []}
-
-    placeholders = ",".join("?" * len(actors))
     cur = conn.execute(
         f"""
         SELECT
@@ -2247,14 +2511,23 @@ def get_actor_institution_targeting(
             COUNT(*) as count
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
-          AND ef.threat_actor_name IN ({placeholders})
           AND {_live_incident_exists('ef')}
         GROUP BY actor, institution_type
         ORDER BY count DESC
-        """,
-        actors
+        """
     )
-    data = [dict(row) for row in cur.fetchall()]
+    merged: Dict[Tuple[str, str], int] = {}
+    for row in cur.fetchall():
+        actor = _normalize_threat_actor_name(row["actor"])
+        if not actor or actor not in actors:
+            continue
+        key = (actor, row["institution_type"])
+        merged[key] = merged.get(key, 0) + row["count"]
+
+    data = [
+        {"actor": actor, "institution_type": institution_type, "count": count}
+        for (actor, institution_type), count in merged.items()
+    ]
     inst_types = sorted(set(d["institution_type"] for d in data))
     return {"actors": actors, "institution_types": inst_types, "data": data}
 
@@ -2264,26 +2537,9 @@ def get_actor_ttp_profile(
     limit: int = 8,
 ) -> Dict[str, Any]:
     """Top actors with their MITRE ATT&CK tactic distribution."""
-    # Get top actors that have MITRE data
-    cur = conn.execute(
-        f"""
-        SELECT ef.threat_actor_name, COUNT(*) as cnt
-        FROM incident_enrichments_flat ef
-        WHERE ef.is_education_related = 1
-          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
-          AND (SELECT COUNT(*) FROM incident_mitre_techniques mt WHERE mt.incident_id = ef.incident_id) > 0
-          AND {_live_incident_exists('ef')}
-        GROUP BY ef.threat_actor_name
-        ORDER BY cnt DESC
-        LIMIT ?
-        """,
-        (limit,)
-    )
-    actors = [row["threat_actor_name"] for row in cur.fetchall()]
+    actors = _get_top_canonical_threat_actors(conn, limit=limit, require_mitre=True)
     if not actors:
         return {"actors": [], "tactics": [], "data": []}
-
-    placeholders = ",".join("?" * len(actors))
     cur = conn.execute(
         f"""
         SELECT ef.threat_actor_name as actor,
@@ -2291,16 +2547,17 @@ def get_actor_ttp_profile(
         FROM incident_mitre_techniques mt
         JOIN incident_enrichments_flat ef ON mt.incident_id = ef.incident_id
         WHERE ef.is_education_related = 1
-          AND ef.threat_actor_name IN ({placeholders})
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
           AND {_live_incident_exists('ef')}
-        """,
-        actors
+        """
     )
 
     # Aggregate by actor + tactic
     actor_tactic_counts: Dict[str, Dict[str, int]] = {}
     for row in cur.fetchall():
-        actor = row["actor"]
+        actor = _normalize_threat_actor_name(row["actor"])
+        if not actor or actor not in actors:
+            continue
         if actor not in actor_tactic_counts:
             actor_tactic_counts[actor] = {}
         try:
@@ -2509,7 +2766,7 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
     # Ransomware families (use threat_actor_name as fallback for ransomware incidents)
     cur = conn.execute(
         f"""
-        SELECT DISTINCT COALESCE(ef.ransomware_family, ef.threat_actor_name) as family
+        SELECT DISTINCT {_ransomware_family_fallback_expr('ef')} as family
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.attack_category LIKE '%ransomware%'
@@ -2530,12 +2787,17 @@ def get_filter_options(conn: sqlite3.Connection) -> Dict[str, List]:
     cur = conn.execute(
         f"""
         SELECT DISTINCT ef.threat_actor_name FROM incident_enrichments_flat ef
-        WHERE ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
+        WHERE ef.is_education_related = 1
+          AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
           AND {_live_incident_exists('ef')}
         ORDER BY threat_actor_name
         """
     )
-    options["threat_actors"] = [row["threat_actor_name"] for row in cur.fetchall()]
+    options["threat_actors"] = sorted({
+        canonical
+        for row in cur.fetchall()
+        if (canonical := _normalize_threat_actor_name(row["threat_actor_name"])) is not None
+    })
     
     # Institution types
     cur = conn.execute(
@@ -2690,11 +2952,12 @@ def get_actor_network(conn: sqlite3.Connection, min_incidents: int = 2) -> Dict[
     # Get actors with their ransomware families
     cur = conn.execute(
         f"""
-        SELECT ef.threat_actor_name as actor, ef.ransomware_family as family, COUNT(*) as cnt
+        SELECT ef.threat_actor_name as actor, {_ransomware_family_fallback_expr('ef')} as family, COUNT(*) as cnt
         FROM incident_enrichments_flat ef
         WHERE ef.is_education_related = 1
           AND ef.threat_actor_name IS NOT NULL AND ef.threat_actor_name != ''
-          AND ef.ransomware_family IS NOT NULL AND ef.ransomware_family != ''
+          AND {_ransomware_family_fallback_expr('ef')} IS NOT NULL
+          AND {_ransomware_family_fallback_expr('ef')} != ''
           AND {_live_incident_exists('ef')}
         GROUP BY actor, family
         HAVING cnt >= 1
@@ -2706,11 +2969,14 @@ def get_actor_network(conn: sqlite3.Connection, min_incidents: int = 2) -> Dict[
     actor_families: Dict[str, set] = {}
     actor_counts: Dict[str, int] = {}
     for r in rows:
-        actor = r["actor"]
+        actor = _normalize_threat_actor_name(r["actor"])
+        family = _normalize_ransomware_family(r["family"])
+        if not actor or not family:
+            continue
         if actor not in actor_families:
             actor_families[actor] = set()
             actor_counts[actor] = 0
-        actor_families[actor].add(r["family"])
+        actor_families[actor].add(family)
         actor_counts[actor] += r["cnt"]
 
     # Filter to actors with min_incidents

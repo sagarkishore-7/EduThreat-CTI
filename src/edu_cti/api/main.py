@@ -900,11 +900,14 @@ async def get_threat_actor_analytics(limit: int = Query(20, ge=1, le=500)):
         actors_data = get_threat_actors(conn, limit=limit)
         conn.close()
 
-        actors = [ThreatActorSummary(**a) for a in actors_data]
+        actors = [ThreatActorSummary(**a) for a in actors_data["threat_actors"]]
 
         result = ThreatActorsResponse(
             threat_actors=actors,
-            total=len(actors),
+            total=actors_data["total"],
+            returned=actors_data["returned"],
+            total_incidents=actors_data["total_incidents"],
+            countries_targeted_total=actors_data["countries_targeted_total"],
         )
         cache_set(cache_key, result)
         return result

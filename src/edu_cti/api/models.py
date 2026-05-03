@@ -359,6 +359,9 @@ class ThreatActorsResponse(BaseModel):
     """Response for threat actors endpoint."""
     threat_actors: List[ThreatActorSummary]
     total: int
+    returned: int = 0
+    total_incidents: int = 0
+    countries_targeted_total: int = 0
 
 
 class RecentIncident(BaseModel):

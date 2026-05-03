@@ -7,7 +7,9 @@ import pytest
 
 from src.edu_cti.api.database import (
     count_education_incidents,
+    get_actor_ransomware_matrix,
     get_dashboard_stats,
+    get_filter_options,
     get_incident_by_id,
     get_incidents_by_country,
     get_incidents_paginated,
@@ -15,7 +17,9 @@ from src.edu_cti.api.database import (
     get_recent_incidents,
     get_attack_vector_by_institution,
     get_ransom_economics,
+    get_threat_actors,
     get_threat_actor_categories,
+    get_threat_actor_timeline,
 )
 from src.edu_cti.api.main import get_stats
 from src.edu_cti.core.countries import normalize_countries_in_database
@@ -189,6 +193,203 @@ def test_threat_actor_and_impact_analytics_exclude_orphan_rows(temp_db):
     assert attack_vectors["data"] == [
         {"institution_type": "university", "attack_vector": "ransomware", "count": 1}
     ]
+
+
+def test_threat_actor_analytics_total_is_not_limited_and_respects_education_scope(temp_db):
+    conn = temp_db
+
+    incidents = []
+    for suffix, country in [
+        ("actor-1", "United States"),
+        ("actor-2", "Canada"),
+        ("actor-3", "Germany"),
+        ("actor-4", "Australia"),
+    ]:
+        incident = _sample_incident()
+        incident.incident_id = make_incident_id("test_source", f"https://example.com/{suffix}|2025-01-15")
+        incident.source_event_id = f"{suffix}_event"
+        incident.country = country
+        incident.country_code = None
+        incidents.append(incident)
+        insert_incident(conn, incident)
+
+    now = datetime.utcnow().isoformat()
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments_flat
+        (incident_id, is_education_related, country, threat_actor_name, ransomware_family, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, ?, 'Vice Society', 'Vice Society', ?, ?, ?)
+        """,
+        (incidents[0].incident_id, "United States", now, now, "Actor incident 1"),
+    )
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments_flat
+        (incident_id, is_education_related, country, threat_actor_name, ransomware_family, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, ?, 'Vice Society', 'Vice Society', ?, ?, ?)
+        """,
+        (incidents[1].incident_id, "Canada", now, now, "Actor incident 2"),
+    )
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments_flat
+        (incident_id, is_education_related, country, threat_actor_name, ransomware_family, created_at, updated_at, enriched_summary)
+        VALUES (?, 1, ?, 'Medusa', 'Medusa', ?, ?, ?)
+        """,
+        (incidents[2].incident_id, "Germany", now, now, "Actor incident 3"),
+    )
+    conn.execute(
+        """
+        INSERT INTO incident_enrichments_flat
+        (incident_id, is_education_related, country, threat_actor_name, ransomware_family, created_at, updated_at, enriched_summary)
+        VALUES (?, 0, ?, 'Ghost Actor', 'Ghost Family', ?, ?, ?)
+        """,
+        (incidents[3].incident_id, "Australia", now, now, "Non-education actor incident"),
+    )
+    conn.commit()
+
+    data = get_threat_actors(conn, limit=1)
+
+    assert data["total"] == 2
+    assert data["returned"] == 1
+    assert data["total_incidents"] == 3
+    assert data["countries_targeted_total"] == 3
+    assert [actor["name"] for actor in data["threat_actors"]] == ["Vice Society"]
+
+
+def test_clop_aliases_are_canonicalized_across_dashboard_analytics(temp_db):
+    conn = temp_db
+
+    variants = [
+        ("clop-1", "United States", "2023-05-31", "Clop", "cl0p_clop"),
+        ("clop-2", "Australia", "2023-06-09", "CL0P", "unknown"),
+        ("clop-3", "Canada", "2023-06-10", "Clop ransomware gang", None),
+        ("clop-4", "United Kingdom", "2023-06-11", "cl0p", "clop"),
+    ]
+
+    incidents = []
+    for suffix, country, incident_date, _, _ in variants:
+        incident = _sample_incident()
+        incident.incident_id = make_incident_id("test_source", f"https://example.com/{suffix}|{incident_date}")
+        incident.source_event_id = f"{suffix}_event"
+        incident.country = country
+        incident.incident_date = incident_date
+        incident.title = f"{suffix} incident"
+        incidents.append(incident)
+        insert_incident(conn, incident)
+
+    now = datetime.utcnow().isoformat()
+    for incident, (_, country, _, actor_name, family_name) in zip(incidents, variants):
+        conn.execute(
+            """
+            INSERT INTO incident_enrichments_flat
+            (incident_id, is_education_related, country, attack_category, threat_actor_name, ransomware_family, created_at, updated_at, enriched_summary)
+            VALUES (?, 1, ?, 'ransomware_double_extortion', ?, ?, ?, ?, ?)
+            """,
+            (incident.incident_id, country, actor_name, family_name, now, now, "Canonicalization test incident"),
+        )
+    conn.commit()
+
+    stats = get_dashboard_stats(conn)
+    assert stats["unique_threat_actors"] == 1
+    assert stats["unique_ransomware_families"] == 1
+
+    actors = get_threat_actors(conn, limit=10)
+    assert actors["total"] == 1
+    assert actors["returned"] == 1
+    assert actors["total_incidents"] == 4
+    assert actors["threat_actors"][0]["name"] == "Cl0p"
+    assert actors["threat_actors"][0]["incident_count"] == 4
+    assert actors["threat_actors"][0]["ransomware_families"] == ["Cl0p"]
+
+    timeline = get_threat_actor_timeline(conn, limit=10)
+    assert {row["actor"] for row in timeline} == {"Cl0p"}
+    assert sum(row["count"] for row in timeline) == 4
+
+    matrix = get_actor_ransomware_matrix(conn, limit_actors=10, limit_families=10)
+    assert matrix["actors"] == ["Cl0p"]
+    assert "Cl0p" in matrix["families"]
+    assert all(family != "cl0p_clop" for family in matrix["families"])
+    assert all(cell["actor"] == "Cl0p" for cell in matrix["matrix"])
+
+    filters = get_filter_options(conn)
+    assert filters["threat_actors"].count("Cl0p") == 1
+    assert filters["ransomware_families"].count("Cl0p") == 1
+    assert "CL0P" not in filters["threat_actors"]
+    assert "cl0p_clop" not in filters["ransomware_families"]
+
+
+def test_incident_views_and_filters_match_canonical_actor_and_family_aliases(temp_db):
+    conn = temp_db
+
+    variants = [
+        ("clop-view-1", "United States", "2024-02-01", "CL0P", "cl0p_clop"),
+        ("clop-view-2", "Australia", "2024-02-02", "Clop ransomware gang", "unknown"),
+        ("clop-view-3", "Canada", "2024-02-03", "cl0p", None),
+    ]
+
+    incidents = []
+    now = datetime.utcnow().isoformat()
+    for suffix, country, incident_date, actor_name, family_name in variants:
+        incident = _sample_incident()
+        incident.incident_id = make_incident_id("test_source", f"https://example.com/{suffix}|{incident_date}")
+        incident.source_event_id = f"{suffix}_event"
+        incident.country = country
+        incident.incident_date = incident_date
+        incident.title = f"{suffix} incident"
+        insert_incident(conn, incident)
+        incidents.append(incident)
+
+        conn.execute(
+            """
+            INSERT INTO incident_enrichments_flat
+            (incident_id, is_education_related, country, attack_category, threat_actor_name, ransomware_family, created_at, updated_at, enriched_summary)
+            VALUES (?, 1, ?, 'ransomware_encryption', ?, ?, ?, ?, ?)
+            """,
+            (incident.incident_id, country, actor_name, family_name, now, now, "Incident view canonicalization test"),
+        )
+        conn.execute(
+            """
+            INSERT INTO incident_enrichments
+            (incident_id, final_enrichment_json, created_at, updated_at)
+            VALUES (?, ?, ?, ?)
+            """,
+            (
+                incident.incident_id,
+                '{"attack_dynamics":{"ransomware_family":"cl0p_clop"}}',
+                now,
+                now,
+            ),
+        )
+    conn.commit()
+
+    filtered_by_family, family_total = get_incidents_paginated(
+        conn,
+        page=1,
+        per_page=10,
+        ransomware_family="Cl0p",
+    )
+    assert family_total == 3
+    assert {row["threat_actor_name"] for row in filtered_by_family} == {"Cl0p"}
+    assert "cl0p_clop" not in {row["ransomware_family"] for row in filtered_by_family if row.get("ransomware_family")}
+
+    filtered_by_actor, actor_total = get_incidents_paginated(
+        conn,
+        page=1,
+        per_page=10,
+        threat_actor="Cl0p",
+    )
+    assert actor_total == 3
+    assert {row["threat_actor_name"] for row in filtered_by_actor} == {"Cl0p"}
+
+    recent = get_recent_incidents(conn, limit=10)
+    clop_recent = [row for row in recent if row["incident_id"] in {incident.incident_id for incident in incidents}]
+    assert {row["threat_actor_name"] for row in clop_recent} == {"Cl0p"}
+    assert "cl0p_clop" not in {row["ransomware_family"] for row in clop_recent if row.get("ransomware_family")}
+
+    detail = get_incident_by_id(conn, incidents[0].incident_id)
+    assert detail["threat_actor_name"] == "Cl0p"
+    assert detail["attack_dynamics"]["ransomware_family"] == "Cl0p"
 
 
 def test_stats_endpoint_bypasses_cache_while_pipeline_is_running():
