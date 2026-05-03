@@ -53,6 +53,26 @@ def test_request_memory_pause_sets_cancel_and_progress(monkeypatch):
     phase2_main._reset_memory_guard_state()
 
 
+def test_reset_phase2_run_state_clears_cancel_and_progress():
+    phase2_main = importlib.import_module("src.edu_cti.pipeline.phase2.__main__")
+
+    phase2_main._cancel_event.set()
+    with phase2_main._in_progress_lock:
+        phase2_main._in_progress.add("incident-123")
+    phase2_main._progress["step"] = "Pausing for memory pressure"
+    phase2_main._progress["detail"] = "RSS 2900 MB exceeded hard limit 2600 MB"
+    phase2_main._progress["percent"] = 88
+    phase2_main._reset_memory_guard_state()
+
+    phase2_main._reset_phase2_run_state()
+
+    assert phase2_main._cancel_event.is_set() is False
+    assert phase2_main._progress == {"step": "", "detail": "", "percent": 0}
+    with phase2_main._in_progress_lock:
+        assert phase2_main._in_progress == set()
+    assert phase2_main._get_memory_guard_state()["pause_requested"] is False
+
+
 def test_check_memory_pressure_requests_pause_at_hard_limit(monkeypatch):
     phase2_main = importlib.import_module("src.edu_cti.pipeline.phase2.__main__")
 

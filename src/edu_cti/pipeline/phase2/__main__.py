@@ -249,6 +249,15 @@ def _reset_memory_guard_state() -> None:
         )
 
 
+def _reset_phase2_run_state() -> None:
+    """Clear per-run cancellation/progress state before starting a new Phase 2 run."""
+    _cancel_event.clear()
+    with _in_progress_lock:
+        _in_progress.clear()
+    _progress.update({"step": "", "detail": "", "percent": 0})
+    _reset_memory_guard_state()
+
+
 def _get_memory_guard_state() -> Dict[str, Any]:
     with _memory_guard_state_lock:
         return dict(_memory_guard_state)
@@ -1673,7 +1682,7 @@ def main() -> Optional[Dict[str, Any]]:
     args = parse_args()
     _clear_watchdog()
     _reset_memory_policy_cache()
-    _reset_memory_guard_state()
+    _reset_phase2_run_state()
     
     # Setup logging
     from pathlib import Path as PathLib
