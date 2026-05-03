@@ -39,6 +39,9 @@ _INDEX_CACHE_FILENAME = "mitre_embeddings_index.json"  # tid → array row
 _MAX_ARTICLE_CHARS = 2_000   # first ~400 words — where attack context is densest
 _TOP_K = 5                   # number of candidate techniques to surface per article
 
+# Set DISABLE_ML_FEATURES=true to skip model loading on memory-constrained hosts.
+_ML_DISABLED = os.environ.get("DISABLE_ML_FEATURES", "").lower() in ("1", "true", "yes")
+
 # Runtime cache — protected by _model_lock to prevent concurrent loads
 _model_lock = threading.Lock()
 _embed_model = None
@@ -65,6 +68,8 @@ def _get_hf_cache_dir() -> str:
 
 def _load_embed_model():
     global _embed_model, _embed_model_load_failed
+    if _ML_DISABLED:
+        return None
     if _embed_model is not None or _embed_model_load_failed:
         return _embed_model
     with _model_lock:

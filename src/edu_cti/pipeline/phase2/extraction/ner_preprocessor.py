@@ -54,6 +54,10 @@ _LABEL_TO_FIELD: Dict[str, str] = {
     "ransomware family": "ransomware_family",
 }
 
+# Set DISABLE_ML_FEATURES=true to skip GLiNER + sentence-transformer loading
+# on memory-constrained hosts (e.g. Railway 512 MB plan).
+_ML_DISABLED = os.environ.get("DISABLE_ML_FEATURES", "").lower() in ("1", "true", "yes")
+
 # Runtime cache — protected by _model_lock to prevent concurrent loads
 _model_lock = threading.Lock()
 _gliner_model = None
@@ -74,6 +78,8 @@ def _get_hf_cache_dir() -> Optional[str]:
 def _load_model():
     """Load GLiNER model once per process. Thread-safe via double-checked locking."""
     global _gliner_model, _gliner_load_failed
+    if _ML_DISABLED:
+        return None
     if _gliner_model is not None or _gliner_load_failed:
         return _gliner_model
     with _model_lock:
