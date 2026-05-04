@@ -8,6 +8,7 @@ Includes advanced bot detection bypass via TLS fingerprinting and headless brows
 
 import json
 import logging
+import os
 import time
 import random
 import re
@@ -155,7 +156,24 @@ BLOCKED_FETCH_DOMAINS = {
     # Paywall / aggregator roundup pages — these are listicles covering hundreds of
     # incidents per page; they cause LLM output to exceed 8192 tokens mid-JSON.
     "techtarget.com",
+    # Cloudflare-protected victim listing / data aggregator — returns Cloudflare
+    # challenge or empty content across all 4 tiers. Articles link out to source
+    # coverage that IS fetchable; the databreaches.net page itself is not needed.
+    "databreaches.net",
+    # Consistently returns 0 extractable chars across all tiers.
+    "tuttoscuola.com",
+    "nu.nl",
+    "alaraby.co.uk",
+    "ithome.com.tw",
 }
+
+# Extend the blocked list at runtime without a code deploy:
+# BLOCKED_FETCH_DOMAINS_EXTRA=domain1.com,domain2.com
+_extra = os.environ.get("BLOCKED_FETCH_DOMAINS_EXTRA", "")
+if _extra:
+    BLOCKED_FETCH_DOMAINS = BLOCKED_FETCH_DOMAINS | {
+        d.strip().lower() for d in _extra.split(",") if d.strip()
+    }
 
 
 # Phrases that indicate the page is a CAPTCHA / bot-gate / login wall rather
