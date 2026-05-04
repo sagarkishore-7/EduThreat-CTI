@@ -375,10 +375,17 @@ def _check_memory_pressure(items_processed: int) -> bool:
 
     gc_interval = policy["gc_interval"]
     if items_processed > 0 and items_processed % gc_interval == 0:
-        import gc
-
         gc.collect()
-        logger.debug(f"[MEM] gc.collect() after {items_processed} items")
+        # Ask glibc to release free pages back to the OS.
+        # PyTorch CPU allocator and large string allocations (e.g. 670 KB Oxylabs
+        # HTML blobs) stay committed in the heap after Python GC; malloc_trim(0)
+        # forces glibc to return them, preventing monotonic RSS growth over long runs.
+        try:
+            import ctypes
+            ctypes.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+        except Exception:
+            pass
+        logger.debug(f"[MEM] gc.collect() + malloc_trim after {items_processed} items")
 
     if items_processed <= 0 or items_processed % policy["check_interval"] != 0:
         return _get_memory_guard_state()["pause_requested"]
