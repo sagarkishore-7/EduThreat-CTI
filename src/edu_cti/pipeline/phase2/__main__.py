@@ -391,7 +391,6 @@ def _check_memory_pressure(items_processed: int) -> bool:
         return _get_memory_guard_state()["pause_requested"]
 
     try:
-        import gc
         import psutil
     except ImportError:
         return False
