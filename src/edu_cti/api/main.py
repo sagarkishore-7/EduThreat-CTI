@@ -190,6 +190,29 @@ async def lifespan(app: FastAPI):
         except sqlite3.Error as exc:
             logger.warning("Startup WAL checkpoint failed (non-fatal): %s", exc)
 
+        # Auto-prune pipeline_runs to the latest 200 rows. Every pipeline
+        # invocation (cron jobs every 30 min/1h/6h/24h) writes a row with
+        # JSON params + result + error. Over months this grows to many MB
+        # of rarely-read history. 200 rows is plenty for the admin UI.
+        try:
+            cur = conn.execute("SELECT COUNT(*) FROM pipeline_runs")
+            run_count = cur.fetchone()[0]
+            if run_count > 200:
+                conn.execute(
+                    """
+                    DELETE FROM pipeline_runs
+                    WHERE run_id NOT IN (
+                        SELECT run_id FROM pipeline_runs
+                        ORDER BY started_at DESC
+                        LIMIT 200
+                    )
+                    """
+                )
+                conn.commit()
+                logger.info("Auto-pruned pipeline_runs: %d → 200 rows", run_count)
+        except sqlite3.Error as exc:
+            logger.warning("Auto-prune pipeline_runs failed (non-fatal): %s", exc)
+
         # Report DATA_DIR contents so persistent-state bloat is visible in logs.
         # Also auto-prune the HuggingFace cache if it has grown past the safe
         # threshold — every redeploy that downloads a model adds new blob files

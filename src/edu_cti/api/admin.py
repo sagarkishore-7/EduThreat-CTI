@@ -2491,3 +2491,114 @@ async def clean_hf_cache(_: bool = Depends(authenticate)):
         "cache_dir": str(cache_dir),
         "message": f"Cleaned {size_before / (1024 * 1024):.1f} MB. Models will re-download on next pipeline start.",
     }
+
+
+@router.get("/maintenance/db-table-sizes")
+async def db_table_sizes(_: bool = Depends(authenticate)):
+    """
+    Report row counts and approximate byte sizes for every table.
+    Use this to spot tables that are growing without bound — articles,
+    incident_enrichments, pipeline_runs, pipeline_metrics are the main risks.
+    """
+    from src.edu_cti.core.db import get_connection
+    conn = get_connection(read_only=True)
+    try:
+        # All user tables
+        tables = [
+            row[0] for row in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+            ).fetchall()
+        ]
+        results: List[Dict[str, Any]] = []
+        for t in tables:
+            try:
+                count = conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]
+                # Approximate per-row payload size by summing the LENGTH of every TEXT column
+                # for the first 100 rows, then extrapolating. SQLite has no easy "bytes per
+                # table" PRAGMA, so this is the cheapest reasonable estimate.
+                cols = [r[1] for r in conn.execute(f"PRAGMA table_info({t})").fetchall()]
+                length_exprs = ", ".join(f"COALESCE(LENGTH({c}), 0)" for c in cols) or "0"
+                sample = conn.execute(
+                    f"SELECT ({length_exprs}) AS sz FROM {t} LIMIT 100"
+                ).fetchall()
+                if sample and count:
+                    avg = sum(r["sz"] for r in sample) / len(sample)
+                    est_bytes = int(avg * count)
+                else:
+                    avg = 0
+                    est_bytes = 0
+                results.append({
+                    "table": t,
+                    "row_count": count,
+                    "avg_row_bytes": int(avg),
+                    "est_total_mb": round(est_bytes / (1024 * 1024), 2),
+                })
+            except sqlite3.Error as exc:
+                results.append({"table": t, "error": str(exc)})
+        results.sort(key=lambda x: -x.get("est_total_mb", 0))
+        return {"tables": results, "total_est_mb": round(sum(r.get("est_total_mb", 0) for r in results), 2)}
+    finally:
+        conn.close()
+
+
+@router.post("/maintenance/prune-pipeline-runs")
+async def prune_pipeline_runs(
+    keep: int = Query(100, ge=10, le=10000),
+    _: bool = Depends(authenticate),
+):
+    """
+    Trim the pipeline_runs table to the latest N rows. Every pipeline
+    invocation writes a row with params/result/error JSON; over months
+    of cron runs, this table grows unboundedly. Default keep=100 rows
+    is plenty for the recent-runs admin view.
+    """
+    from src.edu_cti.core.db import get_connection
+    conn = get_connection()
+    try:
+        before = conn.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0]
+        conn.execute(
+            """
+            DELETE FROM pipeline_runs
+            WHERE run_id NOT IN (
+                SELECT run_id FROM pipeline_runs
+                ORDER BY started_at DESC
+                LIMIT ?
+            )
+            """,
+            (keep,),
+        )
+        conn.commit()
+        after = conn.execute("SELECT COUNT(*) FROM pipeline_runs").fetchone()[0]
+        # Reclaim space in the DB file
+        conn.execute("VACUUM")
+        return {
+            "rows_before": before,
+            "rows_after": after,
+            "rows_pruned": before - after,
+            "message": f"Pruned {before - after} pipeline_runs rows; kept latest {after}.",
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/maintenance/vacuum")
+async def vacuum_database(_: bool = Depends(authenticate)):
+    """
+    Run SQLite VACUUM to reclaim space from deleted rows. After bulk
+    DELETE operations (soft-deletes, manual cleanups, prune-pipeline-runs)
+    the .db file size doesn't shrink — VACUUM rewrites the file to be
+    minimal. Holds an exclusive write lock for its duration.
+    """
+    from src.edu_cti.core.db import get_connection
+    conn = get_connection()
+    try:
+        size_before = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+        conn.execute("VACUUM")
+        size_after = DB_PATH.stat().st_size if DB_PATH.exists() else 0
+        return {
+            "size_before_mb": round(size_before / (1024 * 1024), 2),
+            "size_after_mb": round(size_after / (1024 * 1024), 2),
+            "freed_mb": round((size_before - size_after) / (1024 * 1024), 2),
+        }
+    finally:
+        conn.close()
