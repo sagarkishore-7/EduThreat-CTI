@@ -93,27 +93,6 @@ def _explicit_memory_limits_configured() -> bool:
     return PHASE2_MEMORY_SOFT_LIMIT_MB > 0 or PHASE2_MEMORY_HARD_LIMIT_MB > 0
 
 
-def _disable_ml_features_for_current_run(logger: logging.Logger, reason: str) -> None:
-    """Disable optional local ML helpers for this process before first import."""
-    os.environ["DISABLE_ML_FEATURES"] = "1"
-
-    # If the modules were already imported in this process, flip their runtime flag too.
-    try:
-        from src.edu_cti.pipeline.phase2.extraction import ner_preprocessor as _ner_module
-
-        _ner_module._ML_DISABLED = True
-    except Exception:
-        pass
-    try:
-        from src.edu_cti.pipeline.phase2.extraction import mitre_rag as _rag_module
-
-        _rag_module._ML_DISABLED = True
-    except Exception:
-        pass
-
-    logger.warning("Phase 2 safe mode: DISABLE_ML_FEATURES=1 for this run (%s)", reason)
-
-
 def _apply_runtime_safety_overrides(args, logger: logging.Logger) -> Dict[str, Any]:
     """
     Apply conservative Railway-safe defaults for Phase 2.
@@ -126,7 +105,7 @@ def _apply_runtime_safety_overrides(args, logger: logging.Logger) -> Dict[str, A
     safe_mode = _running_on_railway() and _env_flag("PHASE2_RAILWAY_SAFE_MODE", "1")
     overrides = {
         "safe_mode": safe_mode,
-        "ml_disabled_for_run": False,
+        "ml_disabled_for_run": _env_flag("DISABLE_ML_FEATURES", "0"),
         "prewarm_ml_models": False,
         "effective_workers": max(1, int(getattr(args, "workers", 1))),
     }
@@ -148,22 +127,12 @@ def _apply_runtime_safety_overrides(args, logger: logging.Logger) -> Dict[str, A
 
     overrides["effective_workers"] = requested_workers
 
-    ml_allowed = _env_flag("PHASE2_ENABLE_ML_ON_RAILWAY", "0")
-    if not ml_allowed and not _env_flag("DISABLE_ML_FEATURES", "0"):
-        reason = "Railway Phase 2 safe mode defaults local ML helpers off"
-        if not _explicit_memory_limits_configured():
-            reason += " because explicit memory MB limits are not configured"
-        _disable_ml_features_for_current_run(logger, reason)
-        overrides["ml_disabled_for_run"] = True
-    else:
-        overrides["ml_disabled_for_run"] = _env_flag("DISABLE_ML_FEATURES", "0")
-
     overrides["prewarm_ml_models"] = (
         _env_flag("PHASE2_PREWARM_ML_MODELS", "0")
         and not overrides["ml_disabled_for_run"]
     )
     if not overrides["prewarm_ml_models"]:
-        logger.info("Phase 2 safe mode: ML pre-warm disabled for this run")
+        logger.info("Phase 2 safe mode: ML pre-warm disabled for this run (ML inference remains enabled)")
 
     return overrides
 
@@ -787,6 +756,8 @@ def dict_to_incident(incident_dict: Dict, conn) -> BaseIncident:
         status=incident_dict.get("status", "suspected"),
         source_confidence=incident_dict.get("source_confidence", "medium"),
         notes=incident_dict.get("notes"),
+        re_enrich_attempts=incident_dict.get("re_enrich_attempts"),
+        re_enrich_reason=incident_dict.get("re_enrich_reason"),
     )
 
 
@@ -931,6 +902,8 @@ def fetch_articles_phase(
                 "status": "suspected",
                 "source_confidence": "medium",
                 "notes": fp_incident.get("notes"),
+                "re_enrich_attempts": fp_incident.get("re_enrich_attempts"),
+                "re_enrich_reason": fp_incident.get("re_enrich_reason"),
             })
             stats["processed"] += 1
             stats["articles_fetched"] += 1

@@ -59,7 +59,6 @@ def test_apply_runtime_safety_overrides_on_railway(monkeypatch):
 
     monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
     monkeypatch.setenv("DISABLE_ML_FEATURES", "false")
-    monkeypatch.delenv("PHASE2_ENABLE_ML_ON_RAILWAY", raising=False)
     monkeypatch.delenv("PHASE2_PREWARM_ML_MODELS", raising=False)
     monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_SOFT_LIMIT_MB", 0)
     monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_HARD_LIMIT_MB", 0)
@@ -72,9 +71,9 @@ def test_apply_runtime_safety_overrides_on_railway(monkeypatch):
     assert args.workers == 1
     assert overrides["safe_mode"] is True
     assert overrides["effective_workers"] == 1
-    assert overrides["ml_disabled_for_run"] is True
+    assert overrides["ml_disabled_for_run"] is False
     assert overrides["prewarm_ml_models"] is False
-    assert phase2_main.os.environ["DISABLE_ML_FEATURES"] == "1"
+    assert phase2_main.os.environ["DISABLE_ML_FEATURES"] == "false"
 
 
 def test_request_memory_pause_sets_cancel_and_progress(monkeypatch):

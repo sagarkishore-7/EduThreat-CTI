@@ -572,23 +572,24 @@ class IncidentEnricher:
         except Exception:
             _rag_block = None
 
-        # Re-enrichment hint: when an incident is being re-processed because a
-        # previous extraction had bad data (future date, headline-as-institution,
-        # etc.), tell the LLM what to do differently. This is the only way to
-        # break temperature=0 determinism — same prompt always produces same output.
-        # Use a short-lived read-only connection — leaking write connections per
-        # enrichment exhausts the SQLite lock pool and stalls the pipeline.
+        # Re-enrichment hint: use the metadata already carried on the incident
+        # row so the hot path does not open a fresh SQLite connection per
+        # enrichment call.
         _re_enrich_hint = None
         try:
-            from src.edu_cti.pipeline.data_quality import get_re_enrich_hint
-            from src.edu_cti.core.db import get_connection
-            _incident_id = incident.get("incident_id") if isinstance(incident, dict) else getattr(incident, "incident_id", None)
-            if _incident_id:
-                _hint_conn = get_connection(read_only=True)
-                try:
-                    _re_enrich_hint = get_re_enrich_hint(_hint_conn, _incident_id)
-                finally:
-                    _hint_conn.close()
+            from src.edu_cti.pipeline.data_quality import format_re_enrich_hint
+            _attempts = (
+                incident.get("re_enrich_attempts")
+                if isinstance(incident, dict)
+                else getattr(incident, "re_enrich_attempts", None)
+            )
+            _reason = (
+                incident.get("re_enrich_reason")
+                if isinstance(incident, dict)
+                else getattr(incident, "re_enrich_reason", None)
+            )
+            if _attempts:
+                _re_enrich_hint = format_re_enrich_hint(int(_attempts), _reason)
         except Exception:
             _re_enrich_hint = None
 
@@ -1053,17 +1054,14 @@ class IncidentEnricher:
         _ner_block = f"\n\n{_ner_hint}" if _ner_hint else ""
 
         # ── Re-enrichment hint (breaks temperature=0 determinism on retry) ────
-        # Read-only short-lived connection — see the matching block in
-        # _enrich_article for why this matters.
         _re_enrich_hint = None
         try:
-            from src.edu_cti.pipeline.data_quality import get_re_enrich_hint
-            from src.edu_cti.core.db import get_connection
-            _hint_conn = get_connection(read_only=True)
-            try:
-                _re_enrich_hint = get_re_enrich_hint(_hint_conn, incident.incident_id)
-            finally:
-                _hint_conn.close()
+            from src.edu_cti.pipeline.data_quality import format_re_enrich_hint
+            if getattr(incident, "re_enrich_attempts", None):
+                _re_enrich_hint = format_re_enrich_hint(
+                    int(incident.re_enrich_attempts),
+                    getattr(incident, "re_enrich_reason", None),
+                )
         except Exception:
             _re_enrich_hint = None
         _re_enrich_block = f"\n\n{_re_enrich_hint}" if _re_enrich_hint else ""

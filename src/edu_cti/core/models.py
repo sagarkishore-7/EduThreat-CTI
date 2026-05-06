@@ -56,6 +56,12 @@ class BaseIncident:
     # from the group's own infrastructure; more reliable than LLM-extracted names
     threat_actor: Optional[str] = None
 
+    # Data-quality re-enrichment metadata. When present, the enricher can build
+    # its retry hint directly from the incident row without opening a fresh DB
+    # connection inside the hot path.
+    re_enrich_attempts: Optional[int] = None
+    re_enrich_reason: Optional[str] = None
+
     def to_dict(self) -> dict:
         """
         Flatten to dict for CSV writing.

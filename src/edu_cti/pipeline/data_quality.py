@@ -236,6 +236,24 @@ def sweep_invalid_data(conn: sqlite3.Connection) -> dict:
     }
 
 
+def format_re_enrich_hint(attempts: int, reason: Optional[str]) -> Optional[str]:
+    """Build the prompt hint text from incident metadata already in memory."""
+    if not attempts:
+        return None
+    detail = reason or "previous extraction had errors"
+    return (
+        "=== RE-ENRICHMENT HINT ===\n"
+        f"This is re-enrichment attempt {attempts}. The previous extraction had problems:\n"
+        f"  {detail}\n"
+        "Pay extra attention to the affected fields. Read the article body carefully:\n"
+        "- Institution name should be the actual school / college / university named in the article body, "
+        "NOT the news headline.\n"
+        "- Dates must be in YYYY-MM-DD format and reflect when the incident actually occurred — never use\n"
+        "  today's date as a placeholder; never use a date from before 1990 or in the future.\n"
+        "============================="
+    )
+
+
 def get_re_enrich_hint(conn: sqlite3.Connection, incident_id: str) -> Optional[str]:
     """
     Return a prompt hint for an incident that has been queued for re-enrichment.
@@ -255,15 +273,4 @@ def get_re_enrich_hint(conn: sqlite3.Connection, incident_id: str) -> Optional[s
         return None
     if not row or not row["re_enrich_attempts"]:
         return None
-    reason = row["re_enrich_reason"] or "previous extraction had errors"
-    return (
-        "=== RE-ENRICHMENT HINT ===\n"
-        f"This is re-enrichment attempt {row['re_enrich_attempts']}. The previous extraction had problems:\n"
-        f"  {reason}\n"
-        "Pay extra attention to the affected fields. Read the article body carefully:\n"
-        "- Institution name should be the actual school / college / university named in the article body, "
-        "NOT the news headline.\n"
-        "- Dates must be in YYYY-MM-DD format and reflect when the incident actually occurred — never use\n"
-        "  today's date as a placeholder; never use a date from before 1990 or in the future.\n"
-        "============================="
-    )
+    return format_re_enrich_hint(row["re_enrich_attempts"], row["re_enrich_reason"])

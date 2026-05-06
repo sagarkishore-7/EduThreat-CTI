@@ -1686,6 +1686,8 @@ def get_unenriched_incidents(
             "status": row["status"] or "suspected",
             "source_confidence": row["source_confidence"] or "medium",
             "notes": row["notes"],
+            "re_enrich_attempts": row["re_enrich_attempts"],
+            "re_enrich_reason": row["re_enrich_reason"],
             # True when articles already exist in DB from a previous run.
             # The fetch phase uses this to skip re-fetching and push directly to the LLM queue.
             "has_articles": bool(row["has_articles"]),
