@@ -1987,6 +1987,26 @@ def main() -> Optional[Dict[str, Any]]:
             finally:
                 thread_conn.close()
 
+        # Constrain PyTorch CPU threading to a single thread per inference call.
+        # PyTorch's default is to use all CPU cores; with 4 enricher workers each
+        # running inference, that's up to 4 × N_cores threads of intra-op
+        # parallelism, each holding intermediate buffers. On 8-vCPU Railway hosts
+        # this caused observed RSS spikes of 643 MB / 30s. Single-threaded
+        # inference removes the multiplier without significantly impacting
+        # latency for our small models (GLiNER small, MiniLM-L6-v2).
+        try:
+            os.environ.setdefault("OMP_NUM_THREADS", "1")
+            os.environ.setdefault("MKL_NUM_THREADS", "1")
+            os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+            os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+            os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+            import torch as _torch
+            _torch.set_num_threads(1)
+            _torch.set_num_interop_threads(1)
+            logger.info("PyTorch constrained to single-threaded inference (OMP/MKL/torch=1)")
+        except Exception as _torch_err:
+            logger.warning("PyTorch thread constraint failed (non-fatal): %s", _torch_err)
+
         # Pre-warm ML models in the main thread before workers start.
         # Loading them here (sequential, low-memory moment) prevents the race
         # where all workers try to load 150 MB + 90 MB simultaneously mid-run.
@@ -2021,6 +2041,12 @@ def main() -> Optional[Dict[str, Any]]:
                 return
             hf_cache = _P(DATA_DIR) / "hf_cache"
             HF_THRESHOLD_BYTES = 300 * 1024 * 1024  # 300 MB — far stricter than the 600 MB worker check
+            # Hard ceiling: when Python RSS crosses this, force-cancel the run so
+            # workers stop pulling new articles. Memory then drains as in-flight
+            # enrichments finish. Far better than letting Railway OOM-kill the
+            # whole container — that loses Playwright + DB-write state.
+            # 5500 MB ≈ 72% of 7629 MB container limit.
+            HARD_RSS_CEILING_MB = int(os.environ.get("PHASE2_RSS_HARD_CEILING_MB", "5500"))
             while not _janitor_stop.is_set():
                 try:
                     rss_mb = _ps.Process(os.getpid()).memory_info().rss / (1024 * 1024)
@@ -2033,6 +2059,7 @@ def main() -> Optional[Dict[str, Any]]:
                         "[JANITOR] RSS=%.0f MB | hf_cache=%.0f MB | in_progress=%d",
                         rss_mb, cache_mb, in_progress_count,
                     )
+                    # 1. HF cache prune (existing behaviour)
                     if cache_bytes > HF_THRESHOLD_BYTES and hf_cache.exists():
                         logger.warning(
                             "[JANITOR] HF cache=%.1f MB > %.0f MB threshold — pruning",
@@ -2050,15 +2077,36 @@ def main() -> Optional[Dict[str, Any]]:
                             logger.info("[JANITOR] HF cache pruned + GC + malloc_trim")
                         except Exception as _e:
                             logger.warning("[JANITOR] HF prune failed: %s", _e)
+                    # 2. Hard RSS ceiling — graceful cancel before Railway OOM
+                    if rss_mb > HARD_RSS_CEILING_MB and not _cancel_event.is_set():
+                        logger.error(
+                            "[JANITOR] RSS=%.0f MB > %.0f MB hard ceiling — "
+                            "signalling cancel to drain queue before Railway OOM-kill",
+                            rss_mb, HARD_RSS_CEILING_MB,
+                        )
+                        _request_memory_pause(
+                            rss_mb=rss_mb,
+                            hard_limit_mb=HARD_RSS_CEILING_MB,
+                            container_limit_mb=None,
+                        )
+                        # Aggressive reclamation
+                        gc.collect()
+                        try:
+                            import ctypes as _ct
+                            _ct.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+                        except Exception:
+                            pass
                 except Exception as _e:
                     logger.debug("[JANITOR] iteration failed: %s", _e)
-                _janitor_stop.wait(30)  # 30 second interval
+                # 10s interval — fine-grained visibility into RSS growth rate.
+                # Earlier 30s gap missed a 643 MB jump that caused OOM.
+                _janitor_stop.wait(10)
 
         _janitor_thread = threading.Thread(
             target=_memory_janitor, daemon=True, name="memory-janitor"
         )
         _janitor_thread.start()
-        logger.info("Started memory janitor (30s interval, prunes HF cache > 300 MB)")
+        logger.info("Started memory janitor (10s interval, prunes HF cache > 300 MB, cancels run > 5500 MB RSS)")
 
         # Start consumer threads
         consumers = []
