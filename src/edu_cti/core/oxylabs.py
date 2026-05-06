@@ -32,15 +32,22 @@ class OxylabsClient:
         self,
         username: Optional[str] = None,
         password: Optional[str] = None,
-        timeout: int = 30,
+        timeout: int = 60,
     ):
-        # Default timeout reduced from 120s → 30s. Live logs showed individual
-        # incidents burning 2-3 minutes per URL when all tiers failed; a site
-        # that hasn't responded by 30s is not going to suddenly succeed at
-        # 119s, so we cut the long tail aggressively. Override via constructor
-        # arg if a specific call needs longer (e.g. JS-heavy SERP).
+        # Default timeout: 60s. Down from the original 120s (which had a
+        # long tail of dead sites burning 2 minutes each), but kept high
+        # enough to handle slow-rendering JS-heavy sites that legitimately
+        # take 30-50s through Oxylabs (e.g. some Korean / Japanese news
+        # portals with heavy client-side rendering). Override via env var
+        # OXYLABS_TIMEOUT_SECONDS or constructor arg.
         self.username = username or os.getenv("OXYLABS_USERNAME", "")
         self.password = password or os.getenv("OXYLABS_PASSWORD", "")
+        env_timeout = os.getenv("OXYLABS_TIMEOUT_SECONDS")
+        if env_timeout:
+            try:
+                timeout = int(env_timeout)
+            except ValueError:
+                pass
         self.timeout = timeout
 
     def _is_configured(self) -> bool:
