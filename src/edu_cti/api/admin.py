@@ -2458,6 +2458,40 @@ async def wal_checkpoint_truncate(_: bool = Depends(authenticate)):
         conn.close()
 
 
+@router.get("/maintenance/hf-cache-tree")
+async def hf_cache_tree(_: bool = Depends(authenticate)):
+    """
+    List every file inside hf_cache/ with size, sorted descending. Used to
+    diagnose what's bloating the HuggingFace cache during long enrichment
+    runs (~1 GB in 30 min observed) — likely a per-call download or
+    tokenizer artifact, not the model itself.
+    """
+    from src.edu_cti.core.config import DATA_DIR
+    cache_dir = Path(DATA_DIR) / "hf_cache"
+    if not cache_dir.exists():
+        return {"cache_dir": str(cache_dir), "files": [], "total_mb": 0}
+    files = []
+    total = 0
+    for p in cache_dir.rglob("*"):
+        try:
+            if p.is_file():
+                sz = p.stat().st_size
+                total += sz
+                files.append({
+                    "path": str(p.relative_to(cache_dir)),
+                    "size_mb": round(sz / (1024 * 1024), 3),
+                })
+        except OSError:
+            pass
+    files.sort(key=lambda f: -f["size_mb"])
+    return {
+        "cache_dir": str(cache_dir),
+        "file_count": len(files),
+        "total_mb": round(total / (1024 * 1024), 2),
+        "files": files[:50],  # top 50 only — full list would be huge
+    }
+
+
 @router.post("/maintenance/clean-hf-cache")
 async def clean_hf_cache(_: bool = Depends(authenticate)):
     """

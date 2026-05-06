@@ -490,6 +490,32 @@ def _check_memory_pressure(items_processed: int) -> bool:
             ctypes.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
         except Exception:
             pass
+        # Audit HF cache and prune if it has bloated past the safe threshold.
+        # Observed: HF cache grew from 0 to 1.3 GB in 30 min during enrichment —
+        # likely tokenizer / model artifacts being re-saved per call. Pruning
+        # mid-run releases the disk pages and lets the kernel reclaim buffer
+        # cache; the model weights themselves are kept in RAM, so the next
+        # NER call doesn't trigger a re-download (only the cache directory
+        # gets recreated empty). If a re-download is triggered it's bounded
+        # to ~250 MB once, far better than letting the dir grow to GB+.
+        try:
+            from src.edu_cti.core.config import DATA_DIR
+            import shutil
+            from pathlib import Path as _P
+            hf_cache = _P(DATA_DIR) / "hf_cache"
+            if hf_cache.exists():
+                sz = sum(f.stat().st_size for f in hf_cache.rglob("*") if f.is_file())
+                # Threshold = 600 MB. Models legitimately occupy ~250 MB; any
+                # excess is accumulated artifacts.
+                if sz > 600 * 1024 * 1024:
+                    logger.warning(
+                        "[MEM] HF cache bloat detected: %.1f MB — pruning mid-run",
+                        sz / (1024 * 1024),
+                    )
+                    shutil.rmtree(hf_cache, ignore_errors=True)
+                    hf_cache.mkdir(parents=True, exist_ok=True)
+        except Exception as _e:
+            logger.debug("HF cache prune skipped: %s", _e)
         logger.debug(f"[MEM] gc.collect() + malloc_trim after {items_processed} items")
 
     if items_processed <= 0 or items_processed % policy["check_interval"] != 0:
