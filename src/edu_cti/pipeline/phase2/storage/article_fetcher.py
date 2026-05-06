@@ -174,6 +174,38 @@ BLOCKED_FETCH_DOMAINS = {
     "ithome.com.tw",
 }
 
+# Session-scoped dynamic block list. When all 4 fetch tiers fail for a domain,
+# we add it here so subsequent fetches to that domain short-circuit. This
+# prevents the same broken site from costing 2-3 minutes per attempt across
+# multiple incidents that happen to share its URLs.
+# Cleared on container restart — Railway resets are frequent enough that
+# truly-broken sites won't survive long-term, but truly-flaky ones get a
+# fresh chance after each restart.
+import threading as _threading_for_dyn_block
+_DYNAMIC_FAILED_DOMAINS: set = set()
+_DYNAMIC_FAILED_LOCK = _threading_for_dyn_block.Lock()
+
+
+def _record_dynamic_domain_failure(domain: str) -> None:
+    """Record that all 4 fetch tiers failed for this domain. Both the full
+    netloc and its base domain are stored so www/non-www variants both block."""
+    if not domain:
+        return
+    base = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
+    with _DYNAMIC_FAILED_LOCK:
+        _DYNAMIC_FAILED_DOMAINS.add(domain)
+        if base != domain:
+            _DYNAMIC_FAILED_DOMAINS.add(base)
+
+
+def _domain_failed_dynamically(domain: str) -> bool:
+    if not domain:
+        return False
+    base = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
+    with _DYNAMIC_FAILED_LOCK:
+        return domain in _DYNAMIC_FAILED_DOMAINS or base in _DYNAMIC_FAILED_DOMAINS
+
+
 # Extend the blocked list at runtime without a code deploy:
 # BLOCKED_FETCH_DOMAINS_EXTRA=domain1.com,domain2.com
 _extra = os.environ.get("BLOCKED_FETCH_DOMAINS_EXTRA", "")
@@ -487,6 +519,19 @@ class ArticleFetcher:
                 content_length=0,
             )
 
+        # Reject domains that have already failed all 4 tiers earlier in this
+        # process. Without this, one slow-broken site (e.g. tudocelular.com)
+        # can burn 6+ minutes across 3 URL variants × 4 tiers each. Cleared
+        # on container restart, so flaky sites get a fresh chance per deploy.
+        if _domain_failed_dynamically(domain):
+            logger.info(f"FETCH SKIP dynamic block (failed all tiers earlier this session) domain={domain}")
+            _metrics.increment("article_fetch_failure_total", labels={"tier": "newspaper3k", "source": _fetch_domain(url), "reason": "session_blocked"})
+            return ArticleContent(
+                url=url, title="", content="", fetch_successful=False,
+                error_message=f"Domain failed all tiers earlier in session: {domain}",
+                content_length=0,
+            )
+
         # Reject binary document URLs — they return raw binary content, not article HTML,
         # and can be enormous (10+ MB PDFs) causing RSS memory spikes that kill the worker.
         _url_path_lower = urlparse(url).path.lower()
@@ -582,8 +627,10 @@ class ArticleFetcher:
             return archive_content
         _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(archive_content)})
 
-        # All methods failed
-        logger.warning(f"FETCH FAILED ALL TIERS: domain={domain} url={url[:100]}")
+        # All methods failed — record this domain so subsequent fetches to it
+        # short-circuit. Saves 1-3 minutes per future URL on the same domain.
+        _record_dynamic_domain_failure(domain)
+        logger.warning(f"FETCH FAILED ALL TIERS: domain={domain} url={url[:100]} (added to dynamic block list)")
         return ArticleContent(
             url=url,
             title="",
