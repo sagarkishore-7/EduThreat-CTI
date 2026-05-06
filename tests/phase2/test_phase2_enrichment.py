@@ -239,6 +239,30 @@ class TestArticleFetcher:
         assert result.fetch_successful is False
         assert "All fetch methods failed" in result.error_message
 
+    def test_fetch_article_prefers_oxylabs_before_browser_in_railway_safe_mode(self, monkeypatch):
+        fetcher = ArticleFetcher(http_client=Mock())
+        oxylabs_success = ArticleContent(
+            url="https://example.com/article",
+            title="Oxylabs Article",
+            content="Cloud-fetched article body about an education cyber incident.",
+            fetch_successful=True,
+            content_length=60,
+        )
+
+        monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
+        monkeypatch.setenv("PHASE2_RAILWAY_SAFE_MODE", "1")
+
+        with patch.object(fetcher, "_fetch_with_newspaper", return_value=None), patch.object(
+            fetcher, "_fetch_with_oxylabs", return_value=oxylabs_success
+        ) as mock_oxylabs, patch.object(
+            fetcher, "_fetch_with_browser", side_effect=AssertionError("browser should not run first")
+        ):
+            result = fetcher.fetch_article("https://example.com/article")
+
+        assert result.fetch_successful is True
+        assert result.title == "Oxylabs Article"
+        mock_oxylabs.assert_called_once()
+
 
 class TestEnrichmentDatabase:
     """Tests for enrichment database operations."""

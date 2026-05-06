@@ -80,6 +80,93 @@ _memory_guard_state: Dict[str, Any] = {
     "container_limit_mb": None,
 }
 
+
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _running_on_railway() -> bool:
+    return bool(os.environ.get("RAILWAY_SERVICE_ID") or os.environ.get("RAILWAY_ENVIRONMENT"))
+
+
+def _explicit_memory_limits_configured() -> bool:
+    return PHASE2_MEMORY_SOFT_LIMIT_MB > 0 or PHASE2_MEMORY_HARD_LIMIT_MB > 0
+
+
+def _disable_ml_features_for_current_run(logger: logging.Logger, reason: str) -> None:
+    """Disable optional local ML helpers for this process before first import."""
+    os.environ["DISABLE_ML_FEATURES"] = "1"
+
+    # If the modules were already imported in this process, flip their runtime flag too.
+    try:
+        from src.edu_cti.pipeline.phase2.extraction import ner_preprocessor as _ner_module
+
+        _ner_module._ML_DISABLED = True
+    except Exception:
+        pass
+    try:
+        from src.edu_cti.pipeline.phase2.extraction import mitre_rag as _rag_module
+
+        _rag_module._ML_DISABLED = True
+    except Exception:
+        pass
+
+    logger.warning("Phase 2 safe mode: DISABLE_ML_FEATURES=1 for this run (%s)", reason)
+
+
+def _apply_runtime_safety_overrides(args, logger: logging.Logger) -> Dict[str, Any]:
+    """
+    Apply conservative Railway-safe defaults for Phase 2.
+
+    Railway can report host-sized cgroup memory, so the percentage-based memory
+    guard may never trip before the platform OOM-kills the container. On that
+    platform we default to the safest reasonable Phase 2 settings unless the
+    operator explicitly opts back out via env vars.
+    """
+    safe_mode = _running_on_railway() and _env_flag("PHASE2_RAILWAY_SAFE_MODE", "1")
+    overrides = {
+        "safe_mode": safe_mode,
+        "ml_disabled_for_run": False,
+        "prewarm_ml_models": False,
+        "effective_workers": max(1, int(getattr(args, "workers", 1))),
+    }
+
+    if not safe_mode:
+        overrides["prewarm_ml_models"] = _env_flag("PHASE2_PREWARM_ML_MODELS", "0")
+        return overrides
+
+    max_workers = max(1, int(os.environ.get("PHASE2_RAILWAY_MAX_WORKERS", "1")))
+    requested_workers = max(1, int(getattr(args, "workers", 1)))
+    if requested_workers > max_workers:
+        logger.warning(
+            "Phase 2 safe mode: clamping workers from %s to %s on Railway",
+            requested_workers,
+            max_workers,
+        )
+        args.workers = max_workers
+        requested_workers = max_workers
+
+    overrides["effective_workers"] = requested_workers
+
+    ml_allowed = _env_flag("PHASE2_ENABLE_ML_ON_RAILWAY", "0")
+    if not ml_allowed and not _env_flag("DISABLE_ML_FEATURES", "0"):
+        reason = "Railway Phase 2 safe mode defaults local ML helpers off"
+        if not _explicit_memory_limits_configured():
+            reason += " because explicit memory MB limits are not configured"
+        _disable_ml_features_for_current_run(logger, reason)
+        overrides["ml_disabled_for_run"] = True
+    else:
+        overrides["ml_disabled_for_run"] = _env_flag("DISABLE_ML_FEATURES", "0")
+
+    overrides["prewarm_ml_models"] = (
+        _env_flag("PHASE2_PREWARM_ML_MODELS", "0")
+        and not overrides["ml_disabled_for_run"]
+    )
+    if not overrides["prewarm_ml_models"]:
+        logger.info("Phase 2 safe mode: ML pre-warm disabled for this run")
+
+    return overrides
+
 # --- Critical fields used to compute per-incident completeness score (0-10) ---
 _COMPLETENESS_FIELDS = [
     "attack_category", "institution_name", "institution_type",
@@ -301,13 +388,27 @@ def _resolve_memory_policy() -> Optional[Dict[str, Any]]:
         else None
     )
 
-    if limit_mb is not None:
+    source = "cgroup"
+    if (
+        _running_on_railway()
+        and not _explicit_memory_limits_configured()
+        and (limit_mb is None or limit_mb >= int(os.environ.get("PHASE2_RAILWAY_CGROUP_SUSPECT_MB", "2048")))
+    ):
+        # Railway frequently reports host memory in cgroups rather than the
+        # service cap. Use conservative defaults so the guard trips before the
+        # platform OOM-kills the service.
+        soft_mb = int(os.environ.get("PHASE2_RAILWAY_SOFT_LIMIT_MB", "384"))
+        hard_mb = int(os.environ.get("PHASE2_RAILWAY_HARD_LIMIT_MB", "512"))
+        source = "railway_fallback"
+    elif limit_mb is not None:
         if soft_mb is None:
             soft_mb = max(1, int(limit_mb * PHASE2_MEMORY_SOFT_LIMIT_PCT))
         if hard_mb is None:
             hard_mb = max(soft_mb + 1 if soft_mb is not None else 1, int(limit_mb * PHASE2_MEMORY_HARD_LIMIT_PCT))
+        source = "cgroup"
     elif hard_mb is not None and soft_mb is None:
         soft_mb = max(1, int(hard_mb * 0.85))
+        source = "explicit_hard_only"
 
     if hard_mb is None:
         return None
@@ -317,12 +418,19 @@ def _resolve_memory_policy() -> Optional[Dict[str, Any]]:
     if soft_mb >= hard_mb:
         soft_mb = max(1, hard_mb - 1)
 
+    check_interval = max(1, PHASE2_MEMORY_CHECK_INTERVAL)
+    gc_interval = max(1, PHASE2_MEMORY_GC_INTERVAL)
+    if source == "railway_fallback":
+        check_interval = 1
+        gc_interval = min(gc_interval, 10)
+
     return {
         "soft_limit_mb": soft_mb,
         "hard_limit_mb": hard_mb,
         "container_limit_mb": limit_mb,
-        "check_interval": max(1, PHASE2_MEMORY_CHECK_INTERVAL),
-        "gc_interval": max(1, PHASE2_MEMORY_GC_INTERVAL),
+        "check_interval": check_interval,
+        "gc_interval": gc_interval,
+        "source": source,
     }
 
 
@@ -1696,15 +1804,19 @@ def main() -> Optional[Dict[str, Any]]:
     configure_logging(args.log_level, log_file=log_file_path)
     logger = logging.getLogger(__name__)
 
+    safety_overrides = _apply_runtime_safety_overrides(args, logger)
+
     memory_policy = _get_memory_policy()
     if memory_policy:
         container_limit_mb = memory_policy.get("container_limit_mb")
         limit_detail = f", container={container_limit_mb} MB" if container_limit_mb else ""
+        source_detail = f", source={memory_policy.get('source')}" if memory_policy.get("source") else ""
         logger.info(
-            "Phase 2 memory policy enabled: soft=%s MB, hard=%s MB%s",
+            "Phase 2 memory policy enabled: soft=%s MB, hard=%s MB%s%s",
             memory_policy["soft_limit_mb"],
             memory_policy["hard_limit_mb"],
             limit_detail,
+            source_detail,
         )
     else:
         logger.info("Phase 2 memory policy disabled or no container memory limit detected")
@@ -1788,6 +1900,8 @@ def main() -> Optional[Dict[str, Any]]:
         # Total incidents to process (for progress tracking)
         total_to_process = len(unenriched)
         num_workers = max(1, min(args.workers, 8))  # Cap at 8 workers
+        if num_workers != safety_overrides["effective_workers"]:
+            safety_overrides["effective_workers"] = num_workers
 
         # Snapshot DB enrichment state at run start for cumulative progress display.
         # This lets each progress line show "[N/M this run | X/Y enriched in DB]"
@@ -1849,7 +1963,7 @@ def main() -> Optional[Dict[str, Any]]:
         # Pre-warm ML models in the main thread before workers start.
         # Loading them here (sequential, low-memory moment) prevents the race
         # where all workers try to load 150 MB + 90 MB simultaneously mid-run.
-        if not os.environ.get("DISABLE_ML_FEATURES", "").lower() in ("1", "true", "yes"):
+        if safety_overrides["prewarm_ml_models"]:
             try:
                 from src.edu_cti.pipeline.phase2.extraction.ner_preprocessor import _load_model as _ner_load
                 from src.edu_cti.pipeline.phase2.extraction.mitre_rag import _load_embed_model as _rag_load, _load_index as _rag_index

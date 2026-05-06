@@ -34,6 +34,13 @@ logger = logging.getLogger(__name__)
 from src.edu_cti.core import metrics as _metrics
 
 
+def _phase2_safe_mode_enabled() -> bool:
+    return (
+        bool(os.environ.get("RAILWAY_SERVICE_ID") or os.environ.get("RAILWAY_ENVIRONMENT"))
+        and os.environ.get("PHASE2_RAILWAY_SAFE_MODE", "1").strip().lower() in ("1", "true", "yes", "on")
+    )
+
+
 def _fetch_domain(url: str) -> str:
     """Extract eTLD+1 domain label from a URL for metric labels."""
     try:
@@ -493,6 +500,7 @@ class ArticleFetcher:
 
         logger.info(f"FETCH CHAIN START: {domain} — {url[:100]}")
         _src_label = _fetch_domain(url)
+        prefer_oxylabs_first = _phase2_safe_mode_enabled()
 
         # --- Tier 1: newspaper3k (free, fast) ---
         if NEWSPAPER_AVAILABLE:
@@ -510,35 +518,55 @@ class ArticleFetcher:
             _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(article_content)})
             logger.info(f"FETCH FAIL tier=newspaper3k domain={domain}")
 
-        # --- Tier 2: HttpClient — curl_cffi + Playwright (free, local) ---
-        _t0 = time.time()
-        article_content = self._fetch_with_browser(url)
-        _dur = time.time() - _t0
-        _lbl = {"tier": "httpclient", "source": _src_label}
-        _metrics.increment("article_fetch_attempts_total", labels=_lbl)
-        if article_content and article_content.fetch_successful:
-            logger.info(f"FETCH OK tier=HttpClient domain={domain} chars={article_content.content_length}")
-            _metrics.increment("article_fetch_success_total", labels=_lbl)
-            _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
-            _metrics.observe("article_content_length_chars", float(article_content.content_length or 0), labels=_lbl)
-            return article_content
-        _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(article_content)})
-        logger.info(f"FETCH FAIL tier=HttpClient domain={domain}")
+        def _try_httpclient() -> Optional[ArticleContent]:
+            _t0 = time.time()
+            http_content = self._fetch_with_browser(url)
+            _dur = time.time() - _t0
+            _lbl = {"tier": "httpclient", "source": _src_label}
+            _metrics.increment("article_fetch_attempts_total", labels=_lbl)
+            if http_content and http_content.fetch_successful:
+                logger.info(f"FETCH OK tier=HttpClient domain={domain} chars={http_content.content_length}")
+                _metrics.increment("article_fetch_success_total", labels=_lbl)
+                _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
+                _metrics.observe("article_content_length_chars", float(http_content.content_length or 0), labels=_lbl)
+                return http_content
+            _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(http_content)})
+            logger.info(f"FETCH FAIL tier=HttpClient domain={domain}")
+            return None
 
-        # --- Tier 3: Oxylabs (paid, anti-bot cloud scraper) ---
-        _t0 = time.time()
-        oxylabs_content = self._fetch_with_oxylabs(url)
-        _dur = time.time() - _t0
-        _lbl = {"tier": "oxylabs", "source": _src_label}
-        _metrics.increment("article_fetch_attempts_total", labels=_lbl)
-        if oxylabs_content and oxylabs_content.fetch_successful:
-            logger.info(f"FETCH OK tier=Oxylabs domain={domain} chars={oxylabs_content.content_length}")
-            _metrics.increment("article_fetch_success_total", labels=_lbl)
-            _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
-            _metrics.observe("article_content_length_chars", float(oxylabs_content.content_length or 0), labels=_lbl)
-            return oxylabs_content
-        _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(oxylabs_content)})
-        logger.info(f"FETCH FAIL tier=Oxylabs domain={domain}")
+        def _try_oxylabs() -> Optional[ArticleContent]:
+            _t0 = time.time()
+            oxylabs_content = self._fetch_with_oxylabs(url)
+            _dur = time.time() - _t0
+            _lbl = {"tier": "oxylabs", "source": _src_label}
+            _metrics.increment("article_fetch_attempts_total", labels=_lbl)
+            if oxylabs_content and oxylabs_content.fetch_successful:
+                logger.info(f"FETCH OK tier=Oxylabs domain={domain} chars={oxylabs_content.content_length}")
+                _metrics.increment("article_fetch_success_total", labels=_lbl)
+                _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
+                _metrics.observe("article_content_length_chars", float(oxylabs_content.content_length or 0), labels=_lbl)
+                return oxylabs_content
+            _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(oxylabs_content)})
+            logger.info(f"FETCH FAIL tier=Oxylabs domain={domain}")
+            return None
+
+        # On Railway safe mode, prefer the paid cloud scraper before the local
+        # browser tier to avoid launching Chromium at the exact moment Phase 2
+        # is already holding DB state, LLM workers, and queue buffers in memory.
+        if prefer_oxylabs_first:
+            oxylabs_content = _try_oxylabs()
+            if oxylabs_content:
+                return oxylabs_content
+            article_content = _try_httpclient()
+            if article_content:
+                return article_content
+        else:
+            article_content = _try_httpclient()
+            if article_content:
+                return article_content
+            oxylabs_content = _try_oxylabs()
+            if oxylabs_content:
+                return oxylabs_content
 
         # --- Tier 4: archive.org (free, historical fallback) ---
         _t0 = time.time()

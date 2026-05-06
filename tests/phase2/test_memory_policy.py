@@ -1,4 +1,5 @@
 import importlib
+import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -23,6 +24,57 @@ def test_resolve_memory_policy_prefers_cgroup_limit(monkeypatch):
     assert policy["container_limit_mb"] == 4096
     assert policy["soft_limit_mb"] == 3072
     assert policy["hard_limit_mb"] == 3481
+    assert policy["source"] == "cgroup"
+
+
+def test_resolve_memory_policy_uses_railway_fallback_for_host_sized_cgroup(monkeypatch):
+    phase2_main = importlib.import_module("src.edu_cti.pipeline.phase2.__main__")
+
+    monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_MONITOR_ENABLED", True)
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_SOFT_LIMIT_MB", 0)
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_HARD_LIMIT_MB", 0)
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_SOFT_LIMIT_PCT", 0.45)
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_HARD_LIMIT_PCT", 0.60)
+    monkeypatch.setattr(
+        phase2_main,
+        "_detect_container_memory_limit_bytes",
+        lambda: 8 * 1024 * 1024 * 1024,
+    )
+
+    policy = phase2_main._resolve_memory_policy()
+
+    assert policy is not None
+    assert policy["container_limit_mb"] == 8192
+    assert policy["soft_limit_mb"] == 384
+    assert policy["hard_limit_mb"] == 512
+    assert policy["check_interval"] == 1
+    assert policy["gc_interval"] == 10
+    assert policy["source"] == "railway_fallback"
+
+
+def test_apply_runtime_safety_overrides_on_railway(monkeypatch):
+    phase2_main = importlib.import_module("src.edu_cti.pipeline.phase2.__main__")
+    args = SimpleNamespace(workers=4)
+
+    monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
+    monkeypatch.setenv("DISABLE_ML_FEATURES", "false")
+    monkeypatch.delenv("PHASE2_ENABLE_ML_ON_RAILWAY", raising=False)
+    monkeypatch.delenv("PHASE2_PREWARM_ML_MODELS", raising=False)
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_SOFT_LIMIT_MB", 0)
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_HARD_LIMIT_MB", 0)
+
+    overrides = phase2_main._apply_runtime_safety_overrides(
+        args,
+        logging.getLogger("phase2-test"),
+    )
+
+    assert args.workers == 1
+    assert overrides["safe_mode"] is True
+    assert overrides["effective_workers"] == 1
+    assert overrides["ml_disabled_for_run"] is True
+    assert overrides["prewarm_ml_models"] is False
+    assert phase2_main.os.environ["DISABLE_ML_FEATURES"] == "1"
 
 
 def test_request_memory_pause_sets_cancel_and_progress(monkeypatch):
