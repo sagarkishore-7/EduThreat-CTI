@@ -6,7 +6,9 @@ FastAPI application providing REST endpoints for the CTI dashboard.
 
 import logging
 import os
+import sqlite3
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import List, Optional
 from datetime import datetime
 
@@ -170,6 +172,47 @@ async def lifespan(app: FastAPI):
         init_articles_table(conn)
 
         conn.commit()
+
+        # Truncate the SQLite WAL file. The WAL grows during writes and is only
+        # auto-checkpointed when it crosses wal_autocheckpoint pages — across
+        # many container crashes / redeploys it can accumulate to GB+, which
+        # SQLite then maps into shared memory on every connection open. A
+        # full TRUNCATE checkpoint on startup brings it back to zero size.
+        try:
+            cur = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            row = cur.fetchone()
+            if row:
+                # row = (busy, log_pages, checkpointed_pages)
+                logger.info(
+                    "Startup WAL checkpoint: busy=%s log_pages=%s checkpointed=%s",
+                    row[0], row[1], row[2],
+                )
+        except sqlite3.Error as exc:
+            logger.warning("Startup WAL checkpoint failed (non-fatal): %s", exc)
+
+        # Report DATA_DIR contents so persistent-state bloat is visible in logs.
+        try:
+            from src.edu_cti.core.config import DATA_DIR
+            data_dir = Path(DATA_DIR)
+            sizes = []
+            if data_dir.exists():
+                for p in sorted(data_dir.iterdir()):
+                    try:
+                        if p.is_file():
+                            sizes.append((p.name, p.stat().st_size))
+                        elif p.is_dir():
+                            total = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+                            sizes.append((f"{p.name}/", total))
+                    except OSError:
+                        pass
+            sizes.sort(key=lambda x: -x[1])
+            logger.info(
+                "DATA_DIR contents: %s",
+                ", ".join(f"{n}={s/(1024*1024):.1f}MB" for n, s in sizes[:10]),
+            )
+        except Exception as exc:
+            logger.debug("DATA_DIR audit skipped: %s", exc)
+
         conn.close()
 
         logger.info("Database initialized successfully")

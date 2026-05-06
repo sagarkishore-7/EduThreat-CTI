@@ -98,8 +98,8 @@ def get_connection(
         conn.row_factory = sqlite3.Row
         # Optimize read-only connections
         try:
-            conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
-            conn.execute("PRAGMA mmap_size=268435456")  # 256MB memory-mapped I/O
+            conn.execute("PRAGMA cache_size=-4000")  # 4MB cache (was 8MB)
+            conn.execute("PRAGMA mmap_size=67108864")  # 64MB mmap (was 256MB)
             conn.execute("PRAGMA query_only=ON")
         except sqlite3.Error:
             pass
@@ -128,8 +128,14 @@ def get_connection(
             # Optimize for concurrent access
             conn.execute("PRAGMA synchronous=NORMAL")  # Balance between safety and speed
             conn.execute("PRAGMA busy_timeout=90000")  # 90 second timeout for busy database
-            # Increase cache size for better performance
-            conn.execute("PRAGMA cache_size=-16000")  # 16MB cache
+            # Reduced from 16MB to 8MB — every long-lived connection holds this in
+            # RSS, and on a 525 MB DB across 4 enricher conns this was 64 MB just
+            # in page caches. 8 MB is plenty for our query patterns.
+            conn.execute("PRAGMA cache_size=-8000")  # 8MB cache
+            # Auto-checkpoint WAL more aggressively. Default 1000 pages can let WAL
+            # grow to GB-sized files on busy DBs. 500 pages ≈ 2 MB at 4 KB pages —
+            # forces frequent truncation so WAL stays small in steady state.
+            conn.execute("PRAGMA wal_autocheckpoint=500")
             # Enable foreign keys
             conn.execute("PRAGMA foreign_keys=ON")
         except sqlite3.Error as e:

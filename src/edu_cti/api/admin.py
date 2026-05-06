@@ -2400,3 +2400,59 @@ async def trigger_data_quality_sweep(_: bool = Depends(authenticate)):
         return result
     finally:
         conn.close()
+
+
+# =============================================================================
+# DATA-DIR / WAL maintenance — manually invocable from the admin dashboard
+# =============================================================================
+
+@router.get("/maintenance/data-dir-stats")
+async def data_dir_stats(_: bool = Depends(authenticate)):
+    """
+    Report sizes of files in DATA_DIR plus the SQLite DB / WAL / SHM sizes.
+    Useful when memory keeps growing across container restarts — large WAL
+    files and bloated HF caches show up here.
+    """
+    from src.edu_cti.core.config import DATA_DIR
+    data_dir = Path(DATA_DIR)
+    entries: List[Dict[str, Any]] = []
+    if data_dir.exists():
+        for p in sorted(data_dir.iterdir()):
+            try:
+                if p.is_file():
+                    entries.append({"name": p.name, "type": "file", "size_mb": round(p.stat().st_size / (1024 * 1024), 2)})
+                elif p.is_dir():
+                    total = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+                    entries.append({"name": f"{p.name}/", "type": "dir", "size_mb": round(total / (1024 * 1024), 2)})
+            except OSError:
+                pass
+    entries.sort(key=lambda e: -e["size_mb"])
+    return {
+        "data_dir": str(data_dir),
+        "entries": entries,
+        "total_mb": round(sum(e["size_mb"] for e in entries), 2),
+    }
+
+
+@router.post("/maintenance/wal-checkpoint")
+async def wal_checkpoint_truncate(_: bool = Depends(authenticate)):
+    """
+    Run PRAGMA wal_checkpoint(TRUNCATE) on the main database. Releases
+    accumulated WAL file pages back to the filesystem; SQLite re-mmaps
+    the WAL on next connection so its memory footprint resets.
+    """
+    from src.edu_cti.core.db import get_connection
+    conn = get_connection()
+    try:
+        cur = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        row = cur.fetchone()
+        if row:
+            return {
+                "busy": row[0],
+                "log_pages_before": row[1],
+                "checkpointed_pages": row[2],
+                "message": "WAL truncated.",
+            }
+        return {"message": "WAL checkpoint executed (no row returned)."}
+    finally:
+        conn.close()
