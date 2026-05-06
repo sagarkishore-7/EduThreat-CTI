@@ -2456,3 +2456,38 @@ async def wal_checkpoint_truncate(_: bool = Depends(authenticate)):
         return {"message": "WAL checkpoint executed (no row returned)."}
     finally:
         conn.close()
+
+
+@router.post("/maintenance/clean-hf-cache")
+async def clean_hf_cache(_: bool = Depends(authenticate)):
+    """
+    Wipe the HuggingFace cache directory. Reclaims accumulated stale
+    blobs / snapshots that pile up across container redeploys (each new
+    download creates fresh blobs without removing old ones, so a single
+    250 MB model can balloon to 1+ GB on the persistent volume).
+
+    The cache will rebuild itself the next time GLiNER and the
+    sentence-transformer load — the rebuild downloads ~250 MB once and
+    persists at that size as long as the model versions don't change.
+    """
+    import shutil
+    from src.edu_cti.core.config import DATA_DIR
+    cache_dir = Path(DATA_DIR) / "hf_cache"
+
+    if not cache_dir.exists():
+        return {"deleted_mb": 0.0, "message": "No HF cache to clean."}
+
+    size_before = sum(f.stat().st_size for f in cache_dir.rglob("*") if f.is_file())
+    try:
+        shutil.rmtree(cache_dir)
+    except Exception as exc:
+        logger.error("HF cache cleanup failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=str(exc))
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    logger.info("HF cache cleaned: freed %.1f MB at %s", size_before / (1024 * 1024), cache_dir)
+    return {
+        "deleted_mb": round(size_before / (1024 * 1024), 2),
+        "cache_dir": str(cache_dir),
+        "message": f"Cleaned {size_before / (1024 * 1024):.1f} MB. Models will re-download on next pipeline start.",
+    }

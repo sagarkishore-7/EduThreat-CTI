@@ -191,10 +191,17 @@ async def lifespan(app: FastAPI):
             logger.warning("Startup WAL checkpoint failed (non-fatal): %s", exc)
 
         # Report DATA_DIR contents so persistent-state bloat is visible in logs.
+        # Also auto-prune the HuggingFace cache if it has grown past the safe
+        # threshold — every redeploy that downloads a model adds new blob files
+        # without garbage-collecting old ones, so a 250 MB model can grow to
+        # 1+ GB across many redeploys and OOM the container on next startup.
         try:
+            import shutil
             from src.edu_cti.core.config import DATA_DIR
             data_dir = Path(DATA_DIR)
             sizes = []
+            hf_cache_dir = data_dir / "hf_cache"
+            hf_cache_size = 0
             if data_dir.exists():
                 for p in sorted(data_dir.iterdir()):
                     try:
@@ -203,6 +210,8 @@ async def lifespan(app: FastAPI):
                         elif p.is_dir():
                             total = sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
                             sizes.append((f"{p.name}/", total))
+                            if p == hf_cache_dir:
+                                hf_cache_size = total
                     except OSError:
                         pass
             sizes.sort(key=lambda x: -x[1])
@@ -210,6 +219,23 @@ async def lifespan(app: FastAPI):
                 "DATA_DIR contents: %s",
                 ", ".join(f"{n}={s/(1024*1024):.1f}MB" for n, s in sizes[:10]),
             )
+
+            # Auto-prune oversized HF cache (threshold: 500 MB).
+            # Two models (GLiNER ~150 MB + sentence-transformer ~90 MB) should
+            # total ~250 MB. Anything past 500 MB is accumulated junk.
+            HF_CACHE_THRESHOLD_BYTES = 500 * 1024 * 1024
+            if hf_cache_size > HF_CACHE_THRESHOLD_BYTES and hf_cache_dir.exists():
+                logger.warning(
+                    "HF cache is %.1f MB (threshold %.1f MB) — auto-pruning to release memory pressure",
+                    hf_cache_size / (1024 * 1024),
+                    HF_CACHE_THRESHOLD_BYTES / (1024 * 1024),
+                )
+                try:
+                    shutil.rmtree(hf_cache_dir)
+                    hf_cache_dir.mkdir(parents=True, exist_ok=True)
+                    logger.info("HF cache auto-pruned. Models will re-download on next pipeline run.")
+                except Exception as exc:
+                    logger.error("HF cache auto-prune failed: %s", exc)
         except Exception as exc:
             logger.debug("DATA_DIR audit skipped: %s", exc)
 
