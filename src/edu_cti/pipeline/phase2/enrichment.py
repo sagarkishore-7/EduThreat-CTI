@@ -576,14 +576,19 @@ class IncidentEnricher:
         # previous extraction had bad data (future date, headline-as-institution,
         # etc.), tell the LLM what to do differently. This is the only way to
         # break temperature=0 determinism — same prompt always produces same output.
+        # Use a short-lived read-only connection — leaking write connections per
+        # enrichment exhausts the SQLite lock pool and stalls the pipeline.
+        _re_enrich_hint = None
         try:
             from src.edu_cti.pipeline.data_quality import get_re_enrich_hint
             from src.edu_cti.core.db import get_connection
             _incident_id = incident.get("incident_id") if isinstance(incident, dict) else getattr(incident, "incident_id", None)
             if _incident_id:
-                _re_enrich_hint = get_re_enrich_hint(get_connection(), _incident_id)
-            else:
-                _re_enrich_hint = None
+                _hint_conn = get_connection(read_only=True)
+                try:
+                    _re_enrich_hint = get_re_enrich_hint(_hint_conn, _incident_id)
+                finally:
+                    _hint_conn.close()
         except Exception:
             _re_enrich_hint = None
 
@@ -1048,10 +1053,17 @@ class IncidentEnricher:
         _ner_block = f"\n\n{_ner_hint}" if _ner_hint else ""
 
         # ── Re-enrichment hint (breaks temperature=0 determinism on retry) ────
+        # Read-only short-lived connection — see the matching block in
+        # _enrich_article for why this matters.
+        _re_enrich_hint = None
         try:
             from src.edu_cti.pipeline.data_quality import get_re_enrich_hint
             from src.edu_cti.core.db import get_connection
-            _re_enrich_hint = get_re_enrich_hint(get_connection(), incident.incident_id)
+            _hint_conn = get_connection(read_only=True)
+            try:
+                _re_enrich_hint = get_re_enrich_hint(_hint_conn, incident.incident_id)
+            finally:
+                _hint_conn.close()
         except Exception:
             _re_enrich_hint = None
         _re_enrich_block = f"\n\n{_re_enrich_hint}" if _re_enrich_hint else ""
