@@ -389,12 +389,15 @@ class TestArticleFetcherMetrics:
         m = _fresh()
         fetcher, patch_obj, ArticleContent = self._make_fetcher(m)
         try:
+            # Use a non-blocked domain — databreaches.net is now in
+            # BLOCKED_FETCH_DOMAINS and would return immediately without
+            # attempting any tier, so no metric would be recorded.
             with patch.object(fetcher, "_fetch_with_newspaper", return_value=self._ok()), \
                  patch("src.edu_cti.pipeline.phase2.storage.article_fetcher.NEWSPAPER_AVAILABLE", True):
-                fetcher.fetch_article("http://databreaches.net/story")
-            assert m.counters['article_fetch_attempts_total{source="databreaches.net",tier="newspaper3k"}'] == 1
-            assert m.counters['article_fetch_success_total{source="databreaches.net",tier="newspaper3k"}'] == 1
-            assert len(m.histograms['article_fetch_duration_seconds{source="databreaches.net",tier="newspaper3k"}']) == 1
+                fetcher.fetch_article("http://example-news.com/story")
+            assert m.counters['article_fetch_attempts_total{source="example-news.com",tier="newspaper3k"}'] == 1
+            assert m.counters['article_fetch_success_total{source="example-news.com",tier="newspaper3k"}'] == 1
+            assert len(m.histograms['article_fetch_duration_seconds{source="example-news.com",tier="newspaper3k"}']) == 1
         finally:
             patch_obj.stop()
 
@@ -666,10 +669,12 @@ class TestSerpMetrics:
     def test_serp_urls_returned_increments(self):
         m = _fresh()
         from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs_module
+        # Use two non-blocked domains. databreaches.net is in BLOCKED_FETCH_DOMAINS
+        # (consistently fails all fetch tiers) so it is filtered out by SERP.
         with patch.object(fs_module, "_metrics", m), \
              patch.object(fs_module.OxylabsClient, "search_news", return_value=[
                  {"url": "https://bleepingcomputer.com/news/a"},
-                 {"url": "https://databreaches.net/b"},
+                 {"url": "https://therecord.media/b"},
              ]):
             incident = {
                 "incident_id": "konbriefing_100",
