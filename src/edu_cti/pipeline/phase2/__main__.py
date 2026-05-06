@@ -361,7 +361,10 @@ def _resolve_memory_policy() -> Optional[Dict[str, Any]]:
     if (
         _running_on_railway()
         and not _explicit_memory_limits_configured()
-        and (limit_mb is None or limit_mb >= int(os.environ.get("PHASE2_RAILWAY_CGROUP_SUSPECT_MB", "2048")))
+        and (
+            limit_mb is None
+            or limit_mb >= int(os.environ.get("PHASE2_RAILWAY_CGROUP_SUSPECT_MB", "16384"))
+        )
     ):
         # Railway frequently reports host memory in cgroups rather than the
         # service cap. Use conservative defaults so the guard trips before the

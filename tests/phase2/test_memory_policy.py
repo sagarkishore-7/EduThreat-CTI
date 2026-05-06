@@ -39,6 +39,32 @@ def test_resolve_memory_policy_uses_railway_fallback_for_host_sized_cgroup(monke
     monkeypatch.setattr(
         phase2_main,
         "_detect_container_memory_limit_bytes",
+        lambda: 32 * 1024 * 1024 * 1024,
+    )
+
+    policy = phase2_main._resolve_memory_policy()
+
+    assert policy is not None
+    assert policy["container_limit_mb"] == 32768
+    assert policy["soft_limit_mb"] == 384
+    assert policy["hard_limit_mb"] == 512
+    assert policy["check_interval"] == 1
+    assert policy["gc_interval"] == 10
+    assert policy["source"] == "railway_fallback"
+
+
+def test_resolve_memory_policy_uses_railway_cgroup_for_8gb_service(monkeypatch):
+    phase2_main = importlib.import_module("src.edu_cti.pipeline.phase2.__main__")
+
+    monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_MONITOR_ENABLED", True)
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_SOFT_LIMIT_MB", 0)
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_HARD_LIMIT_MB", 0)
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_SOFT_LIMIT_PCT", 0.45)
+    monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_HARD_LIMIT_PCT", 0.60)
+    monkeypatch.setattr(
+        phase2_main,
+        "_detect_container_memory_limit_bytes",
         lambda: 8 * 1024 * 1024 * 1024,
     )
 
@@ -46,11 +72,9 @@ def test_resolve_memory_policy_uses_railway_fallback_for_host_sized_cgroup(monke
 
     assert policy is not None
     assert policy["container_limit_mb"] == 8192
-    assert policy["soft_limit_mb"] == 384
-    assert policy["hard_limit_mb"] == 512
-    assert policy["check_interval"] == 1
-    assert policy["gc_interval"] == 10
-    assert policy["source"] == "railway_fallback"
+    assert policy["soft_limit_mb"] == 3686
+    assert policy["hard_limit_mb"] == 4915
+    assert policy["source"] == "cgroup"
 
 
 def test_apply_runtime_safety_overrides_on_railway(monkeypatch):
