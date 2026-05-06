@@ -2002,6 +2002,64 @@ def main() -> Optional[Dict[str, Any]]:
             except Exception as _pw_err:
                 logger.warning("ML model pre-warm failed (non-fatal): %s", _pw_err)
 
+        # Start a background memory janitor thread that runs every 30s
+        # independent of worker progress. The per-worker memory check fires
+        # on item-count multiples — but with 4 workers each counting locally,
+        # only 7 total enrichments yield <2 items per worker, so no worker
+        # ever crosses the gc_interval threshold and the HF cache prune
+        # never fires. A timer-based thread guarantees the prune fires.
+        _janitor_stop = threading.Event()
+
+        def _memory_janitor():
+            try:
+                from src.edu_cti.core.config import DATA_DIR
+                from pathlib import Path as _P
+                import shutil as _sh
+                import psutil as _ps
+            except Exception as _imp_err:
+                logger.warning("Memory janitor disabled: %s", _imp_err)
+                return
+            hf_cache = _P(DATA_DIR) / "hf_cache"
+            HF_THRESHOLD_BYTES = 300 * 1024 * 1024  # 300 MB — far stricter than the 600 MB worker check
+            while not _janitor_stop.is_set():
+                try:
+                    rss_mb = _ps.Process(os.getpid()).memory_info().rss / (1024 * 1024)
+                    cache_bytes = 0
+                    if hf_cache.exists():
+                        cache_bytes = sum(f.stat().st_size for f in hf_cache.rglob("*") if f.is_file())
+                    cache_mb = cache_bytes / (1024 * 1024)
+                    in_progress_count = len(_in_progress)
+                    logger.info(
+                        "[JANITOR] RSS=%.0f MB | hf_cache=%.0f MB | in_progress=%d",
+                        rss_mb, cache_mb, in_progress_count,
+                    )
+                    if cache_bytes > HF_THRESHOLD_BYTES and hf_cache.exists():
+                        logger.warning(
+                            "[JANITOR] HF cache=%.1f MB > %.0f MB threshold — pruning",
+                            cache_mb, HF_THRESHOLD_BYTES / (1024 * 1024),
+                        )
+                        try:
+                            _sh.rmtree(hf_cache, ignore_errors=True)
+                            hf_cache.mkdir(parents=True, exist_ok=True)
+                            gc.collect()
+                            try:
+                                import ctypes as _ct
+                                _ct.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+                            except Exception:
+                                pass
+                            logger.info("[JANITOR] HF cache pruned + GC + malloc_trim")
+                        except Exception as _e:
+                            logger.warning("[JANITOR] HF prune failed: %s", _e)
+                except Exception as _e:
+                    logger.debug("[JANITOR] iteration failed: %s", _e)
+                _janitor_stop.wait(30)  # 30 second interval
+
+        _janitor_thread = threading.Thread(
+            target=_memory_janitor, daemon=True, name="memory-janitor"
+        )
+        _janitor_thread.start()
+        logger.info("Started memory janitor (30s interval, prunes HF cache > 300 MB)")
+
         # Start consumer threads
         consumers = []
         for i in range(num_workers):
@@ -2047,6 +2105,12 @@ def main() -> Optional[Dict[str, Any]]:
                     logger.info(f"Still waiting for {t.name}... ({done}/{total_to_process} done so far)")
 
         logger.info("All consumer threads finished")
+
+        # Stop the memory janitor (daemon, but explicit stop is cleaner)
+        try:
+            _janitor_stop.set()
+        except Exception:
+            pass
 
         # Final stats
         enrich_stats = combined_enrich_stats
