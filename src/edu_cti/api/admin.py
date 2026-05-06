@@ -2241,3 +2241,162 @@ async def repair_date_corruption_endpoint(
         raise HTTPException(status_code=500, detail=str(e))
     finally:
         conn.close()
+
+
+# =============================================================================
+# DATA QUALITY: manual review queue + inline edit
+# =============================================================================
+
+import json as _json
+
+
+class IncidentEditRequest(BaseModel):
+    """Fields the admin can override. Any field set to a non-None value here
+    becomes the new value; any field present in this payload is added to
+    manually_edited_fields so re-enrichment will not overwrite it."""
+    institution_name: Optional[str] = None
+    incident_date: Optional[str] = None
+    source_published_date: Optional[str] = None
+    discovery_date: Optional[str] = None
+    country: Optional[str] = None
+    region: Optional[str] = None
+    city: Optional[str] = None
+
+
+@router.get("/manual-review-queue")
+async def manual_review_queue(
+    limit: int = Query(100, ge=1, le=500),
+    _: bool = Depends(authenticate),
+):
+    """
+    List incidents flagged for manual review (data-quality sweeper exhausted
+    the re-enrich retries). Returns the fields most commonly wrong so the
+    admin can edit inline.
+    """
+    conn = get_api_connection()
+    try:
+        cur = conn.execute(
+            """
+            SELECT
+                incident_id,
+                institution_name,
+                title,
+                incident_date,
+                source_published_date,
+                discovery_date,
+                country,
+                region,
+                city,
+                primary_url,
+                manual_review_reason,
+                re_enrich_attempts,
+                manually_edited,
+                manually_edited_fields
+            FROM incidents
+            WHERE manual_review_required = 1
+              AND COALESCE(llm_excluded, 0) = 0
+            ORDER BY ingested_at DESC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            try:
+                r["manually_edited_fields"] = (
+                    _json.loads(r["manually_edited_fields"])
+                    if r.get("manually_edited_fields") else []
+                )
+            except (TypeError, _json.JSONDecodeError):
+                r["manually_edited_fields"] = []
+        return {"incidents": rows, "total": len(rows)}
+    finally:
+        conn.close()
+
+
+@router.patch("/incidents/{incident_id}")
+async def edit_incident(
+    incident_id: str,
+    payload: IncidentEditRequest,
+    _: bool = Depends(authenticate),
+):
+    """
+    Manually edit an incident. Fields in the payload (non-None) are written
+    and added to manually_edited_fields so subsequent re-enrichment runs
+    will not overwrite them. Clears manual_review_required when applied.
+    """
+    edits = {k: v for k, v in payload.model_dump().items() if v is not None}
+    if not edits:
+        raise HTTPException(status_code=400, detail="No fields provided")
+
+    # Date sanity-check anything the admin types in.
+    from src.edu_cti.pipeline.data_quality import is_safe_date as _safe_date
+    for date_field in ("incident_date", "source_published_date", "discovery_date"):
+        if date_field in edits and not _safe_date(edits[date_field]):
+            raise HTTPException(
+                status_code=400,
+                detail=f"{date_field}={edits[date_field]!r} is not a valid YYYY-MM-DD in [1990, today+3d]",
+            )
+
+    conn = get_api_connection()
+    try:
+        cur = conn.execute(
+            "SELECT manually_edited_fields FROM incidents WHERE incident_id = ?",
+            (incident_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Incident not found")
+
+        existing_locked: List[str] = []
+        if row["manually_edited_fields"]:
+            try:
+                parsed = _json.loads(row["manually_edited_fields"])
+                if isinstance(parsed, list):
+                    existing_locked = [str(f) for f in parsed]
+            except (TypeError, _json.JSONDecodeError):
+                pass
+        new_locked = sorted(set(existing_locked) | set(edits.keys()))
+
+        set_clauses = ", ".join(f"{k} = ?" for k in edits.keys())
+        params = list(edits.values()) + [
+            _json.dumps(new_locked),
+            incident_id,
+        ]
+        conn.execute(
+            f"""
+            UPDATE incidents
+            SET {set_clauses},
+                manually_edited = 1,
+                manually_edited_fields = ?,
+                manual_review_required = 0,
+                manual_review_reason = NULL
+            WHERE incident_id = ?
+            """,
+            params,
+        )
+        conn.commit()
+        cache_invalidate()
+        logger.info(
+            "Manual edit on %s: fields=%s (now locked: %s)",
+            incident_id, list(edits.keys()), new_locked,
+        )
+        return {
+            "incident_id": incident_id,
+            "edited_fields": list(edits.keys()),
+            "locked_fields": new_locked,
+        }
+    finally:
+        conn.close()
+
+
+@router.post("/data-quality/sweep-now")
+async def trigger_data_quality_sweep(_: bool = Depends(authenticate)):
+    """Run the data-quality sweep on demand (don't wait for the 6h cron)."""
+    from src.edu_cti.pipeline.data_quality import sweep_invalid_data
+    conn = get_api_connection()
+    try:
+        result = sweep_invalid_data(conn)
+        return result
+    finally:
+        conn.close()

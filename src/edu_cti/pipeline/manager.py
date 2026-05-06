@@ -1039,11 +1039,17 @@ class PipelineManager:
             self._scheduler_run_job, "interval", hours=daily_interval_hours,
             args=["daily", {}], id="daily_pipeline", replace_existing=True,
         )
+        # Data-quality sweep: find rows with bad dates / headline-as-institution
+        # and queue them for re-enrichment (or flag for manual review).
+        self._scheduler_schedule.add_job(
+            self._scheduler_run_data_quality_sweep, "interval", hours=6,
+            id="data_quality_sweep", replace_existing=True,
+        )
 
         logger.info(
             f"[SCHEDULER] Started — RSS every {rss_interval_hours}h, "
             f"API every {api_interval_hours}h, Enrich every {enrich_interval_minutes}min, "
-            f"Daily every {daily_interval_hours}h"
+            f"Daily every {daily_interval_hours}h, Data-quality sweep every 6h"
         )
 
         # Run initial catch-up in yet another thread so start_scheduler returns immediately
@@ -1099,6 +1105,31 @@ class PipelineManager:
         """Run an initial catch-up: daily pipeline to ingest recent incidents."""
         logger.info("[SCHEDULER] Running initial catch-up cycle...")
         self._scheduler_run_job("daily", {})
+
+    def _scheduler_run_data_quality_sweep(self):
+        """
+        Periodic sweep that finds enriched rows with bad dates or
+        headline-as-institution and queues them for re-enrichment.
+
+        Safe to run alongside any pipeline phase — it only updates flag
+        columns, never the enrichment payload itself.
+        """
+        if not self._scheduler_running:
+            return
+        try:
+            from src.edu_cti.pipeline.data_quality import sweep_invalid_data
+            from src.edu_cti.core.db import get_connection
+            conn = get_connection()
+            try:
+                result = sweep_invalid_data(conn)
+            finally:
+                conn.close()
+            logger.info(
+                "[SCHEDULER] data_quality_sweep complete: %s",
+                result,
+            )
+        except Exception as exc:
+            logger.warning("[SCHEDULER] data_quality_sweep failed: %s", exc, exc_info=True)
 
     def _scheduler_run_enrich_if_needed(self):
         """
