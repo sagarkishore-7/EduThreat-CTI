@@ -34,13 +34,6 @@ logger = logging.getLogger(__name__)
 from src.edu_cti.core import metrics as _metrics
 
 
-def _phase2_safe_mode_enabled() -> bool:
-    return (
-        bool(os.environ.get("RAILWAY_SERVICE_ID") or os.environ.get("RAILWAY_ENVIRONMENT"))
-        and os.environ.get("PHASE2_RAILWAY_SAFE_MODE", "1").strip().lower() in ("1", "true", "yes", "on")
-    )
-
-
 def _fetch_domain(url: str) -> str:
     """Extract eTLD+1 domain label from a URL for metric labels."""
     try:
@@ -545,7 +538,6 @@ class ArticleFetcher:
 
         logger.info(f"FETCH CHAIN START: {domain} — {url[:100]}")
         _src_label = _fetch_domain(url)
-        prefer_oxylabs_first = _phase2_safe_mode_enabled()
 
         # --- Tier 1: newspaper3k (free, fast) ---
         if NEWSPAPER_AVAILABLE:
@@ -595,23 +587,14 @@ class ArticleFetcher:
             logger.info(f"FETCH FAIL tier=Oxylabs domain={domain}")
             return None
 
-        # On Railway safe mode, prefer the paid cloud scraper before the local
-        # browser tier to avoid launching Chromium at the exact moment Phase 2
-        # is already holding DB state, LLM workers, and queue buffers in memory.
-        if prefer_oxylabs_first:
-            oxylabs_content = _try_oxylabs()
-            if oxylabs_content:
-                return oxylabs_content
-            article_content = _try_httpclient()
-            if article_content:
-                return article_content
-        else:
-            article_content = _try_httpclient()
-            if article_content:
-                return article_content
-            oxylabs_content = _try_oxylabs()
-            if oxylabs_content:
-                return oxylabs_content
+        # Standard tier order: try the local Chromium / curl_cffi fallback
+        # first (free), then the paid Oxylabs cloud scraper.
+        article_content = _try_httpclient()
+        if article_content:
+            return article_content
+        oxylabs_content = _try_oxylabs()
+        if oxylabs_content:
+            return oxylabs_content
 
         # --- Tier 4: archive.org (free, historical fallback) ---
         _t0 = time.time()

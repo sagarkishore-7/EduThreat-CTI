@@ -93,72 +93,33 @@ def _explicit_memory_limits_configured() -> bool:
     return PHASE2_MEMORY_SOFT_LIMIT_MB > 0 or PHASE2_MEMORY_HARD_LIMIT_MB > 0
 
 
-def _auto_railway_worker_cap() -> int:
-    """
-    Pick a conservative default worker cap for Railway based on detected RAM.
-    """
-    limit_bytes = _detect_container_memory_limit_bytes()
-    limit_mb = int(limit_bytes / (1024 * 1024)) if limit_bytes else None
-    if not limit_mb:
-        return 1
-    if limit_mb >= 6144:
-        return 4
-    if limit_mb >= 4096:
-        return 3
-    if limit_mb >= 3072:
-        return 2
-    return 1
-
-
 def _apply_runtime_safety_overrides(args, logger: logging.Logger) -> Dict[str, Any]:
     """
-    Apply conservative Railway-safe defaults for Phase 2.
+    Resolve runtime overrides for Phase 2.
 
-    Railway can report host-sized cgroup memory, so the percentage-based memory
-    guard may never trip before the platform OOM-kills the container. On that
-    platform we default to the safest reasonable Phase 2 settings unless the
-    operator explicitly opts back out via env vars.
+    Workers come from a single source: args.workers (which is wired to the
+    ENRICHMENT_WORKERS env var via config.py). No more auto-capping based
+    on detected RAM, no more Railway-specific clamping — the operator
+    sets ENRICHMENT_WORKERS to whatever they want and we honour it.
+
+    Pre-warm defaults to True. Loading the ML models once in the main
+    thread before workers start is strictly safer than letting N workers
+    race to load them concurrently. The PHASE2_PREWARM_ML_MODELS=false
+    escape hatch is kept for diagnostic edge cases.
     """
-    safe_mode = _running_on_railway() and _env_flag("PHASE2_RAILWAY_SAFE_MODE", "1")
     overrides = {
-        "safe_mode": safe_mode,
         "ml_disabled_for_run": _env_flag("DISABLE_ML_FEATURES", "0"),
-        "prewarm_ml_models": False,
+        "prewarm_ml_models": _env_flag("PHASE2_PREWARM_ML_MODELS", "1"),
         "effective_workers": max(1, int(getattr(args, "workers", 1))),
     }
-
-    if not safe_mode:
-        overrides["prewarm_ml_models"] = _env_flag("PHASE2_PREWARM_ML_MODELS", "0")
-        return overrides
-
-    max_workers = _auto_railway_worker_cap()
-    requested_workers = max(1, int(getattr(args, "workers", 1)))
-    if requested_workers > max_workers:
-        logger.warning(
-            "Phase 2 safe mode: clamping workers from %s to %s on Railway (source=%s)",
-            requested_workers,
-            max_workers,
-            "memory_auto_cap",
-        )
-        args.workers = max_workers
-        requested_workers = max_workers
-    else:
-        logger.info(
-            "Phase 2 safe mode: allowing %s worker(s) on Railway (cap=%s, source=%s)",
-            requested_workers,
-            max_workers,
-            "memory_auto_cap",
-        )
-
-    overrides["effective_workers"] = requested_workers
-
-    overrides["prewarm_ml_models"] = (
-        _env_flag("PHASE2_PREWARM_ML_MODELS", "0")
-        and not overrides["ml_disabled_for_run"]
+    if overrides["ml_disabled_for_run"]:
+        overrides["prewarm_ml_models"] = False
+    logger.info(
+        "Phase 2 config: workers=%d, ML pre-warm=%s, ML disabled=%s",
+        overrides["effective_workers"],
+        overrides["prewarm_ml_models"],
+        overrides["ml_disabled_for_run"],
     )
-    if not overrides["prewarm_ml_models"]:
-        logger.info("Phase 2 safe mode: ML pre-warm disabled for this run (ML inference remains enabled)")
-
     return overrides
 
 # --- Critical fields used to compute per-incident completeness score (0-10) ---
