@@ -84,20 +84,49 @@ def test_apply_runtime_safety_overrides_on_railway(monkeypatch):
     monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
     monkeypatch.setenv("DISABLE_ML_FEATURES", "false")
     monkeypatch.delenv("PHASE2_PREWARM_ML_MODELS", raising=False)
+    monkeypatch.delenv("PHASE2_RAILWAY_MAX_WORKERS", raising=False)
     monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_SOFT_LIMIT_MB", 0)
     monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_HARD_LIMIT_MB", 0)
+    monkeypatch.setattr(
+        phase2_main,
+        "_detect_container_memory_limit_bytes",
+        lambda: 8 * 1024 * 1024 * 1024,
+    )
 
     overrides = phase2_main._apply_runtime_safety_overrides(
         args,
         logging.getLogger("phase2-test"),
     )
 
-    assert args.workers == 1
+    assert args.workers == 4
     assert overrides["safe_mode"] is True
-    assert overrides["effective_workers"] == 1
+    assert overrides["effective_workers"] == 4
     assert overrides["ml_disabled_for_run"] is False
     assert overrides["prewarm_ml_models"] is False
     assert phase2_main.os.environ["DISABLE_ML_FEATURES"] == "false"
+
+
+def test_apply_runtime_safety_overrides_clamps_workers_when_limit_is_smaller(monkeypatch):
+    phase2_main = importlib.import_module("src.edu_cti.pipeline.phase2.__main__")
+    args = SimpleNamespace(workers=4)
+
+    monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
+    monkeypatch.setenv("DISABLE_ML_FEATURES", "false")
+    monkeypatch.delenv("PHASE2_PREWARM_ML_MODELS", raising=False)
+    monkeypatch.delenv("PHASE2_RAILWAY_MAX_WORKERS", raising=False)
+    monkeypatch.setattr(
+        phase2_main,
+        "_detect_container_memory_limit_bytes",
+        lambda: 4 * 1024 * 1024 * 1024,
+    )
+
+    overrides = phase2_main._apply_runtime_safety_overrides(
+        args,
+        logging.getLogger("phase2-test"),
+    )
+
+    assert args.workers == 3
+    assert overrides["effective_workers"] == 3
 
 
 def test_request_memory_pause_sets_cancel_and_progress(monkeypatch):
