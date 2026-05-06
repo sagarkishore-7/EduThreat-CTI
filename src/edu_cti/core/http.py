@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import logging
+import os
 import random
 import time
 from dataclasses import dataclass
@@ -176,6 +177,15 @@ class HttpClient:
         self._browser: Browser | None = None
         self._browser_context: BrowserContext | None = None
 
+        # Counter for periodic browser recycling. Chromium accumulates memory
+        # across page loads (JS heaps, GPU/image decoder pools, DNS cache,
+        # stealth-injected script state) even when pages are closed. Recycling
+        # the browser every N fetches releases that memory back to the OS.
+        self._browser_fetches_since_recycle = 0
+        self._browser_recycle_threshold = int(
+            os.environ.get("PLAYWRIGHT_RECYCLE_AFTER", "100")
+        )
+
     def close(self) -> None:
         """Clean up browser resources."""
         # Shut down Playwright in its dedicated thread
@@ -331,6 +341,51 @@ class HttpClient:
 
     # ── Tier 2: Playwright (headless browser with stealth) ───────────
 
+    def _recycle_browser_if_needed(self) -> None:
+        """
+        Close and reopen the Chromium browser every N fetches to release
+        accumulated memory. MUST run inside the dedicated Playwright thread.
+
+        Chromium accumulates memory across page loads (JS heap fragments,
+        DNS cache, GPU/image decoder pools, stealth-injected script state)
+        even when individual pages are closed. Without recycling, the
+        Chromium child-process memory grows monotonically over hours and
+        eventually OOMs the container.
+
+        The Python heap is unaffected — this is a child-process leak that
+        gc.collect() and malloc_trim() cannot reach.
+        """
+        if self._browser_fetches_since_recycle < self._browser_recycle_threshold:
+            return
+        if self._browser is None:
+            self._browser_fetches_since_recycle = 0
+            return
+        logger.info(
+            "Recycling Playwright browser after %d fetches to release Chromium memory",
+            self._browser_fetches_since_recycle,
+        )
+        try:
+            if self._browser_context is not None:
+                try:
+                    self._browser_context.close()
+                except Exception as exc:
+                    logger.debug("Browser context close failed (non-fatal): %s", exc)
+                self._browser_context = None
+            try:
+                self._browser.close()
+            except Exception as exc:
+                logger.debug("Browser close failed (non-fatal): %s", exc)
+            self._browser = None
+            if self._stealth_cm:
+                try:
+                    self._stealth_cm.__exit__(None, None, None)
+                except Exception as exc:
+                    logger.debug("Stealth context exit failed (non-fatal): %s", exc)
+                self._stealth_cm = None
+            self._pw = None
+        finally:
+            self._browser_fetches_since_recycle = 0
+
     def _ensure_browser(self) -> BrowserContext:
         """Lazy-initialize Playwright browser with stealth configuration.
 
@@ -450,8 +505,12 @@ class HttpClient:
         """
         page = None
         try:
+            # Periodically recycle the Chromium browser to release accumulated
+            # memory in the child process. Runs inside the Playwright thread.
+            self._recycle_browser_if_needed()
             ctx = self._ensure_browser()
             page = ctx.new_page()
+            self._browser_fetches_since_recycle += 1
 
             # Navigate
             response = page.goto(url, timeout=self.timeout * 1000, wait_until="domcontentloaded")
