@@ -364,6 +364,11 @@ class HttpClient:
             "Recycling Playwright browser after %d fetches to release Chromium memory",
             self._browser_fetches_since_recycle,
         )
+        # IMPORTANT: only close the browser child process (where the memory leak lives).
+        # Keep self._pw and self._stealth_cm alive — Playwright's sync API uses Greenlets
+        # internally and re-entering sync_playwright() in the same thread after __exit__
+        # is known to hang. _ensure_browser() will detect _browser is None and call
+        # self._pw.chromium.launch(...) on the existing Playwright instance, which is safe.
         try:
             if self._browser_context is not None:
                 try:
@@ -376,13 +381,6 @@ class HttpClient:
             except Exception as exc:
                 logger.debug("Browser close failed (non-fatal): %s", exc)
             self._browser = None
-            if self._stealth_cm:
-                try:
-                    self._stealth_cm.__exit__(None, None, None)
-                except Exception as exc:
-                    logger.debug("Stealth context exit failed (non-fatal): %s", exc)
-                self._stealth_cm = None
-            self._pw = None
         finally:
             self._browser_fetches_since_recycle = 0
 
@@ -400,10 +398,13 @@ class HttpClient:
 
         profile = self._profile
 
-        # Use Stealth wrapper to auto-apply evasion scripts to all pages
-        stealth = Stealth()
-        self._stealth_cm = stealth.use_sync(sync_playwright())
-        self._pw = self._stealth_cm.__enter__()
+        # First-time init: start the Playwright greenlet only once per thread.
+        # Recycle path keeps self._pw alive and only closes the browser, so
+        # avoid re-entering sync_playwright() (which hangs the Greenlet).
+        if self._pw is None:
+            stealth = Stealth()
+            self._stealth_cm = stealth.use_sync(sync_playwright())
+            self._pw = self._stealth_cm.__enter__()
         self._browser = self._pw.chromium.launch(
             headless=True,
             args=[
