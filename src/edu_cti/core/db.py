@@ -301,6 +301,13 @@ def init_db(conn: sqlite3.Connection) -> None:
         ("llm_excluded_reason", "TEXT"),
         ("discovery_date", "TEXT"),
         ("threat_actor", "TEXT"),
+        # Data-quality re-enrichment tracking
+        ("re_enrich_attempts", "INTEGER DEFAULT 0"),
+        ("re_enrich_reason", "TEXT"),
+        ("manual_review_required", "INTEGER DEFAULT 0"),
+        ("manual_review_reason", "TEXT"),
+        ("manually_edited", "INTEGER DEFAULT 0"),
+        ("manually_edited_fields", "TEXT"),
     ]:
         try:
             conn.execute(f"ALTER TABLE incidents ADD COLUMN {col} {col_type}")

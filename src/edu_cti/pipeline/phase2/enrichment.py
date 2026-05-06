@@ -572,7 +572,24 @@ class IncidentEnricher:
         except Exception:
             _rag_block = None
 
+        # Re-enrichment hint: when an incident is being re-processed because a
+        # previous extraction had bad data (future date, headline-as-institution,
+        # etc.), tell the LLM what to do differently. This is the only way to
+        # break temperature=0 determinism — same prompt always produces same output.
+        try:
+            from src.edu_cti.pipeline.data_quality import get_re_enrich_hint
+            from src.edu_cti.core.db import get_connection
+            _incident_id = incident.get("incident_id") if isinstance(incident, dict) else getattr(incident, "incident_id", None)
+            if _incident_id:
+                _re_enrich_hint = get_re_enrich_hint(get_connection(), _incident_id)
+            else:
+                _re_enrich_hint = None
+        except Exception:
+            _re_enrich_hint = None
+
         _extra = ""
+        if _re_enrich_hint:
+            _extra += f"\n\n{_re_enrich_hint}"
         if _ner_hint:
             _extra += f"\n\n{_ner_hint}"
         if _rag_block:
@@ -1030,13 +1047,22 @@ class IncidentEnricher:
             _ner_hint = None
         _ner_block = f"\n\n{_ner_hint}" if _ner_hint else ""
 
+        # ── Re-enrichment hint (breaks temperature=0 determinism on retry) ────
+        try:
+            from src.edu_cti.pipeline.data_quality import get_re_enrich_hint
+            from src.edu_cti.core.db import get_connection
+            _re_enrich_hint = get_re_enrich_hint(get_connection(), incident.incident_id)
+        except Exception:
+            _re_enrich_hint = None
+        _re_enrich_block = f"\n\n{_re_enrich_hint}" if _re_enrich_hint else ""
+
         part1_prompt = PROMPT_TEMPLATE.format(
             url=primary_url,
             title=title,
             target_institution_line=target_institution_line,
             article_metadata_block=article_metadata_block,
             text=combined_text,
-        ) + _ner_block
+        ) + _re_enrich_block + _ner_block
 
         try:
             _t0 = _time_module.time()

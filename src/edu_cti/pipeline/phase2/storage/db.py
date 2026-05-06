@@ -1738,7 +1738,8 @@ def save_enrichment_result(
     cur = conn.execute(
         """
         SELECT institution_name, victim_raw_name, institution_type, country, region, city,
-               title, subtitle, source_published_date, notes, all_urls, status
+               title, subtitle, source_published_date, notes, all_urls, status,
+               manually_edited_fields
         FROM incidents
         WHERE incident_id = ?
         """,
@@ -1753,6 +1754,18 @@ def save_enrichment_result(
     city_fallback = incident_row["city"] if incident_row else None
     source_published_date_fallback = incident_row["source_published_date"] if incident_row else None
     notes_fallback = incident_row["notes"] if incident_row else None
+
+    # Manually-edited fields are locked — admin set the truth, never overwrite.
+    locked_fields: set[str] = set()
+    if incident_row:
+        try:
+            _raw_locked = incident_row["manually_edited_fields"]
+            if _raw_locked:
+                _parsed_locked = json.loads(_raw_locked)
+                if isinstance(_parsed_locked, list):
+                    locked_fields = {str(f) for f in _parsed_locked}
+        except (json.JSONDecodeError, TypeError, IndexError):
+            pass
     
     def _scalar(v):
         """Coerce list → first element; return other values unchanged."""
@@ -1885,28 +1898,30 @@ def save_enrichment_result(
         if _wm:
             _window_year = int(_wm.group(1))
 
-    # Guard LLM publication_date: discard if it looks like today's enrichment date but the
-    # SERP search window was a prior year (LLM hallucinated current date instead of reading
-    # the article), or if it's in the future.
+    # Guard LLM publication_date: discard if it's unparseable, before 1990,
+    # in the future (>3 days for TZ buffer), or matches today's enrichment
+    # date when the SERP search window points to a prior year (LLM hallucinated).
     if publication_date:
-        try:
-            from datetime import date as _date
-            _today = _date.fromisoformat(now[:10])
-            _pub_dt = _date.fromisoformat(str(publication_date)[:10])
-            if _pub_dt > _today:
-                logger.warning(
-                    "Discarding LLM publication_date %s (future date) for %s",
-                    publication_date, incident_id,
-                )
-                publication_date = None
-            elif (_today - _pub_dt).days <= 7 and _window_year and _window_year < _today.year:
-                logger.warning(
-                    "Discarding LLM publication_date %s (matches enrichment date; SERP window=%s) for %s",
-                    publication_date, _window_year, incident_id,
-                )
-                publication_date = None
-        except (ValueError, TypeError):
-            pass
+        from src.edu_cti.pipeline.data_quality import is_safe_date as _is_safe_date
+        if not _is_safe_date(publication_date):
+            logger.warning(
+                "Discarding LLM publication_date %r (unparseable / out of [1990, today+3d] window) for %s",
+                publication_date, incident_id,
+            )
+            publication_date = None
+        else:
+            try:
+                from datetime import date as _date
+                _today = _date.fromisoformat(now[:10])
+                _pub_dt = _date.fromisoformat(str(publication_date)[:10])
+                if (_today - _pub_dt).days <= 7 and _window_year and _window_year < _today.year:
+                    logger.warning(
+                        "Discarding LLM publication_date %s (matches enrichment date; SERP window=%s) for %s",
+                        publication_date, _window_year, incident_id,
+                    )
+                    publication_date = None
+            except (ValueError, TypeError):
+                pass
 
     # Update incident with enrichment data
     summary = enrichment_result.enriched_summary
@@ -1946,14 +1961,15 @@ def save_enrichment_result(
         now,
     ]
     
-    # Also update country and country_code in incidents table if we have normalized values
-    if country:
+    # Also update country and country_code in incidents table if we have normalized values.
+    # Manually-edited fields (locked_fields) are skipped — admin owns those values.
+    if country and "country" not in locked_fields:
         update_fields += ",\n        country = ?"
         update_params.append(country)
-    if country_code:
+    if country_code and "country" not in locked_fields:
         update_fields += ",\n        country_code = ?"
         update_params.append(country_code)
-    if resolved_institution_name:
+    if resolved_institution_name and "institution_name" not in locked_fields:
         update_fields += ",\n        institution_name = ?"
         update_params.append(resolved_institution_name)
         if not victim_name_fallback:
@@ -1965,7 +1981,11 @@ def save_enrichment_result(
         if source_published_date_fallback
         else None
     )
-    if normalized_publication_date and normalized_publication_date != normalized_source_published_date:
+    if (
+        normalized_publication_date
+        and normalized_publication_date != normalized_source_published_date
+        and "source_published_date" not in locked_fields
+    ):
         update_fields += ",\n        source_published_date = ?"
         update_params.append(normalized_publication_date)
     
@@ -1974,10 +1994,20 @@ def save_enrichment_result(
     # An incident cannot occur significantly after the article reporting it was written.
     if llm_incident_date:
         _apply_llm_date = True
+        # Hard floor / ceiling guard — catches absurd values like "-4707-06-01"
+        # or future dates beyond the timezone buffer that the year-mismatch
+        # check below cannot detect (because fromisoformat raises silently).
+        from src.edu_cti.pipeline.data_quality import is_safe_date as _is_safe_date
+        if not _is_safe_date(llm_incident_date):
+            logger.warning(
+                "Skipping LLM incident_date %r (unparseable / out of [1990, today+3d] window) for %s",
+                llm_incident_date, incident_id,
+            )
+            _apply_llm_date = False
         # Use pre-existing source_published_date; fall back to LLM's (now-validated) publication_date
         # so incidents with no prior date still get the year-mismatch check.
         _eff_src = source_published_date_fallback or publication_date
-        if _eff_src:
+        if _apply_llm_date and _eff_src:
             try:
                 from datetime import date as _date
                 _src_dt = _date.fromisoformat(str(_eff_src)[:10])
@@ -2012,15 +2042,23 @@ def save_enrichment_result(
                     _apply_llm_date = False
             except (ValueError, TypeError):
                 pass
-        if _apply_llm_date:
+        if _apply_llm_date and "incident_date" not in locked_fields:
             update_fields += """,
         incident_date = ?,
         date_precision = ?
         """
             update_params.extend([llm_incident_date, llm_date_precision or "approximate"])
-    if llm_discovery_date:
-        update_fields += ",\n        discovery_date = ?"
-        update_params.append(llm_discovery_date)
+    if llm_discovery_date and "discovery_date" not in locked_fields:
+        # Hard floor / ceiling guard for discovery_date too.
+        from src.edu_cti.pipeline.data_quality import is_safe_date as _is_safe_disc
+        if _is_safe_disc(llm_discovery_date):
+            update_fields += ",\n        discovery_date = ?"
+            update_params.append(llm_discovery_date)
+        else:
+            logger.warning(
+                "Skipping LLM discovery_date %r (unsafe) for %s",
+                llm_discovery_date, incident_id,
+            )
     
     update_params.append(incident_id)
 
