@@ -1867,6 +1867,21 @@ def main() -> Optional[Dict[str, Any]]:
         # Checkpointed incidents are intentionally retained here — if articles were
         # already fetched before a crash/restart, fetch_articles_phase() will fast-path
         # them directly into the LLM queue instead of re-fetching.
+        #
+        # Cap each run to PHASE2_RUN_LIMIT incidents (default 1000) so we never
+        # load all 11k+ unenriched rows into memory at once. Each row holds
+        # multiple text columns (title, notes, all_urls, etc.) — at ~5 KB
+        # average × 11k rows = ~55 MB just for the in-memory list, plus
+        # downstream copies in the queue and fetching strategy. Processing
+        # in batches of 1000 keeps that under 5 MB and lets each crash/restart
+        # recover from a checkpoint within the same batch.
+        # The pipeline manager / cron re-invokes Phase 2 after the batch
+        # completes, so the next 1000 are picked up automatically.
+        _run_limit = args.limit
+        if _run_limit is None:
+            _run_limit = int(os.environ.get("PHASE2_RUN_LIMIT", "1000"))
+            logger.info("Phase 2 run cap: %d incidents (override via PHASE2_RUN_LIMIT)", _run_limit)
+        args.limit = _run_limit
         unenriched = get_unenriched_incidents(conn, limit=args.limit)
         checkpointed = checkpoint_get_fetched(conn)
         if checkpointed:
