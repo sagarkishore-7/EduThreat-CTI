@@ -84,7 +84,6 @@ def test_apply_runtime_safety_overrides_on_railway(monkeypatch):
     monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
     monkeypatch.setenv("DISABLE_ML_FEATURES", "false")
     monkeypatch.delenv("PHASE2_PREWARM_ML_MODELS", raising=False)
-    monkeypatch.delenv("PHASE2_RAILWAY_MAX_WORKERS", raising=False)
     monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_SOFT_LIMIT_MB", 0)
     monkeypatch.setattr(phase2_main, "PHASE2_MEMORY_HARD_LIMIT_MB", 0)
     monkeypatch.setattr(
@@ -113,7 +112,6 @@ def test_apply_runtime_safety_overrides_clamps_workers_when_limit_is_smaller(mon
     monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
     monkeypatch.setenv("DISABLE_ML_FEATURES", "false")
     monkeypatch.delenv("PHASE2_PREWARM_ML_MODELS", raising=False)
-    monkeypatch.delenv("PHASE2_RAILWAY_MAX_WORKERS", raising=False)
     monkeypatch.setattr(
         phase2_main,
         "_detect_container_memory_limit_bytes",

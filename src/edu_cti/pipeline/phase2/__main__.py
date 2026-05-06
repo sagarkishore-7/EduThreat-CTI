@@ -96,8 +96,6 @@ def _explicit_memory_limits_configured() -> bool:
 def _auto_railway_worker_cap() -> int:
     """
     Pick a conservative default worker cap for Railway based on detected RAM.
-
-    The user can still override this with PHASE2_RAILWAY_MAX_WORKERS.
     """
     limit_bytes = _detect_container_memory_limit_bytes()
     limit_mb = int(limit_bytes / (1024 * 1024)) if limit_bytes else None
@@ -133,21 +131,14 @@ def _apply_runtime_safety_overrides(args, logger: logging.Logger) -> Dict[str, A
         overrides["prewarm_ml_models"] = _env_flag("PHASE2_PREWARM_ML_MODELS", "0")
         return overrides
 
-    max_workers_env = os.environ.get("PHASE2_RAILWAY_MAX_WORKERS")
-    if max_workers_env:
-        max_workers = max(1, int(max_workers_env))
-        worker_cap_source = "env"
-    else:
-        max_workers = _auto_railway_worker_cap()
-        worker_cap_source = "auto"
-
+    max_workers = _auto_railway_worker_cap()
     requested_workers = max(1, int(getattr(args, "workers", 1)))
     if requested_workers > max_workers:
         logger.warning(
             "Phase 2 safe mode: clamping workers from %s to %s on Railway (source=%s)",
             requested_workers,
             max_workers,
-            worker_cap_source,
+            "memory_auto_cap",
         )
         args.workers = max_workers
         requested_workers = max_workers
@@ -156,7 +147,7 @@ def _apply_runtime_safety_overrides(args, logger: logging.Logger) -> Dict[str, A
             "Phase 2 safe mode: allowing %s worker(s) on Railway (cap=%s, source=%s)",
             requested_workers,
             max_workers,
-            worker_cap_source,
+            "memory_auto_cap",
         )
 
     overrides["effective_workers"] = requested_workers
