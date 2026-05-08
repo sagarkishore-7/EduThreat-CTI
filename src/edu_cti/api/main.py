@@ -429,7 +429,32 @@ async def health_check():
 
 @app.get("/api/health", tags=["Health"])
 async def api_health_check():
-    """Health check with database connectivity test and incident count."""
+    """
+    Cheap liveness probe. Railway hits this at the configured
+    healthcheckPath every few seconds; it must respond fast and never
+    contend with Phase 2's writers.
+
+    Previous version ran SELECT COUNT(*) FROM incidents on every call
+    (28k+ rows). When Phase 2 holds the write lock during enrichment
+    saves, that COUNT can block for minutes, which Railway interprets
+    as a healthcheck timeout and gracefully restarts the container.
+    That looked like "service just restarting without crashing".
+
+    For full DB stats use GET /api/admin/export/stats instead.
+    """
+    return {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/health/db", tags=["Health"])
+async def api_health_check_with_db():
+    """
+    DB-touching health check. Used for diagnostics, NOT the Railway
+    healthcheck. Opens a short read-only connection to check
+    connectivity and report incident count.
+    """
     try:
         conn = get_api_connection()
         cur = conn.execute("SELECT COUNT(*) as count FROM incidents")
