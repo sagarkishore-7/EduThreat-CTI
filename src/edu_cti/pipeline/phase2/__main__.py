@@ -68,6 +68,11 @@ _cancel_event = threading.Event()
 _in_progress: set = set()
 _in_progress_lock = threading.Lock()
 
+# Module-level flag — torch.set_num_interop_threads() can only be called once
+# per process. Track that we've configured PyTorch threading so the auto-loop's
+# second round doesn't try to re-set and emit a misleading warning.
+_PYTORCH_THREADS_SET: bool = False
+
 _memory_policy_lock = threading.Lock()
 _memory_policy: Optional[Dict[str, Any]] = None
 _memory_guard_state_lock = threading.Lock()
@@ -1964,24 +1969,29 @@ def main() -> Optional[Dict[str, Any]]:
                 thread_conn.close()
 
         # Constrain PyTorch CPU threading to a single thread per inference call.
-        # PyTorch's default is to use all CPU cores; with 4 enricher workers each
-        # running inference, that's up to 4 × N_cores threads of intra-op
-        # parallelism, each holding intermediate buffers. On 8-vCPU Railway hosts
-        # this caused observed RSS spikes of 643 MB / 30s. Single-threaded
-        # inference removes the multiplier without significantly impacting
-        # latency for our small models (GLiNER small, MiniLM-L6-v2).
-        try:
-            os.environ.setdefault("OMP_NUM_THREADS", "1")
-            os.environ.setdefault("MKL_NUM_THREADS", "1")
-            os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
-            os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
-            os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
-            import torch as _torch
-            _torch.set_num_threads(1)
-            _torch.set_num_interop_threads(1)
-            logger.info("PyTorch constrained to single-threaded inference (OMP/MKL/torch=1)")
-        except Exception as _torch_err:
-            logger.warning("PyTorch thread constraint failed (non-fatal): %s", _torch_err)
+        # set_num_interop_threads can only be called ONCE per process — calling
+        # it again on subsequent main() invocations (auto-loop rounds 2+) raises
+        # because parallel work has already started. Track whether we've already
+        # set it so subsequent rounds skip the call silently.
+        global _PYTORCH_THREADS_SET
+        if not globals().get("_PYTORCH_THREADS_SET", False):
+            try:
+                os.environ.setdefault("OMP_NUM_THREADS", "1")
+                os.environ.setdefault("MKL_NUM_THREADS", "1")
+                os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+                os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
+                os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+                import torch as _torch
+                _torch.set_num_threads(1)
+                _torch.set_num_interop_threads(1)
+                _PYTORCH_THREADS_SET = True
+                logger.info("PyTorch constrained to single-threaded inference (OMP/MKL/torch=1)")
+            except Exception as _torch_err:
+                # set_num_interop_threads can fail if called after work started.
+                # set_num_threads still applies process-wide and is the more
+                # important one for inference memory.
+                logger.debug("PyTorch thread constraint partially applied: %s", _torch_err)
+                _PYTORCH_THREADS_SET = True
 
         # Pre-warm ML models in the main thread before workers start.
         # Loading them here (sequential, low-memory moment) prevents the race

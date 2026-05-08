@@ -558,6 +558,28 @@ class PipelineManager:
                     )
                     break
 
+            # Aggressive inter-round cleanup. Each phase2.main() call leaves
+            # behind references in module-level state (queue objects, watchdog
+            # closures, thread-local caches). Without this, round 2's startup
+            # can OOM 7 seconds in despite round 1 running an hour cleanly —
+            # the process-global PyTorch allocator and HF cache symlinks
+            # accumulate fragmentation across calls.
+            try:
+                import gc as _gc
+                _gc.collect()
+                try:
+                    import ctypes as _ct
+                    _ct.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+                except Exception:
+                    pass
+                # Pause briefly so any daemon janitor / watchdog from the
+                # previous round actually exits before we spawn the next set.
+                import time as _time
+                _time.sleep(2)
+                logger.info("[ENRICH-LOOP] Round %d cleanup done; starting next round", rounds)
+            except Exception as _cleanup_err:
+                logger.debug("Inter-round cleanup error (non-fatal): %s", _cleanup_err)
+
         # Surface aggregate counts
         if last_result:
             last_result["enrich_rounds"] = rounds
