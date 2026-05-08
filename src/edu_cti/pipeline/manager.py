@@ -509,6 +509,65 @@ class PipelineManager:
                     progress_range: tuple = (0, 100), step_prefix: str = "") -> Dict:
         """Run Phase 2 LLM enrichment.
 
+        Standalone-enrich entry point: keeps invoking _run_one_enrich_batch
+        until ready_for_enrichment hits 0 or the run is cancelled. Each batch
+        is capped by PHASE2_RUN_LIMIT (default 1000) so memory stays bounded;
+        looping here means a single 'enrich' admin click drains the whole
+        backlog without manual re-clicks.
+
+        Historical/daily phases call _run_one_enrich_batch directly because
+        they already have their own outer loop that interleaves with ingest.
+
+        If params explicitly sets a `limit`, we honour it and run exactly
+        one batch (caller wants a bounded run).
+        """
+        explicit_limit = params.get("limit")
+        if explicit_limit:
+            return self._run_one_enrich_batch(run, params, progress_range, step_prefix)
+
+        total_enriched = 0
+        rounds = 0
+        last_result: Dict = {}
+
+        while not run._cancel_requested:
+            stats = _load_enrichment_stats()
+            ready = stats.get("ready_for_enrichment", 0)
+            if ready == 0:
+                logger.info(
+                    "Enrich phase complete: 0 actionable incidents remain "
+                    "(enriched %d across %d round(s))",
+                    total_enriched, rounds,
+                )
+                break
+
+            rounds += 1
+            logger.info(
+                "Enrich phase round %d starting — %d actionable incidents available",
+                rounds, ready,
+            )
+            result = self._run_one_enrich_batch(run, params, progress_range, step_prefix)
+            last_result = result if isinstance(result, dict) else {}
+
+            if isinstance(result, dict):
+                total_enriched += result.get("run_stats", {}).get("enriched", 0)
+                if result.get("memory_pause_requested"):
+                    logger.warning(
+                        "Enrich phase paused due to memory pressure after round %d; "
+                        "stopping loop. Reason: %s",
+                        rounds, result.get("memory_pause_reason"),
+                    )
+                    break
+
+        # Surface aggregate counts
+        if last_result:
+            last_result["enrich_rounds"] = rounds
+            last_result["enrich_total_enriched"] = total_enriched
+        return last_result
+
+    def _run_one_enrich_batch(self, run: PipelineRun, params: Dict,
+                              progress_range: tuple = (0, 100), step_prefix: str = "") -> Dict:
+        """Run exactly one Phase 2 batch (capped by PHASE2_RUN_LIMIT).
+
         progress_range: (min_percent, max_percent) to map internal 0-100 into.
         step_prefix: optional prefix for step text (e.g. "Phase 2: ").
         """
@@ -713,7 +772,9 @@ class PipelineManager:
                 f"Historical pipeline: enrichment round {enrich_rounds} — "
                 f"{ready} actionable / {unenriched} unenriched incidents available"
             )
-            enrich_result = self._run_enrich(run, {
+            # Historical's outer loop already iterates rounds — call the
+            # single-batch helper directly so we don't double-loop.
+            enrich_result = self._run_one_enrich_batch(run, {
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
                 "export_csv": False,  # Only export on final round
@@ -877,7 +938,9 @@ class PipelineManager:
                 f"Daily pipeline: enrichment round {enrich_rounds} — "
                 f"{ready} actionable / {unenriched} unenriched"
             )
-            enrich_result = self._run_enrich(run, {
+            # Daily's outer loop already iterates rounds — call the
+            # single-batch helper directly so we don't double-loop.
+            enrich_result = self._run_one_enrich_batch(run, {
                 "limit": enrich_limit,
                 "rate_limit_delay": 2.0,
                 "export_csv": False,
