@@ -2036,23 +2036,42 @@ def main() -> Optional[Dict[str, Any]]:
                         rss_mb, cache_mb, in_progress_count,
                     )
                     # 1. HF cache prune (existing behaviour)
+                    # Skip the rmtree if any worker is actively enriching, AND
+                    # the cache is below an emergency ceiling. PyTorch holds
+                    # mmap handles on the cached model files; deleting them
+                    # while a worker is in the middle of inference can stress
+                    # the kernel page cache and (rarely) trigger an OOM spike.
+                    # We accept slightly larger cache (up to 600 MB) as long as
+                    # workers are busy, only pruning when idle. Beyond 600 MB
+                    # we prune anyway because the bloat itself is the bigger risk.
+                    EMERGENCY_PRUNE_BYTES = 600 * 1024 * 1024
                     if cache_bytes > HF_THRESHOLD_BYTES and hf_cache.exists():
-                        logger.warning(
-                            "[JANITOR] HF cache=%.1f MB > %.0f MB threshold — pruning",
-                            cache_mb, HF_THRESHOLD_BYTES / (1024 * 1024),
-                        )
-                        try:
-                            _sh.rmtree(hf_cache, ignore_errors=True)
-                            hf_cache.mkdir(parents=True, exist_ok=True)
-                            gc.collect()
+                        if in_progress_count > 0 and cache_bytes < EMERGENCY_PRUNE_BYTES:
+                            logger.info(
+                                "[JANITOR] HF cache=%.1f MB > %.0f MB threshold but %d worker(s) active — deferring prune",
+                                cache_mb,
+                                HF_THRESHOLD_BYTES / (1024 * 1024),
+                                in_progress_count,
+                            )
+                        else:
+                            logger.warning(
+                                "[JANITOR] HF cache=%.1f MB > %.0f MB threshold — pruning (workers=%d)",
+                                cache_mb,
+                                HF_THRESHOLD_BYTES / (1024 * 1024),
+                                in_progress_count,
+                            )
                             try:
-                                import ctypes as _ct
-                                _ct.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
-                            except Exception:
-                                pass
-                            logger.info("[JANITOR] HF cache pruned + GC + malloc_trim")
-                        except Exception as _e:
-                            logger.warning("[JANITOR] HF prune failed: %s", _e)
+                                _sh.rmtree(hf_cache, ignore_errors=True)
+                                hf_cache.mkdir(parents=True, exist_ok=True)
+                                gc.collect()
+                                try:
+                                    import ctypes as _ct
+                                    _ct.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+                                except Exception:
+                                    pass
+                                logger.info("[JANITOR] HF cache pruned + GC + malloc_trim")
+                            except Exception as _e:
+                                logger.warning("[JANITOR] HF prune failed: %s", _e)
                     # 2. Hard RSS ceiling — graceful cancel before Railway OOM
                     if rss_mb > HARD_RSS_CEILING_MB and not _cancel_event.is_set():
                         logger.error(
