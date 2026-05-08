@@ -605,12 +605,23 @@ class PipelineManager:
 
     def _run_one_enrich_batch(self, run: PipelineRun, params: Dict,
                               progress_range: tuple = (0, 100), step_prefix: str = "") -> Dict:
-        """Run exactly one Phase 2 batch (capped by PHASE2_RUN_LIMIT).
+        """Run exactly one Phase 2 batch in a SUBPROCESS.
+
+        Why subprocess instead of in-thread:
+        - Each batch starts with a clean Python heap, no allocator
+          fragmentation from prior batches, no leaked daemon threads.
+        - When phase2 OOMs, ONLY the subprocess dies — the API server
+          and pipeline manager survive. The auto-loop catches the
+          non-zero exit code and proceeds to the next round.
+        - Models redownload is bounded (HF cache survives on the
+          persistent volume; only Python heap is fresh).
 
         progress_range: (min_percent, max_percent) to map internal 0-100 into.
         step_prefix: optional prefix for step text (e.g. "Phase 2: ").
         """
         import sys
+        import subprocess
+        import re
 
         pmin, pmax = progress_range
         limit = params.get("limit")
@@ -621,83 +632,157 @@ class PipelineManager:
 
         run.progress = {"step": f"{step_prefix}Starting enrichment", "detail": "", "percent": pmin}
 
-        # Clear any previous cancel signal so this run starts fresh
-        from src.edu_cti.pipeline.phase2.__main__ import _cancel_event, _progress
-        _cancel_event.clear()
-        _progress["step"] = "Starting enrichment"
-        _progress["detail"] = ""
-        _progress["percent"] = 0
-
-        # Build argv for phase2's argparse
-        phase2_argv = []
-        if limit:
-            phase2_argv.extend(["--limit", str(limit)])
-        if rate_limit_delay:
-            phase2_argv.extend(["--rate-limit-delay", str(rate_limit_delay)])
-        if workers and workers > 1:
-            phase2_argv.extend(["--workers", str(workers)])
-        if export_csv:
-            phase2_argv.append("--export-csv")
-        phase2_argv.extend(["--log-level", "INFO"])
-
-        # Run phase2 in a sub-thread so we can poll progress from this thread
-        phase2_error = [None]  # mutable container for thread result
-        phase2_result = [None]
-
-        def _run_phase2():
-            nonlocal original_argv
-            try:
-                from src.edu_cti.pipeline.phase2.__main__ import main as phase2_main
-                phase2_result[0] = phase2_main()
-            except Exception as e:
-                phase2_error[0] = e
-            finally:
-                sys.argv = original_argv
-
-        original_argv = sys.argv
-        sys.argv = ["phase2"] + phase2_argv
-
-        phase2_thread = threading.Thread(target=_run_phase2, daemon=True, name="phase2-exec")
-        phase2_thread.start()
-
-        # Poll progress from _progress dict until phase2 finishes
-        while phase2_thread.is_alive():
-            raw_pct = _progress.get("percent", 0)
-            run.progress = {
-                "step": f"{step_prefix}{_progress.get('step', '')}",
-                "detail": _progress.get("detail", ""),
-                "percent": self._scale_percent(raw_pct, pmin, pmax),
-            }
-            phase2_thread.join(timeout=2.0)
-
-        # Re-raise any error from phase2
-        if phase2_error[0] is not None:
-            raise phase2_error[0]
-
-        if isinstance(phase2_result[0], dict):
-            result = phase2_result[0]
-            if result.get("memory_pause_requested"):
-                run.progress = {
-                    "step": f"{step_prefix}Paused for memory pressure",
-                    "detail": result.get("memory_pause_reason", ""),
-                    "percent": max(run.progress.get("percent", pmin), pmin),
-                }
-                return result
-
-        # Get enrichment stats
+        # Snapshot DB state BEFORE the subprocess so we can compute the
+        # delta after it exits (gives us run_stats.enriched count without
+        # an IPC channel back from the subprocess).
         from src.edu_cti.core.db import get_connection, init_db
         from src.edu_cti.pipeline.phase2.storage.db import get_enrichment_stats
+        try:
+            _conn_before = get_connection()
+            init_db(_conn_before)
+            stats_before = get_enrichment_stats(_conn_before)
+            _conn_before.close()
+        except Exception:
+            stats_before = {"enriched_incidents": 0}
 
-        conn = get_connection()
-        init_db(conn)
-        stats = get_enrichment_stats(conn)
-        conn.close()
+        # Build argv for phase2's argparse
+        cmd = [sys.executable, "-m", "src.edu_cti.pipeline.phase2"]
+        if limit:
+            cmd.extend(["--limit", str(limit)])
+        if rate_limit_delay:
+            cmd.extend(["--rate-limit-delay", str(rate_limit_delay)])
+        if workers and workers > 1:
+            cmd.extend(["--workers", str(workers)])
+        if export_csv:
+            cmd.append("--export-csv")
+        cmd.extend(["--log-level", "INFO"])
 
-        run.progress = {"step": f"{step_prefix}Enrichment complete", "detail": "", "percent": pmax}
-        if isinstance(phase2_result[0], dict):
-            phase2_result[0]["enrichment_stats"] = stats
-            return phase2_result[0]
-        return {"enrichment_stats": stats}
+        logger.info("Launching phase2 subprocess: %s", " ".join(cmd[1:]))
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,  # line-buffered
+            env=os.environ.copy(),
+        )
+
+        # Stream subprocess stdout/stderr through our logger, and watch for
+        # progress markers we can map back into run.progress.
+        memory_pause: Dict[str, Any] = {"requested": False, "reason": None}
+        _enrich_re = re.compile(r"Enriching \[(\d+)/(\d+) this run")
+        _fetch_re = re.compile(r"Fetching \[(\d+)/(\d+)\]")
+        _phase2_logger = logging.getLogger("phase2")
+
+        def _stream_logs():
+            try:
+                assert proc.stdout is not None
+                for line in proc.stdout:
+                    line = line.rstrip()
+                    if not line:
+                        continue
+                    _phase2_logger.info(line)
+                    # Map "Enriching [X/Y this run | A/B enriched in DB]" → percent
+                    m_enr = _enrich_re.search(line)
+                    if m_enr:
+                        cur, tot = int(m_enr.group(1)), int(m_enr.group(2))
+                        # Enrichment phase maps to 30-100% of the overall progress
+                        pct = 30 + int((cur / max(tot, 1)) * 70)
+                        run.progress = {
+                            "step": f"{step_prefix}Enriching",
+                            "detail": f"{cur}/{tot}",
+                            "percent": self._scale_percent(pct, pmin, pmax),
+                        }
+                        continue
+                    m_fet = _fetch_re.search(line)
+                    if m_fet:
+                        cur, tot = int(m_fet.group(1)), int(m_fet.group(2))
+                        # Fetching phase maps to 0-30% of the overall progress
+                        pct = int((cur / max(tot, 1)) * 30)
+                        run.progress = {
+                            "step": f"{step_prefix}Fetching",
+                            "detail": f"{cur}/{tot}",
+                            "percent": self._scale_percent(pct, pmin, pmax),
+                        }
+                        continue
+                    if "memory pause" in line.lower() or "Paused for memory pressure" in line:
+                        memory_pause["requested"] = True
+                        memory_pause["reason"] = line
+            except Exception as exc:
+                logger.warning("Subprocess log stream error: %s", exc)
+
+        _log_thread = threading.Thread(target=_stream_logs, daemon=True, name="phase2-log-stream")
+        _log_thread.start()
+
+        # Wait for subprocess; check cancel every 2s.
+        try:
+            while proc.poll() is None:
+                if run._cancel_requested:
+                    logger.info(
+                        "Cancel requested — sending SIGTERM to phase2 subprocess (PID %d)",
+                        proc.pid,
+                    )
+                    proc.terminate()
+                    try:
+                        proc.wait(timeout=60)
+                    except subprocess.TimeoutExpired:
+                        logger.warning("phase2 subprocess did not exit in 60s; sending SIGKILL")
+                        proc.kill()
+                        proc.wait(timeout=10)
+                    break
+                time.sleep(2)
+        except Exception:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+            raise
+        finally:
+            _log_thread.join(timeout=10)
+
+        return_code = proc.returncode
+        logger.info("phase2 subprocess exited with code %d", return_code)
+
+        # Compute run_stats from DB delta. This replaces the in-memory
+        # counters that the previous in-thread version returned.
+        try:
+            _conn_after = get_connection()
+            init_db(_conn_after)
+            stats_after = get_enrichment_stats(_conn_after)
+            _conn_after.close()
+        except Exception:
+            stats_after = stats_before
+        enriched_delta = max(
+            0,
+            int(stats_after.get("enriched_incidents", 0)) - int(stats_before.get("enriched_incidents", 0)),
+        )
+
+        run.progress = {
+            "step": f"{step_prefix}Enrichment complete",
+            "detail": f"+{enriched_delta} enriched this round",
+            "percent": pmax,
+        }
+
+        result: Dict[str, Any] = {
+            "enrichment_stats": stats_after,
+            "run_stats": {"enriched": enriched_delta, "subprocess_exit_code": return_code},
+        }
+        if memory_pause["requested"]:
+            result["memory_pause_requested"] = True
+            result["memory_pause_reason"] = memory_pause["reason"]
+        # Non-zero exit (signal kill, OOM) — surface so the auto-loop can decide
+        # whether to retry or pause. Treat OOM-kill (137 / -9) as memory pause.
+        if return_code not in (0, None):
+            if return_code in (137, -9, -15):
+                logger.warning(
+                    "phase2 subprocess killed by signal (exit=%d) — likely OOM; treating as memory pause",
+                    return_code,
+                )
+                result["memory_pause_requested"] = True
+                result["memory_pause_reason"] = result.get("memory_pause_reason") or f"subprocess killed (exit={return_code})"
+            else:
+                result["error"] = f"phase2 subprocess exit code {return_code}"
+        return result
 
     def _run_historical(self, run: PipelineRun, params: Dict) -> Dict:
         """Run full historical pipeline (ingest + enrich in parallel).
