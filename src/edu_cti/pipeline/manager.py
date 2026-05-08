@@ -645,8 +645,13 @@ class PipelineManager:
         except Exception:
             stats_before = {"enriched_incidents": 0}
 
-        # Build argv for phase2's argparse
-        cmd = [sys.executable, "-m", "src.edu_cti.pipeline.phase2"]
+        # Build argv for phase2's argparse. The -u flag forces unbuffered
+        # stdout/stderr in the child — without it, Python block-buffers writes
+        # to the pipe (4-8 KB) and the parent doesn't see log lines until a
+        # buffer flush, which can lag minutes behind actual progress and
+        # makes Railway logs look "frozen" while the subprocess is happily
+        # working.
+        cmd = [sys.executable, "-u", "-m", "src.edu_cti.pipeline.phase2"]
         if limit:
             cmd.extend(["--limit", str(limit)])
         if rate_limit_delay:
@@ -657,14 +662,19 @@ class PipelineManager:
             cmd.append("--export-csv")
         cmd.extend(["--log-level", "INFO"])
 
+        # Belt-and-braces: also set PYTHONUNBUFFERED in case some library
+        # ignores -u (e.g. when child swaps stdout to a TextIOWrapper).
+        sub_env = os.environ.copy()
+        sub_env["PYTHONUNBUFFERED"] = "1"
+
         logger.info("Launching phase2 subprocess: %s", " ".join(cmd[1:]))
         proc = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
-            bufsize=1,  # line-buffered
-            env=os.environ.copy(),
+            bufsize=1,  # line-buffered on the PARENT's read side
+            env=sub_env,
         )
 
         # Stream subprocess stdout/stderr through our logger, and watch for
