@@ -9,6 +9,7 @@ Also manages a built-in scheduler for continuous real-time intelligence collecti
 
 import json
 import logging
+import os
 import threading
 import time
 import uuid
@@ -564,6 +565,11 @@ class PipelineManager:
             # can OOM 7 seconds in despite round 1 running an hour cleanly —
             # the process-global PyTorch allocator and HF cache symlinks
             # accumulate fragmentation across calls.
+            #
+            # The 30-second pause lets the kernel actually reclaim cgroup pages
+            # (mmap'd files, freed allocator chunks). 2s wasn't enough — the
+            # OS lazy-flushes page cache and 30s gives it real time to release
+            # memory back to the cgroup before round N+1's startup spike.
             try:
                 import gc as _gc
                 _gc.collect()
@@ -572,11 +578,22 @@ class PipelineManager:
                     _ct.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
                 except Exception:
                     pass
-                # Pause briefly so any daemon janitor / watchdog from the
-                # previous round actually exits before we spawn the next set.
                 import time as _time
-                _time.sleep(2)
-                logger.info("[ENRICH-LOOP] Round %d cleanup done; starting next round", rounds)
+                _pause_seconds = int(os.environ.get("PHASE2_INTER_ROUND_PAUSE_SECONDS", "30"))
+                logger.info(
+                    "[ENRICH-LOOP] Round %d done; pausing %ds for kernel reclaim before next round",
+                    rounds, _pause_seconds,
+                )
+                _time.sleep(_pause_seconds)
+                # Run gc + trim once more after the pause to catch anything
+                # released asynchronously during the wait.
+                _gc.collect()
+                try:
+                    import ctypes as _ct2
+                    _ct2.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+                except Exception:
+                    pass
+                logger.info("[ENRICH-LOOP] Inter-round cleanup complete; starting next round")
             except Exception as _cleanup_err:
                 logger.debug("Inter-round cleanup error (non-fatal): %s", _cleanup_err)
 
