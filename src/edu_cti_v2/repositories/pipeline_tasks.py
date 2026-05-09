@@ -45,7 +45,7 @@ class PipelineTaskRepository:
             select(PipelineTask)
             .where(PipelineTask.status == "queued")
             .where(PipelineTask.available_at <= now)
-            .order_by(PipelineTask.priority.asc(), PipelineTask.created_at.asc())
+            .order_by(PipelineTask.priority.desc(), PipelineTask.created_at.asc())
             .limit(limit)
             .with_for_update(skip_locked=True)
         )

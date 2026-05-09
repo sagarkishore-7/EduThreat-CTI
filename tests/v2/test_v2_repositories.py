@@ -19,6 +19,7 @@ def test_pipeline_task_repository_lease_stmt_uses_skip_locked():
 
     assert "FOR UPDATE SKIP LOCKED" in compiled
     assert "enrich_source" in compiled
+    assert "ORDER BY pipeline_tasks.priority DESC" in compiled
 
 
 def test_source_incident_repository_lookup_stmt_filters_by_source_and_event_key():
