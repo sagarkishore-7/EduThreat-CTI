@@ -1,14 +1,15 @@
 from fastapi.testclient import TestClient
 
-from src.edu_cti.api.admin import authenticate
 from src.edu_cti.api.v2 import get_v2_read_service, get_v2_session
 from src.edu_cti.api.v2_admin import (
     get_v2_collection_service,
     get_v2_operations_service,
     get_v2_orchestration_service,
+    get_v2_preflight_service,
     get_v2_scheduler_service,
 )
 from src.edu_cti_v2.api_app import create_app
+from src.edu_cti_v2.auth import authenticate
 
 
 def test_v2_api_app_health_endpoints_exist():
@@ -43,6 +44,7 @@ def test_v2_api_app_mounts_public_and_admin_routes():
     app.dependency_overrides[get_v2_collection_service] = lambda: object()
     app.dependency_overrides[get_v2_orchestration_service] = lambda: object()
     app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
+    app.dependency_overrides[get_v2_preflight_service] = lambda: object()
     app.dependency_overrides[authenticate] = lambda: True
 
     client = TestClient(app)
@@ -54,4 +56,3 @@ def test_v2_api_app_mounts_public_and_admin_routes():
     admin_status = client.get("/api/admin/v2/status")
     assert admin_status.status_code == 200
     assert admin_status.json()["counts"]["queued_tasks"] == 4
-

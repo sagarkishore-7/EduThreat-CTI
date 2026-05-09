@@ -5,11 +5,18 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 
-from src.edu_cti.api.admin import authenticate
 from src.edu_cti.api.v2 import get_v2_session, get_v2_session_factory
-from src.edu_cti_v2.services import V2OperationsService
+from src.edu_cti_v2.auth import (
+    V2LoginRequest,
+    V2LoginResponse,
+    authenticate,
+    create_session_token,
+    revoke_session,
+    verify_password,
+)
+from src.edu_cti_v2.services import V2OperationsService, V2PreflightService
 from src.edu_cti_v2.services.collection import V2CollectionService
 from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 from src.edu_cti_v2.services.scheduler import V2SchedulerService
@@ -37,6 +44,40 @@ def get_v2_scheduler_service() -> V2SchedulerService:
     return V2SchedulerService()
 
 
+@lru_cache
+def get_v2_preflight_service() -> V2PreflightService:
+    return V2PreflightService()
+
+
+@router.post("/login", response_model=V2LoginResponse)
+async def v2_admin_login(request: V2LoginRequest):
+    """Login endpoint for the dedicated v2 admin surface."""
+    from src.edu_cti_v2.auth import ADMIN_USERNAME
+
+    if request.username != ADMIN_USERNAME:
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    if not verify_password(request.password):
+        raise HTTPException(status_code=401, detail="Invalid credentials")
+
+    session_token, expires_at = create_session_token()
+    return V2LoginResponse(
+        success=True,
+        session_token=session_token,
+        expires_at=expires_at.isoformat(),
+        message="Login successful",
+    )
+
+
+@router.post("/logout")
+async def v2_admin_logout(
+    x_session_token: Optional[str] = None,
+    _: bool = Depends(authenticate),
+):
+    revoke_session(x_session_token)
+    return {"success": True, "message": "Logged out"}
+
+
 @router.get("/status")
 async def get_v2_runtime_status(
     session=Depends(get_v2_session),
@@ -45,6 +86,16 @@ async def get_v2_runtime_status(
 ):
     """Return queue, run, and snapshot status for the v2 runtime."""
     return operations.get_runtime_status(session)
+
+
+@router.get("/preflight")
+async def get_v2_preflight_status(
+    session=Depends(get_v2_session),
+    preflight: V2PreflightService = Depends(get_v2_preflight_service),
+    _: bool = Depends(authenticate),
+):
+    """Check whether the dedicated v2 runtime is ready for a fresh Postgres run."""
+    return preflight.get_status(session)
 
 
 @router.get("/tasks")

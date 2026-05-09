@@ -1,15 +1,16 @@
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.edu_cti.api.admin import authenticate
 from src.edu_cti.api.v2 import get_v2_session
 from src.edu_cti.api.v2_admin import (
     get_v2_collection_service,
     get_v2_operations_service,
     get_v2_orchestration_service,
+    get_v2_preflight_service,
     get_v2_scheduler_service,
     router,
 )
+from src.edu_cti_v2.auth import authenticate
 
 
 def _build_client(operations_service):
@@ -43,12 +44,17 @@ def _build_client(operations_service):
         def trigger_job(self, *_args, **_kwargs):
             raise AssertionError("unexpected scheduler trigger call")
 
+    class _NullPreflightService:
+        def get_status(self, _session):
+            raise AssertionError("unexpected preflight call")
+
     app.dependency_overrides[authenticate] = lambda: True
     app.dependency_overrides[get_v2_session] = _override_session
     app.dependency_overrides[get_v2_operations_service] = lambda: operations_service
     app.dependency_overrides[get_v2_collection_service] = lambda: _NullCollectionService()
     app.dependency_overrides[get_v2_orchestration_service] = lambda: _NullOrchestrationService()
     app.dependency_overrides[get_v2_scheduler_service] = lambda: _NullSchedulerService()
+    app.dependency_overrides[get_v2_preflight_service] = lambda: _NullPreflightService()
     return TestClient(app)
 
 
@@ -135,6 +141,7 @@ def test_v2_admin_collect_endpoint_returns_collection_result():
     app.dependency_overrides[get_v2_collection_service] = lambda: collection
     app.dependency_overrides[get_v2_orchestration_service] = lambda: object()
     app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
+    app.dependency_overrides[get_v2_preflight_service] = lambda: object()
     client = TestClient(app)
 
     response = client.post(
@@ -170,6 +177,7 @@ def test_v2_admin_plans_endpoint_returns_named_plan_list():
     app.dependency_overrides[get_v2_collection_service] = lambda: object()
     app.dependency_overrides[get_v2_orchestration_service] = lambda: _OrchestrationService()
     app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
+    app.dependency_overrides[get_v2_preflight_service] = lambda: object()
     client = TestClient(app)
 
     response = client.get("/api/admin/v2/plans")
@@ -204,6 +212,7 @@ def test_v2_admin_run_plan_endpoint_returns_orchestrated_result():
     app.dependency_overrides[get_v2_collection_service] = lambda: object()
     app.dependency_overrides[get_v2_orchestration_service] = lambda: orchestrator
     app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
+    app.dependency_overrides[get_v2_preflight_service] = lambda: object()
     client = TestClient(app)
 
     response = client.post(
@@ -249,6 +258,7 @@ def test_v2_admin_scheduler_endpoints_proxy_service():
     app.dependency_overrides[get_v2_collection_service] = lambda: object()
     app.dependency_overrides[get_v2_orchestration_service] = lambda: object()
     app.dependency_overrides[get_v2_scheduler_service] = lambda: scheduler
+    app.dependency_overrides[get_v2_preflight_service] = lambda: object()
     client = TestClient(app)
 
     assert client.get("/api/admin/v2/scheduler/status").json()["running"] is False
@@ -258,3 +268,58 @@ def test_v2_admin_scheduler_endpoints_proxy_service():
     assert trigger.status_code == 200
     assert trigger.json()["job_name"] == "rss_fast_refresh"
     assert trigger.json()["background"] is False
+
+
+def test_v2_admin_preflight_endpoint_returns_service_payload():
+    class _OperationsService:
+        def get_runtime_status(self, _session):
+            return {}
+
+    class _PreflightService:
+        def get_status(self, _session):
+            return {"ready": True, "warnings": []}
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    def _override_session():
+        yield object()
+
+    app.dependency_overrides[authenticate] = lambda: True
+    app.dependency_overrides[get_v2_session] = _override_session
+    app.dependency_overrides[get_v2_operations_service] = lambda: _OperationsService()
+    app.dependency_overrides[get_v2_collection_service] = lambda: object()
+    app.dependency_overrides[get_v2_orchestration_service] = lambda: object()
+    app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
+    app.dependency_overrides[get_v2_preflight_service] = lambda: _PreflightService()
+    client = TestClient(app)
+
+    response = client.get("/api/admin/v2/preflight")
+
+    assert response.status_code == 200
+    assert response.json()["ready"] is True
+
+
+def test_v2_admin_login_and_logout_endpoints(monkeypatch):
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    client = TestClient(app)
+
+    monkeypatch.setenv("EDUTHREAT_ADMIN_PASSWORD", "secret123")
+
+    response = client.post(
+        "/api/admin/v2/login",
+        json={"username": "admin", "password": "secret123"},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["success"] is True
+    assert payload["session_token"]
+
+    logout = client.post(
+        "/api/admin/v2/logout",
+        headers={"X-Session-Token": payload["session_token"]},
+    )
+    assert logout.status_code == 200
+    assert logout.json()["success"] is True

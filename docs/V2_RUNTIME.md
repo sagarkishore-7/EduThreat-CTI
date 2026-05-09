@@ -32,6 +32,11 @@ These commands are installed from `pyproject.toml`:
 eduthreat-v2-migrate upgrade head
 ```
 
+Optional preflight after deploy:
+
+- `GET /api/admin/v2/preflight`
+- `POST /api/admin/v2/login`
+
 ### 2. Start the dedicated v2 API
 
 ```bash
@@ -90,4 +95,3 @@ The Docker image now includes:
 - `alembic.ini`
 
 so the migration command works inside deployed containers.
-
