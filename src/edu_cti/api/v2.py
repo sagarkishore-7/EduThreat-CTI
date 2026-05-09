@@ -7,8 +7,10 @@ from datetime import date
 from typing import Iterator, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy.orm import Session, sessionmaker
 
+from src.edu_cti.api.reports import generate_cti_report
 from src.edu_cti_v2.db import create_session_factory
 from src.edu_cti_v2.services import V2CanonicalReadService
 
@@ -45,6 +47,15 @@ async def get_v2_dashboard(
     return read_service.get_dashboard_summary(session)
 
 
+@router.get("/stats")
+async def get_v2_stats(
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Return the dashboard stats subset for compatibility with the old stats route."""
+    return read_service.get_dashboard_stats(session)
+
+
 @router.get("/incidents")
 async def list_v2_incidents(
     limit: int = Query(50, ge=1, le=200),
@@ -61,11 +72,30 @@ async def list_v2_incidents(
     date_to: Optional[date] = Query(None),
     sort_by: Literal["last_seen_at", "incident_date", "created_at", "institution_name", "country", "severity"] = Query("last_seen_at"),
     sort_order: Literal["asc", "desc"] = Query("desc"),
+    format: Literal["default", "legacy"] = Query("default"),
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
 ):
     """List recent canonical incidents from the v2 Postgres layer."""
     statuses = tuple(status) if status else ("open",)
+    if format == "legacy":
+        return read_service.list_legacy_incidents(
+            session,
+            limit=limit,
+            offset=offset,
+            statuses=statuses,
+            search=search,
+            country_code=country_code.upper() if country_code else None,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
     result = read_service.list_incidents(
         session,
         limit=limit,
@@ -310,11 +340,37 @@ async def get_v2_filter_options(
 @router.get("/incidents/{canonical_incident_id}")
 async def get_v2_incident_detail(
     canonical_incident_id: str,
+    format: Literal["default", "legacy"] = Query("default"),
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
 ):
     """Return one canonical incident detail payload from the v2 Postgres layer."""
-    detail = read_service.get_incident_detail(session, canonical_incident_id)
+    detail = (
+        read_service.get_legacy_incident_detail(session, canonical_incident_id)
+        if format == "legacy"
+        else read_service.get_incident_detail(session, canonical_incident_id)
+    )
     if detail is None:
         raise HTTPException(status_code=404, detail="Canonical incident not found")
     return detail
+
+
+@router.get("/incidents/{canonical_incident_id}/report")
+async def get_v2_incident_report(
+    canonical_incident_id: str,
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Generate a markdown CTI report from the v2 canonical incident detail."""
+    detail = read_service.get_legacy_incident_detail(session, canonical_incident_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Canonical incident not found")
+
+    report = generate_cti_report(detail)
+    return Response(
+        content=report,
+        media_type="text/markdown",
+        headers={
+            "Content-Disposition": f'attachment; filename="cti-report-{canonical_incident_id}.md"'
+        },
+    )

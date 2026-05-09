@@ -207,6 +207,73 @@ def _is_full_dashboard_snapshot(payload: dict[str, Any]) -> bool:
     return required.issubset(payload.keys())
 
 
+def _to_legacy_incident_summary(item: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "incident_id": item["canonical_incident_id"],
+        "institution_name": item.get("display_name") or item.get("institution_name") or "Unknown",
+        "institution_type": item.get("institution_type"),
+        "country": item.get("country"),
+        "country_code": item.get("country_code"),
+        "region": item.get("region"),
+        "city": item.get("city"),
+        "incident_date": item.get("incident_date"),
+        "date_precision": item.get("date_precision"),
+        "title": item.get("canonical_summary"),
+        "subtitle": None,
+        "enriched_summary": item.get("canonical_summary"),
+        "attack_type_hint": item.get("attack_category"),
+        "attack_category": item.get("attack_category"),
+        "ransomware_family": item.get("ransomware_family"),
+        "threat_actor_name": item.get("threat_actor_name"),
+        "status": item.get("status") or "open",
+        "source_confidence": "medium",
+        "llm_enriched": bool(item.get("selected_source_enrichment_id")),
+        "llm_enriched_at": item.get("updated_at"),
+        "ingested_at": item.get("first_seen_at"),
+        "sources": [],
+    }
+
+
+def _to_legacy_timeline(timeline: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "date": item.get("event_date"),
+            "date_precision": item.get("date_precision"),
+            "event_description": item.get("event_description"),
+            "event_type": item.get("event_type"),
+            "actor_attribution": item.get("actor_attribution"),
+            "indicators": None,
+        }
+        for item in timeline
+    ]
+
+
+def _to_legacy_sources(memberships: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "source": item.get("source_name"),
+            "source_event_id": item.get("source_incident_id"),
+            "first_seen_at": item.get("collected_at"),
+            "confidence": None,
+        }
+        for item in memberships
+        if item.get("source_name")
+    ]
+
+
+def _collect_urls(selected_source: dict[str, Any] | None) -> list[str]:
+    urls: list[str] = []
+    if not selected_source:
+        return urls
+    for candidate in (
+        selected_source.get("article_resolved_url"),
+        selected_source.get("article_url"),
+    ):
+        if candidate and candidate not in urls:
+            urls.append(candidate)
+    return urls
+
+
 class V2CanonicalReadService:
     """Build API-friendly read models from canonical incident tables."""
 
@@ -297,6 +364,59 @@ class V2CanonicalReadService:
             "total": total,
         }
 
+    def list_legacy_incidents(
+        self,
+        session: Session,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        sort_by: str = "incident_date",
+        sort_order: str = "desc",
+    ) -> dict[str, Any]:
+        result = self.list_incidents(
+            session,
+            limit=limit,
+            offset=offset,
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+        total = int(result["total"])
+        per_page = max(limit, 1)
+        page = (offset // per_page) + 1
+        total_pages = (total + per_page - 1) // per_page if total else 0
+        incidents = [_to_legacy_incident_summary(item) for item in result["items"]]
+        return {
+            "incidents": incidents,
+            "pagination": {
+                "page": page,
+                "per_page": per_page,
+                "total": total,
+                "total_pages": total_pages,
+                "has_next": offset + per_page < total,
+                "has_prev": offset > 0,
+            },
+        }
+
     def get_incident_detail(self, session: Session, canonical_incident_id: str) -> dict[str, Any] | None:
         canonical = self.canonical_repository.get_by_id(session, canonical_incident_id)
         if canonical is None:
@@ -338,12 +458,198 @@ class V2CanonicalReadService:
             "snapshot": (snapshot.state_payload if snapshot else None) or {},
         }
 
+    def get_legacy_incident_detail(
+        self,
+        session: Session,
+        canonical_incident_id: str,
+    ) -> dict[str, Any] | None:
+        detail = self.get_incident_detail(session, canonical_incident_id)
+        if detail is None:
+            return None
+
+        projection = detail.get("canonical_projection") or {}
+        attack_dynamics = projection.get("attack_dynamics") or {}
+        selected_source = detail.get("selected_source") or {}
+        timeline = _to_legacy_timeline(detail.get("timeline") or [])
+        urls = _collect_urls(selected_source)
+        attack_vector = detail.get("attack_vector") or attack_dynamics.get("attack_vector") or projection.get("attack_vector")
+        ransomware_family = detail.get("ransomware_family") or attack_dynamics.get("ransomware_family") or projection.get("ransomware_family")
+
+        return {
+            "incident_id": detail["canonical_incident_id"],
+            "institution_name": detail.get("display_name") or detail.get("institution_name") or "Unknown",
+            "institution_type": detail.get("institution_type"),
+            "institution_size": projection.get("institution_size"),
+            "country": detail.get("country"),
+            "country_code": detail.get("country_code"),
+            "region": detail.get("region"),
+            "city": detail.get("city"),
+            "incident_date": detail.get("incident_date"),
+            "date_precision": detail.get("date_precision"),
+            "discovery_date": projection.get("discovery_date"),
+            "source_published_date": selected_source.get("article_publish_date"),
+            "ingested_at": detail.get("first_seen_at"),
+            "title": selected_source.get("article_title") or detail.get("canonical_summary"),
+            "subtitle": selected_source.get("raw_subtitle"),
+            "enriched_summary": detail.get("canonical_summary"),
+            "initial_access_description": projection.get("initial_access_description"),
+            "primary_url": urls[0] if urls else None,
+            "all_urls": urls,
+            "leak_site_url": projection.get("threat_actor_claim_url") or projection.get("leak_site_url"),
+            "source_detail_url": projection.get("source_detail_url"),
+            "screenshot_url": projection.get("screenshot_url"),
+            "attack_type_hint": detail.get("attack_category"),
+            "attack_category": detail.get("attack_category"),
+            "incident_severity": detail.get("severity"),
+            "status": detail.get("status") or "open",
+            "source_confidence": "medium",
+            "academic_period_affected": projection.get("academic_period_affected"),
+            "dark_web_posting_confirmed": projection.get("dark_web_posting_confirmed"),
+            "prior_breach_same_institution": projection.get("prior_breach_same_institution"),
+            "threat_actor": projection.get("threat_actor") or detail.get("threat_actor_name"),
+            "threat_actor_name": detail.get("threat_actor_name"),
+            "threat_actor_category": projection.get("threat_actor_category"),
+            "threat_actor_motivation": projection.get("threat_actor_motivation"),
+            "threat_actor_origin_country": projection.get("threat_actor_origin_country"),
+            "threat_actor_claim_url": projection.get("threat_actor_claim_url"),
+            "timeline": timeline,
+            "mitre_attack_techniques": projection.get("mitre_attack_techniques"),
+            "attack_dynamics": {
+                "attack_vector": attack_vector,
+                "attack_chain": attack_dynamics.get("attack_chain"),
+                "ransomware_family": ransomware_family,
+                "data_exfiltration": projection.get("data_exfiltrated"),
+                "encryption_impact": attack_dynamics.get("encryption_impact"),
+                "ransom_demanded": projection.get("was_ransom_demanded") or attack_dynamics.get("ransom_demanded"),
+                "ransom_amount": projection.get("ransom_amount") or attack_dynamics.get("ransom_amount"),
+                "ransom_paid": projection.get("ransom_paid") or attack_dynamics.get("ransom_paid"),
+                "recovery_timeframe_days": projection.get("recovery_duration_days") or attack_dynamics.get("recovery_timeframe_days"),
+                "business_impact": projection.get("business_impact") or attack_dynamics.get("business_impact"),
+                "operational_impact": projection.get("operational_impact") or attack_dynamics.get("operational_impact"),
+            },
+            "data_impact": {
+                "data_breached": projection.get("data_breached"),
+                "data_exfiltrated": projection.get("data_exfiltrated"),
+                "data_categories": projection.get("data_categories"),
+                "records_affected_exact": projection.get("records_affected_exact"),
+                "records_affected_min": projection.get("records_affected_min"),
+                "records_affected_max": projection.get("records_affected_max"),
+                "pii_records_leaked": projection.get("pii_records_leaked"),
+            },
+            "system_impact": {
+                "systems_affected": projection.get("systems_affected"),
+                "critical_systems_affected": projection.get("critical_systems_affected"),
+                "network_compromised": projection.get("network_compromised"),
+                "email_system_affected": projection.get("email_system_affected"),
+                "student_portal_affected": projection.get("student_portal_affected"),
+                "research_systems_affected": projection.get("research_systems_affected"),
+                "hospital_systems_affected": projection.get("hospital_systems_affected"),
+                "cloud_services_affected": projection.get("cloud_services_affected"),
+                "third_party_vendor_impact": projection.get("third_party_vendor_impact"),
+                "vendor_name": detail.get("vendor_name"),
+            },
+            "user_impact": {
+                "students_affected": projection.get("students_affected"),
+                "staff_affected": projection.get("staff_affected"),
+                "faculty_affected": projection.get("faculty_affected"),
+                "alumni_affected": projection.get("alumni_affected"),
+                "parents_affected": projection.get("parents_affected"),
+                "applicants_affected": projection.get("applicants_affected"),
+                "patients_affected": projection.get("patients_affected"),
+                "users_affected_min": projection.get("users_affected_min"),
+                "users_affected_max": projection.get("users_affected_max"),
+                "users_affected_exact": projection.get("users_affected_exact"),
+                "total_individuals_affected": projection.get("total_individuals_affected"),
+            },
+            "financial_impact": {
+                "estimated_total_cost_usd": projection.get("estimated_total_cost_usd"),
+                "ransom_cost_usd": projection.get("ransom_cost_usd"),
+                "recovery_cost_usd": projection.get("recovery_cost_usd"),
+                "legal_cost_usd": projection.get("legal_cost_usd"),
+                "notification_cost_usd": projection.get("notification_cost_usd"),
+                "insurance_claim": projection.get("insurance_claim"),
+                "insurance_payout_usd": projection.get("insurance_payout_usd"),
+                "business_impact": projection.get("business_impact"),
+            },
+            "regulatory_impact": {
+                "applicable_regulations": projection.get("applicable_regulations"),
+                "gdpr_breach": projection.get("gdpr_breach"),
+                "hipaa_breach": projection.get("hipaa_breach"),
+                "ferpa_breach": projection.get("ferpa_breach"),
+                "breach_notification_required": projection.get("breach_notification_required"),
+                "notification_sent": projection.get("notification_sent"),
+                "notification_sent_date": projection.get("notification_sent_date"),
+                "notification_delay_days": projection.get("notification_delay_days"),
+                "dpa_notified": projection.get("dpa_notified"),
+                "investigation_opened": projection.get("investigation_opened"),
+                "fine_imposed": projection.get("fine_imposed"),
+                "fine_amount_usd": projection.get("fine_amount_usd"),
+                "lawsuits_filed": projection.get("lawsuits_filed"),
+                "class_action_filed": projection.get("class_action_filed"),
+            },
+            "research_impact": {
+                "research_projects_affected": projection.get("research_projects_affected"),
+                "research_data_compromised": projection.get("research_data_compromised"),
+                "publications_delayed": projection.get("publications_delayed"),
+                "grants_affected": projection.get("grants_affected"),
+                "research_area": projection.get("research_area"),
+            },
+            "recovery_metrics": {
+                "recovery_method": projection.get("recovery_method"),
+                "recovery_duration_days": projection.get("recovery_duration_days"),
+                "from_backup": projection.get("from_backup"),
+                "backup_status": projection.get("backup_status"),
+                "backup_age_days": projection.get("backup_age_days"),
+                "mfa_implemented": projection.get("mfa_implemented"),
+                "law_enforcement_involved": projection.get("law_enforcement_involved"),
+                "law_enforcement_agency": projection.get("law_enforcement_agency"),
+                "ir_firm_engaged": projection.get("ir_firm_engaged"),
+                "forensics_firm": projection.get("forensics_firm"),
+                "security_improvements": projection.get("security_improvements"),
+            },
+            "transparency_metrics": {
+                "public_disclosure": projection.get("public_disclosure"),
+                "public_disclosure_date": projection.get("public_disclosure_date"),
+                "disclosure_delay_days": projection.get("disclosure_delay_days"),
+                "transparency_level": projection.get("transparency_level"),
+            },
+            "llm_enriched": bool(detail.get("selected_source_enrichment_id")),
+            "llm_enriched_at": detail.get("updated_at"),
+            "sources": _to_legacy_sources(detail.get("memberships") or []),
+            "notes": projection.get("notes"),
+            "data_breached": projection.get("data_breached"),
+            "data_exfiltrated": projection.get("data_exfiltrated"),
+            "records_affected_exact": projection.get("records_affected_exact"),
+            "records_affected_min": projection.get("records_affected_min"),
+            "records_affected_max": projection.get("records_affected_max"),
+            "pii_records_leaked": projection.get("pii_records_leaked"),
+            "systems_affected": projection.get("systems_affected"),
+            "teaching_impacted": projection.get("teaching_impacted"),
+            "research_impacted": projection.get("research_impacted"),
+            "classes_cancelled": projection.get("classes_cancelled"),
+            "exams_postponed": projection.get("exams_postponed"),
+            "downtime_days": projection.get("downtime_days"),
+            "recovery_costs_min": projection.get("recovery_costs_min"),
+            "recovery_costs_max": projection.get("recovery_costs_max"),
+            "ransom_amount": projection.get("ransom_amount"),
+            "ransom_currency": projection.get("ransom_currency"),
+            "ransom_paid": projection.get("ransom_paid"),
+            "ransom_paid_amount": projection.get("ransom_paid_amount"),
+            "fine_amount": projection.get("fine_amount"),
+            "attack_vector": attack_vector,
+            "access_vector": projection.get("access_vector") or attack_vector,
+            "ransomware_family": ransomware_family,
+        }
+
     def get_dashboard_summary(self, session: Session) -> dict[str, Any]:
         snapshot = self.analytics_refresh_repository.get_by_key(session, "dashboard:global")
         if snapshot is not None and snapshot.state_payload and _is_full_dashboard_snapshot(snapshot.state_payload):
             return snapshot.state_payload
 
         return self.build_dashboard_payload(session)
+
+    def get_dashboard_stats(self, session: Session) -> dict[str, Any]:
+        return self.get_dashboard_summary(session)["stats"]
 
     def build_dashboard_payload(
         self,

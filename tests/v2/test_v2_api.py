@@ -41,6 +41,19 @@ def test_v2_dashboard_endpoint_returns_read_service_payload():
     assert response.json()["incidents_by_country"][0]["category"] == "United States"
 
 
+def test_v2_stats_endpoint_returns_dashboard_stats_payload():
+    class _ReadService:
+        def get_dashboard_stats(self, _session):
+            return {"total_incidents": 7, "education_incidents": 6}
+
+    client = _build_client(_ReadService())
+
+    response = client.get("/api/v2/stats")
+
+    assert response.status_code == 200
+    assert response.json()["total_incidents"] == 7
+
+
 def test_v2_incidents_endpoint_returns_items_and_meta():
     class _ReadService:
         def __init__(self):
@@ -98,6 +111,30 @@ def test_v2_incidents_endpoint_returns_items_and_meta():
     assert payload["meta"]["sort_order"] == "asc"
 
 
+def test_v2_incidents_endpoint_supports_legacy_format():
+    class _ReadService:
+        def __init__(self):
+            self.called = None
+
+        def list_legacy_incidents(self, _session, **kwargs):
+            self.called = kwargs
+            return {
+                "incidents": [{"incident_id": "abc", "institution_name": "Stanford University"}],
+                "pagination": {"page": 1, "per_page": 20, "total": 1, "total_pages": 1, "has_next": False, "has_prev": False},
+            }
+
+    service = _ReadService()
+    client = _build_client(service)
+
+    response = client.get("/api/v2/incidents", params={"format": "legacy", "limit": 20, "offset": 0})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["incidents"][0]["incident_id"] == "abc"
+    assert payload["pagination"]["total"] == 1
+    assert service.called["limit"] == 20
+
+
 def test_v2_incident_detail_endpoint_returns_404_for_missing_canonical():
     class _ReadService:
         def get_incident_detail(self, _session, _canonical_incident_id):
@@ -109,6 +146,42 @@ def test_v2_incident_detail_endpoint_returns_404_for_missing_canonical():
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Canonical incident not found"
+
+
+def test_v2_incident_detail_endpoint_supports_legacy_format():
+    class _ReadService:
+        def get_legacy_incident_detail(self, _session, _canonical_incident_id):
+            return {"incident_id": "abc", "institution_name": "Stanford University"}
+
+    client = _build_client(_ReadService())
+
+    response = client.get("/api/v2/incidents/abc", params={"format": "legacy"})
+
+    assert response.status_code == 200
+    assert response.json()["incident_id"] == "abc"
+
+
+def test_v2_incident_report_endpoint_returns_markdown():
+    class _ReadService:
+        def get_legacy_incident_detail(self, _session, _canonical_incident_id):
+            return {
+                "incident_id": "abc",
+                "institution_name": "Stanford University",
+                "country": "United States",
+                "country_code": "US",
+                "incident_date": "2026-05-08",
+                "enriched_summary": "Stanford suffered a ransomware incident.",
+                "attack_category": "ransomware_encryption",
+                "timeline": [],
+            }
+
+    client = _build_client(_ReadService())
+
+    response = client.get("/api/v2/incidents/abc/report")
+
+    assert response.status_code == 200
+    assert response.headers["content-disposition"] == 'attachment; filename="cti-report-abc.md"'
+    assert "# CYBER THREAT INTELLIGENCE REPORT" in response.text
 
 
 def test_v2_incident_facets_endpoint_returns_filtered_facets():

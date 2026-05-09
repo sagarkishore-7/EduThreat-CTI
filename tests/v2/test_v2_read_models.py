@@ -122,6 +122,53 @@ def test_read_service_list_incidents_returns_items_and_total_with_filters():
     canonical_repo.count_recent.assert_called_once()
 
 
+def test_read_service_list_legacy_incidents_returns_old_pagination_shape():
+    canonical = SimpleNamespace(
+        id=uuid4(),
+        institution_name="Stanford University",
+        vendor_name=None,
+        institution_type="university",
+        country="United States",
+        country_code="US",
+        region="California",
+        city="Stanford",
+        incident_date=date(2026, 5, 8),
+        date_precision="day",
+        attack_category="ransomware_encryption",
+        attack_vector="phishing_email",
+        threat_actor_name="SomeGroup",
+        ransomware_family="LockBit",
+        is_education_related=True,
+        severity="high",
+        canonical_summary="Stanford suffered a ransomware incident.",
+        status="open",
+        first_seen_at=datetime(2026, 5, 8, 8, 0, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 9, 8, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 5, 9, 9, 0, tzinfo=timezone.utc),
+    )
+    enrichment = SimpleNamespace(
+        selected_source_enrichment_id=uuid4(),
+        analytics_projection={"attack_category": "ransomware_encryption"},
+    )
+    canonical_repo = Mock()
+    canonical_repo.list_recent_with_enrichment.return_value = [(canonical, enrichment, 3)]
+    canonical_repo.count_recent.return_value = 17
+
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+
+    result = service.list_legacy_incidents(
+        Mock(),
+        limit=10,
+        offset=20,
+        statuses=("open", "excluded"),
+    )
+
+    assert result["incidents"][0]["incident_id"]
+    assert result["pagination"]["page"] == 3
+    assert result["pagination"]["total_pages"] == 2
+    assert result["pagination"]["has_prev"] is True
+
+
 def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     canonical_id = str(uuid4())
     canonical = SimpleNamespace(
@@ -245,6 +292,117 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     assert detail["fetch_attempts"][0]["http_status"] == 200
 
 
+def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
+    canonical_id = str(uuid4())
+    canonical = SimpleNamespace(
+        id=uuid4(),
+        institution_name="Penn State University",
+        vendor_name=None,
+        institution_type="university",
+        country="United States",
+        country_code="US",
+        region="Pennsylvania",
+        city="State College",
+        incident_date=date(2026, 5, 8),
+        date_precision="day",
+        attack_category="ransomware_encryption",
+        attack_vector="phishing_email",
+        threat_actor_name="SomeGroup",
+        ransomware_family="LockBit",
+        is_education_related=True,
+        severity="high",
+        canonical_summary="Penn State suffered a ransomware incident.",
+        status="open",
+        first_seen_at=datetime(2026, 5, 8, 8, 0, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 9, 8, 0, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 5, 9, 9, 0, tzinfo=timezone.utc),
+        resolution_metadata={},
+    )
+    enrichment = SimpleNamespace(
+        selected_source_enrichment_id=uuid4(),
+        analytics_projection={},
+        field_provenance={},
+        canonical_projection={
+            "attack_dynamics": {"attack_vector": "phishing_email"},
+            "data_breached": True,
+            "records_affected_exact": 5000,
+            "mitre_attack_techniques": [{"technique_id": "T1486"}],
+        },
+    )
+    membership = SimpleNamespace(
+        source_incident_id=uuid4(),
+        match_type="url_exact",
+        match_score=100.0,
+        survivor_score=55.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 9, 9, 30, tzinfo=timezone.utc),
+    )
+    canonical_repo = Mock()
+    canonical_repo.get_by_id.return_value = canonical
+    canonical_repo.get_enrichment.return_value = enrichment
+    canonical_repo.list_membership_details.return_value = [
+        {
+            "membership": membership,
+            "source_incident_id": str(membership.source_incident_id),
+            "source_name": "googlenews_rss",
+            "source_group": "rss",
+            "collected_at": "2026-05-09T09:00:00+00:00",
+            "source_published_at": "2026-05-09T08:30:00+00:00",
+            "raw_title": "Penn State ransomware update",
+            "raw_subtitle": None,
+            "raw_victim_name": "Penn State University",
+            "raw_institution_name": "Penn State University",
+            "raw_institution_type": "university",
+            "raw_country": "United States",
+            "raw_region": "Pennsylvania",
+            "raw_city": "State College",
+        }
+    ]
+    canonical_repo.list_timeline_events.return_value = [
+        SimpleNamespace(
+            seq_order=1,
+            event_date=date(2026, 5, 8),
+            date_precision="day",
+            event_type="impact",
+            event_description="Systems were encrypted.",
+            actor_attribution="SomeGroup",
+            source_enrichment_id=uuid4(),
+        )
+    ]
+    canonical_repo.get_selected_source_details.return_value = {
+        "source_incident_id": "00000000-0000-0000-0000-000000000111",
+        "source_name": "googlenews_rss",
+        "raw_subtitle": None,
+        "article_title": "Penn State ransomware update",
+        "article_publish_date": "2026-05-09",
+        "article_url": "https://example.com/article",
+        "article_resolved_url": "https://example.com/article",
+    }
+    analytics_repo = Mock()
+    analytics_repo.get_by_key.return_value = None
+    article_repo = Mock()
+    article_repo.list_fetch_attempts.return_value = []
+
+    service = V2CanonicalReadService(
+        canonical_repository=canonical_repo,
+        analytics_refresh_repository=analytics_repo,
+        article_repository=article_repo,
+    )
+
+    detail = service.get_legacy_incident_detail(Mock(), canonical_id)
+
+    assert detail is not None
+    assert detail["incident_id"] == str(canonical.id)
+    assert detail["title"] == "Penn State ransomware update"
+    assert detail["primary_url"] == "https://example.com/article"
+    assert detail["timeline"][0]["date"] == "2026-05-08"
+    assert detail["sources"][0]["source"] == "googlenews_rss"
+    assert detail["data_breached"] is True
+    assert detail["records_affected_exact"] == 5000
+
+
 def test_read_service_dashboard_summary_prefers_cached_snapshot():
     dashboard_snapshot = {
         "totals": {"canonical_incident_count": 5},
@@ -268,6 +426,31 @@ def test_read_service_dashboard_summary_prefers_cached_snapshot():
 
     assert summary == dashboard_snapshot
     canonical_repo.get_dashboard_rollup.assert_not_called()
+
+
+def test_read_service_can_return_dashboard_stats_only():
+    canonical_repo = Mock()
+    analytics_repo = Mock()
+    analytics_repo.get_by_key.return_value = SimpleNamespace(
+        state_payload={
+            "totals": {"canonical_incident_count": 5},
+            "stats": {"total_incidents": 5, "education_incidents": 4},
+            "incidents_by_country": [],
+            "incidents_by_attack_type": [],
+            "incidents_by_ransomware": [],
+            "incidents_over_time": [],
+            "recent_incidents": [],
+        }
+    )
+
+    service = V2CanonicalReadService(
+        canonical_repository=canonical_repo,
+        analytics_refresh_repository=analytics_repo,
+    )
+
+    stats = service.get_dashboard_stats(Mock())
+
+    assert stats["total_incidents"] == 5
 
 
 def test_read_service_dashboard_summary_rebuilds_when_cached_snapshot_is_legacy_shape():
