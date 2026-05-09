@@ -172,6 +172,7 @@ class V2CanonicalReadService:
         enrichment = self.canonical_repository.get_enrichment(session, canonical_incident_id)
         memberships = self.canonical_repository.list_memberships(session, canonical_incident_id)
         timeline = self.canonical_repository.list_timeline_events(session, canonical_incident_id)
+        selected_source = self.canonical_repository.get_selected_source_details(session, canonical_incident_id)
         snapshot = self.analytics_refresh_repository.get_by_key(
             session,
             f"canonical:{canonical_incident_id}",
@@ -185,6 +186,7 @@ class V2CanonicalReadService:
             "resolution_metadata": canonical.resolution_metadata or {},
             "field_provenance": (enrichment.field_provenance if enrichment else None) or {},
             "canonical_projection": (enrichment.canonical_projection if enrichment else None) or {},
+            "selected_source": selected_source,
             "memberships": [_serialize_membership(member) for member in memberships],
             "timeline": [_serialize_timeline_event(event) for event in timeline],
             "snapshot": (snapshot.state_payload if snapshot else None) or {},

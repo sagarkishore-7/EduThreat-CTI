@@ -180,6 +180,13 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     canonical_repo.get_enrichment.return_value = enrichment
     canonical_repo.list_memberships.return_value = [membership]
     canonical_repo.list_timeline_events.return_value = [timeline_event]
+    canonical_repo.get_selected_source_details.return_value = {
+        "source_name": "googlenews_rss",
+        "article_title": "Penn State ransomware update",
+        "article_publish_date": "2026-05-09",
+        "article_url": "https://example.com/article",
+        "article_resolved_url": "https://example.com/article",
+    }
 
     analytics_repo = Mock()
     analytics_repo.get_by_key.return_value = snapshot
@@ -196,6 +203,8 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     assert detail["memberships"][0]["match_type"] == "url_exact"
     assert detail["timeline"][0]["event_description"] == "Systems were encrypted."
     assert detail["snapshot"]["timeline_count"] == 1
+    assert detail["selected_source"]["source_name"] == "googlenews_rss"
+    assert detail["selected_source"]["article_url"] == "https://example.com/article"
 
 
 def test_read_service_dashboard_summary_prefers_cached_snapshot():

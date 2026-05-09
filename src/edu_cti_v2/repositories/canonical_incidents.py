@@ -9,10 +9,13 @@ from sqlalchemy import Select, case, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from src.edu_cti_v2.models import (
+    ArticleDocument,
     CanonicalEnrichment,
     CanonicalIncident,
     CanonicalMembership,
     CanonicalTimelineEvent,
+    SourceEnrichment,
+    SourceIncident,
     SourceIncidentUrl,
 )
 
@@ -141,6 +144,32 @@ class CanonicalIncidentRepository:
     def build_get_enrichment_stmt(canonical_incident_id: str) -> Select:
         return (
             select(CanonicalEnrichment)
+            .where(CanonicalEnrichment.canonical_incident_id == canonical_incident_id)
+            .limit(1)
+        )
+
+    @staticmethod
+    def build_selected_source_stmt(canonical_incident_id: str) -> Select:
+        return (
+            select(
+                SourceEnrichment.id.label("source_enrichment_id"),
+                SourceIncident.id.label("source_incident_id"),
+                SourceIncident.source_name,
+                SourceIncident.source_group,
+                SourceIncident.raw_title,
+                SourceIncident.raw_subtitle,
+                ArticleDocument.id.label("article_document_id"),
+                ArticleDocument.title.label("article_title"),
+                ArticleDocument.author.label("article_author"),
+                ArticleDocument.publish_date.label("article_publish_date"),
+                SourceIncidentUrl.url.label("article_url"),
+                SourceIncidentUrl.resolved_url.label("article_resolved_url"),
+            )
+            .select_from(CanonicalEnrichment)
+            .join(SourceEnrichment, SourceEnrichment.id == CanonicalEnrichment.selected_source_enrichment_id)
+            .join(SourceIncident, SourceIncident.id == SourceEnrichment.source_incident_id)
+            .outerjoin(ArticleDocument, ArticleDocument.id == SourceEnrichment.article_document_id)
+            .outerjoin(SourceIncidentUrl, SourceIncidentUrl.id == ArticleDocument.source_incident_url_id)
             .where(CanonicalEnrichment.canonical_incident_id == canonical_incident_id)
             .limit(1)
         )
@@ -579,6 +608,33 @@ class CanonicalIncidentRepository:
     ) -> CanonicalEnrichment | None:
         stmt = self.build_get_enrichment_stmt(canonical_incident_id)
         return session.execute(stmt).scalar_one_or_none()
+
+    def get_selected_source_details(
+        self,
+        session: Session,
+        canonical_incident_id: str,
+    ) -> dict[str, object] | None:
+        stmt = self.build_selected_source_stmt(canonical_incident_id)
+        row = session.execute(stmt).one_or_none()
+        if row is None:
+            return None
+        data = row._mapping
+        return {
+            "source_enrichment_id": str(data["source_enrichment_id"]) if data["source_enrichment_id"] else None,
+            "source_incident_id": str(data["source_incident_id"]) if data["source_incident_id"] else None,
+            "source_name": data["source_name"],
+            "source_group": data["source_group"],
+            "raw_title": data["raw_title"],
+            "raw_subtitle": data["raw_subtitle"],
+            "article_document_id": str(data["article_document_id"]) if data["article_document_id"] else None,
+            "article_title": data["article_title"],
+            "article_author": data["article_author"],
+            "article_publish_date": (
+                data["article_publish_date"].isoformat() if data["article_publish_date"] else None
+            ),
+            "article_url": data["article_url"],
+            "article_resolved_url": data["article_resolved_url"],
+        }
 
     def list_timeline_events(
         self,

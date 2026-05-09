@@ -131,6 +131,19 @@ def test_canonical_repository_recent_stmt_supports_sorting():
     assert "canonical_incidents.last_seen_at ASC NULLS LAST" in compiled
 
 
+def test_canonical_repository_selected_source_stmt_joins_source_and_article_tables():
+    stmt = CanonicalIncidentRepository.build_selected_source_stmt(
+        "00000000-0000-0000-0000-000000000111"
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "JOIN source_enrichments" in compiled
+    assert "JOIN source_incidents" in compiled
+    assert "LEFT OUTER JOIN article_documents" in compiled
+    assert "LEFT OUTER JOIN source_incident_urls" in compiled
+    assert "canonical_enrichments.canonical_incident_id = '00000000-0000-0000-0000-000000000111'" in compiled
+
+
 def test_canonical_repository_country_facet_stmt_supports_filters():
     stmt = CanonicalIncidentRepository.build_country_facet_stmt(
         statuses=("open", "excluded"),
