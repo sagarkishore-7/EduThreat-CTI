@@ -83,6 +83,8 @@ def test_enrichment_service_persists_typed_source_enrichment():
     article_repo = Mock()
     source_enrichment_repo = Mock()
     source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
     enricher = Mock()
     result_model = Mock()
     result_model.model_dump.return_value = {
@@ -115,6 +117,7 @@ def test_enrichment_service_persists_typed_source_enrichment():
     service = V2EnrichmentService(
         article_repository=article_repo,
         source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
         enricher=enricher,
     )
     session = Mock()
@@ -123,11 +126,13 @@ def test_enrichment_service_persists_typed_source_enrichment():
 
     assert outcome["enriched"] is True
     assert outcome["is_education_related"] is True
+    assert outcome["canonicalize_tasks_enqueued"] == 1
     saved = source_enrichment_repo.add.call_args.args[1]
     assert saved.article_document_id == document.id
     assert saved.llm_model == "deepseek-v3.1:671b-cloud"
     assert saved.typed_enrichment["attack_category"] == "ransomware_encryption"
     assert saved.raw_response == {"extraction": "{\"ok\":true}"}
+    pipeline_task_repo.enqueue.assert_called_once()
 
 
 def test_enrichment_service_records_missing_article_failure():
@@ -135,9 +140,11 @@ def test_enrichment_service_records_missing_article_failure():
     article_repo.get_selected_document.return_value = None
     source_enrichment_repo = Mock()
     source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
     service = V2EnrichmentService(
         article_repository=article_repo,
         source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
         enricher=Mock(),
     )
     session = Mock()
@@ -145,6 +152,6 @@ def test_enrichment_service_records_missing_article_failure():
 
     outcome = service.enrich_source_incident(session, incident)
 
-    assert outcome == {"enriched": False, "reason": "missing_article"}
+    assert outcome == {"enriched": False, "reason": "missing_article", "canonicalize_tasks_enqueued": 0}
     saved = source_enrichment_repo.add.call_args.args[1]
     assert saved.failed_reason == "No selected article available for enrichment"

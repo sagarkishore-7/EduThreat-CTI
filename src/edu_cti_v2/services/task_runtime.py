@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceIncidentRepository
+from src.edu_cti_v2.services.canonicalization import V2CanonicalizationService
 from src.edu_cti_v2.services.enrichment import V2EnrichmentService
 from src.edu_cti_v2.services.fetching import V2FetchService
 from src.edu_cti_v2.services.resolution import V2ResolveUrlService
@@ -23,6 +24,7 @@ class V2TaskRuntime:
         fetch_service: Optional[V2FetchService] = None,
         resolve_url_service: Optional[V2ResolveUrlService] = None,
         enrichment_service: Optional[V2EnrichmentService] = None,
+        canonicalization_service: Optional[V2CanonicalizationService] = None,
     ) -> None:
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
         self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
@@ -31,6 +33,7 @@ class V2TaskRuntime:
         )
         self.resolve_url_service = resolve_url_service
         self.enrichment_service = enrichment_service
+        self.canonicalization_service = canonicalization_service
 
     def process_next_task(
         self,
@@ -52,7 +55,7 @@ class V2TaskRuntime:
 
         task = leased[0]
         try:
-            if task.task_type in {"fetch_article", "resolve_url", "enrich_source"}:
+            if task.task_type in {"fetch_article", "resolve_url", "enrich_source", "canonicalize"}:
                 source_incident = self.source_incident_repository.get_by_id(session, task.target_id)
                 if source_incident is None:
                     raise ValueError(f"Source incident not found: {task.target_id}")
@@ -72,12 +75,24 @@ class V2TaskRuntime:
                         session,
                         source_incident,
                     )
-                else:
-                    enrichment_service = self.enrichment_service or V2EnrichmentService()
+                elif task.task_type == "enrich_source":
+                    enrichment_service = self.enrichment_service or V2EnrichmentService(
+                        pipeline_task_repository=self.pipeline_task_repository,
+                    )
                     self.enrichment_service = enrichment_service
                     result = enrichment_service.enrich_source_incident(
                         session,
                         source_incident,
+                    )
+                else:
+                    canonicalization_service = self.canonicalization_service or V2CanonicalizationService(
+                        source_incident_repository=self.source_incident_repository,
+                        pipeline_task_repository=self.pipeline_task_repository,
+                    )
+                    self.canonicalization_service = canonicalization_service
+                    result = canonicalization_service.canonicalize_source_incident(
+                        session,
+                        source_incident.id,
                     )
                 self.pipeline_task_repository.mark_completed(session, task, result)
                 return task

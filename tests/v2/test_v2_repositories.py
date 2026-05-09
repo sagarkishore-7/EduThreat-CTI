@@ -1,3 +1,5 @@
+from datetime import date
+
 from sqlalchemy.dialects import postgresql
 
 from src.edu_cti_v2.repositories import (
@@ -30,6 +32,28 @@ def test_canonical_repository_membership_stmt_filters_by_source_incident():
     compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
 
     assert "canonical_memberships.source_incident_id" in compiled
+
+
+def test_canonical_repository_url_candidate_stmt_joins_source_urls():
+    stmt = CanonicalIncidentRepository.build_find_by_url_candidates_stmt(
+        ["https://example.com/article"]
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "source_incident_urls.normalized_url IN ('https://example.com/article')" in compiled
+    assert "JOIN canonical_memberships" in compiled
+
+
+def test_canonical_repository_name_date_candidate_stmt_filters_country_and_window():
+    stmt = CanonicalIncidentRepository.build_find_name_date_candidates_stmt(
+        incident_date=date(2026, 5, 9),
+        country_code="US",
+        window_days=14,
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "canonical_incidents.country_code = 'US'" in compiled
+    assert "canonical_incidents.incident_date BETWEEN '2026-04-25'" in compiled
 
 
 def test_pipeline_task_repository_active_target_stmt_filters_by_target():

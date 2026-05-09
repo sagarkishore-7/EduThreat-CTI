@@ -2,14 +2,19 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.enrichment import IncidentEnricher
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
 from src.edu_cti.pipeline.phase2.storage import ArticleContent
-from src.edu_cti_v2.models import SourceEnrichment
-from src.edu_cti_v2.repositories import ArticleRepository, SourceEnrichmentRepository
+from src.edu_cti_v2.models import PipelineTask, SourceEnrichment
+from src.edu_cti_v2.repositories import (
+    ArticleRepository,
+    PipelineTaskRepository,
+    SourceEnrichmentRepository,
+)
 
 
 def source_incident_to_base_incident(source_incident, article_url: str) -> BaseIncident:
@@ -67,11 +72,13 @@ class V2EnrichmentService:
         *,
         article_repository: Optional[ArticleRepository] = None,
         source_enrichment_repository: Optional[SourceEnrichmentRepository] = None,
+        pipeline_task_repository: Optional[PipelineTaskRepository] = None,
         enricher: Optional[IncidentEnricher] = None,
         llm_client: Optional[OllamaLLMClient] = None,
     ) -> None:
         self.article_repository = article_repository or ArticleRepository()
         self.source_enrichment_repository = source_enrichment_repository or SourceEnrichmentRepository()
+        self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
         if enricher is not None:
             self.enricher = enricher
         else:
@@ -122,6 +129,7 @@ class V2EnrichmentService:
             return {
                 "enriched": False,
                 "reason": "missing_article",
+                "canonicalize_tasks_enqueued": 0,
             }
 
         base_incident = source_incident_to_base_incident(source_incident, article_url)
@@ -172,9 +180,40 @@ class V2EnrichmentService:
 
         self.source_enrichment_repository.add(session, enrichment)
 
+        canonicalize_tasks_enqueued = 0
+        if result is not None and is_education_related is not False:
+            existing_canonicalize_task = self.pipeline_task_repository.get_active_for_target(
+                session,
+                task_type="canonicalize",
+                target_table="source_incidents",
+                target_id=source_incident.id,
+            )
+            if existing_canonicalize_task is None:
+                self.pipeline_task_repository.enqueue(
+                    session,
+                    PipelineTask(
+                        run_id=None,
+                        task_type="canonicalize",
+                        target_table="source_incidents",
+                        target_id=source_incident.id,
+                        status="queued",
+                        priority=120,
+                        payload={
+                            "source_incident_id": str(source_incident.id),
+                            "source_name": source_incident.source_name,
+                        },
+                        result={},
+                        available_at=datetime.now(timezone.utc),
+                        attempt_count=0,
+                        max_attempts=5,
+                    ),
+                )
+                canonicalize_tasks_enqueued = 1
+
         return {
             "enriched": result is not None,
             "is_education_related": is_education_related,
             "has_typed_enrichment": typed_enrichment is not None,
             "article_document_id": str(document.id),
+            "canonicalize_tasks_enqueued": canonicalize_tasks_enqueued,
         }

@@ -38,7 +38,7 @@ def test_task_runtime_dead_letters_unimplemented_task_types():
     task_repo = Mock()
     source_repo = Mock()
     fetch_service = Mock()
-    task = SimpleNamespace(task_type="canonicalize", target_id=uuid4())
+    task = SimpleNamespace(task_type="refresh_analytics", target_id=uuid4())
     task_repo.lease_batch.return_value = [task]
 
     runtime = V2TaskRuntime(
@@ -111,3 +111,34 @@ def test_task_runtime_processes_enrich_source_task_and_marks_complete():
     assert processed is task
     enrich_service.enrich_source_incident.assert_called_once_with(session, source_incident)
     task_repo.mark_completed.assert_called_once_with(session, task, {"enriched": True})
+
+
+def test_task_runtime_processes_canonicalize_task_and_marks_complete():
+    task_repo = Mock()
+    source_repo = Mock()
+    fetch_service = Mock()
+    resolve_service = Mock()
+    enrich_service = Mock()
+    canonicalization_service = Mock()
+
+    task = SimpleNamespace(task_type="canonicalize", target_id=uuid4())
+    source_incident = SimpleNamespace(id=task.target_id)
+    task_repo.lease_batch.return_value = [task]
+    source_repo.get_by_id.return_value = source_incident
+    canonicalization_service.canonicalize_source_incident.return_value = {"canonicalized": True}
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        fetch_service=fetch_service,
+        resolve_url_service=resolve_service,
+        enrichment_service=enrich_service,
+        canonicalization_service=canonicalization_service,
+    )
+    session = Mock()
+
+    processed = runtime.process_next_task(session, worker_id="worker-1")
+
+    assert processed is task
+    canonicalization_service.canonicalize_source_incident.assert_called_once_with(session, source_incident.id)
+    task_repo.mark_completed.assert_called_once_with(session, task, {"canonicalized": True})
