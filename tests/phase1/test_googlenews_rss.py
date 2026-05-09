@@ -41,6 +41,11 @@ def test_build_googlenews_rss_incidents_serializes_pub_date(monkeypatch):
             }
         ],
     )
+    monkeypatch.setattr(
+        googlenews_rss,
+        "_resolve_google_news_article_url",
+        lambda _link: "https://example.com/resolved-article",
+    )
     monkeypatch.setattr(googlenews_rss.time, "sleep", lambda _seconds: None)
 
     saved = []
@@ -56,5 +61,39 @@ def test_build_googlenews_rss_incidents_serializes_pub_date(monkeypatch):
     assert incidents[0].source_published_date == "2026-04-15"
     assert "search_country=US" in incidents[0].notes
     assert "search_lang=en" in incidents[0].notes
+    assert incidents[0].all_urls == ["https://example.com/resolved-article"]
     assert isinstance(incidents[0].incident_date, str)
     assert isinstance(saved[0].incident_date, str)
+
+
+def test_build_googlenews_rss_incidents_keeps_item_when_wrapper_cannot_be_resolved(monkeypatch):
+    monkeypatch.setattr(
+        googlenews_rss,
+        "GOOGLE_NEWS_QUERIES",
+        [("canvas cyberattack", "ja", "JP")],
+    )
+    monkeypatch.setattr(
+        googlenews_rss,
+        "_fetch_google_news_rss",
+        lambda _url: [
+            {
+                "title": "Canvas outage impacts universities",
+                "link": "https://news.google.com/rss/articles/test-wrapper",
+                "pub_date": "Wed, 15 Apr 2026 16:23:06 +0000",
+                "description": "Service outage reported by multiple universities",
+                "source_name": "Example News",
+            }
+        ],
+    )
+    monkeypatch.setattr(googlenews_rss, "_resolve_google_news_article_url", lambda _link: None)
+    monkeypatch.setattr(googlenews_rss.time, "sleep", lambda _seconds: None)
+
+    incidents = googlenews_rss.build_googlenews_rss_incidents(
+        incremental=True,
+        max_age_days=3650,
+        save_callback=None,
+    )
+
+    assert len(incidents) == 1
+    assert incidents[0].source_event_id == "https://news.google.com/rss/articles/test-wrapper"
+    assert incidents[0].all_urls == []

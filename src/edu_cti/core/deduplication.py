@@ -66,6 +66,29 @@ _API_PREFERRED_FIELDS: Set[str] = {
     "source_detail_url", # API = CTI platform detail page (not a news article)
 }
 
+_SOURCE_SURVIVOR_RANK: Dict[str, int] = {
+    "ransomwarelive": 50,
+    "ransomlook": 40,
+    "comparitech": 35,
+    "konbriefing": 34,
+    "databreach": 33,
+    "oxylabs_news": 30,
+    "googlenews_rss": 20,
+}
+
+
+def is_google_news_wrapper_url(url: str) -> bool:
+    """Return True for Google News wrapper URLs that should not be treated as source articles."""
+    if not url:
+        return False
+    try:
+        parsed = urlparse(url.strip())
+    except Exception:
+        return False
+    host = parsed.netloc.lower().lstrip("www.")
+    path = parsed.path or ""
+    return host == "news.google.com" and path.startswith("/rss/articles/")
+
 
 def _pick_better_date(
     date1: Optional[str],
@@ -155,13 +178,18 @@ def extract_urls_from_incident(incident: BaseIncident) -> Set[str]:
     # Collect from all_urls
     if incident.all_urls:
         for url in incident.all_urls:
+            if is_google_news_wrapper_url(url):
+                continue
             normalized = normalize_url(url)
             if normalized:
                 urls.add(normalized)
     
     # Collect from primary_url (should be None in Phase 1, but check anyway)
     if incident.primary_url:
-        normalized = normalize_url(incident.primary_url)
+        if is_google_news_wrapper_url(incident.primary_url):
+            normalized = ""
+        else:
+            normalized = normalize_url(incident.primary_url)
         if normalized:
             urls.add(normalized)
     
@@ -251,8 +279,11 @@ def merge_incidents(incidents: List[BaseIncident]) -> BaseIncident:
     # Sort by confidence (highest first)
     sorted_incidents = sorted(
         incidents,
-        key=lambda inc: SOURCE_CONFIDENCE_RANK.get(inc.source_confidence, 0),
-        reverse=True
+        key=lambda inc: (
+            SOURCE_CONFIDENCE_RANK.get(inc.source_confidence, 0),
+            _SOURCE_SURVIVOR_RANK.get(inc.source, 0),
+        ),
+        reverse=True,
     )
     
     primary = sorted_incidents[0]
@@ -436,4 +467,3 @@ def deduplicate_by_urls(incidents: List[BaseIncident]) -> Tuple[List[BaseInciden
     )
     
     return merged_incidents, stats
-

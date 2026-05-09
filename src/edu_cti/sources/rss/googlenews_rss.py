@@ -97,6 +97,30 @@ def _clean_google_news_description(description: str) -> str:
     return text
 
 
+def _resolve_google_news_article_url(link: str) -> Optional[str]:
+    """Resolve Google News wrapper links to the underlying article URL when possible."""
+    if not link:
+        return None
+
+    link = link.strip()
+    if "news.google.com" not in link:
+        return link
+
+    try:
+        from googlenewsdecoder import new_decoderv1
+
+        result = new_decoderv1(link)
+        resolved = (result or {}).get("decoded_url")
+        if resolved and "news.google.com" not in resolved:
+            return str(resolved).strip()
+    except ImportError:
+        logger.warning("googlenewsdecoder not installed — Google RSS links will require SERP discovery")
+    except Exception as exc:
+        logger.debug("Failed to resolve Google News RSS article URL %s: %s", link[:120], exc)
+
+    return None
+
+
 def _fetch_google_news_rss(url: str) -> List[dict]:
     """Fetch and parse a Google News RSS feed. Returns list of item dicts."""
     items = []
@@ -214,13 +238,16 @@ def build_googlenews_rss_incidents(
 
                 link = raw_link
 
-                # Dedup by URL
+                # Dedup by source-event id / Google wrapper, but do not persist the
+                # wrapper URL as an enrichment candidate. Phase 2 will discover a
+                # real article URL via SERP/title matching.
                 if link in seen_urls:
                     continue
                 seen_urls.add(link)
 
                 title = item["title"]
                 description = item.get("description", "")
+                source_name = item.get("source_name")
 
                 total_matched += 1
 
@@ -237,7 +264,8 @@ def build_googlenews_rss_incidents(
                                 continue
                         pub_date = parsed_pub_date.date().isoformat()
 
-                source_event_id = link
+                resolved_link = _resolve_google_news_article_url(link)
+                source_event_id = resolved_link or link
                 incident_id = make_incident_id("googlenews_rss", source_event_id)
 
                 incident = BaseIncident(
@@ -257,11 +285,14 @@ def build_googlenews_rss_incidents(
                     title=title[:200],
                     subtitle=description[:300] if description else None,
                     primary_url=None,
-                    all_urls=[link],
+                    all_urls=[resolved_link] if resolved_link else [],
                     attack_type_hint=None,
                     status="suspected",
                     source_confidence="medium",
-                    notes=f"search_lang={lang};search_country={country};query={query[:50]}",
+                    notes=(
+                        f"search_lang={lang};search_country={country};"
+                        f"source={source_name or 'unknown'};query={query[:50]}"
+                    ),
                 )
 
                 all_incidents.append(incident)

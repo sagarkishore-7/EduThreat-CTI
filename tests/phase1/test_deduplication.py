@@ -2,9 +2,10 @@
 
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.core.deduplication import (
-    normalize_url,
-    extract_urls_from_incident,
     deduplicate_by_urls,
+    extract_urls_from_incident,
+    merge_incidents,
+    normalize_url,
 )
 
 
@@ -76,6 +77,41 @@ class TestExtractURLs:
         
         urls = extract_urls_from_incident(incident)
         assert len(urls) == 2
+
+    def test_extract_urls_ignores_google_news_wrapper_urls(self):
+        incident = BaseIncident(
+            incident_id="test_google_1",
+            source="googlenews_rss",
+            source_event_id="event_google_1",
+            institution_name="Test University",
+            victim_raw_name="Test University",
+            institution_type="University",
+            country="US",
+            region=None,
+            city=None,
+            incident_date="2024-01-01",
+            date_precision="day",
+            source_published_date="2024-01-01",
+            ingested_at="2024-01-01T00:00:00Z",
+            title="Test Incident",
+            subtitle=None,
+            primary_url="https://news.google.com/rss/articles/CBMi-test",
+            all_urls=[
+                "https://news.google.com/rss/articles/CBMi-test",
+                "https://example.com/article",
+            ],
+            leak_site_url=None,
+            source_detail_url=None,
+            screenshot_url=None,
+            attack_type_hint=None,
+            status="suspected",
+            source_confidence="medium",
+            notes=None,
+        )
+
+        urls = extract_urls_from_incident(incident)
+
+        assert urls == {"https://example.com/article"}
 
 
 class TestDeduplication:
@@ -199,6 +235,66 @@ class TestDeduplication:
         )
         
         unique, stats = deduplicate_by_urls([incident1, incident2])
-        
+
         # Should keep both incidents
         assert len(unique) == 2
+
+    def test_merge_incidents_prefers_ransomwarelive_survivor_when_confidence_ties(self):
+        ransomlook = BaseIncident(
+            incident_id="ransomlook_123",
+            source="ransomlook",
+            source_event_id="ransomlook_event",
+            institution_name="Penncrest School District",
+            victim_raw_name="Penncrest School District",
+            institution_type="School",
+            country="US",
+            region=None,
+            city=None,
+            incident_date="2024-01-01",
+            date_precision="day",
+            source_published_date="2024-01-01",
+            ingested_at="2024-01-01T00:00:00Z",
+            title="Penncrest incident",
+            subtitle=None,
+            primary_url=None,
+            all_urls=["https://ransomware.live/report/1"],
+            leak_site_url=None,
+            source_detail_url=None,
+            screenshot_url=None,
+            attack_type_hint="ransomware",
+            status="confirmed",
+            source_confidence="medium",
+            notes=None,
+        )
+
+        ransomwarelive = BaseIncident(
+            incident_id="ransomwarelive_456",
+            source="ransomwarelive",
+            source_event_id="ransomwarelive_event",
+            institution_name="Penncrest School District",
+            victim_raw_name="Penncrest School District",
+            institution_type="School",
+            country="US",
+            region=None,
+            city=None,
+            incident_date="2024-01-01",
+            date_precision="day",
+            source_published_date="2024-01-01",
+            ingested_at="2024-01-01T00:00:00Z",
+            title="Penncrest incident",
+            subtitle=None,
+            primary_url=None,
+            all_urls=["https://ransomware.live/report/1"],
+            leak_site_url=None,
+            source_detail_url=None,
+            screenshot_url=None,
+            attack_type_hint="ransomware",
+            status="confirmed",
+            source_confidence="medium",
+            notes=None,
+        )
+
+        merged = merge_incidents([ransomlook, ransomwarelive])
+
+        assert merged.incident_id == "ransomwarelive_456"
+        assert merged.source == "ransomwarelive"

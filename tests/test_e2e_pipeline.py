@@ -537,7 +537,7 @@ class TestGoogleNewsRSSCleanup:
         assert not hasattr(gnr, "_resolve_google_news_link"), \
             "_resolve_google_news_link should have been removed — it silently dropped all items when googlenewsdecoder was not installed"
 
-    def test_build_function_uses_raw_link(self, monkeypatch):
+    def test_build_function_keeps_item_even_when_google_wrapper_cannot_be_resolved(self, monkeypatch):
         import src.edu_cti.sources.rss.googlenews_rss as gnr
 
         monkeypatch.setattr(gnr, "GOOGLE_NEWS_QUERIES", [("university ransomware", "en", "US")])
@@ -548,6 +548,7 @@ class TestGoogleNewsRSSCleanup:
             "description": "Ransomware attack on State University",
             "source_name": "CyberNews",
         }])
+        monkeypatch.setattr(gnr, "_resolve_google_news_article_url", lambda _url: None)
         monkeypatch.setattr(gnr.time, "sleep", lambda _: None)
 
         saved = []
@@ -559,5 +560,4 @@ class TestGoogleNewsRSSCleanup:
 
         # Item must not be dropped even though URL is a google.com redirect
         assert len(incidents) == 1, "Google News item was dropped — check link handling"
-        url = incidents[0].primary_url or (incidents[0].all_urls[0] if incidents[0].all_urls else None)
-        assert url is not None, "Incident has no URL at all"
+        assert incidents[0].all_urls == []

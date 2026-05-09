@@ -19,6 +19,7 @@ from src.edu_cti.core.countries import (
     get_country_code,
     normalize_country,
 )
+from src.edu_cti.core.deduplication import is_google_news_wrapper_url
 from src.edu_cti.core.db import get_connection
 from src.edu_cti.pipeline.phase2.schemas import CTIEnrichmentResult
 from src.edu_cti.pipeline.phase2.utils.deduplication import choose_best_institution_name, clean_institution_name
@@ -953,6 +954,178 @@ def _should_clear_ambiguous_identity(
     return bool(is_headline_format(candidate, title))
 
 
+_KNOWN_VENDOR_NAMES = (
+    "Instructure Holdings",
+    "Instructure",
+    "Canvas",
+    "PowerSchool",
+    "Blackbaud",
+    "Infinite Campus",
+    "Illuminate Education",
+    "Illuminate",
+    "Schoology",
+    "Brightspace",
+    "D2L",
+    "Moodle",
+    "Blackboard",
+    "ClassLink",
+    "Ellucian",
+    "Finalsite",
+    "Pearson",
+    "Clever",
+    "Aeries",
+    "Skyward",
+)
+_GENERIC_ATTACK_WORD_RE = re.compile(
+    r"\b(?:attack|attacked|targeted|breach|breached|compromised|hacked|ransomware|cyberattack)\b",
+    re.IGNORECASE,
+)
+_VENDOR_SUFFIX_RE = re.compile(
+    r"\b([A-Z][A-Za-z0-9&.\-]{2,}(?:\s+[A-Z][A-Za-z0-9&.\-]{2,}){0,3}\s+"
+    r"(?:Holdings|Systems|Software|Technologies|Technology|Platform|Platforms|"
+    r"Inc\.?|Corp\.?|Corporation|Ltd\.?|LLC))\b"
+)
+_PLATFORM_MARKER_RE = re.compile(
+    r"\b([A-Z][A-Za-z0-9&.\-]{2,}(?:\s+[A-Z][A-Za-z0-9&.\-]{2,}){0,2})\s+"
+    r"(?:LMS|SIS|learning management system|student information system)\b",
+    re.IGNORECASE,
+)
+_TITLE_ATTACKED_ENTITY_RE = re.compile(
+    r"\b(?:who attacked|attacked|targeted|affecting|hit|hits|breached|compromised)\s+"
+    r"([A-Z][A-Za-z0-9&.\-]{2,}(?:\s+[A-Z][A-Za-z0-9&.\-]{2,}){0,3})\b",
+    re.IGNORECASE,
+)
+_COLLECTIVE_PLACEHOLDER_RE = re.compile(
+    r"\b(?:institutions?|universities|schools|colleges|districts|campuses|providers|customers|students)\b",
+    re.IGNORECASE,
+)
+
+
+def _clean_candidate_entity(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    text = re.sub(r"\s+", " ", str(value)).strip(" \t\r\n\"'“”.,;:-")
+    if not text:
+        return None
+    if is_headline_format(text, None):
+        return None
+    if _GENERIC_ATTACK_WORD_RE.search(text) and len(text.split()) > 5:
+        return None
+    return text
+
+
+def _looks_like_collective_placeholder_name(value: Optional[str]) -> bool:
+    if not value:
+        return False
+    text = re.sub(r"\s+", " ", str(value)).strip(" \t\r\n\"'“”.,;:-")
+    if not text:
+        return False
+    return bool(_COLLECTIVE_PLACEHOLDER_RE.search(text))
+
+
+def _prefer_recovered_vendor_name(
+    resolved_name: Optional[str],
+    recovered_vendor_name: Optional[str],
+) -> bool:
+    if not recovered_vendor_name:
+        return False
+    if not resolved_name:
+        return True
+    if _looks_like_collective_placeholder_name(resolved_name):
+        return True
+    if (
+        resolved_name in _KNOWN_VENDOR_NAMES
+        and recovered_vendor_name in _KNOWN_VENDOR_NAMES
+        and len(recovered_vendor_name) > len(resolved_name)
+    ):
+        return True
+    return False
+
+
+def _recover_named_vendor_from_context(
+    conn: sqlite3.Connection,
+    incident_id: str,
+    incident_row: Optional[sqlite3.Row],
+    raw_json_data: Optional[Dict[str, Any]],
+    summary: Optional[str],
+) -> Optional[str]:
+    """Recover a named supply-chain/vendor/platform target from text context."""
+    if raw_json_data:
+        direct_vendor = _first_present(
+            raw_json_data.get("vendor_name"),
+            (raw_json_data.get("third_parties_involved") or [None])[0]
+            if isinstance(raw_json_data.get("third_parties_involved"), list)
+            else None,
+        )
+        cleaned_direct = _clean_candidate_entity(direct_vendor)
+        if cleaned_direct:
+            return cleaned_direct
+
+    try:
+        article_row = conn.execute(
+            """
+            SELECT title, content
+            FROM articles
+            WHERE incident_id = ? AND fetch_successful = 1
+            ORDER BY is_primary DESC, fetched_at DESC
+            LIMIT 1
+            """,
+            (incident_id,),
+        ).fetchone()
+    except sqlite3.OperationalError:
+        article_row = None
+
+    texts: List[str] = []
+    if incident_row:
+        texts.extend(v for v in (incident_row["title"], incident_row["subtitle"]) if v)
+    if summary:
+        texts.append(summary)
+    if raw_json_data:
+        for key in ("education_relevance_reasoning", "source_headline"):
+            value = raw_json_data.get(key)
+            if value:
+                texts.append(str(value))
+    if article_row:
+        texts.extend(v for v in (article_row["title"], article_row["content"]) if v)
+
+    joined = "\n".join(texts)
+    if not joined:
+        return None
+
+    candidates: List[str] = []
+    lowered = joined.lower()
+    for vendor in _KNOWN_VENDOR_NAMES:
+        if vendor.lower() in lowered:
+            candidates.append(vendor)
+
+    for pattern in (_VENDOR_SUFFIX_RE, _PLATFORM_MARKER_RE, _TITLE_ATTACKED_ENTITY_RE):
+        for match in pattern.finditer(joined):
+            candidates.append(match.group(1))
+
+    seen: set[str] = set()
+    scored: List[tuple[int, int, str]] = []
+    for candidate in candidates:
+        cleaned = _clean_candidate_entity(candidate)
+        if not cleaned:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        score = 0
+        if cleaned in _KNOWN_VENDOR_NAMES:
+            score += 100
+        if _VENDOR_SUFFIX_RE.search(cleaned):
+            score += 30
+        if _PLATFORM_MARKER_RE.search(cleaned):
+            score += 20
+        if len(cleaned.split()) >= 2:
+            score += 10
+        scored.append((score, -len(cleaned), cleaned))
+
+    return max(scored)[2] if scored else None
+
+
 def _extract_institution_from_reasoning(reasoning: Optional[str]) -> Optional[str]:
     """Recover an institution label from the LLM's education-relevance reasoning."""
     if not reasoning:
@@ -1693,7 +1866,11 @@ def get_unenriched_incidents(
     for row in rows:
         # Parse all_urls
         all_urls_str = row["all_urls"] or ""
-        all_urls = [url.strip() for url in all_urls_str.split(";") if url.strip()]
+        all_urls = [
+            url.strip()
+            for url in all_urls_str.split(";")
+            if url.strip() and not is_google_news_wrapper_url(url.strip())
+        ]
         
         incident_dict = {
             "incident_id": row["incident_id"],
@@ -1880,6 +2057,22 @@ def save_enrichment_result(
     ):
         resolved_institution_name = None
 
+    recovered_vendor_name = _recover_named_vendor_from_context(
+        conn,
+        incident_id,
+        incident_row,
+        raw_json_data,
+        enrichment_result.enriched_summary,
+    )
+    if _prefer_recovered_vendor_name(resolved_institution_name, recovered_vendor_name):
+        resolved_institution_name = recovered_vendor_name
+        if institution_type in (None, "unknown") or _looks_like_collective_placeholder_name(
+            institution_type
+        ):
+            institution_type = "edtech_platform"
+        country = None if search_locale_notes else country
+        country_code = get_country_code(country) if country else None
+
     ambiguous_identity = _should_clear_ambiguous_identity(
         institution_name_fallback,
         resolved_institution_name,
@@ -1898,6 +2091,13 @@ def save_enrichment_result(
         region = None
         city = None
 
+    if not resolved_institution_name:
+        logger.info(
+            "Soft-excluding %s because no concrete institution/vendor target could be extracted",
+            incident_id,
+        )
+        return delete_incident(conn, incident_id, reason="no_named_target")
+
     _raw_primary_url = enrichment_result.primary_url
     # Only allow a SERP-discovered URL as primary_url when the incident has no
     # known source URLs. If all_urls is non-empty, the primary_url must come from
@@ -1911,6 +2111,7 @@ def save_enrichment_result(
             _all_urls = [u.strip() for u in _all_urls_str.split(";") if u.strip()]
     else:
         _all_urls = []
+    _all_urls = [u for u in _all_urls if not is_google_news_wrapper_url(u)]
     # Domains that are victim-listing sites, not news articles. Prefer any other URL.
     _LEAK_SITE_DOMAINS = {"ransomware.live", "ransomwatch.telemetry.ltd", "id.ransomware.live"}
 
@@ -2029,6 +2230,9 @@ def save_enrichment_result(
         if not victim_name_fallback:
             update_fields += ",\n        victim_raw_name = ?"
             update_params.append(resolved_institution_name)
+    if institution_type and "institution_type" not in locked_fields:
+        update_fields += ",\n        institution_type = ?"
+        update_params.append(institution_type)
     elif ambiguous_identity:
         if "institution_name" not in locked_fields:
             update_fields += ",\n        institution_name = NULL"

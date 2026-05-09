@@ -240,6 +240,8 @@ class TestArticleFetcher:
         assert "All fetch methods failed" in result.error_message
 
     def test_fetch_article_prefers_oxylabs_before_browser_in_railway_safe_mode(self, monkeypatch):
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
         fetcher = ArticleFetcher(http_client=Mock())
         oxylabs_success = ArticleContent(
             url="https://example.com/article",
@@ -251,6 +253,7 @@ class TestArticleFetcher:
 
         monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
         monkeypatch.setenv("PHASE2_RAILWAY_SAFE_MODE", "1")
+        article_fetcher_module._DYNAMIC_FAILED_DOMAINS.clear()
 
         with patch.object(fetcher, "_fetch_with_newspaper", return_value=None), patch.object(
             fetcher, "_fetch_with_oxylabs", return_value=oxylabs_success
@@ -960,12 +963,10 @@ class TestFetchingStrategy:
         assert row["country"] == "United States"
         assert row["country_code"] == "US"
 
-    def test_save_enrichment_result_clears_headline_only_identity_and_location(self, temp_db):
-        """Roundup headlines without a concrete institution should not keep fake location/type."""
+    def test_save_enrichment_result_soft_excludes_roundup_without_named_target(self, temp_db):
+        """Roundup headlines without a concrete institution/vendor should be excluded."""
         conn, _ = temp_db
-        title = (
-            "Canvas cyberattack disrupts multiple North American universities during final exams"
-        )
+        title = "Cyberattack disrupts multiple North American universities during final exams"
         incident = BaseIncident(
             incident_id="canvas_roundup_incident",
             source="googlenews_rss",
@@ -999,7 +1000,7 @@ class TestFetchingStrategy:
                 title=title,
                 content=(
                     "Multiple universities in the United States and Canada reported "
-                    "service disruptions after the Canvas attack."
+                    "service disruptions after a cyberattack."
                 ),
                 fetch_successful=True,
                 content_length=140,
@@ -1010,8 +1011,8 @@ class TestFetchingStrategy:
         enrichment = _sample_enrichment_result(
             primary_url="https://example.com/canvas-roundup",
             summary=(
-                "Multiple North American universities were attacked through a compromise "
-                "of the Canvas learning management system."
+                "Multiple North American universities reported disruptions after "
+                "a cyberattack during final exams."
             ),
             institution_name=None,
         )
@@ -1020,7 +1021,85 @@ class TestFetchingStrategy:
 
         incident_row = conn.execute(
             """
-            SELECT institution_name, institution_type, country, country_code
+            SELECT llm_excluded, llm_excluded_reason, llm_enriched,
+                   institution_name, institution_type, country, country_code
+            FROM incidents
+            WHERE incident_id = ?
+            """,
+            (incident.incident_id,),
+        ).fetchone()
+        assert incident_row["llm_excluded"] == 1
+        assert incident_row["llm_excluded_reason"] == "no_named_target"
+        assert incident_row["llm_enriched"] == 1
+        assert incident_row["institution_name"] == title
+        assert incident_row["country"] == "Japan"
+        assert conn.execute(
+            "SELECT 1 FROM incident_enrichments_flat WHERE incident_id = ?",
+            (incident.incident_id,),
+        ).fetchone() is None
+        assert conn.execute(
+            "SELECT 1 FROM articles WHERE incident_id = ?",
+            (incident.incident_id,),
+        ).fetchone() is None
+
+    def test_save_enrichment_result_recovers_named_vendor_from_context(self, temp_db):
+        """Vendor/platform incidents should survive with the concrete named provider."""
+        conn, _ = temp_db
+        title = "Canvas cyberattack affects universities across the United States and Canada"
+        incident = BaseIncident(
+            incident_id="canvas_vendor_incident",
+            source="oxylabs_news",
+            source_event_id="https://example.com/canvas-vendor",
+            victim_raw_name=None,
+            title=title,
+            subtitle="Instructure confirms the incident affected Canvas-hosted institutions.",
+            institution_name=title,
+            institution_type=None,
+            country=None,
+            city=None,
+            region=None,
+            incident_date="2026-05-07",
+            date_precision="day",
+            source_published_date="2026-05-09",
+            ingested_at=None,
+            primary_url=None,
+            all_urls=["https://example.com/canvas-vendor"],
+            attack_type_hint=None,
+            status="confirmed",
+            source_confidence="medium",
+        )
+        insert_incident(conn, incident)
+        save_article(
+            conn,
+            incident.incident_id,
+            "https://example.com/canvas-vendor",
+            ArticleContent(
+                url="https://example.com/canvas-vendor",
+                title=title,
+                content=(
+                    "Instructure Holdings said its Canvas learning management system was "
+                    "targeted, affecting multiple universities that rely on the platform."
+                ),
+                fetch_successful=True,
+                content_length=145,
+            ),
+            is_primary=True,
+        )
+
+        enrichment = _sample_enrichment_result(
+            primary_url="https://example.com/canvas-vendor",
+            summary=(
+                "Instructure Holdings disclosed that attackers disrupted the Canvas LMS, "
+                "affecting multiple universities."
+            ),
+            institution_name=None,
+        )
+
+        assert save_enrichment_result(conn, incident.incident_id, enrichment) is True
+
+        incident_row = conn.execute(
+            """
+            SELECT institution_name, institution_type, llm_excluded
             FROM incidents
             WHERE incident_id = ?
             """,
@@ -1028,21 +1107,18 @@ class TestFetchingStrategy:
         ).fetchone()
         flat_row = conn.execute(
             """
-            SELECT institution_name, institution_type, country, country_code
+            SELECT institution_name, institution_type
             FROM incident_enrichments_flat
             WHERE incident_id = ?
             """,
             (incident.incident_id,),
         ).fetchone()
 
-        assert incident_row["institution_name"] is None
-        assert incident_row["institution_type"] is None
-        assert incident_row["country"] is None
-        assert incident_row["country_code"] is None
-        assert flat_row["institution_name"] is None
-        assert flat_row["institution_type"] is None
-        assert flat_row["country"] is None
-        assert flat_row["country_code"] is None
+        assert incident_row["llm_excluded"] in (None, 0)
+        assert incident_row["institution_name"] == "Instructure Holdings"
+        assert incident_row["institution_type"] == "edtech_platform"
+        assert flat_row["institution_name"] == "Instructure Holdings"
+        assert flat_row["institution_type"] == "edtech_platform"
 
     def test_save_enrichment_result_backfills_curated_ransom_fields_from_notes(
         self, temp_db, sample_incident

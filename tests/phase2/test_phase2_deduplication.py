@@ -295,6 +295,48 @@ class TestDeduplication:
         assert "Ransomware" not in surviving_name
         assert "School District" in surviving_name
 
+    def test_deduplicate_by_institution_prefers_ransomwarelive_survivor_on_tie(self, temp_db):
+        conn, _ = temp_db
+
+        incident1 = _incident(
+            "ransomlook",
+            "https://ransomware.live/report/legacy",
+            "2026-04-09",
+            "Penncrest School District",
+        )
+        incident2 = _incident(
+            "ransomwarelive",
+            "https://ransomware.live/report/current",
+            "2026-04-09",
+            "Penncrest School District",
+        )
+
+        insert_incident(conn, incident1)
+        insert_incident(conn, incident2)
+
+        save_enrichment_result(
+            conn,
+            incident1.incident_id,
+            _enrichment("Detailed ransomware report.", incident1.all_urls[0], institution_name="Penncrest School District"),
+        )
+        save_enrichment_result(
+            conn,
+            incident2.incident_id,
+            _enrichment("Detailed ransomware report.", incident2.all_urls[0], institution_name="Penncrest School District"),
+        )
+
+        stats = deduplicate_by_institution(conn, window_days=14)
+
+        assert stats["removed"] == 1
+        assert conn.execute(
+            "SELECT 1 FROM incidents WHERE incident_id = ?",
+            (incident2.incident_id,),
+        ).fetchone() is not None
+        assert conn.execute(
+            "SELECT 1 FROM incidents WHERE incident_id = ?",
+            (incident1.incident_id,),
+        ).fetchone() is None
+
     def test_deduplicate_skips_unenriched_incidents_with_same_institution_name(self, temp_db):
         """Unenriched incidents should remain separate until each has Phase 2 output."""
         conn, _ = temp_db

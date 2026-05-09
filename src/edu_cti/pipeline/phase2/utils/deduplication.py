@@ -16,6 +16,7 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
 from src.edu_cti.core import metrics as _metrics
+from src.edu_cti.core.deduplication import is_google_news_wrapper_url
 
 try:
     from dateutil import parser as date_parser
@@ -28,6 +29,16 @@ except ImportError:
     fuzz = None
 
 logger = logging.getLogger(__name__)
+
+_SURVIVOR_SOURCE_RANK = {
+    "ransomwarelive": 50,
+    "ransomlook": 40,
+    "comparitech": 35,
+    "konbriefing": 34,
+    "databreach": 33,
+    "oxylabs_news": 30,
+    "googlenews_rss": 20,
+}
 
 _DETAIL_SCORE_SQL = """
 (
@@ -203,8 +214,23 @@ def choose_best_institution_name(*names: Optional[str]) -> Optional[str]:
     """
     scored: List[tuple[int, int, str]] = []
     for raw in names:
+        raw_text = str(raw or "").strip()
+        if not raw_text:
+            continue
         cleaned = clean_institution_name(raw)
         if not cleaned:
+            continue
+        # Headlines can still beat shorter real vendor/entity names on token
+        # count. Reject obvious headline-style candidates before scoring.
+        if (
+            "?" in raw_text
+            or len(cleaned) > 80
+            or (
+                _ATTACK_TERM_RE.search(raw_text)
+                and len(cleaned.split()) > 5
+                and not _EDU_KEYWORD_RE.search(cleaned)
+            )
+        ):
             continue
         score = 0
         if _EDU_KEYWORD_RE.search(cleaned):
@@ -363,6 +389,10 @@ def find_duplicate_institutions(
     cur = conn.execute(
         """
         SELECT i.incident_id,
+               CASE
+                   WHEN instr(i.incident_id, '_') > 0 THEN substr(i.incident_id, 1, instr(i.incident_id, '_') - 1)
+                   ELSE ''
+               END AS source_name,
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                i.incident_date,
                i.llm_summary,
@@ -403,11 +433,12 @@ def find_duplicate_institutions(
     return duplicates
 
 
-def _row_score(row: sqlite3.Row) -> tuple[int, int, int, str]:
+def _row_score(row: sqlite3.Row) -> tuple[int, int, int, int, str]:
     return (
         int(row["llm_enriched"] or 0),
         int(row["detail_score"] or 0),
         int(row["summary_length"] or 0),
+        _SURVIVOR_SOURCE_RANK.get(row["source_name"] or "", 0),
         int(row["source_count"] or 0),
         row["ingested_at"] or "",
     )
@@ -464,8 +495,16 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
         (dup_id,),
     ).fetchone()
 
-    keep_urls = {u.strip() for u in (keep_row["all_urls"] or "").split(";") if u.strip()}
-    dup_urls = {u.strip() for u in (dup_row["all_urls"] or "").split(";") if u.strip()}
+    keep_urls = {
+        u.strip()
+        for u in (keep_row["all_urls"] or "").split(";")
+        if u.strip() and not is_google_news_wrapper_url(u.strip())
+    }
+    dup_urls = {
+        u.strip()
+        for u in (dup_row["all_urls"] or "").split(";")
+        if u.strip() and not is_google_news_wrapper_url(u.strip())
+    }
     merged_urls = ";".join(sorted(keep_urls | dup_urls)) or None
 
     best_name = choose_best_institution_name(
@@ -645,6 +684,10 @@ def deduplicate_by_institution(
     cur = conn.execute(
         f"""
         SELECT i.incident_id,
+               CASE
+                   WHEN instr(i.incident_id, '_') > 0 THEN substr(i.incident_id, 1, instr(i.incident_id, '_') - 1)
+                   ELSE ''
+               END AS source_name,
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
@@ -843,6 +886,10 @@ def dedup_incident_after_save(
     row = conn.execute(
         f"""
         SELECT i.incident_id,
+               CASE
+                   WHEN instr(i.incident_id, '_') > 0 THEN substr(i.incident_id, 1, instr(i.incident_id, '_') - 1)
+                   ELSE ''
+               END AS source_name,
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,
@@ -879,6 +926,10 @@ def dedup_incident_after_save(
     existing = conn.execute(
         f"""
         SELECT i.incident_id,
+               CASE
+                   WHEN instr(i.incident_id, '_') > 0 THEN substr(i.incident_id, 1, instr(i.incident_id, '_') - 1)
+                   ELSE ''
+               END AS source_name,
                COALESCE(NULLIF(ef.institution_name, ''), NULLIF(i.institution_name, ''), NULLIF(i.victim_raw_name, '')) AS institution_name,
                NULLIF(i.victim_raw_name, '') AS raw_victim_name,
                i.incident_date,

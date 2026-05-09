@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 from src.edu_cti.core.config import DB_PATH
 from src.edu_cti.core.db import get_connection
+from src.edu_cti.core.deduplication import is_google_news_wrapper_url
 
 
 def count_education_incidents(conn: sqlite3.Connection) -> int:
@@ -269,7 +270,13 @@ def get_incident_by_id(
     
     # Parse all_urls
     all_urls_str = incident.get("all_urls") or ""
-    incident["all_urls"] = [url.strip() for url in all_urls_str.split(";") if url.strip()]
+    incident["all_urls"] = [
+        url.strip()
+        for url in all_urls_str.split(";")
+        if url.strip() and not is_google_news_wrapper_url(url.strip())
+    ]
+    if incident.get("primary_url") and is_google_news_wrapper_url(incident["primary_url"]):
+        incident["primary_url"] = incident["all_urls"][0] if incident["all_urls"] else None
     
     # Get enrichment data
     cur = conn.execute(
