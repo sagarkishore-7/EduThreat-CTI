@@ -107,6 +107,82 @@ def test_build_source_projection_maps_typed_enrichment_into_canonical_fields():
     assert projection["date_precision"] == "day"
 
 
+def test_build_source_projection_prefers_explicit_extracted_name_over_generic_raw_label():
+    incident = _source_incident()
+    incident.raw_institution_name = "a university in Australia"
+    incident.raw_victim_name = "a university in Australia"
+    incident.raw_title = "University of Western Australia suffers major data breach"
+    incident.raw_country = "Australia"
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "incident_date": "2025-08-09",
+            "incident_date_precision": "approximate",
+            "attack_category": "data_breach_external",
+            "enriched_summary": "University of Western Australia suffered a data breach.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "University of Western Australia",
+            "institution_type": "university",
+            "country": "Australia",
+            "country_code": "AU",
+            "incident_date": "2025-08-09",
+            "incident_date_precision": "approximate",
+            "attack_category": "data_breach_external",
+        },
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] == "University of Western Australia"
+    assert projection["country"] == "Australia"
+    assert projection["country_code"] == "AU"
+
+
+def test_build_source_projection_normalizes_country_from_institution_country():
+    incident = _source_incident()
+    incident.raw_institution_name = "BYU-Pathway Worldwide"
+    incident.raw_victim_name = "BYU-Pathway Worldwide"
+    incident.raw_country = "USA"
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "incident_date": "2025-06-24",
+            "incident_date_precision": "exact",
+            "attack_category": "third_party_compromise",
+            "enriched_summary": "BYU-Pathway Worldwide disclosed a vendor-linked data incident.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "BYU-Pathway Worldwide",
+            "institution_type": "higher_education",
+            "institution_country": "United States",
+            "incident_date": "2025-06-24",
+            "incident_date_precision": "exact",
+            "attack_category": "third_party_compromise",
+        },
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] == "BYU-Pathway Worldwide"
+    assert projection["country"] == "United States"
+    assert projection["country_code"] == "US"
+
+
 def test_canonicalization_service_creates_seed_canonical_and_membership():
     canonical_repo = Mock()
     canonical_repo.get_membership_for_source_incident.return_value = None

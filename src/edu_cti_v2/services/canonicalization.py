@@ -3,14 +3,17 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from datetime import date, datetime, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from src.edu_cti.core.countries import get_country_code, normalize_country
 from src.edu_cti.pipeline.phase2.utils.deduplication import (
     _SURVIVOR_SOURCE_RANK,
+    clean_institution_name,
     choose_best_institution_name,
     dates_within_window,
     institution_names_match,
@@ -32,6 +35,13 @@ from src.edu_cti_v2.repositories import (
 )
 
 _EDTECH_LIKE_TYPES = {"edtech_platform", "education_vendor", "tutoring_service"}
+_GENERIC_INDEFINITE_INSTITUTION_RE = re.compile(
+    r"^(?:a|an)\s+"
+    r"(?:public\s+|private\s+|state\s+|local\s+|regional\s+|major\s+|leading\s+)?"
+    r"(?:university|college|school|academy|institute|polytechnic|library|"
+    r"school district|community college|technical college|research institute)\b",
+    re.IGNORECASE,
+)
 
 
 def _first_present(*values: Any) -> Any:
@@ -89,26 +99,91 @@ def _count_present_fields(payload: Any) -> int:
     return 1
 
 
+def _looks_generic_institution_label(value: Optional[str]) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return bool(_GENERIC_INDEFINITE_INSTITUTION_RE.match(text))
+
+
+def _resolve_institution_name(source_incident, typed: Dict[str, Any], raw: Dict[str, Any]) -> Optional[str]:
+    extracted_candidates = [
+        typed.get("institution_name"),
+        typed.get("institution_name_en"),
+        raw.get("institution_name"),
+        raw.get("institution_name_en"),
+    ]
+    for candidate in extracted_candidates:
+        cleaned = clean_institution_name(candidate)
+        if cleaned and not _looks_generic_institution_label(cleaned):
+            return cleaned
+
+    return choose_best_institution_name(
+        *extracted_candidates,
+        source_incident.raw_institution_name,
+        source_incident.raw_victim_name,
+        source_incident.raw_title,
+    )
+
+
+def _normalize_country_fields(
+    source_incident,
+    typed: Dict[str, Any],
+    raw: Dict[str, Any],
+) -> Tuple[Optional[str], Optional[str]]:
+    country = _first_present(
+        typed.get("country"),
+        typed.get("institution_country"),
+        raw.get("country"),
+        raw.get("institution_country"),
+        source_incident.raw_country,
+    )
+    country_code = _first_present(
+        typed.get("country_code"),
+        raw.get("country_code"),
+    )
+
+    if country:
+        country = normalize_country(str(country))
+    elif country_code:
+        country = normalize_country(str(country_code))
+
+    if country_code:
+        country_code = str(country_code).strip().upper()
+    elif country:
+        country_code = get_country_code(country)
+
+    if not country and country_code:
+        country = normalize_country(country_code)
+
+    return country, country_code
+
+
+def _choose_canonical_institution_name(existing: Optional[str], new: Optional[str]) -> Optional[str]:
+    existing_clean = clean_institution_name(existing)
+    new_clean = clean_institution_name(new)
+
+    if new_clean and (_looks_generic_institution_label(existing_clean) and not _looks_generic_institution_label(new_clean)):
+        return new_clean
+    if existing_clean and (_looks_generic_institution_label(new_clean) and not _looks_generic_institution_label(existing_clean)):
+        return existing_clean
+
+    return choose_best_institution_name(existing_clean, new_clean)
+
+
 def build_source_projection(source_incident, source_enrichment: SourceEnrichment) -> Dict[str, Any]:
     """Project a source incident + source enrichment into canonical-shaped fields."""
     typed = source_enrichment.typed_enrichment or {}
     raw = source_enrichment.raw_extraction or {}
     attack_dynamics = typed.get("attack_dynamics") or raw.get("attack_dynamics") or {}
 
-    institution_name = choose_best_institution_name(
-        typed.get("institution_name"),
-        raw.get("institution_name"),
-        source_incident.raw_institution_name,
-        source_incident.raw_victim_name,
-        source_incident.raw_title,
-    )
+    institution_name = _resolve_institution_name(source_incident, typed, raw)
     institution_type = _first_present(
         typed.get("institution_type"),
         raw.get("institution_type"),
         source_incident.raw_institution_type,
     )
-    country = _first_present(typed.get("country"), raw.get("country"), source_incident.raw_country)
-    country_code = _first_present(typed.get("country_code"), raw.get("country_code"))
+    country, country_code = _normalize_country_fields(source_incident, typed, raw)
     region = _first_present(typed.get("region"), raw.get("region"), source_incident.raw_region)
     city = _first_present(typed.get("city"), raw.get("city"), source_incident.raw_city)
     incident_date = _parse_date_only(
@@ -435,14 +510,14 @@ class V2CanonicalizationService:
             )
             self.canonical_repository.add_membership(session, membership)
 
-        canonical.institution_name = choose_best_institution_name(
+        canonical.institution_name = _choose_canonical_institution_name(
             canonical.institution_name,
             projection.get("institution_name"),
         )
         canonical.institution_type = canonical.institution_type or projection.get("institution_type")
         canonical.vendor_name = canonical.vendor_name or projection.get("vendor_name")
-        canonical.country = canonical.country or projection.get("country")
-        canonical.country_code = canonical.country_code or projection.get("country_code")
+        canonical.country = normalize_country(canonical.country) if canonical.country else projection.get("country")
+        canonical.country_code = canonical.country_code or projection.get("country_code") or get_country_code(canonical.country or "")
         canonical.region = canonical.region or projection.get("region")
         canonical.city = canonical.city or projection.get("city")
         canonical.incident_date = canonical.incident_date or projection.get("incident_date")
