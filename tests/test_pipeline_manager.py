@@ -1,5 +1,6 @@
 """Tests for pipeline manager execution and regression behavior."""
 
+import io
 import sys
 import types
 from unittest.mock import patch
@@ -275,3 +276,67 @@ def test_run_historical_reduces_workers_after_memory_pause():
     assert worker_counts == [3, 2]
     assert result["memory_pause_requested"] is False
     assert result["enrich_rounds"] == 2
+
+
+def test_run_one_enrich_batch_launches_unbuffered_subprocess():
+    manager = PipelineManager()
+    run = PipelineRun("enrich-run", "enrich", {})
+    captured = {}
+
+    class _FakeConn:
+        def close(self):
+            return None
+
+    class _FakeProc:
+        def __init__(self):
+            self.stdout = io.StringIO("child log line\n")
+            self.returncode = 0
+            self.pid = 4321
+            self._poll_calls = 0
+
+        def poll(self):
+            self._poll_calls += 1
+            if self._poll_calls == 1:
+                return None
+            self.returncode = 0
+            return 0
+
+        def terminate(self):
+            self.returncode = -15
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def kill(self):
+            self.returncode = -9
+
+    def _fake_popen(cmd, stdout=None, stderr=None, text=None, bufsize=None, env=None):
+        captured["cmd"] = cmd
+        captured["stdout"] = stdout
+        captured["stderr"] = stderr
+        captured["text"] = text
+        captured["bufsize"] = bufsize
+        captured["env"] = env
+        return _FakeProc()
+
+    with patch("src.edu_cti.pipeline.manager.threading.Thread", _ImmediateThread), patch(
+        "src.edu_cti.core.db.get_connection", side_effect=[_FakeConn(), _FakeConn()]
+    ), patch(
+        "src.edu_cti.core.db.init_db"
+    ), patch(
+        "src.edu_cti.pipeline.phase2.storage.db.get_enrichment_stats",
+        side_effect=[
+            {"enriched_incidents": 10},
+            {"enriched_incidents": 11},
+        ],
+    ), patch(
+        "subprocess.Popen", side_effect=_fake_popen
+    ), patch(
+        "src.edu_cti.pipeline.manager.time.sleep"
+    ):
+        result = manager._run_one_enrich_batch(run, {"workers": 3})
+
+    assert captured["cmd"][:3] == [sys.executable, "-u", "-m"]
+    assert captured["cmd"][3] == "src.edu_cti.pipeline.phase2"
+    assert captured["env"]["PYTHONUNBUFFERED"] == "1"
+    assert result["run_stats"]["enriched"] == 1
