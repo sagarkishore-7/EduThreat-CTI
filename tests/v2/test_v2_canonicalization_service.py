@@ -425,6 +425,119 @@ def test_canonicalization_service_updates_existing_canonical_with_better_project
     assert existing_canonical.incident_date.isoformat() == "2026-05-08"
 
 
+def test_canonicalization_service_refreshes_canonical_fields_from_primary_member_projection():
+    canonical_repo = Mock()
+    incident = _source_incident(event_key="powerschool-primary-refresh", url="https://example.com/powerschool-primary-refresh")
+    incident.raw_institution_name = "PowerSchool"
+    incident.raw_victim_name = "PowerSchool"
+    incident.raw_institution_type = "education_technology_provider"
+    incident.raw_country = "United States"
+    incident.raw_region = "Massachusetts"
+    incident.raw_city = None
+    incident.raw_incident_date = "2024-08-01"
+    incident.raw_title = "Prosecutors seek prison term for PowerSchool hacker"
+
+    existing_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="powerschool-canonical",
+        status="open",
+        institution_name="PowerSchool",
+        vendor_name="PowerSchool",
+        country="Canada",
+        country_code="CA",
+        region="Ontario",
+        city="Toronto",
+        incident_date=datetime(2023, 12, 1, tzinfo=timezone.utc).date(),
+        date_precision="month",
+        attack_category="data_breach_external",
+        attack_vector="unpatched_system",
+        threat_actor_name=None,
+        ransomware_family=None,
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    existing_membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=existing_canonical.id,
+        source_incident_id=incident.id,
+        match_type="seed",
+        match_score=100.0,
+        survivor_score=10.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+    canonical_repo.get_membership_for_source_incident.return_value = existing_membership
+    canonical_repo.get_by_id.return_value = existing_canonical
+    canonical_repo.list_memberships.return_value = [existing_membership]
+    canonical_repo.find_by_url_candidates.return_value = []
+    canonical_repo.find_name_date_candidates.return_value = []
+    canonical_repo.find_identity_candidates.return_value = []
+
+    source_repo = Mock()
+    source_repo.get_by_id.return_value = incident
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "country": "United States",
+            "country_code": "US",
+            "region": "Massachusetts",
+            "city": None,
+            "incident_date": "2024-08-01",
+            "incident_date_precision": "month",
+            "attack_category": "ransomware_double_extortion",
+            "attack_vector": "stolen_credentials",
+            "threat_actor_name": "Matthew Lane",
+            "ransomware_family": "unknown",
+            "enriched_summary": "PowerSchool was hit by a ransomware attack.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "country_code": "US",
+            "incident_date": "2024-08-01",
+            "attack_category": "ransomware_double_extortion",
+        },
+        is_education_related=True,
+    )
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    service._upsert_canonical_enrichment = Mock(return_value=Mock(id=uuid4()))  # type: ignore[attr-defined]
+    session = Mock()
+    session.flush.return_value = None
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is True
+    assert existing_canonical.country == "United States"
+    assert existing_canonical.country_code == "US"
+    assert existing_canonical.region == "Massachusetts"
+    assert existing_canonical.city is None
+    assert existing_canonical.incident_date.isoformat() == "2024-08-01"
+    assert existing_canonical.attack_vector == "stolen_credentials"
+
+
 def test_canonicalization_service_matches_vendor_date_candidates():
     canonical_repo = Mock()
     canonical_repo.get_membership_for_source_incident.return_value = None
