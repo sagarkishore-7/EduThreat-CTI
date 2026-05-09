@@ -39,7 +39,12 @@ def test_v2_runtime_service_starts_and_stops_workers_and_scheduler(monkeypatch):
     monkeypatch.setattr("src.edu_cti_v2.runtime._prewarm_ml_models", lambda: prewarmed.append(True))
 
     scheduler = _FakeScheduler()
-    runtime = V2RuntimeService(worker_count=2, scheduler_service=scheduler)
+    runtime = V2RuntimeService(
+        worker_count=2,
+        fetch_worker_count=1,
+        resolve_worker_count=1,
+        scheduler_service=scheduler,
+    )
 
     started = runtime.start()
     assert started["running"] is True
@@ -52,8 +57,12 @@ def test_v2_runtime_service_starts_and_stops_workers_and_scheduler(monkeypatch):
     assert prewarmed == [True]
     assert ("v2-runtime:orchestrator", "orchestrate_plan", ()) in seen
     assert ("v2-runtime:analytics", "refresh_analytics", ()) in seen
-    assert ("v2-runtime:1", None, ("orchestrate_plan",)) in seen
-    assert ("v2-runtime:2", None, ("orchestrate_plan",)) in seen
+    assert ("v2-runtime:1", None, ("orchestrate_plan", "refresh_analytics", "fetch_article", "resolve_url")) in seen
+    assert ("v2-runtime:2", None, ("orchestrate_plan", "refresh_analytics", "fetch_article", "resolve_url")) in seen
+    assert ("v2-runtime:fetch:1", "fetch_article", ()) in seen
+    assert ("v2-runtime:resolve:1", "resolve_url", ()) in seen
+    assert started["fetch_worker_count"] == 1
+    assert started["resolve_worker_count"] == 1
     assert all(worker["summary"]["stop_reason"] == "stopped" for worker in stopped["workers"])
 
 
@@ -75,6 +84,8 @@ def test_v2_runtime_service_can_disable_scheduler(monkeypatch):
     started = runtime.start()
     assert started["scheduler_enabled"] is False
     assert started["scheduler"] is None
+    assert started["fetch_worker_count"] == 1
+    assert started["resolve_worker_count"] == 1
     stopped = runtime.stop()
     assert stopped["scheduler"] is None
 

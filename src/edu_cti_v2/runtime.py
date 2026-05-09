@@ -56,6 +56,8 @@ class V2RuntimeService:
         self,
         *,
         worker_count: int = 2,
+        fetch_worker_count: int = 1,
+        resolve_worker_count: int = 1,
         task_type: Optional[str] = None,
         poll_interval_seconds: float = 5.0,
         lease_seconds: Optional[int] = None,
@@ -67,6 +69,8 @@ class V2RuntimeService:
         session_factory: Optional[Callable] = None,
     ) -> None:
         self.worker_count = max(worker_count, 1)
+        self.fetch_worker_count = max(fetch_worker_count, 0)
+        self.resolve_worker_count = max(resolve_worker_count, 0)
         self.task_type = task_type
         self.poll_interval_seconds = poll_interval_seconds
         self.lease_seconds = lease_seconds
@@ -153,7 +157,27 @@ class V2RuntimeService:
                 state = _WorkerThreadState(
                     worker_id=worker_id,
                     thread=None,
-                    exclude_task_types=("orchestrate_plan",),
+                    exclude_task_types=("orchestrate_plan", "refresh_analytics", "fetch_article", "resolve_url"),
+                )
+                self._worker_states.append(state)
+                self._start_worker_thread(state)
+
+            for index in range(self.fetch_worker_count):
+                worker_id = f"v2-runtime:fetch:{index + 1}"
+                state = _WorkerThreadState(
+                    worker_id=worker_id,
+                    thread=None,
+                    task_type="fetch_article",
+                )
+                self._worker_states.append(state)
+                self._start_worker_thread(state)
+
+            for index in range(self.resolve_worker_count):
+                worker_id = f"v2-runtime:resolve:{index + 1}"
+                state = _WorkerThreadState(
+                    worker_id=worker_id,
+                    thread=None,
+                    task_type="resolve_url",
                 )
                 self._worker_states.append(state)
                 self._start_worker_thread(state)
@@ -170,8 +194,10 @@ class V2RuntimeService:
 
         self._running = True
         logger.info(
-            "Started v2 runtime: workers=%s task_type=%s scheduler=%s",
+            "Started v2 runtime: workers=%s fetch_workers=%s resolve_workers=%s task_type=%s scheduler=%s",
             self.worker_count,
+            self.fetch_worker_count,
+            self.resolve_worker_count,
             self.task_type,
             self.enable_scheduler,
         )
@@ -241,6 +267,8 @@ class V2RuntimeService:
         return {
             "running": self._running,
             "worker_count": self.worker_count,
+            "fetch_worker_count": self.fetch_worker_count,
+            "resolve_worker_count": self.resolve_worker_count,
             "task_type": self.task_type,
             "scheduler_enabled": self.enable_scheduler,
             "scheduler": self.scheduler_service.get_status() if self.enable_scheduler else None,
@@ -263,7 +291,19 @@ def build_parser() -> argparse.ArgumentParser:
         "--workers",
         type=int,
         default=int(os.environ.get("EDU_CTI_V2_WORKER_COUNT", "2")),
-        help="Number of long-running worker threads",
+        help="Number of general long-running worker threads",
+    )
+    parser.add_argument(
+        "--fetch-workers",
+        type=int,
+        default=int(os.environ.get("EDU_CTI_V2_FETCH_WORKER_COUNT", "1")),
+        help="Number of dedicated fetch_article worker threads",
+    )
+    parser.add_argument(
+        "--resolve-workers",
+        type=int,
+        default=int(os.environ.get("EDU_CTI_V2_RESOLVE_WORKER_COUNT", "1")),
+        help="Number of dedicated resolve_url worker threads",
     )
     parser.add_argument("--task-type", type=str, default=None, help="Restrict all workers to one task type")
     parser.add_argument(
@@ -306,6 +346,8 @@ def main() -> None:
     args = build_parser().parse_args()
     runtime = V2RuntimeService(
         worker_count=args.workers,
+        fetch_worker_count=args.fetch_workers,
+        resolve_worker_count=args.resolve_workers,
         task_type=args.task_type,
         poll_interval_seconds=args.poll_interval,
         lease_seconds=args.lease_seconds,
