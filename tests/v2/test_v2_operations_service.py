@@ -288,9 +288,7 @@ def test_operations_service_lists_canonical_consistency_candidates():
 
     assert len(items) == 1
     assert items[0]["display_name"] == "Cincinnati Public Schools"
-    assert "institution_name" in items[0]["mismatch_fields"]
-    assert "region" in items[0]["mismatch_fields"]
-    assert "city" in items[0]["mismatch_fields"]
+    assert items[0]["mismatch_fields"] == ["institution_name"]
 
 
 def test_operations_service_queues_canonical_consistency_sweep():

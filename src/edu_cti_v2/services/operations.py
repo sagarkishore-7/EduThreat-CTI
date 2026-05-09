@@ -46,6 +46,11 @@ _CANONICAL_CONSISTENCY_FIELDS = (
     "is_education_related",
 )
 
+_OPTIONAL_ANALYTICS_FIELDS = {
+    "region",
+    "city",
+}
+
 
 def _serialize_consistency_value(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
@@ -72,6 +77,8 @@ def _canonical_consistency_mismatches(
     for field in _CANONICAL_CONSISTENCY_FIELDS:
         actual = _serialize_consistency_value(getattr(canonical, field, None))
         expected = _serialize_consistency_value(projection.get(field))
+        if expected is None and field in _OPTIONAL_ANALYTICS_FIELDS:
+            continue
         if _normalized_consistency_value(actual) == _normalized_consistency_value(expected):
             continue
         if actual is None and expected is None:

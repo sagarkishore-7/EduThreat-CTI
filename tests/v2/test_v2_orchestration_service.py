@@ -52,12 +52,19 @@ def test_orchestration_service_runs_plan_and_combines_collect_and_worker_results
 
     operations_service = Mock()
     operations_service.run_worker_batch.return_value = {"run_id": "worker-1", "result": {"processed_tasks": 4}}
+    operations_service.queue_canonical_consistency_sweep.return_value = {
+        "candidates_considered": 0,
+        "canonicals_queued": 0,
+        "queued_tasks": 0,
+        "skipped_existing_tasks": 0,
+        "scan_limit": 1000,
+    }
     data_quality_service = Mock()
 
     run_repo = Mock()
     run_repo.get_by_id.return_value = SimpleNamespace(id=uuid4())
 
-    sessions = [_FakeSession(), _FakeSession()]
+    sessions = [_FakeSession(), _FakeSession(), _FakeSession()]
 
     def _session_factory():
         return _FakeSessionContext(sessions.pop(0))
@@ -113,13 +120,21 @@ def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan()
     operations_service.run_worker_batch.side_effect = [
         {"run_id": "worker-1", "result": {"processed_tasks": 4}},
         {"run_id": "reenrich-1", "result": {"processed_tasks": 2}},
+        {"run_id": "consistency-1", "result": {"processed_tasks": 3}},
     ]
+    operations_service.queue_canonical_consistency_sweep.return_value = {
+        "candidates_considered": 2,
+        "canonicals_queued": 2,
+        "queued_tasks": 3,
+        "skipped_existing_tasks": 0,
+        "scan_limit": 1000,
+    }
     data_quality_service = Mock()
     data_quality_service.run_sweep.return_value = {"requeued_for_reenrichment": 2}
 
     run_repo = Mock()
     run_repo.get_by_id.return_value = SimpleNamespace(id=uuid4())
-    sessions = [_FakeSession(), _FakeSession()]
+    sessions = [_FakeSession(), _FakeSession(), _FakeSession()]
 
     def _session_factory():
         return _FakeSessionContext(sessions.pop(0))
@@ -136,9 +151,13 @@ def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan()
 
     assert result["data_quality_result"]["requeued_for_reenrichment"] == 2
     assert result["reenrich_worker_result"]["run_id"] == "reenrich-1"
-    assert operations_service.run_worker_batch.call_count == 2
+    assert result["consistency_sweep_result"]["queued_tasks"] == 3
+    assert result["consistency_worker_result"]["run_id"] == "consistency-1"
+    assert operations_service.run_worker_batch.call_count == 3
     second_call = operations_service.run_worker_batch.call_args_list[1]
     assert second_call.kwargs["task_type"] == "reenrich"
+    third_call = operations_service.run_worker_batch.call_args_list[2]
+    assert third_call.kwargs["task_type"] == "canonicalize"
 
 
 def test_orchestration_service_execute_enqueued_plan_waits_for_drain(monkeypatch):
@@ -146,17 +165,24 @@ def test_orchestration_service_execute_enqueued_plan_waits_for_drain(monkeypatch
     collection_service.collect_into_v2.return_value = {"run_id": None, "counts": {"incidents_collected": 3}}
     data_quality_service = Mock()
     data_quality_service.run_sweep.return_value = {"requeued_for_reenrichment": 0}
+    operations_service = Mock()
+    operations_service.queue_canonical_consistency_sweep.return_value = {
+        "candidates_considered": 0,
+        "canonicals_queued": 0,
+        "queued_tasks": 0,
+        "skipped_existing_tasks": 0,
+        "scan_limit": 1000,
+    }
     run_repo = Mock()
     run_repo.get_by_id.return_value = SimpleNamespace(id=uuid4(), status="pending")
     task_repo = Mock()
     task_repo.count_active.side_effect = [2, 0]
-    session = _FakeSession()
     monkeypatch.setattr("src.edu_cti_v2.services.orchestration.time.sleep", lambda _seconds: None)
 
     service = V2OrchestrationService(
-        session_factory=lambda: _FakeSessionContext(session),
+        session_factory=lambda: _FakeSessionContext(_FakeSession()),
         collection_service=collection_service,
-        operations_service=Mock(),
+        operations_service=operations_service,
         data_quality_service=data_quality_service,
         pipeline_run_repository=run_repo,
         pipeline_task_repository=task_repo,
