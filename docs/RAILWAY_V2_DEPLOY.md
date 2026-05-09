@@ -10,7 +10,10 @@ Create `3` Railway services in the same project:
 2. `v2-api`
 3. `v2-worker`
 
-Use the same repository and Docker image for both `v2-api` and `v2-worker`. Only the start command changes.
+Use the same repository for both `v2-api` and `v2-worker`, but point each service at a different Dockerfile:
+
+- `Dockerfile.v2-api`
+- `Dockerfile.v2-worker`
 
 ## What Changes Compared to the Old Stack
 
@@ -21,27 +24,23 @@ Use the same repository and Docker image for both `v2-api` and `v2-worker`. Only
 
 ## Start Commands
 
-### v2-api
+### Dockerfile.v2-api
+
+Default command inside the image:
 
 ```bash
 eduthreat-v2-api --host 0.0.0.0
 ```
 
-### v2-worker
+### Dockerfile.v2-worker
 
-Normal recurring mode:
-
-```bash
-eduthreat-v2-runtime --workers 2
-```
-
-Initial backfill mode without recurring scheduler jobs:
+Default command inside the image:
 
 ```bash
-eduthreat-v2-runtime --workers 2 --no-scheduler
+eduthreat-v2-runtime --workers ${EDU_CTI_V2_WORKER_COUNT:-2}
 ```
 
-You can also control that with:
+Initial backfill mode is controlled with:
 
 ```bash
 EDU_CTI_V2_ENABLE_SCHEDULER=0
@@ -127,20 +126,42 @@ Optional DB tuning:
 
 ### 1. Create the Postgres service
 
-- add a fresh Railway Postgres database
+- In Railway, click `New` -> `Database` -> `PostgreSQL`
+- name it something like `eduthreat-v2-postgres`
 - do not reuse the old SQLite-backed volume
+- wait until Railway shows the database as provisioned
+- confirm the database service exposes:
+  - `DATABASE_URL`
+  - `PGHOST`
+  - `PGPORT`
+  - `PGUSER`
+  - `PGPASSWORD`
+  - `PGDATABASE`
 
 ### 2. Create the `v2-api` service
 
-- same repo
-- same Dockerfile
-- start command: `eduthreat-v2-api --host 0.0.0.0`
+- click `New` -> `GitHub Repo`
+- select this repository
+- name the service `v2-api`
+- in the service variables/settings, set:
+  - `RAILWAY_DOCKERFILE_PATH=Dockerfile.v2-api`
+- enable public networking for this service
+- set the HTTP healthcheck path to:
+  - `/api/health`
+
+You do not need to override the start command if you use `Dockerfile.v2-api`.
 
 ### 3. Create the `v2-worker` service
 
-- same repo
-- same Dockerfile
-- start command: `eduthreat-v2-runtime --workers 2 --no-scheduler`
+- click `New` -> `GitHub Repo`
+- select this repository again
+- name the service `v2-worker`
+- in the service variables/settings, set:
+  - `RAILWAY_DOCKERFILE_PATH=Dockerfile.v2-worker`
+- disable public networking for this service if you do not need external access
+- do not attach a public domain to the worker
+
+You do not need to override the start command if you use `Dockerfile.v2-worker`.
 
 Start with scheduler disabled for the first historical run so the worker does not also fire recurring incremental plans during the backfill.
 
@@ -148,17 +169,61 @@ Start with scheduler disabled for the first historical run so the worker does no
 
 Set all required secrets and URLs before the first migration.
 
+#### v2-api variables
+
+Set these on the `v2-api` service:
+
+- `EDU_CTI_V2_DATABASE_URL`
+- `ALEMBIC_DATABASE_URL`
+- `EDUTHREAT_ADMIN_API_KEY`
+- optionally `EDUTHREAT_ADMIN_USERNAME`
+- optionally `EDUTHREAT_ADMIN_PASSWORD_HASH`
+- `LOG_LEVEL=INFO`
+
+Recommended DB value:
+
+- set `EDU_CTI_V2_DATABASE_URL` to the Postgres service `DATABASE_URL`
+- set `ALEMBIC_DATABASE_URL` to the same value
+
+#### v2-worker variables
+
+Set these on the `v2-worker` service:
+
+- `EDU_CTI_V2_DATABASE_URL`
+- `ALEMBIC_DATABASE_URL`
+- `OLLAMA_API_KEY`
+- `OLLAMA_HOST`
+- `OLLAMA_MODEL=deepseek-v3.1:671b-cloud`
+- `OXYLABS_USERNAME`
+- `OXYLABS_PASSWORD`
+- `ENABLE_OXYLABS_NEWS_HISTORICAL=1`
+- `ENABLE_OXYLABS_NEWS_DAILY=0`
+- `EDU_CTI_V2_WORKER_COUNT=2`
+- `EDU_CTI_V2_ENABLE_SCHEDULER=0`
+- `LOG_LEVEL=INFO`
+
+Optional tuning:
+
+- `EDU_CTI_V2_DB_POOL_SIZE=10`
+- `EDU_CTI_V2_DB_MAX_OVERFLOW=20`
+- `EDU_CTI_V2_DB_POOL_TIMEOUT=30`
+- `EDU_CTI_V2_DB_POOL_RECYCLE=1800`
+- `EDU_CTI_V2_DB_STATEMENT_TIMEOUT_MS=30000`
+- `EDU_CTI_V2_TASK_LEASE_SECONDS=300`
+
 ### 5. Run migrations
 
-From a Railway shell or one-off command:
+After both services have built at least once, run migrations from a Railway shell or one-off command on either service:
 
 ```bash
 eduthreat-v2-migrate upgrade head
 ```
 
+This creates the Postgres `v2` tables and the `alembic_version` row.
+
 ### 6. Run preflight
 
-From a Railway shell:
+From a Railway shell on `v2-api` or `v2-worker`:
 
 ```bash
 eduthreat-v2-preflight --require-ready
@@ -193,10 +258,9 @@ curl -X POST "$API_BASE/api/admin/v2/run-plan?plan_name=historical_max_coverage"
 
 ### 8. After historical backfill finishes
 
-Change the worker service to enable recurring scheduling:
+Change the worker service to enable recurring scheduling by setting:
 
-- either update the start command to `eduthreat-v2-runtime --workers 2`
-- or keep the same start command and set `EDU_CTI_V2_ENABLE_SCHEDULER=1`
+- `EDU_CTI_V2_ENABLE_SCHEDULER=1`
 
 Then redeploy/restart the worker.
 
@@ -243,4 +307,5 @@ Before you start the first historical run, all of these should be true:
 - API service health endpoint is green
 - worker service is running
 - admin auth works on `/api/admin/v2/login`
-
+- `v2-api` is using `Dockerfile.v2-api`
+- `v2-worker` is using `Dockerfile.v2-worker`

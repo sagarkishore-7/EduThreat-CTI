@@ -50,6 +50,7 @@ python-dotenv>=1.0.0
 
 # Scheduler
 apscheduler>=3.10.0
+schedule>=1.2.0
 
 # Memory monitoring
 psutil>=5.9.0
