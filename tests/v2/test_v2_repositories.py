@@ -81,6 +81,18 @@ def test_canonical_repository_name_date_candidate_stmt_filters_country_and_windo
     assert "canonical_incidents.incident_date BETWEEN '2026-04-25'" in compiled
 
 
+def test_canonical_repository_identity_candidate_stmt_matches_institution_or_vendor_name():
+    stmt = CanonicalIncidentRepository.build_find_identity_candidates_stmt(
+        ["PowerSchool", "Canvas"],
+        statuses=("open", "excluded"),
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "canonical_incidents.status IN ('open', 'excluded')" in compiled
+    assert "canonical_incidents.institution_name IN ('PowerSchool', 'Canvas')" in compiled
+    assert "canonical_incidents.vendor_name IN ('PowerSchool', 'Canvas')" in compiled
+
+
 def test_canonical_repository_recent_stmt_joins_enrichment_and_orders_by_recency():
     stmt = CanonicalIncidentRepository.build_list_recent_stmt(limit=25)
     compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))

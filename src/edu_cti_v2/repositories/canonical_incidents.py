@@ -361,6 +361,25 @@ class CanonicalIncidentRepository:
         return stmt
 
     @staticmethod
+    def build_find_identity_candidates_stmt(
+        identities: Sequence[str],
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> Select:
+        cleaned_identities = [value.strip() for value in identities if value and value.strip()]
+        stmt = select(CanonicalIncident).options(selectinload(CanonicalIncident.memberships))
+        if statuses:
+            stmt = stmt.where(CanonicalIncident.status.in_(list(statuses)))
+        if not cleaned_identities:
+            return stmt.where(CanonicalIncident.id.is_(None))
+        return stmt.where(
+            or_(
+                CanonicalIncident.institution_name.in_(cleaned_identities),
+                CanonicalIncident.vendor_name.in_(cleaned_identities),
+            )
+        )
+
+    @staticmethod
     def build_country_facet_stmt(
         *,
         statuses: Sequence[str] = ("open",),
@@ -598,6 +617,19 @@ class CanonicalIncidentRepository:
             incident_date=incident_date,
             country_code=country_code,
             window_days=window_days,
+        )
+        return list(session.execute(stmt).scalars().all())
+
+    def find_identity_candidates(
+        self,
+        session: Session,
+        identities: Sequence[str],
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> list[CanonicalIncident]:
+        stmt = self.build_find_identity_candidates_stmt(
+            identities,
+            statuses=statuses,
         )
         return list(session.execute(stmt).scalars().all())
 

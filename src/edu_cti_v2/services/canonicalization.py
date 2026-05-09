@@ -35,7 +35,33 @@ from src.edu_cti_v2.repositories import (
     SourceIncidentRepository,
 )
 
-_EDTECH_LIKE_TYPES = {"edtech_platform", "education_vendor", "tutoring_service"}
+_VENDOR_LIKE_TYPES = {
+    "edtech_platform",
+    "education_vendor",
+    "education_technology_provider",
+    "third_party",
+    "tutoring_service",
+}
+_VENDOR_FOLLOWUP_CUES = (
+    "attorney general",
+    "charges",
+    "charged",
+    "class action",
+    "class-action",
+    "guilty",
+    "investigation",
+    "lawsuit",
+    "plead guilty",
+    "probe",
+    "regulator",
+    "regulators",
+    "sentenced",
+    "sentencing",
+    "settlement",
+    "share blame",
+    "sues",
+    "sued",
+)
 _GENERIC_INDEFINITE_INSTITUTION_RE = re.compile(
     r"^(?:a|an)\s+"
     r"(?:public\s+|private\s+|state\s+|local\s+|regional\s+|major\s+|leading\s+)?"
@@ -194,9 +220,44 @@ def _identity_match_quality(left: Optional[str], right: Optional[str]) -> int:
     return 0
 
 
+def _attack_category_family(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text.startswith("data_breach_") or text.startswith("ransomware_"):
+        return "data_compromise"
+    if text.startswith("third_party") or text.startswith("supply_chain"):
+        return "vendor_compromise"
+    return text
+
+
+def _is_vendor_like_projection(projection: Dict[str, Any]) -> bool:
+    if projection.get("vendor_name"):
+        return True
+    institution_type = str(projection.get("institution_type") or "").strip().lower()
+    return institution_type in _VENDOR_LIKE_TYPES
+
+
+def _looks_vendor_followup_coverage(projection: Dict[str, Any]) -> bool:
+    if not _is_vendor_like_projection(projection):
+        return False
+    text = " ".join(
+        str(value).strip().lower()
+        for value in (
+            projection.get("raw_title"),
+            projection.get("raw_subtitle"),
+            projection.get("canonical_summary"),
+        )
+        if value
+    )
+    return any(cue in text for cue in _VENDOR_FOLLOWUP_CUES)
+
+
 def _score_candidate_match(
     projection: Dict[str, Any],
     candidate: CanonicalIncident,
+    *,
+    relaxed_vendor_followup: bool = False,
 ) -> Tuple[float, Optional[str]]:
     incoming_identities = [
         ("institution_name", projection.get("institution_name")),
@@ -234,32 +295,45 @@ def _score_candidate_match(
 
     if best_quality <= 0 or best_match_type is None:
         return 0.0, None
+    exact_vendor_identity = best_match_type == "vendor_date" and best_quality >= 100
 
     projection_date = parse_incident_date(str(projection.get("incident_date")) if projection.get("incident_date") else None)
     candidate_date = parse_incident_date(str(candidate.incident_date) if candidate.incident_date else None)
-    if projection_date and candidate_date and not dates_within_window(projection_date, candidate_date, 14):
-        return 0.0, None
+    if projection_date and candidate_date:
+        if dates_within_window(projection_date, candidate_date, 14):
+            date_score = 20.0 if dates_within_window(projection_date, candidate_date, 3) else 12.0
+        elif relaxed_vendor_followup and exact_vendor_identity and dates_within_window(projection_date, candidate_date, 400):
+            date_score = 8.0
+        else:
+            return 0.0, None
+    else:
+        date_score = 4.0
 
     projection_country = projection.get("country_code")
-    if projection_country and candidate.country_code and projection_country != candidate.country_code:
-        return 0.0, None
+    same_country = projection_country and candidate.country_code and projection_country == candidate.country_code
+    if projection_country and candidate.country_code and not same_country:
+        if not (relaxed_vendor_followup and exact_vendor_identity):
+            return 0.0, None
 
     score = float(best_quality)
-    if projection_date and candidate_date:
-        if dates_within_window(projection_date, candidate_date, 3):
-            score += 20.0
-        else:
-            score += 12.0
-    else:
-        score += 4.0
+    score += date_score
 
-    if projection_country and candidate.country_code:
+    if same_country:
         score += 8.0
+    elif projection_country and candidate.country_code:
+        score -= 4.0
     elif projection_country or candidate.country_code:
         score += 2.0
 
     if projection.get("attack_category") and candidate.attack_category == projection.get("attack_category"):
         score += 6.0
+    else:
+        projection_attack_family = _attack_category_family(projection.get("attack_category"))
+        candidate_attack_family = _attack_category_family(candidate.attack_category)
+        if relaxed_vendor_followup and projection_attack_family and projection_attack_family == candidate_attack_family:
+            score += 4.0
+        elif relaxed_vendor_followup and projection.get("attack_category") and candidate.attack_category:
+            return 0.0, None
     if projection.get("ransomware_family") and candidate.ransomware_family == projection.get("ransomware_family"):
         score += 4.0
     if projection.get("threat_actor_name") and candidate.threat_actor_name == projection.get("threat_actor_name"):
@@ -320,13 +394,15 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
         source_incident.raw_title,
     )
     vendor_name = _first_present(typed.get("vendor_name"), raw.get("vendor_name"))
-    if not vendor_name and institution_name and institution_type in _EDTECH_LIKE_TYPES:
+    if not vendor_name and institution_name and institution_type in _VENDOR_LIKE_TYPES:
         vendor_name = institution_name
 
     return {
         "institution_name": institution_name,
         "institution_type": institution_type,
         "vendor_name": vendor_name,
+        "raw_title": source_incident.raw_title,
+        "raw_subtitle": source_incident.raw_subtitle,
         "country": country,
         "country_code": country_code,
         "region": region,
@@ -539,6 +615,32 @@ class V2CanonicalizationService:
 
         if best_candidate is not None and best_score >= 95.0:
             return best_candidate, best_match_type, best_score
+
+        if _looks_vendor_followup_coverage(projection):
+            identity_values = [
+                value
+                for value in (
+                    projection.get("institution_name"),
+                    projection.get("vendor_name"),
+                )
+                if value
+            ]
+            relaxed_candidates = self.canonical_repository.find_identity_candidates(session, identity_values)
+            best_candidate = None
+            best_score = 0.0
+            for candidate in relaxed_candidates:
+                score, candidate_match_type = _score_candidate_match(
+                    projection,
+                    candidate,
+                    relaxed_vendor_followup=True,
+                )
+                if score <= best_score or candidate_match_type is None:
+                    continue
+                best_candidate = candidate
+                best_score = score
+
+            if best_candidate is not None and best_score >= 94.0:
+                return best_candidate, "vendor_followup", best_score
 
         return None, "seed", 0.0
 

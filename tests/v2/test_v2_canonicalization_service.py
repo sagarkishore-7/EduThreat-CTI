@@ -107,6 +107,48 @@ def test_build_source_projection_maps_typed_enrichment_into_canonical_fields():
     assert projection["date_precision"] == "day"
 
 
+def test_build_source_projection_promotes_education_technology_provider_as_vendor_name():
+    incident = _source_incident(event_key="powerschool-story")
+    incident.raw_institution_name = "PowerSchool"
+    incident.raw_victim_name = "PowerSchool"
+    incident.raw_institution_type = "education_technology_provider"
+    incident.raw_country = "United States"
+    incident.raw_region = "California"
+    incident.raw_city = None
+    incident.raw_title = "Texas sues PowerSchool for breach exposing the data of students and teachers"
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "country": "United States",
+            "country_code": "US",
+            "incident_date": "2024-12-01",
+            "incident_date_precision": "month",
+            "attack_category": "data_breach_external",
+            "enriched_summary": "PowerSchool suffered a data breach that exposed student and teacher data.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "country_code": "US",
+            "attack_category": "data_breach_external",
+        },
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] == "PowerSchool"
+    assert projection["vendor_name"] == "PowerSchool"
+
+
 def test_build_source_projection_prefers_explicit_extracted_name_over_generic_raw_label():
     incident = _source_incident()
     incident.raw_institution_name = "a university in Australia"
@@ -528,3 +570,100 @@ def test_canonicalization_service_rejects_country_conflict_even_with_name_match(
     assert outcome["canonicalized"] is True
     assert outcome["match_type"] == "seed"
     assert added_canonicals
+
+
+def test_canonicalization_service_merges_vendor_followup_candidates_across_country_conflict():
+    canonical_repo = Mock()
+    canonical_repo.get_membership_for_source_incident.return_value = None
+    canonical_repo.find_by_url_candidates.return_value = []
+    canonical_repo.find_name_date_candidates.return_value = []
+    existing_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="powerschool-canonical",
+        status="open",
+        institution_name="PowerSchool",
+        vendor_name="PowerSchool",
+        country="United States",
+        country_code="US",
+        incident_date=datetime(2024, 12, 1, tzinfo=timezone.utc).date(),
+        date_precision="month",
+        attack_category="data_breach_external",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    canonical_repo.find_identity_candidates.return_value = [existing_canonical]
+    canonical_repo.list_memberships.return_value = []
+
+    source_repo = Mock()
+    incident = _source_incident(event_key="powerschool-followup", url="https://example.com/powerschool-followup")
+    incident.raw_institution_name = "PowerSchool"
+    incident.raw_victim_name = "PowerSchool"
+    incident.raw_institution_type = "education_technology_provider"
+    incident.raw_country = "Canada"
+    incident.raw_region = "Ontario"
+    incident.raw_city = "Toronto"
+    incident.raw_title = "Canadian privacy regulators say schools share blame for PowerSchool hack"
+    source_repo.get_by_id.return_value = incident
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "country": "Canada",
+            "country_code": "CA",
+            "region": "Ontario",
+            "city": "Toronto",
+            "incident_date": "2023-12-01",
+            "incident_date_precision": "month",
+            "attack_category": "data_breach_external",
+            "enriched_summary": "Canadian regulators say schools share blame for the PowerSchool hack that exposed student and teacher data.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "country_code": "CA",
+            "incident_date": "2023-12-01",
+            "attack_category": "data_breach_external",
+        },
+        is_education_related=True,
+    )
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = object()
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+    session.flush.return_value = None
+    session.execute.return_value.scalars.return_value.all.return_value = [enrichment]
+    session.query.return_value.filter_by.return_value.delete.return_value = None
+
+    added_memberships = []
+
+    def _capture_membership(_session, membership):
+        added_memberships.append(membership)
+        membership.id = membership.id or uuid4()
+        return membership
+
+    canonical_repo.add_membership.side_effect = _capture_membership
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is True
+    assert outcome["match_type"] == "vendor_followup"
+    assert added_memberships
+    assert added_memberships[0].canonical_incident_id == existing_canonical.id
