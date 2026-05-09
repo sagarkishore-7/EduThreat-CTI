@@ -400,7 +400,9 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 # Include admin router
 from .admin import router as admin_router
 from .v2 import router as v2_router
+from .v2_admin import router as v2_admin_router
 app.include_router(admin_router, prefix="/api")
+app.include_router(v2_admin_router, prefix="/api")
 app.include_router(v2_router)
 
 

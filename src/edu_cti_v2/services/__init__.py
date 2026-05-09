@@ -5,6 +5,7 @@ from .canonicalization import V2CanonicalizationService, build_source_projection
 from .enrichment import V2EnrichmentService, source_incident_to_base_incident
 from .fetching import V2FetchService
 from .intake import V2IntakeService, determine_initial_task_type
+from .operations import V2OperationsService
 from .read_models import V2CanonicalReadService
 from .resolution import V2ResolveUrlService
 from .task_runtime import V2TaskRuntime
@@ -16,6 +17,7 @@ __all__ = [
     "V2EnrichmentService",
     "V2FetchService",
     "V2IntakeService",
+    "V2OperationsService",
     "V2ResolveUrlService",
     "V2TaskRuntime",
     "build_source_projection",

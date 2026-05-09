@@ -15,12 +15,12 @@ router = APIRouter(prefix="/api/v2", tags=["V2"])
 
 
 @lru_cache
-def _get_v2_session_factory() -> sessionmaker[Session]:
+def get_v2_session_factory() -> sessionmaker[Session]:
     return create_session_factory()
 
 
 def get_v2_session() -> Iterator[Session]:
-    session_factory = _get_v2_session_factory()
+    session_factory = get_v2_session_factory()
     with session_factory() as session:
         yield session
 
@@ -79,4 +79,3 @@ async def get_v2_incident_detail(
     if detail is None:
         raise HTTPException(status_code=404, detail="Canonical incident not found")
     return detail
-

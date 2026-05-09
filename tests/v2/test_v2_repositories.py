@@ -5,6 +5,7 @@ from sqlalchemy.dialects import postgresql
 from src.edu_cti_v2.repositories import (
     AnalyticsRefreshRepository,
     CanonicalIncidentRepository,
+    PipelineRunRepository,
     PipelineTaskRepository,
     SourceEnrichmentRepository,
     SourceIncidentRepository,
@@ -79,6 +80,21 @@ def test_analytics_refresh_repository_lookup_stmt_filters_by_refresh_key():
     compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
 
     assert "analytics_refresh_state.refresh_key = 'dashboard:global'" in compiled
+
+
+def test_pipeline_task_repository_status_summary_stmt_groups_by_type_and_status():
+    stmt = PipelineTaskRepository.build_status_summary_stmt()
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "GROUP BY pipeline_tasks.task_type, pipeline_tasks.status" in compiled
+
+
+def test_pipeline_run_repository_recent_stmt_orders_by_created_at():
+    stmt = PipelineRunRepository.build_list_recent_stmt(limit=5)
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "ORDER BY pipeline_runs.created_at DESC" in compiled
+    assert "LIMIT 5" in compiled
 
 
 def test_pipeline_task_repository_active_target_stmt_filters_by_target():

@@ -3,6 +3,7 @@
 from .analytics_refresh import AnalyticsRefreshRepository
 from .articles import ArticleRepository
 from .canonical_incidents import CanonicalIncidentRepository
+from .pipeline_runs import PipelineRunRepository
 from .pipeline_tasks import PipelineTaskRepository
 from .source_enrichments import SourceEnrichmentRepository
 from .source_incidents import SourceIncidentRepository
@@ -12,6 +13,7 @@ __all__ = [
     "AnalyticsRefreshRepository",
     "ArticleRepository",
     "CanonicalIncidentRepository",
+    "PipelineRunRepository",
     "PipelineTaskRepository",
     "SourceEnrichmentRepository",
     "SourceIncidentRepository",

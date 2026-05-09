@@ -14,7 +14,7 @@ from typing import Callable, Optional
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.edu_cti_v2.db import V2DatabaseSettings, create_session_factory
-from src.edu_cti_v2.services import V2TaskRuntime
+from src.edu_cti_v2.services.task_runtime import V2TaskRuntime
 
 logger = logging.getLogger(__name__)
 
@@ -150,4 +150,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

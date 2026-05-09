@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Sequence
 from uuid import uuid4
 
-from sqlalchemy import Select, select
+from sqlalchemy import Select, func, select
 from sqlalchemy.orm import Session
 
 from src.edu_cti_v2.models import PipelineTask
@@ -53,6 +53,32 @@ class PipelineTaskRepository:
             stmt = stmt.where(PipelineTask.task_type == task_type)
         return stmt
 
+    @staticmethod
+    def build_status_summary_stmt() -> Select:
+        return (
+            select(
+                PipelineTask.task_type,
+                PipelineTask.status,
+                func.count(PipelineTask.id).label("task_count"),
+            )
+            .group_by(PipelineTask.task_type, PipelineTask.status)
+            .order_by(PipelineTask.task_type.asc(), PipelineTask.status.asc())
+        )
+
+    @staticmethod
+    def build_recent_tasks_stmt(
+        *,
+        limit: int = 25,
+        task_type: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+    ) -> Select:
+        stmt = select(PipelineTask).order_by(PipelineTask.created_at.desc()).limit(limit)
+        if task_type:
+            stmt = stmt.where(PipelineTask.task_type == task_type)
+        if statuses:
+            stmt = stmt.where(PipelineTask.status.in_(list(statuses)))
+        return stmt
+
     def enqueue(self, session: Session, task: PipelineTask) -> PipelineTask:
         session.add(task)
         return task
@@ -95,6 +121,28 @@ class PipelineTaskRepository:
             task.lease_expires_at = expires_at
             task.attempt_count += 1
         return tasks
+
+    def get_status_summary(self, session: Session) -> list[dict[str, object]]:
+        stmt = self.build_status_summary_stmt()
+        return [
+            {
+                "task_type": row.task_type,
+                "status": row.status,
+                "task_count": int(row.task_count or 0),
+            }
+            for row in session.execute(stmt).all()
+        ]
+
+    def list_recent(
+        self,
+        session: Session,
+        *,
+        limit: int = 25,
+        task_type: Optional[str] = None,
+        statuses: Optional[Sequence[str]] = None,
+    ) -> list[PipelineTask]:
+        stmt = self.build_recent_tasks_stmt(limit=limit, task_type=task_type, statuses=statuses)
+        return list(session.execute(stmt).scalars().all())
 
     def mark_completed(self, session: Session, task: PipelineTask, result: Optional[dict] = None) -> None:
         task.status = "completed"
