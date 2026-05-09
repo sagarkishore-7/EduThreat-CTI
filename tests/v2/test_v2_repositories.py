@@ -20,6 +20,9 @@ def test_pipeline_task_repository_lease_stmt_uses_skip_locked():
     assert "FOR UPDATE SKIP LOCKED" in compiled
     assert "enrich_source" in compiled
     assert "ORDER BY pipeline_tasks.priority DESC" in compiled
+    assert "pipeline_tasks.status = 'queued'" in compiled
+    assert "pipeline_tasks.status = 'leased'" in compiled
+    assert "pipeline_tasks.lease_expires_at <" in compiled
 
 
 def test_pipeline_task_repository_lease_stmt_can_exclude_task_types():

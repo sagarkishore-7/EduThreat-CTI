@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 from typing import List, Optional, Sequence
 from uuid import uuid4
 
-from sqlalchemy import Select, func, select
+from sqlalchemy import Select, and_, func, or_, select
 from sqlalchemy.orm import Session
 
 from src.edu_cti_v2.models import PipelineTask
@@ -44,8 +44,19 @@ class PipelineTaskRepository:
         now = now or datetime.now(timezone.utc)
         stmt = (
             select(PipelineTask)
-            .where(PipelineTask.status == "queued")
-            .where(PipelineTask.available_at <= now)
+            .where(
+                or_(
+                    and_(
+                        PipelineTask.status == "queued",
+                        PipelineTask.available_at <= now,
+                    ),
+                    and_(
+                        PipelineTask.status == "leased",
+                        PipelineTask.lease_expires_at.is_not(None),
+                        PipelineTask.lease_expires_at < now,
+                    ),
+                )
+            )
             .order_by(PipelineTask.priority.desc(), PipelineTask.created_at.asc())
             .limit(limit)
             .with_for_update(skip_locked=True)
@@ -147,6 +158,23 @@ class PipelineTaskRepository:
             task.lease_expires_at = expires_at
             task.attempt_count += 1
         return tasks
+
+    def renew_lease(
+        self,
+        session: Session,
+        *,
+        task_id,
+        worker_id: str,
+        lease_seconds: int,
+    ) -> bool:
+        task = session.get(PipelineTask, task_id)
+        if task is None:
+            return False
+        if task.status != "leased" or task.lease_owner != worker_id:
+            return False
+        task.lease_expires_at = datetime.now(timezone.utc) + timedelta(seconds=lease_seconds)
+        session.add(task)
+        return True
 
     def get_status_summary(self, session: Session) -> list[dict[str, object]]:
         stmt = self.build_status_summary_stmt()

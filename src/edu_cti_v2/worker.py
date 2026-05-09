@@ -6,6 +6,7 @@ import argparse
 import logging
 import os
 import socket
+import threading
 import time
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
@@ -15,6 +16,7 @@ from typing import Callable, Optional, Sequence
 from sqlalchemy.orm import Session, sessionmaker
 
 from src.edu_cti_v2.db import V2DatabaseSettings, create_session_factory
+from src.edu_cti_v2.repositories import PipelineTaskRepository
 from src.edu_cti_v2.services.task_runtime import V2TaskRuntime
 
 logger = logging.getLogger(__name__)
@@ -31,6 +33,68 @@ class V2WorkerRunSummary:
 
 def _default_worker_id() -> str:
     return f"{socket.gethostname()}:{os.getpid()}"
+
+
+def _lease_heartbeat_interval(lease_seconds: int) -> float:
+    return max(min(float(lease_seconds) / 3.0, 30.0), 1.0)
+
+
+def _lease_heartbeat_loop(
+    *,
+    session_factory: Callable[[], AbstractContextManager[Session]],
+    task_id,
+    worker_id: str,
+    lease_seconds: int,
+    stop_event: Event,
+) -> None:
+    task_repository = PipelineTaskRepository()
+    interval = _lease_heartbeat_interval(lease_seconds)
+
+    while not stop_event.wait(interval):
+        with session_factory() as session:
+            try:
+                renewed = task_repository.renew_lease(
+                    session,
+                    task_id=task_id,
+                    worker_id=worker_id,
+                    lease_seconds=lease_seconds,
+                )
+                session.commit()
+            except Exception as exc:
+                session.rollback()
+                logger.warning(
+                    "v2 worker lease heartbeat failed: worker_id=%s task_id=%s error=%s",
+                    worker_id,
+                    task_id,
+                    exc,
+                )
+                continue
+        if not renewed:
+            return
+
+
+def _start_lease_heartbeat(
+    *,
+    session_factory: Callable[[], AbstractContextManager[Session]],
+    task_id,
+    worker_id: str,
+    lease_seconds: int,
+):
+    stop_event = Event()
+    thread = threading.Thread(
+        target=_lease_heartbeat_loop,
+        kwargs={
+            "session_factory": session_factory,
+            "task_id": task_id,
+            "worker_id": worker_id,
+            "lease_seconds": lease_seconds,
+            "stop_event": stop_event,
+        },
+        name=f"lease-heartbeat-{worker_id.replace(':', '-')}",
+        daemon=True,
+    )
+    thread.start()
+    return stop_event, thread
 
 
 def run_worker_loop(
@@ -96,6 +160,12 @@ def run_worker_loop(
                 time.sleep(max(poll_interval, 0.0))
             continue
 
+        heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(
+            session_factory=session_factory,
+            task_id=leased_task_id,
+            worker_id=worker_id,
+            lease_seconds=lease_seconds,
+        )
         with session_factory() as session:
             try:
                 processed = runtime.process_leased_task(
@@ -106,7 +176,12 @@ def run_worker_loop(
                 session.commit()
             except Exception:
                 session.rollback()
+                heartbeat_stop.set()
+                heartbeat_thread.join(timeout=max(min(_lease_heartbeat_interval(lease_seconds), 1.0), 0.1))
                 raise
+            finally:
+                heartbeat_stop.set()
+                heartbeat_thread.join(timeout=max(min(_lease_heartbeat_interval(lease_seconds), 1.0), 0.1))
 
         if processed is None:
             continue
