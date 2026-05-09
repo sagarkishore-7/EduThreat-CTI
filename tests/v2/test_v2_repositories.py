@@ -3,6 +3,7 @@ from sqlalchemy.dialects import postgresql
 from src.edu_cti_v2.repositories import (
     CanonicalIncidentRepository,
     PipelineTaskRepository,
+    SourceEnrichmentRepository,
     SourceIncidentRepository,
     SourceStateRepository,
 )
@@ -55,3 +56,12 @@ def test_source_state_repository_lookup_stmt_filters_by_scope_and_cursor():
     assert "source_state.source_name = 'googlenews_rss'" in compiled
     assert "source_state.state_scope = 'historical'" in compiled
     assert "source_state.cursor_key = '2026-01-01:2026-07-01'" in compiled
+
+
+def test_source_enrichment_repository_lookup_stmt_filters_by_source_incident():
+    stmt = SourceEnrichmentRepository.build_get_by_source_incident_stmt(
+        "00000000-0000-0000-0000-000000000111"
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "source_enrichments.source_incident_id = '00000000-0000-0000-0000-000000000111'" in compiled
