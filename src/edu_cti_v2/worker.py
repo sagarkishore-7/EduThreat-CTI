@@ -9,6 +9,7 @@ import socket
 import time
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
+from threading import Event
 from typing import Callable, Optional
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -42,6 +43,7 @@ def run_worker_loop(
     max_tasks: Optional[int] = None,
     stop_when_idle: bool = False,
     lease_seconds: Optional[int] = None,
+    stop_event: Optional[Event] = None,
 ) -> V2WorkerRunSummary:
     """Run the v2 task worker loop once, until idle, or forever."""
     settings = V2DatabaseSettings.from_env()
@@ -54,6 +56,14 @@ def run_worker_loop(
     idle_polls = 0
 
     while True:
+        if stop_event and stop_event.is_set():
+            return V2WorkerRunSummary(
+                processed_tasks=processed_tasks,
+                idle_polls=idle_polls,
+                stop_reason="stopped",
+                worker_id=worker_id,
+                task_type=task_type,
+            )
         with session_factory() as session:
             try:
                 processed = runtime.process_next_task(
@@ -77,7 +87,10 @@ def run_worker_loop(
                     worker_id=worker_id,
                     task_type=task_type,
                 )
-            time.sleep(max(poll_interval, 0.0))
+            if stop_event:
+                stop_event.wait(max(poll_interval, 0.0))
+            else:
+                time.sleep(max(poll_interval, 0.0))
             continue
 
         processed_tasks += 1

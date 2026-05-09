@@ -1,3 +1,4 @@
+from threading import Event
 from unittest.mock import Mock
 
 from src.edu_cti_v2.worker import run_worker_loop
@@ -73,3 +74,30 @@ def test_worker_loop_stops_after_max_tasks():
     assert summary.processed_tasks == 1
     assert summary.idle_polls == 0
     assert session.committed == 1
+
+
+def test_worker_loop_stops_when_stop_event_is_set():
+    session = _FakeSession()
+    stop_event = Event()
+
+    def _session_factory():
+        return _FakeSessionContext(session)
+
+    runtime = Mock()
+    runtime.process_next_task.side_effect = [None]
+
+    stop_event.set()
+    summary = run_worker_loop(
+        session_factory=_session_factory,
+        runtime=runtime,
+        worker_id="worker-1",
+        stop_when_idle=False,
+        poll_interval=0,
+        lease_seconds=60,
+        stop_event=stop_event,
+    )
+
+    assert summary.stop_reason == "stopped"
+    assert summary.processed_tasks == 0
+    assert summary.idle_polls == 0
+    runtime.process_next_task.assert_not_called()

@@ -42,6 +42,8 @@ RUN playwright install chromium --with-deps
 # Copy the source code
 COPY src/ ./src/
 COPY pyproject.toml ./
+COPY alembic/ ./alembic/
+COPY alembic.ini ./
 
 # Install the package itself (so imports work as `src.edu_cti.*`)
 RUN pip install --no-cache-dir .
