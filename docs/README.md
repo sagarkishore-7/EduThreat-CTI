@@ -10,6 +10,7 @@ Welcome to the EduThreat-CTI documentation. This index helps you find the right 
 ### 👨‍💻 Developers & Contributors
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**: System architecture and design
+- **[POSTGRES_V2_BLUEPRINT.md](POSTGRES_V2_BLUEPRINT.md)**: Approved v2 redesign for Postgres, split services, and canonical lineage
 - **[ADDING_SOURCES.md](ADDING_SOURCES.md)**: Guide for adding new data sources
 - **[CONTRIBUTING.md](../CONTRIBUTING.md)**: Contribution guidelines
 - **[DATABASE.md](DATABASE.md)**: Database schema and operations
@@ -39,11 +40,13 @@ Welcome to the EduThreat-CTI documentation. This index helps you find the right 
 ### System Architecture
 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**: Complete system architecture, data flow, and module organization
+- **[POSTGRES_V2_BLUEPRINT.md](POSTGRES_V2_BLUEPRINT.md)**: Fresh-start v2 architecture and rollout target
 
 ### Database
 
 - **[DATABASE.md](DATABASE.md)**: Complete database schema, tables, and query examples
 - **[DATABASE_CONCURRENCY.md](DATABASE_CONCURRENCY.md)**: WAL mode, concurrent access, production considerations
+- **[postgres_v2_schema.sql](postgres_v2_schema.sql)**: First-pass Postgres DDL draft for the v2 greenfield schema
 
 ### Data Processing
 
@@ -88,10 +91,12 @@ Welcome to the EduThreat-CTI documentation. This index helps you find the right 
 
 ### Architecture & Design
 - [ARCHITECTURE.md](ARCHITECTURE.md)
+- [POSTGRES_V2_BLUEPRINT.md](POSTGRES_V2_BLUEPRINT.md)
 
 ### Database
 - [DATABASE.md](DATABASE.md)
 - [DATABASE_CONCURRENCY.md](DATABASE_CONCURRENCY.md)
+- [postgres_v2_schema.sql](postgres_v2_schema.sql)
 
 ### Data Processing
 - [DEDUPLICATION.md](DEDUPLICATION.md)

@@ -7,6 +7,8 @@
 
 EduThreat-CTI is a production-grade cyber threat intelligence pipeline designed for scalability, maintainability, and contributor-friendly extension. The system follows a three-phase architecture with clear separation of concerns.
 
+For the approved greenfield redesign target, see [POSTGRES_V2_BLUEPRINT.md](POSTGRES_V2_BLUEPRINT.md). This document describes the current production architecture; the v2 blueprint describes the planned Postgres + split-service replacement.
+
 ## Design Principles
 
 1. **Phase-Based Organization**: Clear separation of Phase 1 (Ingestion), Phase 2 (Enrichment), and Phase 3 (API/Dashboard)
