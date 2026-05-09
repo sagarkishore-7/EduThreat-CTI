@@ -71,3 +71,32 @@ def test_v2_runtime_service_can_disable_scheduler(monkeypatch):
     stopped = runtime.stop()
     assert stopped["scheduler"] is None
 
+
+def test_v2_runtime_service_restarts_dead_worker_threads(monkeypatch):
+    call_counts = {}
+
+    def _fake_run_worker_loop(*, worker_id, stop_event, **_kwargs):
+        count = call_counts.get(worker_id, 0) + 1
+        call_counts[worker_id] = count
+        if count == 1:
+            raise RuntimeError("boom")
+        stop_event.wait(0.01)
+        return V2WorkerRunSummary(
+            processed_tasks=0,
+            idle_polls=0,
+            stop_reason="stopped",
+            worker_id=worker_id,
+            task_type=None,
+        )
+
+    monkeypatch.setattr("src.edu_cti_v2.runtime.run_worker_loop", _fake_run_worker_loop)
+
+    runtime = V2RuntimeService(worker_count=1, enable_scheduler=False)
+    runtime.start()
+    time.sleep(0.02)
+    runtime.tick()
+    time.sleep(0.02)
+    stopped = runtime.stop()
+
+    assert call_counts["v2-runtime:1"] == 2
+    assert stopped["workers"][0]["summary"]["stop_reason"] == "stopped"

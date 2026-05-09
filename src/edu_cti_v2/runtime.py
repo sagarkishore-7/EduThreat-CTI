@@ -56,6 +56,18 @@ class V2RuntimeService:
         self._worker_states: list[_WorkerThreadState] = []
         self._running = False
 
+    def _start_worker_thread(self, state: _WorkerThreadState) -> None:
+        state.summary = None
+        state.error = None
+        thread = threading.Thread(
+            target=self._worker_target,
+            args=(state.worker_id, state),
+            name=state.worker_id.replace(":", "-"),
+            daemon=True,
+        )
+        state.thread = thread
+        thread.start()
+
     def _worker_target(self, worker_id: str, state: _WorkerThreadState) -> None:
         try:
             state.summary = run_worker_loop(
@@ -89,15 +101,8 @@ class V2RuntimeService:
         for index in range(self.worker_count):
             worker_id = f"v2-runtime:{index + 1}"
             state = _WorkerThreadState(worker_id=worker_id, thread=None)
-            thread = threading.Thread(
-                target=self._worker_target,
-                args=(worker_id, state),
-                name=f"v2-worker-{index + 1}",
-                daemon=True,
-            )
-            state.thread = thread
             self._worker_states.append(state)
-            thread.start()
+            self._start_worker_thread(state)
 
         self._running = True
         logger.info(
@@ -121,6 +126,24 @@ class V2RuntimeService:
         self._running = False
         logger.info("Stopped v2 runtime")
         return self.get_status()
+
+    def tick(self) -> None:
+        """Restart any dead worker thread while the runtime is supposed to be running."""
+        if not self._running or self._stop_event.is_set():
+            return
+
+        for state in self._worker_states:
+            if state.thread and state.thread.is_alive():
+                continue
+            if state.summary and state.summary.stop_reason == "stopped":
+                continue
+            logger.warning(
+                "Restarting v2 runtime worker after unexpected stop: worker_id=%s error=%s summary=%s",
+                state.worker_id,
+                state.error,
+                state.summary.stop_reason if state.summary else None,
+            )
+            self._start_worker_thread(state)
 
     def get_status(self) -> dict[str, object]:
         return {
@@ -205,6 +228,7 @@ def main() -> None:
     runtime.start()
     try:
         while not stop:
+            runtime.tick()
             time.sleep(1.0)
     finally:
         runtime.stop()
