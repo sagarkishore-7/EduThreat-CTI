@@ -12,6 +12,7 @@ from src.edu_cti.api.v2 import get_v2_session, get_v2_session_factory
 from src.edu_cti_v2.services import V2OperationsService
 from src.edu_cti_v2.services.collection import V2CollectionService
 from src.edu_cti_v2.services.orchestration import V2OrchestrationService
+from src.edu_cti_v2.services.scheduler import V2SchedulerService
 
 router = APIRouter(prefix="/admin/v2", tags=["Admin", "V2"])
 
@@ -29,6 +30,11 @@ def get_v2_collection_service() -> V2CollectionService:
 @lru_cache
 def get_v2_orchestration_service() -> V2OrchestrationService:
     return V2OrchestrationService(session_factory=get_v2_session_factory())
+
+
+@lru_cache
+def get_v2_scheduler_service() -> V2SchedulerService:
+    return V2SchedulerService()
 
 
 @router.get("/status")
@@ -158,3 +164,41 @@ async def run_v2_plan(
         worker_max_tasks=worker_max_tasks,
         drain_tasks=drain_tasks,
     )
+
+
+@router.get("/scheduler/status")
+async def get_v2_scheduler_status(
+    scheduler: V2SchedulerService = Depends(get_v2_scheduler_service),
+    _: bool = Depends(authenticate),
+):
+    """Return recurring v2 scheduler status and recent outcomes."""
+    return scheduler.get_status()
+
+
+@router.post("/scheduler/start")
+async def start_v2_scheduler(
+    scheduler: V2SchedulerService = Depends(get_v2_scheduler_service),
+    _: bool = Depends(authenticate),
+):
+    """Start the recurring v2 scheduler in-process."""
+    return scheduler.start()
+
+
+@router.post("/scheduler/stop")
+async def stop_v2_scheduler(
+    scheduler: V2SchedulerService = Depends(get_v2_scheduler_service),
+    _: bool = Depends(authenticate),
+):
+    """Stop the recurring v2 scheduler."""
+    return scheduler.stop()
+
+
+@router.post("/scheduler/trigger/{job_name}")
+async def trigger_v2_scheduler_job(
+    job_name: str,
+    background: bool = Query(True),
+    scheduler: V2SchedulerService = Depends(get_v2_scheduler_service),
+    _: bool = Depends(authenticate),
+):
+    """Trigger one named recurring v2 scheduler job on demand."""
+    return scheduler.trigger_job(job_name, background=background)
