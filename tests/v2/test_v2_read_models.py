@@ -407,6 +407,7 @@ def test_read_service_dashboard_summary_prefers_cached_snapshot():
     dashboard_snapshot = {
         "totals": {"canonical_incident_count": 5},
         "stats": {"total_incidents": 5},
+        "intelligence_summary": {"overview": {"total_incidents": 5}},
         "incidents_by_country": [],
         "incidents_by_attack_type": [],
         "incidents_by_ransomware": [],
@@ -435,6 +436,7 @@ def test_read_service_can_return_dashboard_stats_only():
         state_payload={
             "totals": {"canonical_incident_count": 5},
             "stats": {"total_incidents": 5, "education_incidents": 4},
+            "intelligence_summary": {"overview": {"total_incidents": 5}},
             "incidents_by_country": [],
             "incidents_by_attack_type": [],
             "incidents_by_ransomware": [],
@@ -477,6 +479,13 @@ def test_read_service_dashboard_summary_rebuilds_when_cached_snapshot_is_legacy_
     canonical_repo.get_incident_trend.return_value = [
         {"bucket_start": "2026-05-01", "incident_count": 4}
     ]
+    canonical_repo.get_threat_actor_breakdown.return_value = {
+        "threat_actors": [{"name": "SomeGroup", "incident_count": 2, "countries_targeted": ["United States"], "ransomware_families": ["LockBit"]}],
+        "total": 1,
+        "returned": 1,
+        "total_incidents": 2,
+        "countries_targeted_total": 1,
+    }
     canonical_repo.list_recent_with_enrichment.return_value = [(
         SimpleNamespace(
             id=uuid4(),
@@ -639,6 +648,13 @@ def test_read_service_build_dashboard_payload_shapes_full_dashboard_response():
         3,
     )]
     canonical_repo.count_recent.return_value = 1
+    canonical_repo.get_threat_actor_breakdown.return_value = {
+        "threat_actors": [{"name": "SomeGroup", "incident_count": 3, "countries_targeted": ["United States"], "ransomware_families": ["LockBit"]}],
+        "total": 1,
+        "returned": 1,
+        "total_incidents": 3,
+        "countries_targeted_total": 1,
+    }
 
     service = V2CanonicalReadService(canonical_repository=canonical_repo)
 
@@ -653,6 +669,8 @@ def test_read_service_build_dashboard_payload_shapes_full_dashboard_response():
     assert payload["incidents_over_time"][0]["date"] == "2026-05-01"
     assert payload["recent_incidents"][0]["incident_id"]
     assert payload["top_ransomware_families"][0]["ransomware_family"] == "LockBit"
+    assert payload["intelligence_summary"]["overview"]["total_incidents"] == 8
+    assert payload["intelligence_summary"]["tradecraft"]["attack_clusters"][0]["cluster"] == "Ransomware & Extortion"
 
 
 def test_read_service_compat_analytics_shapes_delegate_to_repository():
@@ -723,3 +741,93 @@ def test_read_service_threat_actor_analytics_and_filter_options_delegate_to_repo
         statuses=("open",),
     )
     assert filters["ransomware_families"] == ["LockBit"]
+
+
+def test_read_service_intelligence_summary_aggregates_analyst_metrics():
+    canonical_repo = Mock()
+    canonical_repo.count_recent.return_value = 2
+    canonical_repo.list_recent_with_enrichment.return_value = [
+        (
+            SimpleNamespace(
+                id=uuid4(),
+                institution_name="Example University",
+                vendor_name=None,
+                institution_type="university",
+                country="United States",
+                country_code="US",
+                incident_date=date(2026, 5, 8),
+                last_seen_at=datetime(2026, 5, 9, 8, 0, tzinfo=timezone.utc),
+                attack_category="ransomware_double_extortion",
+                attack_vector=None,
+                threat_actor_name="Example Crew",
+                ransomware_family="LockBit",
+            ),
+            SimpleNamespace(
+                canonical_projection={
+                    "attack_dynamics": {"attack_vector": "phishing_email"},
+                    "data_impact": {"records_affected_exact": 1200},
+                },
+            ),
+            2,
+        ),
+        (
+            SimpleNamespace(
+                id=uuid4(),
+                institution_name=None,
+                vendor_name="PowerSchool",
+                institution_type="education_technology_provider",
+                country="Canada",
+                country_code="CA",
+                incident_date=date(2026, 2, 1),
+                last_seen_at=datetime(2026, 2, 2, 8, 0, tzinfo=timezone.utc),
+                attack_category="third_party_compromise",
+                attack_vector=None,
+                threat_actor_name=None,
+                ransomware_family=None,
+            ),
+            SimpleNamespace(
+                canonical_projection={
+                    "attack_dynamics": {"attack_vector": "third_party_vendor"},
+                    "data_impact": {},
+                },
+            ),
+            1,
+        ),
+    ]
+    canonical_repo.get_country_breakdown.return_value = [
+        {"country_code": "US", "country": "United States", "incident_count": 1},
+        {"country_code": "CA", "country": "Canada", "incident_count": 1},
+    ]
+    canonical_repo.get_ransomware_breakdown.return_value = [
+        {"ransomware_family": "LockBit", "incident_count": 1}
+    ]
+    canonical_repo.get_threat_actor_breakdown.return_value = {
+        "threat_actors": [
+            {
+                "name": "Example Crew",
+                "incident_count": 1,
+                "countries_targeted": ["United States"],
+                "ransomware_families": ["LockBit"],
+                "first_seen": "2026-05-08T00:00:00+00:00",
+                "last_seen": "2026-05-09T00:00:00+00:00",
+            }
+        ],
+        "total": 1,
+        "returned": 1,
+        "total_incidents": 1,
+        "countries_targeted_total": 1,
+    }
+
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+
+    summary = service.get_intelligence_summary(Mock(), statuses=("open",))
+
+    assert summary["overview"]["total_incidents"] == 2
+    assert summary["overview"]["ransomware_count"] == 1
+    assert summary["overview"]["vendor_linked_count"] == 1
+    assert summary["exposure"]["known_record_volume"] == 1200
+    assert summary["tradecraft"]["attack_vectors"][0]["vector"] == "Phishing Email"
+    assert summary["victimology"]["institution_segments"][0]["segment"] in {
+        "Higher Education",
+        "Education Vendor / Provider",
+    }

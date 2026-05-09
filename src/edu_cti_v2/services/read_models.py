@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from collections import Counter
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Optional, Sequence
 
 from sqlalchemy.orm import Session
@@ -85,7 +86,7 @@ def _summary_from_canonical(
     *,
     membership_count: int,
 ) -> dict[str, Any]:
-    analytics_projection = (enrichment.analytics_projection if enrichment else None) or {}
+    analytics_projection = (getattr(enrichment, "analytics_projection", None) if enrichment else None) or {}
     display_name = canonical.institution_name or canonical.vendor_name
     return {
         "canonical_incident_id": str(canonical.id),
@@ -173,6 +174,101 @@ def _to_recent_incidents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
+def _humanize_slug(value: str | None) -> str:
+    if not value:
+        return "Unknown"
+    return value.replace("_", " ").replace("/", " / ").title()
+
+
+def _projection_section(payload: dict[str, Any], key: str) -> dict[str, Any]:
+    value = payload.get(key)
+    return value if isinstance(value, dict) else {}
+
+
+def _coerce_int(value: Any) -> int | None:
+    if value in (None, "", False):
+        return None
+    if isinstance(value, bool):
+        return int(value)
+    try:
+        return int(float(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_institution_segment(institution_type: str | None, vendor_name: str | None) -> str:
+    if vendor_name:
+        return "Education Vendor / Provider"
+
+    raw = (institution_type or "").strip().lower()
+    if not raw:
+        return "Other Education"
+
+    if any(token in raw for token in ("vendor", "provider", "technology_provider", "service_provider")):
+        return "Education Vendor / Provider"
+    if "school_district" in raw or "k12" in raw or raw == "school":
+        return "K-12"
+    if any(token in raw for token in ("university", "college", "higher_education", "community_college")):
+        return "Higher Education"
+    if any(token in raw for token in ("hospital", "medical", "research")):
+        return "Academic Medical / Research"
+    return "Other Education"
+
+
+def _normalize_attack_cluster(attack_category: str | None) -> str:
+    raw = (attack_category or "").strip().lower()
+    if not raw:
+        return "Unspecified"
+    if raw.startswith("ransomware"):
+        return "Ransomware & Extortion"
+    if raw.startswith("data_breach"):
+        return "Data Breach & Exposure"
+    if raw in {"third_party_compromise", "supply_chain_software"}:
+        return "Third-Party & Supply Chain"
+    if raw == "unauthorized_access":
+        return "Unauthorized Access"
+    if raw.startswith("ddos"):
+        return "Service Disruption"
+    if raw == "web_defacement":
+        return "Website Defacement"
+    return _humanize_slug(raw)
+
+
+def _normalize_attack_vector(attack_vector: str | None) -> str | None:
+    raw = (attack_vector or "").strip().lower()
+    if not raw or raw in {"unknown", "other", "n/a"}:
+        return None
+
+    labels = {
+        "phishing_email": "Phishing Email",
+        "third_party_vendor": "Third-Party Vendor",
+        "stolen_credentials": "Stolen Credentials",
+        "supply_chain_compromise": "Supply Chain Compromise",
+        "vulnerability_exploit_known": "Known Vulnerability Exploit",
+        "vulnerability_exploit_zero_day": "Zero-Day Exploit",
+        "exposed_service": "Exposed Service",
+        "misconfiguration": "Misconfiguration",
+        "malicious_link": "Malicious Link",
+        "ddos": "DDoS",
+    }
+    return labels.get(raw, _humanize_slug(raw))
+
+
+def _to_ranked_items(counter: Counter[str], *, total: int, label_key: str) -> list[dict[str, Any]]:
+    results: list[dict[str, Any]] = []
+    for label, count in counter.most_common():
+        if not label:
+            continue
+        results.append(
+            {
+                label_key: label,
+                "count": int(count),
+                "percentage": (count / total * 100.0) if total else 0.0,
+            }
+        )
+    return results
+
+
 def _dashboard_stats_from_rollup(rollup: dict[str, Any], *, refreshed_at: str) -> dict[str, Any]:
     total_incidents = int(rollup.get("canonical_incident_count") or 0)
     enriched_incidents = int(rollup.get("enriched_canonical_count") or 0)
@@ -198,6 +294,7 @@ def _is_full_dashboard_snapshot(payload: dict[str, Any]) -> bool:
     required = {
         "totals",
         "stats",
+        "intelligence_summary",
         "incidents_by_country",
         "incidents_by_attack_type",
         "incidents_by_ransomware",
@@ -230,6 +327,7 @@ def _to_legacy_incident_summary(item: dict[str, Any]) -> dict[str, Any]:
         "llm_enriched": bool(item.get("selected_source_enrichment_id")),
         "llm_enriched_at": item.get("updated_at"),
         "ingested_at": item.get("first_seen_at"),
+        "source_count": item.get("membership_count") or 0,
         "sources": [],
     }
 
@@ -446,8 +544,8 @@ class V2CanonicalReadService:
                 membership_count=len(membership_details),
             ),
             "resolution_metadata": canonical.resolution_metadata or {},
-            "field_provenance": (enrichment.field_provenance if enrichment else None) or {},
-            "canonical_projection": (enrichment.canonical_projection if enrichment else None) or {},
+            "field_provenance": (getattr(enrichment, "field_provenance", None) if enrichment else None) or {},
+            "canonical_projection": (getattr(enrichment, "canonical_projection", None) if enrichment else None) or {},
             "selected_source": selected_source,
             "fetch_attempts": fetch_attempts,
             "memberships": [
@@ -651,6 +749,314 @@ class V2CanonicalReadService:
     def get_dashboard_stats(self, session: Session) -> dict[str, Any]:
         return self.get_dashboard_summary(session)["stats"]
 
+    def get_intelligence_summary(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> dict[str, Any]:
+        return self._build_intelligence_summary(
+            session,
+            statuses=statuses,
+        )
+
+    def _build_intelligence_summary(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str],
+        rollup: Optional[dict[str, Any]] = None,
+        countries: Optional[list[dict[str, Any]]] = None,
+        ransomware: Optional[list[dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        total_incidents = int(
+            (rollup or {}).get("canonical_incident_count")
+            or self.canonical_repository.count_recent(session, statuses=statuses)
+            or 0
+        )
+        rows = self.canonical_repository.list_recent_with_enrichment(
+            session,
+            statuses=statuses,
+            limit=max(total_incidents, 1),
+            offset=0,
+            sort_by="incident_date",
+            sort_order="desc",
+        )
+        country_breakdown = countries or self.canonical_repository.get_country_breakdown(
+            session,
+            statuses=statuses,
+            limit=8,
+        )
+        ransomware_breakdown = ransomware or self.canonical_repository.get_ransomware_breakdown(
+            session,
+            statuses=statuses,
+            limit=8,
+        )
+        threat_actor_breakdown = self.canonical_repository.get_threat_actor_breakdown(
+            session,
+            statuses=statuses,
+            limit=8,
+        )
+        if not isinstance(threat_actor_breakdown, dict):
+            threat_actor_breakdown = {}
+
+        institution_segments: Counter[str] = Counter()
+        attack_clusters: Counter[str] = Counter()
+        attack_vectors: Counter[str] = Counter()
+        largest_record_events: list[dict[str, Any]] = []
+
+        actor_attributed_count = 0
+        ransomware_count = 0
+        breach_count = 0
+        vendor_linked_count = 0
+        attack_vector_known_count = 0
+        known_record_events = 0
+        known_record_volume = 0
+        timeline_points: list[dict[str, Any]] = []
+
+        for canonical, enrichment, _membership_count in rows:
+            projection = (
+                getattr(enrichment, "canonical_projection", None)
+                if enrichment and isinstance(getattr(enrichment, "canonical_projection", None), dict)
+                else {}
+            )
+            attack_dynamics = _projection_section(projection, "attack_dynamics")
+            data_impact = _projection_section(projection, "data_impact")
+
+            display_name = canonical.institution_name or canonical.vendor_name or "Unknown"
+            incident_date = canonical.incident_date
+            if incident_date is None and canonical.last_seen_at:
+                incident_date = canonical.last_seen_at.date()
+
+            segment = _normalize_institution_segment(canonical.institution_type, canonical.vendor_name)
+            cluster = _normalize_attack_cluster(canonical.attack_category)
+            vector = _normalize_attack_vector(
+                attack_dynamics.get("attack_vector") or canonical.attack_vector
+            )
+
+            is_actor_attributed = bool(canonical.threat_actor_name)
+            is_ransomware = bool(
+                canonical.ransomware_family
+                or ((canonical.attack_category or "").lower().startswith("ransomware"))
+            )
+            is_breach = bool(
+                (canonical.attack_category or "").lower().startswith("data_breach")
+            )
+            is_vendor_linked = bool(
+                canonical.vendor_name
+                or cluster == "Third-Party & Supply Chain"
+                or vector in {"Third-Party Vendor", "Supply Chain Compromise"}
+            )
+            exact_records = _coerce_int(data_impact.get("records_affected_exact"))
+
+            institution_segments[segment] += 1
+            attack_clusters[cluster] += 1
+            if vector:
+                attack_vectors[vector] += 1
+                attack_vector_known_count += 1
+
+            if is_actor_attributed:
+                actor_attributed_count += 1
+            if is_ransomware:
+                ransomware_count += 1
+            if is_breach:
+                breach_count += 1
+            if is_vendor_linked:
+                vendor_linked_count += 1
+
+            if exact_records and exact_records > 0:
+                known_record_events += 1
+                known_record_volume += exact_records
+                largest_record_events.append(
+                    {
+                        "incident_id": str(canonical.id),
+                        "display_name": display_name,
+                        "country": canonical.country,
+                        "country_code": canonical.country_code,
+                        "incident_date": incident_date.isoformat() if incident_date else None,
+                        "records_affected": exact_records,
+                        "attack_category": canonical.attack_category,
+                    }
+                )
+
+            timeline_points.append(
+                {
+                    "incident_date": incident_date,
+                    "ransomware": is_ransomware,
+                    "vendor_linked": is_vendor_linked,
+                    "breach": is_breach,
+                }
+            )
+
+        largest_record_events.sort(key=lambda item: int(item["records_affected"]), reverse=True)
+        largest_record_events = largest_record_events[:5]
+
+        anchor_date = max(
+            (item["incident_date"] for item in timeline_points if item["incident_date"] is not None),
+            default=None,
+        )
+        recent_90d_count = 0
+        prior_90d_count = 0
+        recent_ransomware_count = 0
+        recent_vendor_count = 0
+        recent_breach_count = 0
+        if anchor_date is not None:
+            recent_start = anchor_date - timedelta(days=89)
+            prior_start = recent_start - timedelta(days=90)
+            prior_end = recent_start - timedelta(days=1)
+            for item in timeline_points:
+                point_date = item["incident_date"]
+                if point_date is None:
+                    continue
+                if recent_start <= point_date <= anchor_date:
+                    recent_90d_count += 1
+                    recent_ransomware_count += int(item["ransomware"])
+                    recent_vendor_count += int(item["vendor_linked"])
+                    recent_breach_count += int(item["breach"])
+                elif prior_start <= point_date <= prior_end:
+                    prior_90d_count += 1
+
+        recent_change_count = recent_90d_count - prior_90d_count
+        recent_change_pct = (
+            (recent_change_count / prior_90d_count * 100.0)
+            if prior_90d_count
+            else None
+        )
+
+        total = max(total_incidents, 1)
+        segment_breakdown = _to_ranked_items(
+            institution_segments,
+            total=total_incidents,
+            label_key="segment",
+        )
+        cluster_breakdown = _to_ranked_items(
+            attack_clusters,
+            total=total_incidents,
+            label_key="cluster",
+        )
+        vector_breakdown = _to_ranked_items(
+            attack_vectors,
+            total=max(attack_vector_known_count, 1),
+            label_key="vector",
+        )[:8]
+
+        top_countries = _to_count_by_category(
+            country_breakdown,
+            label_key="country",
+            country_code_key="country_code",
+        )
+        top_ransomware = _to_count_by_category(
+            ransomware_breakdown,
+            label_key="ransomware_family",
+        )
+
+        threat_actors = list(threat_actor_breakdown.get("threat_actors") or [])
+        top_actor = threat_actors[0] if threat_actors else None
+        lead_cluster = cluster_breakdown[0] if cluster_breakdown else None
+        lead_segment = segment_breakdown[0] if segment_breakdown else None
+        lead_family = top_ransomware[0] if top_ransomware else None
+
+        priority_findings: list[dict[str, Any]] = []
+        if lead_cluster:
+            priority_findings.append(
+                {
+                    "title": "Primary intrusion pattern",
+                    "value": lead_cluster["cluster"],
+                    "context": f"{lead_cluster['count']} canonicals, {lead_cluster['percentage']:.1f}% of the open dataset",
+                }
+            )
+        if lead_segment:
+            priority_findings.append(
+                {
+                    "title": "Most exposed victim segment",
+                    "value": lead_segment["segment"],
+                    "context": f"{lead_segment['count']} incidents across the retained education dataset",
+                }
+            )
+        if top_actor:
+            priority_findings.append(
+                {
+                    "title": "Most active attributed actor",
+                    "value": top_actor.get("name"),
+                    "context": f"{int(top_actor.get('incident_count') or 0)} canonicals with attribution to this group",
+                }
+            )
+        elif lead_family:
+            priority_findings.append(
+                {
+                    "title": "Leading ransomware family",
+                    "value": lead_family["category"],
+                    "context": f"{lead_family['count']} canonicals with this family attached",
+                }
+            )
+        if vendor_linked_count:
+            priority_findings.append(
+                {
+                    "title": "Vendor-mediated exposure",
+                    "value": f"{vendor_linked_count} incidents",
+                    "context": f"{vendor_linked_count / total * 100.0:.1f}% of open canonicals show vendor or supply-chain involvement",
+                }
+            )
+
+        return {
+            "overview": {
+                "total_incidents": total_incidents,
+                "actor_attributed_count": actor_attributed_count,
+                "actor_attributed_share": actor_attributed_count / total * 100.0,
+                "ransomware_count": ransomware_count,
+                "ransomware_share": ransomware_count / total * 100.0,
+                "breach_count": breach_count,
+                "breach_share": breach_count / total * 100.0,
+                "vendor_linked_count": vendor_linked_count,
+                "vendor_linked_share": vendor_linked_count / total * 100.0,
+                "known_record_events": known_record_events,
+                "known_record_volume": known_record_volume,
+            },
+            "tempo": {
+                "anchor_date": anchor_date.isoformat() if anchor_date else None,
+                "recent_90d_count": recent_90d_count,
+                "prior_90d_count": prior_90d_count,
+                "recent_change_count": recent_change_count,
+                "recent_change_pct": recent_change_pct,
+                "recent_ransomware_count": recent_ransomware_count,
+                "recent_vendor_count": recent_vendor_count,
+                "recent_breach_count": recent_breach_count,
+            },
+            "victimology": {
+                "institution_segments": segment_breakdown,
+                "top_countries": top_countries,
+                "vendor_linked_count": vendor_linked_count,
+                "direct_victim_count": max(total_incidents - vendor_linked_count, 0),
+            },
+            "tradecraft": {
+                "attack_clusters": cluster_breakdown,
+                "attack_vectors": vector_breakdown,
+                "attack_vector_known_count": attack_vector_known_count,
+                "attack_vector_known_share": attack_vector_known_count / total * 100.0,
+            },
+            "attribution": {
+                "top_threat_actors": threat_actors,
+                "top_ransomware_families": top_ransomware,
+                "actor_attributed_count": actor_attributed_count,
+                "actor_attributed_share": actor_attributed_count / total * 100.0,
+            },
+            "exposure": {
+                "breach_count": breach_count,
+                "known_record_events": known_record_events,
+                "known_record_volume": known_record_volume,
+                "largest_record_events": largest_record_events,
+            },
+            "coverage": {
+                "attack_vector_known_count": attack_vector_known_count,
+                "attack_vector_known_share": attack_vector_known_count / total * 100.0,
+                "record_loss_known_count": known_record_events,
+                "record_loss_known_share": known_record_events / total * 100.0,
+                "attribution_known_count": actor_attributed_count,
+                "attribution_known_share": actor_attributed_count / total * 100.0,
+            },
+            "priority_findings": priority_findings,
+        }
+
     def build_dashboard_payload(
         self,
         session: Session,
@@ -677,10 +1083,18 @@ class V2CanonicalReadService:
             sort_by="incident_date",
             sort_order="desc",
         )["items"]
+        intelligence_summary = self._build_intelligence_summary(
+            session,
+            statuses=statuses,
+            rollup=rollup,
+            countries=countries,
+            ransomware=ransomware,
+        )
 
         return {
             "totals": rollup,
             "stats": _dashboard_stats_from_rollup(rollup, refreshed_at=effective_refreshed_at),
+            "intelligence_summary": intelligence_summary,
             "incidents_by_country": _to_count_by_category(
                 countries,
                 label_key="country",

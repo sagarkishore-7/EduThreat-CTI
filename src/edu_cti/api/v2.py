@@ -323,6 +323,20 @@ async def get_v2_threat_actor_analytics(
     )
 
 
+@router.get("/analytics/intelligence")
+async def get_v2_intelligence_analytics(
+    status: Optional[List[str]] = Query(None),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Return an analyst-focused intelligence summary from canonical incidents."""
+    statuses = tuple(status) if status else ("open",)
+    return read_service.get_intelligence_summary(
+        session,
+        statuses=statuses,
+    )
+
+
 @router.get("/filters")
 async def get_v2_filter_options(
     status: Optional[List[str]] = Query(None),

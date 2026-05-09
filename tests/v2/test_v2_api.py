@@ -352,6 +352,25 @@ def test_v2_threat_actor_analytics_and_filters_endpoints_return_payloads():
     assert service.calls["filters"] == {"statuses": ("open",)}
 
 
+def test_v2_intelligence_analytics_endpoint_returns_payload():
+    class _ReadService:
+        def get_intelligence_summary(self, _session, **kwargs):
+            assert kwargs["statuses"] == ("open", "excluded")
+            return {
+                "overview": {"total_incidents": 12},
+                "priority_findings": [{"title": "Primary intrusion pattern", "value": "Ransomware & Extortion"}],
+            }
+
+    client = _build_client(_ReadService())
+
+    response = client.get("/api/v2/analytics/intelligence", params={"status": ["open", "excluded"]})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["overview"]["total_incidents"] == 12
+    assert payload["priority_findings"][0]["value"] == "Ransomware & Extortion"
+
+
 def test_v2_analytics_trend_endpoint_returns_bucketed_items():
     class _ReadService:
         def __init__(self):
