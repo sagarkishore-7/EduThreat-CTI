@@ -93,6 +93,7 @@ eduthreat-v2-scheduler = "src.edu_cti_v2.scheduler:main"
 eduthreat-v2-runtime = "src.edu_cti_v2.runtime:main"
 eduthreat-v2-migrate = "src.edu_cti_v2.migrate:main"
 eduthreat-v2-preflight = "src.edu_cti_v2.preflight_cli:main"
+eduthreat-v2-run-plan = "src.edu_cti_v2.orchestrator_cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
