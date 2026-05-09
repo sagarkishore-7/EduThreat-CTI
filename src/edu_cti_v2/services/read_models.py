@@ -502,6 +502,46 @@ class V2CanonicalReadService:
             facet_limit=breakdown_limit,
         )
 
+    def get_country_analytics(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        data = _to_count_by_category(
+            self.canonical_repository.get_country_breakdown(session, statuses=statuses, limit=limit),
+            label_key="country",
+            country_code_key="country_code",
+        )
+        return {"data": data, "total": sum(item["count"] for item in data)}
+
+    def get_attack_type_analytics(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        limit: int = 15,
+    ) -> dict[str, Any]:
+        data = _to_count_by_category(
+            self.canonical_repository.get_attack_breakdown(session, statuses=statuses, limit=limit),
+            label_key="attack_category",
+        )
+        return {"data": data, "total": sum(item["count"] for item in data)}
+
+    def get_ransomware_analytics(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        limit: int = 15,
+    ) -> dict[str, Any]:
+        data = _to_count_by_category(
+            self.canonical_repository.get_ransomware_breakdown(session, statuses=statuses, limit=limit),
+            label_key="ransomware_family",
+        )
+        return {"data": data, "total": sum(item["count"] for item in data)}
+
     def get_incident_trend(
         self,
         session: Session,
@@ -533,4 +573,45 @@ class V2CanonicalReadService:
             date_to=date_to,
             bucket=bucket,
             limit=limit,
+        )
+
+    def get_timeline_analytics(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        months: int = 24,
+    ) -> dict[str, Any]:
+        items = _to_time_series(
+            self.canonical_repository.get_incident_trend(
+                session,
+                statuses=statuses,
+                bucket="month",
+                limit=months,
+            )
+        )
+        return {"data": items, "total": sum(item["count"] for item in items)}
+
+    def get_threat_actor_analytics(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        limit: int = 20,
+    ) -> dict[str, Any]:
+        return self.canonical_repository.get_threat_actor_breakdown(
+            session,
+            statuses=statuses,
+            limit=limit,
+        )
+
+    def get_filter_options(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> dict[str, Any]:
+        return self.canonical_repository.get_filter_options(
+            session,
+            statuses=statuses,
         )

@@ -191,6 +191,94 @@ def test_v2_analytics_breakdowns_endpoint_returns_filtered_breakdowns():
     assert service.called["breakdown_limit"] == 12
 
 
+def test_v2_compat_analytics_endpoints_return_old_style_shapes():
+    class _ReadService:
+        def __init__(self):
+            self.calls = {}
+
+        def get_country_analytics(self, _session, **kwargs):
+            self.calls["countries"] = kwargs
+            return {"data": [{"category": "United States", "count": 4}], "total": 4}
+
+        def get_attack_type_analytics(self, _session, **kwargs):
+            self.calls["attack_types"] = kwargs
+            return {"data": [{"category": "ransomware_encryption", "count": 3}], "total": 3}
+
+        def get_ransomware_analytics(self, _session, **kwargs):
+            self.calls["ransomware"] = kwargs
+            return {"data": [{"category": "LockBit", "count": 2}], "total": 2}
+
+        def get_timeline_analytics(self, _session, **kwargs):
+            self.calls["timeline"] = kwargs
+            return {"data": [{"date": "2026-05-01", "count": 5}], "total": 5}
+
+    service = _ReadService()
+    client = _build_client(service)
+
+    countries = client.get("/api/v2/analytics/countries", params={"limit": 25, "status": ["open", "excluded"]})
+    attack_types = client.get("/api/v2/analytics/attack-types", params={"limit": 12})
+    ransomware = client.get("/api/v2/analytics/ransomware", params={"limit": 8})
+    timeline = client.get("/api/v2/analytics/timeline", params={"months": 18})
+
+    assert countries.status_code == 200
+    assert countries.json()["data"][0]["category"] == "United States"
+    assert countries.json()["total"] == 4
+    assert service.calls["countries"] == {"statuses": ("open", "excluded"), "limit": 25}
+
+    assert attack_types.status_code == 200
+    assert attack_types.json()["data"][0]["category"] == "ransomware_encryption"
+    assert service.calls["attack_types"] == {"statuses": ("open",), "limit": 12}
+
+    assert ransomware.status_code == 200
+    assert ransomware.json()["data"][0]["category"] == "LockBit"
+    assert service.calls["ransomware"] == {"statuses": ("open",), "limit": 8}
+
+    assert timeline.status_code == 200
+    assert timeline.json()["data"][0]["date"] == "2026-05-01"
+    assert service.calls["timeline"] == {"statuses": ("open",), "months": 18}
+
+
+def test_v2_threat_actor_analytics_and_filters_endpoints_return_payloads():
+    class _ReadService:
+        def __init__(self):
+            self.calls = {}
+
+        def get_threat_actor_analytics(self, _session, **kwargs):
+            self.calls["threat_actors"] = kwargs
+            return {
+                "threat_actors": [{"name": "SomeGroup", "incident_count": 3, "countries_targeted": ["United States"], "ransomware_families": ["LockBit"], "first_seen": "2026-05-01", "last_seen": "2026-05-09"}],
+                "total": 1,
+                "returned": 1,
+                "total_incidents": 3,
+                "countries_targeted_total": 1,
+            }
+
+        def get_filter_options(self, _session, **kwargs):
+            self.calls["filters"] = kwargs
+            return {
+                "countries": ["United States"],
+                "attack_categories": ["ransomware_encryption"],
+                "ransomware_families": ["LockBit"],
+                "threat_actors": ["SomeGroup"],
+                "institution_types": ["university"],
+                "years": [2026],
+            }
+
+    service = _ReadService()
+    client = _build_client(service)
+
+    threat_actors = client.get("/api/v2/analytics/threat-actors", params={"limit": 30, "status": ["open", "excluded"]})
+    filters = client.get("/api/v2/filters", params={"status": ["open"]})
+
+    assert threat_actors.status_code == 200
+    assert threat_actors.json()["threat_actors"][0]["name"] == "SomeGroup"
+    assert service.calls["threat_actors"] == {"statuses": ("open", "excluded"), "limit": 30}
+
+    assert filters.status_code == 200
+    assert filters.json()["countries"] == ["United States"]
+    assert service.calls["filters"] == {"statuses": ("open",)}
+
+
 def test_v2_analytics_trend_endpoint_returns_bucketed_items():
     class _ReadService:
         def __init__(self):

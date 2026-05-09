@@ -174,6 +174,54 @@ async def get_v2_analytics_breakdowns(
     )
 
 
+@router.get("/analytics/countries")
+async def get_v2_country_analytics(
+    limit: int = Query(20, ge=1, le=500),
+    status: Optional[List[str]] = Query(None),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Compatibility endpoint for old country analytics shape."""
+    statuses = tuple(status) if status else ("open",)
+    return read_service.get_country_analytics(
+        session,
+        statuses=statuses,
+        limit=limit,
+    )
+
+
+@router.get("/analytics/attack-types")
+async def get_v2_attack_type_analytics(
+    limit: int = Query(15, ge=1, le=50),
+    status: Optional[List[str]] = Query(None),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Compatibility endpoint for old attack-type analytics shape."""
+    statuses = tuple(status) if status else ("open",)
+    return read_service.get_attack_type_analytics(
+        session,
+        statuses=statuses,
+        limit=limit,
+    )
+
+
+@router.get("/analytics/ransomware")
+async def get_v2_ransomware_analytics(
+    limit: int = Query(15, ge=1, le=50),
+    status: Optional[List[str]] = Query(None),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Compatibility endpoint for old ransomware analytics shape."""
+    statuses = tuple(status) if status else ("open",)
+    return read_service.get_ransomware_analytics(
+        session,
+        statuses=statuses,
+        limit=limit,
+    )
+
+
 @router.get("/analytics/trend")
 async def get_v2_analytics_trend(
     status: Optional[List[str]] = Query(None),
@@ -211,6 +259,52 @@ async def get_v2_analytics_trend(
             limit=limit,
         ),
     }
+
+
+@router.get("/analytics/timeline")
+async def get_v2_timeline_analytics(
+    months: int = Query(24, ge=1, le=120),
+    status: Optional[List[str]] = Query(None),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Compatibility endpoint for old timeline analytics shape."""
+    statuses = tuple(status) if status else ("open",)
+    return read_service.get_timeline_analytics(
+        session,
+        statuses=statuses,
+        months=months,
+    )
+
+
+@router.get("/analytics/threat-actors")
+async def get_v2_threat_actor_analytics(
+    limit: int = Query(20, ge=1, le=500),
+    status: Optional[List[str]] = Query(None),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Compatibility endpoint for old threat-actor analytics shape."""
+    statuses = tuple(status) if status else ("open",)
+    return read_service.get_threat_actor_analytics(
+        session,
+        statuses=statuses,
+        limit=limit,
+    )
+
+
+@router.get("/filters")
+async def get_v2_filter_options(
+    status: Optional[List[str]] = Query(None),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Compatibility endpoint for incident list filter options."""
+    statuses = tuple(status) if status else ("open",)
+    return read_service.get_filter_options(
+        session,
+        statuses=statuses,
+    )
 
 
 @router.get("/incidents/{canonical_incident_id}")

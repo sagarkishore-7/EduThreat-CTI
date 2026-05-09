@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, timedelta
 from typing import Optional, Sequence
 
-from sqlalchemy import Select, case, func, or_, select
+from sqlalchemy import Select, case, extract, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from src.edu_cti_v2.models import (
@@ -378,6 +378,107 @@ class CanonicalIncidentRepository:
             .group_by(CanonicalIncident.ransomware_family)
             .order_by(func.count(CanonicalIncident.id).desc(), CanonicalIncident.ransomware_family.asc())
             .limit(limit)
+        )
+
+    @staticmethod
+    def build_threat_actor_breakdown_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+        limit: int = 20,
+    ) -> Select:
+        return (
+            select(
+                CanonicalIncident.threat_actor_name.label("name"),
+                func.count(CanonicalIncident.id).label("incident_count"),
+                func.array_remove(
+                    func.array_agg(func.distinct(CanonicalIncident.country)),
+                    None,
+                ).label("countries_targeted"),
+                func.array_remove(
+                    func.array_agg(func.distinct(CanonicalIncident.ransomware_family)),
+                    None,
+                ).label("ransomware_families"),
+                func.min(CanonicalIncident.incident_date).label("first_seen"),
+                func.max(CanonicalIncident.incident_date).label("last_seen"),
+            )
+            .where(CanonicalIncident.status.in_(list(statuses)))
+            .where(CanonicalIncident.threat_actor_name.is_not(None))
+            .group_by(CanonicalIncident.threat_actor_name)
+            .order_by(func.count(CanonicalIncident.id).desc(), CanonicalIncident.threat_actor_name.asc())
+            .limit(limit)
+        )
+
+    @staticmethod
+    def build_filter_countries_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> Select:
+        return (
+            select(func.distinct(CanonicalIncident.country).label("country"))
+            .where(CanonicalIncident.status.in_(list(statuses)))
+            .where(CanonicalIncident.country.is_not(None))
+            .order_by(CanonicalIncident.country.asc())
+        )
+
+    @staticmethod
+    def build_filter_attack_categories_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> Select:
+        return (
+            select(func.distinct(CanonicalIncident.attack_category).label("attack_category"))
+            .where(CanonicalIncident.status.in_(list(statuses)))
+            .where(CanonicalIncident.attack_category.is_not(None))
+            .order_by(CanonicalIncident.attack_category.asc())
+        )
+
+    @staticmethod
+    def build_filter_ransomware_families_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> Select:
+        return (
+            select(func.distinct(CanonicalIncident.ransomware_family).label("ransomware_family"))
+            .where(CanonicalIncident.status.in_(list(statuses)))
+            .where(CanonicalIncident.ransomware_family.is_not(None))
+            .order_by(CanonicalIncident.ransomware_family.asc())
+        )
+
+    @staticmethod
+    def build_filter_threat_actors_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> Select:
+        return (
+            select(func.distinct(CanonicalIncident.threat_actor_name).label("threat_actor_name"))
+            .where(CanonicalIncident.status.in_(list(statuses)))
+            .where(CanonicalIncident.threat_actor_name.is_not(None))
+            .order_by(CanonicalIncident.threat_actor_name.asc())
+        )
+
+    @staticmethod
+    def build_filter_institution_types_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> Select:
+        return (
+            select(func.distinct(CanonicalIncident.institution_type).label("institution_type"))
+            .where(CanonicalIncident.status.in_(list(statuses)))
+            .where(CanonicalIncident.institution_type.is_not(None))
+            .order_by(CanonicalIncident.institution_type.asc())
+        )
+
+    @staticmethod
+    def build_filter_years_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> Select:
+        year_expr = extract("year", CanonicalIncident.incident_date).label("incident_year")
+        return (
+            select(func.distinct(year_expr))
+            .where(CanonicalIncident.status.in_(list(statuses)))
+            .where(CanonicalIncident.incident_date.is_not(None))
+            .order_by(year_expr.desc())
         )
 
     @staticmethod
@@ -937,6 +1038,89 @@ class CanonicalIncidentRepository:
             }
             for row in session.execute(stmt).all()
         ]
+
+    def get_threat_actor_breakdown(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        limit: int = 20,
+    ) -> dict[str, object]:
+        stmt = self.build_threat_actor_breakdown_stmt(statuses=statuses, limit=limit)
+        rows = list(session.execute(stmt).all())
+        threat_actors: list[dict[str, object]] = []
+        all_countries: set[str] = set()
+        total_incidents = 0
+
+        for row in rows:
+            countries = sorted({country for country in (row.countries_targeted or []) if country})
+            ransomware_families = sorted({family for family in (row.ransomware_families or []) if family})
+            all_countries.update(countries)
+            incident_count = int(row.incident_count or 0)
+            total_incidents += incident_count
+            threat_actors.append(
+                {
+                    "name": row.name,
+                    "incident_count": incident_count,
+                    "countries_targeted": countries,
+                    "ransomware_families": ransomware_families,
+                    "first_seen": row.first_seen.isoformat() if row.first_seen else None,
+                    "last_seen": row.last_seen.isoformat() if row.last_seen else None,
+                }
+            )
+
+        return {
+            "threat_actors": threat_actors,
+            "total": len(threat_actors),
+            "returned": len(threat_actors),
+            "total_incidents": total_incidents,
+            "countries_targeted_total": len(all_countries),
+        }
+
+    def get_filter_options(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> dict[str, object]:
+        countries = [
+            row.country
+            for row in session.execute(self.build_filter_countries_stmt(statuses=statuses)).all()
+            if row.country
+        ]
+        attack_categories = [
+            row.attack_category
+            for row in session.execute(self.build_filter_attack_categories_stmt(statuses=statuses)).all()
+            if row.attack_category
+        ]
+        ransomware_families = [
+            row.ransomware_family
+            for row in session.execute(self.build_filter_ransomware_families_stmt(statuses=statuses)).all()
+            if row.ransomware_family
+        ]
+        threat_actors = [
+            row.threat_actor_name
+            for row in session.execute(self.build_filter_threat_actors_stmt(statuses=statuses)).all()
+            if row.threat_actor_name
+        ]
+        institution_types = [
+            row.institution_type
+            for row in session.execute(self.build_filter_institution_types_stmt(statuses=statuses)).all()
+            if row.institution_type
+        ]
+        years = [
+            int(row.incident_year)
+            for row in session.execute(self.build_filter_years_stmt(statuses=statuses)).all()
+            if row.incident_year is not None
+        ]
+        return {
+            "countries": countries,
+            "attack_categories": attack_categories,
+            "ransomware_families": ransomware_families,
+            "threat_actors": threat_actors,
+            "institution_types": institution_types,
+            "years": years,
+        }
 
     def get_attack_category_facets(
         self,

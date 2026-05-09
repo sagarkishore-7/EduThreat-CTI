@@ -266,6 +266,28 @@ def test_canonical_repository_ransomware_breakdown_stmt_orders_and_limits():
     assert "LIMIT 12" in compiled
 
 
+def test_canonical_repository_threat_actor_breakdown_stmt_groups_and_limits():
+    stmt = CanonicalIncidentRepository.build_threat_actor_breakdown_stmt(
+        statuses=("open", "excluded"),
+        limit=20,
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "canonical_incidents.status IN ('open', 'excluded')" in compiled
+    assert "canonical_incidents.threat_actor_name IS NOT NULL" in compiled
+    assert "GROUP BY canonical_incidents.threat_actor_name" in compiled
+    assert "LIMIT 20" in compiled
+
+
+def test_canonical_repository_filter_years_stmt_extracts_and_orders_desc():
+    stmt = CanonicalIncidentRepository.build_filter_years_stmt(statuses=("open",))
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "EXTRACT(year FROM canonical_incidents.incident_date)" in compiled
+    assert "canonical_incidents.incident_date IS NOT NULL" in compiled
+    assert "ORDER BY EXTRACT(year FROM canonical_incidents.incident_date) DESC" in compiled
+
+
 def test_analytics_refresh_repository_lookup_stmt_filters_by_refresh_key():
     stmt = AnalyticsRefreshRepository.build_get_by_key_stmt("dashboard:global")
     compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))

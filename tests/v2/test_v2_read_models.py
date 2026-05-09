@@ -470,3 +470,73 @@ def test_read_service_build_dashboard_payload_shapes_full_dashboard_response():
     assert payload["incidents_over_time"][0]["date"] == "2026-05-01"
     assert payload["recent_incidents"][0]["incident_id"]
     assert payload["top_ransomware_families"][0]["ransomware_family"] == "LockBit"
+
+
+def test_read_service_compat_analytics_shapes_delegate_to_repository():
+    canonical_repo = Mock()
+    canonical_repo.get_country_breakdown.return_value = [
+        {"country_code": "US", "country": "United States", "incident_count": 4}
+    ]
+    canonical_repo.get_attack_breakdown.return_value = [
+        {"attack_category": "ransomware_encryption", "incident_count": 3}
+    ]
+    canonical_repo.get_ransomware_breakdown.return_value = [
+        {"ransomware_family": "LockBit", "incident_count": 2}
+    ]
+    canonical_repo.get_incident_trend.return_value = [
+        {"bucket_start": "2026-05-01", "incident_count": 5}
+    ]
+
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+
+    countries = service.get_country_analytics(Mock(), statuses=("open",), limit=25)
+    attack_types = service.get_attack_type_analytics(Mock(), statuses=("open",), limit=12)
+    ransomware = service.get_ransomware_analytics(Mock(), statuses=("open",), limit=8)
+    timeline = service.get_timeline_analytics(Mock(), statuses=("open",), months=18)
+
+    assert countries["data"][0]["category"] == "United States"
+    assert countries["total"] == 4
+    assert attack_types["data"][0]["category"] == "ransomware_encryption"
+    assert ransomware["data"][0]["category"] == "LockBit"
+    assert timeline["data"][0]["date"] == "2026-05-01"
+
+
+def test_read_service_threat_actor_analytics_and_filter_options_delegate_to_repository():
+    canonical_repo = Mock()
+    canonical_repo.get_threat_actor_breakdown.return_value = {
+        "threat_actors": [{"name": "SomeGroup"}],
+        "total": 1,
+        "returned": 1,
+        "total_incidents": 3,
+        "countries_targeted_total": 1,
+    }
+    canonical_repo.get_filter_options.return_value = {
+        "countries": ["United States"],
+        "attack_categories": ["ransomware_encryption"],
+        "ransomware_families": ["LockBit"],
+        "threat_actors": ["SomeGroup"],
+        "institution_types": ["university"],
+        "years": [2026],
+    }
+
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+    threat_actor_session = Mock()
+    filters_session = Mock()
+    threat_actors = service.get_threat_actor_analytics(
+        threat_actor_session,
+        statuses=("open", "excluded"),
+        limit=30,
+    )
+    filters = service.get_filter_options(filters_session, statuses=("open",))
+
+    assert threat_actors["threat_actors"][0]["name"] == "SomeGroup"
+    canonical_repo.get_threat_actor_breakdown.assert_called_once_with(
+        threat_actor_session,
+        statuses=("open", "excluded"),
+        limit=30,
+    )
+    canonical_repo.get_filter_options.assert_called_once_with(
+        filters_session,
+        statuses=("open",),
+    )
+    assert filters["ransomware_families"] == ["LockBit"]
