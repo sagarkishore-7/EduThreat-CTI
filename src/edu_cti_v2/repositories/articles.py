@@ -1,0 +1,36 @@
+"""Repository helpers for v2 article documents and fetch attempts."""
+
+from __future__ import annotations
+
+from sqlalchemy import Select, select
+from sqlalchemy.orm import Session
+
+from src.edu_cti_v2.models import ArticleDocument, ArticleFetchAttempt
+
+
+class ArticleRepository:
+    """Repository boundary for article persistence in v2."""
+
+    @staticmethod
+    def build_get_document_by_source_url_stmt(source_incident_url_id) -> Select:
+        return (
+            select(ArticleDocument)
+            .where(ArticleDocument.source_incident_url_id == source_incident_url_id)
+            .limit(1)
+        )
+
+    def get_document_by_source_url(
+        self,
+        session: Session,
+        source_incident_url_id,
+    ) -> ArticleDocument | None:
+        stmt = self.build_get_document_by_source_url_stmt(source_incident_url_id)
+        return session.execute(stmt).scalar_one_or_none()
+
+    def add_document(self, session: Session, document: ArticleDocument) -> ArticleDocument:
+        session.add(document)
+        return document
+
+    def add_fetch_attempt(self, session: Session, attempt: ArticleFetchAttempt) -> ArticleFetchAttempt:
+        session.add(attempt)
+        return attempt

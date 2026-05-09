@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Iterable, Sequence
 
 from sqlalchemy import Select, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, selectinload
 
 from src.edu_cti_v2.models import SourceIncident, SourceIncidentUrl
 
@@ -14,9 +14,19 @@ class SourceIncidentRepository:
     """Repository boundary for source incident reads and writes."""
 
     @staticmethod
+    def build_get_by_id_stmt(source_incident_id) -> Select:
+        return (
+            select(SourceIncident)
+            .options(selectinload(SourceIncident.urls))
+            .where(SourceIncident.id == source_incident_id)
+            .limit(1)
+        )
+
+    @staticmethod
     def build_get_by_source_event_key_stmt(source_name: str, source_event_key: str) -> Select:
         return (
             select(SourceIncident)
+            .options(selectinload(SourceIncident.urls))
             .where(SourceIncident.source_name == source_name)
             .where(SourceIncident.source_event_key == source_event_key)
             .limit(1)
@@ -28,6 +38,10 @@ class SourceIncidentRepository:
             select(SourceIncidentUrl)
             .where(SourceIncidentUrl.normalized_url.in_(list(normalized_urls)))
         )
+
+    def get_by_id(self, session: Session, source_incident_id) -> SourceIncident | None:
+        stmt = self.build_get_by_id_stmt(source_incident_id)
+        return session.execute(stmt).scalar_one_or_none()
 
     def get_by_source_event_key(
         self,
