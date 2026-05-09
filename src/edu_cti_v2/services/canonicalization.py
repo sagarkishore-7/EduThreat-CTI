@@ -171,6 +171,105 @@ def _choose_canonical_institution_name(existing: Optional[str], new: Optional[st
     return choose_best_institution_name(existing_clean, new_clean)
 
 
+def _normalized_identity(value: Optional[str]) -> Optional[str]:
+    cleaned = clean_institution_name(value)
+    if not cleaned:
+        return None
+    normalized = re.sub(r"\s+", " ", cleaned).strip().lower()
+    return normalized or None
+
+
+def _identity_match_quality(left: Optional[str], right: Optional[str]) -> int:
+    left_normalized = _normalized_identity(left)
+    right_normalized = _normalized_identity(right)
+    if not left_normalized or not right_normalized:
+        return 0
+    if left_normalized == right_normalized:
+        return 100
+    if institution_names_match(left_normalized, right_normalized, threshold=92):
+        return 92
+    if institution_names_match(left_normalized, right_normalized, threshold=85):
+        return 85
+    return 0
+
+
+def _score_candidate_match(
+    projection: Dict[str, Any],
+    candidate: CanonicalIncident,
+) -> Tuple[float, Optional[str]]:
+    incoming_identities = [
+        ("institution_name", projection.get("institution_name")),
+        ("vendor_name", projection.get("vendor_name")),
+    ]
+    candidate_identities = [
+        ("institution_name", candidate.institution_name),
+        ("vendor_name", candidate.vendor_name),
+    ]
+
+    best_quality = 0
+    best_match_type: Optional[str] = None
+    best_incoming_value: Optional[str] = None
+    best_candidate_value: Optional[str] = None
+
+    for incoming_kind, incoming_value in incoming_identities:
+        for candidate_kind, candidate_value in candidate_identities:
+            quality = _identity_match_quality(incoming_value, candidate_value)
+            if quality <= best_quality:
+                continue
+            best_quality = quality
+            if "vendor" in {incoming_kind, candidate_kind}:
+                best_match_type = "vendor_date"
+            else:
+                best_match_type = "name_date"
+            best_incoming_value = incoming_value
+            best_candidate_value = candidate_value
+
+    vendor_quality = _identity_match_quality(projection.get("vendor_name"), candidate.vendor_name)
+    if vendor_quality and vendor_quality >= best_quality:
+        best_quality = vendor_quality
+        best_match_type = "vendor_date"
+        best_incoming_value = projection.get("vendor_name")
+        best_candidate_value = candidate.vendor_name
+
+    if best_quality <= 0 or best_match_type is None:
+        return 0.0, None
+
+    projection_date = parse_incident_date(str(projection.get("incident_date")) if projection.get("incident_date") else None)
+    candidate_date = parse_incident_date(str(candidate.incident_date) if candidate.incident_date else None)
+    if projection_date and candidate_date and not dates_within_window(projection_date, candidate_date, 14):
+        return 0.0, None
+
+    projection_country = projection.get("country_code")
+    if projection_country and candidate.country_code and projection_country != candidate.country_code:
+        return 0.0, None
+
+    score = float(best_quality)
+    if projection_date and candidate_date:
+        if dates_within_window(projection_date, candidate_date, 3):
+            score += 20.0
+        else:
+            score += 12.0
+    else:
+        score += 4.0
+
+    if projection_country and candidate.country_code:
+        score += 8.0
+    elif projection_country or candidate.country_code:
+        score += 2.0
+
+    if projection.get("attack_category") and candidate.attack_category == projection.get("attack_category"):
+        score += 6.0
+    if projection.get("ransomware_family") and candidate.ransomware_family == projection.get("ransomware_family"):
+        score += 4.0
+    if projection.get("threat_actor_name") and candidate.threat_actor_name == projection.get("threat_actor_name"):
+        score += 4.0
+
+    if _looks_generic_institution_label(best_incoming_value) or _looks_generic_institution_label(best_candidate_value):
+        score -= 20.0
+
+    return score, best_match_type
+
+
 def build_source_projection(source_incident, source_enrichment: SourceEnrichment) -> Dict[str, Any]:
     """Project a source incident + source enrichment into canonical-shaped fields."""
     typed = source_enrichment.typed_enrichment or {}
@@ -385,7 +484,7 @@ def _build_field_provenance(
 class V2CanonicalizationService:
     """Create and update canonical incidents with lineage retained."""
 
-    MATCHER_VERSION = "v2-canonicalizer-1"
+    MATCHER_VERSION = "v2-canonicalizer-2"
 
     def __init__(
         self,
@@ -424,25 +523,19 @@ class V2CanonicalizationService:
             incident_date=projection.get("incident_date"),
             country_code=projection.get("country_code"),
         )
+        best_candidate: Optional[CanonicalIncident] = None
+        best_match_type = "seed"
+        best_score = 0.0
         for candidate in candidates:
-            existing_name = candidate.institution_name or candidate.vendor_name
-            if not existing_name:
+            score, candidate_match_type = _score_candidate_match(projection, candidate)
+            if score <= best_score or candidate_match_type is None:
                 continue
-            if not institution_names_match(candidate_name, existing_name, threshold=85):
-                continue
-            if not dates_within_window(
-                parse_incident_date(str(projection.get("incident_date")) if projection.get("incident_date") else None),
-                parse_incident_date(str(candidate.incident_date) if candidate.incident_date else None),
-                14,
-            ):
-                continue
-            if (
-                projection.get("country_code")
-                and candidate.country_code
-                and projection.get("country_code") != candidate.country_code
-            ):
-                continue
-            return candidate, "name_date", 90.0
+            best_candidate = candidate
+            best_match_type = candidate_match_type
+            best_score = score
+
+        if best_candidate is not None and best_score >= 95.0:
+            return best_candidate, best_match_type, best_score
 
         return None, "seed", 0.0
 

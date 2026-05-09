@@ -367,3 +367,153 @@ def test_canonicalization_service_updates_existing_canonical_with_better_project
     assert existing_canonical.institution_name == "Penn State University"
     assert existing_canonical.country_code == "US"
     assert existing_canonical.incident_date.isoformat() == "2026-05-08"
+
+
+def test_canonicalization_service_matches_vendor_date_candidates():
+    canonical_repo = Mock()
+    canonical_repo.get_membership_for_source_incident.return_value = None
+    canonical_repo.find_by_url_candidates.return_value = []
+    existing_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="vendor-canonical",
+        status="open",
+        institution_name=None,
+        vendor_name="Canvas",
+        country="United States",
+        country_code="US",
+        incident_date=datetime(2026, 5, 8, tzinfo=timezone.utc).date(),
+        date_precision="day",
+        attack_category="third_party_compromise",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    canonical_repo.find_name_date_candidates.return_value = [existing_canonical]
+    canonical_repo.list_memberships.return_value = []
+
+    source_repo = Mock()
+    incident = _source_incident(event_key="vendor-story", url="https://example.com/vendor-story")
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    incident.raw_title = "Canvas outage affects universities"
+    source_repo.get_by_id.return_value = incident
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "vendor_name": "Canvas",
+            "institution_type": "edtech_platform",
+            "country": "United States",
+            "country_code": "US",
+            "incident_date": "2026-05-08",
+            "incident_date_precision": "exact",
+            "attack_category": "third_party_compromise",
+            "enriched_summary": "Canvas suffered an outage affecting university users.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "vendor_name": "Canvas",
+            "country_code": "US",
+            "incident_date": "2026-05-08",
+            "attack_category": "third_party_compromise",
+        },
+        is_education_related=True,
+    )
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = object()
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+    session.flush.return_value = None
+    session.execute.return_value.scalars.return_value.all.return_value = [enrichment]
+    session.query.return_value.filter_by.return_value.delete.return_value = None
+
+    added_memberships = []
+
+    def _capture_membership(_session, membership):
+        added_memberships.append(membership)
+        membership.id = membership.id or uuid4()
+        return membership
+
+    canonical_repo.add_membership.side_effect = _capture_membership
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is True
+    assert outcome["match_type"] == "vendor_date"
+    assert added_memberships
+    assert added_memberships[0].canonical_incident_id == existing_canonical.id
+
+
+def test_canonicalization_service_rejects_country_conflict_even_with_name_match():
+    canonical_repo = Mock()
+    canonical_repo.get_membership_for_source_incident.return_value = None
+    canonical_repo.find_by_url_candidates.return_value = []
+    existing_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="country-conflict",
+        status="open",
+        institution_name="Penn State University",
+        country="Japan",
+        country_code="JP",
+        incident_date=datetime(2026, 5, 8, tzinfo=timezone.utc).date(),
+        date_precision="day",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    canonical_repo.find_name_date_candidates.return_value = [existing_canonical]
+    canonical_repo.list_memberships.return_value = []
+
+    source_repo = Mock()
+    incident = _source_incident(event_key="conflict-story")
+    source_repo.get_by_id.return_value = incident
+
+    enrichment_repo = Mock()
+    enrichment = _source_enrichment(incident)
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = object()
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+    session.flush.side_effect = None
+    session.execute.return_value.scalars.return_value.all.return_value = [enrichment]
+    session.query.return_value.filter_by.return_value.delete.return_value = None
+
+    added_canonicals = []
+
+    def _capture_canonical(_session, canonical):
+        added_canonicals.append(canonical)
+        canonical.id = canonical.id or uuid4()
+        canonical.memberships = []
+        return canonical
+
+    canonical_repo.add.side_effect = _capture_canonical
+    canonical_repo.add_membership.side_effect = lambda _session, membership: membership
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is True
+    assert outcome["match_type"] == "seed"
+    assert added_canonicals
