@@ -19,8 +19,8 @@ DEFAULT_TASK_LEASE_ORDER = (
     "orchestrate_plan",
     "reenrich",
     "enrich_source",
-    "fetch_article",
     "canonicalize",
+    "fetch_article",
     "refresh_analytics",
     "resolve_url",
 )

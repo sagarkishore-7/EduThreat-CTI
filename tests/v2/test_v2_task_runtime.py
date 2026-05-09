@@ -112,6 +112,45 @@ def test_task_runtime_can_exclude_task_types():
     fetch_service.fetch_articles_for_source_incident.assert_called_once()
 
 
+def test_task_runtime_prefers_canonicalize_over_fetch_when_unspecified():
+    task_repo = Mock()
+    source_repo = Mock()
+    fetch_service = Mock()
+    canonicalization_service = Mock()
+
+    canonical_task = SimpleNamespace(id=uuid4(), task_type="canonicalize", target_id=uuid4())
+    canonical_source_incident = SimpleNamespace(id=canonical_task.target_id)
+    source_repo.get_by_id.return_value = canonical_source_incident
+    canonicalization_service.canonicalize_source_incident.return_value = {"canonicalized": True}
+
+    def _lease_batch(_session, *, worker_id, task_type, exclude_task_types=None, limit, lease_seconds):
+        if task_type == "canonicalize":
+            return [canonical_task]
+        if task_type == "fetch_article":
+            return [SimpleNamespace(id=uuid4(), task_type="fetch_article", target_id=uuid4())]
+        return []
+
+    task_repo.lease_batch.side_effect = _lease_batch
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        fetch_service=fetch_service,
+        canonicalization_service=canonicalization_service,
+    )
+    session = Mock()
+    session.get.return_value = canonical_task
+
+    processed = runtime.process_next_task(session, worker_id="worker-1")
+
+    assert processed is canonical_task
+    canonicalization_service.canonicalize_source_incident.assert_called_once_with(
+        session,
+        canonical_source_incident.id,
+    )
+    fetch_service.fetch_articles_for_source_incident.assert_not_called()
+
+
 def test_task_runtime_dead_letters_unimplemented_task_types():
     task_repo = Mock()
     source_repo = Mock()
