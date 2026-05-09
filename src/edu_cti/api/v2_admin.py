@@ -11,6 +11,7 @@ from src.edu_cti.api.admin import authenticate
 from src.edu_cti.api.v2 import get_v2_session, get_v2_session_factory
 from src.edu_cti_v2.services import V2OperationsService
 from src.edu_cti_v2.services.collection import V2CollectionService
+from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 
 router = APIRouter(prefix="/admin/v2", tags=["Admin", "V2"])
 
@@ -23,6 +24,11 @@ def get_v2_operations_service() -> V2OperationsService:
 @lru_cache
 def get_v2_collection_service() -> V2CollectionService:
     return V2CollectionService(session_factory=get_v2_session_factory())
+
+
+@lru_cache
+def get_v2_orchestration_service() -> V2OrchestrationService:
+    return V2OrchestrationService(session_factory=get_v2_session_factory())
 
 
 @router.get("/status")
@@ -119,4 +125,36 @@ async def run_v2_collection(
         rss_max_age_days=rss_max_age_days,
         incremental=incremental,
         include_paid_rss=include_paid_rss,
+    )
+
+
+@router.get("/plans")
+async def list_v2_plans(
+    orchestration: V2OrchestrationService = Depends(get_v2_orchestration_service),
+    _: bool = Depends(authenticate),
+):
+    """List supported named v2 orchestration plans."""
+    return {"items": orchestration.list_plans()}
+
+
+@router.post("/run-plan")
+async def run_v2_plan(
+    plan_name: str = Query(...),
+    worker_id: str = Query("admin-v2-plan"),
+    worker_max_tasks: Optional[int] = Query(None, ge=1, le=20000),
+    drain_tasks: Optional[bool] = Query(None),
+    include_paid_rss: Optional[bool] = Query(None),
+    orchestration: V2OrchestrationService = Depends(get_v2_orchestration_service),
+    _: bool = Depends(authenticate),
+):
+    """Run a named v2 plan that bundles collection and optional task draining."""
+    collect_overrides = {}
+    if include_paid_rss is not None:
+        collect_overrides["include_paid_rss"] = include_paid_rss
+    return orchestration.run_plan(
+        plan_name=plan_name,
+        worker_id=worker_id,
+        collect_overrides=collect_overrides or None,
+        worker_max_tasks=worker_max_tasks,
+        drain_tasks=drain_tasks,
     )

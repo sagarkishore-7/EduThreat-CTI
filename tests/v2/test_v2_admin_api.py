@@ -3,7 +3,12 @@ from fastapi.testclient import TestClient
 
 from src.edu_cti.api.admin import authenticate
 from src.edu_cti.api.v2 import get_v2_session
-from src.edu_cti.api.v2_admin import get_v2_collection_service, get_v2_operations_service, router
+from src.edu_cti.api.v2_admin import (
+    get_v2_collection_service,
+    get_v2_operations_service,
+    get_v2_orchestration_service,
+    router,
+)
 
 
 def _build_client(operations_service):
@@ -17,10 +22,18 @@ def _build_client(operations_service):
         def collect_into_v2(self, **_kwargs):
             raise AssertionError("unexpected collection call")
 
+    class _NullOrchestrationService:
+        def list_plans(self):
+            raise AssertionError("unexpected plans call")
+
+        def run_plan(self, **_kwargs):
+            raise AssertionError("unexpected run-plan call")
+
     app.dependency_overrides[authenticate] = lambda: True
     app.dependency_overrides[get_v2_session] = _override_session
     app.dependency_overrides[get_v2_operations_service] = lambda: operations_service
     app.dependency_overrides[get_v2_collection_service] = lambda: _NullCollectionService()
+    app.dependency_overrides[get_v2_orchestration_service] = lambda: _NullOrchestrationService()
     return TestClient(app)
 
 
@@ -105,6 +118,7 @@ def test_v2_admin_collect_endpoint_returns_collection_result():
     app.dependency_overrides[get_v2_session] = _override_session
     app.dependency_overrides[get_v2_operations_service] = lambda: _OperationsService()
     app.dependency_overrides[get_v2_collection_service] = lambda: collection
+    app.dependency_overrides[get_v2_orchestration_service] = lambda: object()
     client = TestClient(app)
 
     response = client.post(
@@ -117,3 +131,70 @@ def test_v2_admin_collect_endpoint_returns_collection_result():
     assert collection.called["groups"] == ["news"]
     assert collection.called["sources"] == ["therecord"]
     assert collection.called["max_pages"] == 5
+
+
+def test_v2_admin_plans_endpoint_returns_named_plan_list():
+    class _OperationsService:
+        def get_runtime_status(self, _session):
+            return {}
+
+    class _OrchestrationService:
+        def list_plans(self):
+            return [{"name": "historical_full"}]
+
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    def _override_session():
+        yield object()
+
+    app.dependency_overrides[authenticate] = lambda: True
+    app.dependency_overrides[get_v2_session] = _override_session
+    app.dependency_overrides[get_v2_operations_service] = lambda: _OperationsService()
+    app.dependency_overrides[get_v2_collection_service] = lambda: object()
+    app.dependency_overrides[get_v2_orchestration_service] = lambda: _OrchestrationService()
+    client = TestClient(app)
+
+    response = client.get("/api/admin/v2/plans")
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["name"] == "historical_full"
+
+
+def test_v2_admin_run_plan_endpoint_returns_orchestrated_result():
+    class _OperationsService:
+        def get_runtime_status(self, _session):
+            return {}
+
+    class _OrchestrationService:
+        def __init__(self):
+            self.called = None
+
+        def run_plan(self, **kwargs):
+            self.called = kwargs
+            return {"run_id": "plan-1", "plan_name": kwargs["plan_name"]}
+
+    orchestrator = _OrchestrationService()
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    def _override_session():
+        yield object()
+
+    app.dependency_overrides[authenticate] = lambda: True
+    app.dependency_overrides[get_v2_session] = _override_session
+    app.dependency_overrides[get_v2_operations_service] = lambda: _OperationsService()
+    app.dependency_overrides[get_v2_collection_service] = lambda: object()
+    app.dependency_overrides[get_v2_orchestration_service] = lambda: orchestrator
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/admin/v2/run-plan",
+        params={"plan_name": "incremental_refresh", "worker_max_tasks": 123, "include_paid_rss": "true"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "plan-1"
+    assert orchestrator.called["plan_name"] == "incremental_refresh"
+    assert orchestrator.called["worker_max_tasks"] == 123
+    assert orchestrator.called["collect_overrides"] == {"include_paid_rss": True}
