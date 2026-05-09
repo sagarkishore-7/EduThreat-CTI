@@ -149,6 +149,49 @@ def test_build_source_projection_promotes_education_technology_provider_as_vendo
     assert projection["vendor_name"] == "PowerSchool"
 
 
+def test_build_source_projection_does_not_inherit_raw_location_from_mismatched_vendor_placeholder():
+    incident = _source_incident(event_key="powerschool-placeholder")
+    incident.raw_institution_name = "Forrest City School District"
+    incident.raw_victim_name = "Forrest City School District"
+    incident.raw_institution_type = "School"
+    incident.raw_country = "United States"
+    incident.raw_region = "Arkansas"
+    incident.raw_city = "Forrest City"
+    incident.raw_title = "Ransomware attack on Forrest City School District (2024)"
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "incident_date": "2024-12-28",
+            "incident_date_precision": "day",
+            "attack_category": "third_party_compromise",
+            "enriched_summary": "PowerSchool disclosed a breach affecting multiple school districts.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "attack_category": "third_party_compromise",
+        },
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] == "PowerSchool"
+    assert projection["vendor_name"] == "PowerSchool"
+    assert projection["country"] is None
+    assert projection["country_code"] is None
+    assert projection["region"] is None
+    assert projection["city"] is None
+
+
 def test_build_source_projection_prefers_explicit_extracted_name_over_generic_raw_label():
     incident = _source_incident()
     incident.raw_institution_name = "a university in Australia"
@@ -441,7 +484,7 @@ def test_canonicalization_service_refreshes_canonical_fields_from_primary_member
         id=uuid4(),
         canonical_key="powerschool-canonical",
         status="open",
-        institution_name="PowerSchool",
+        institution_name="Cincinnati Public Schools",
         vendor_name="PowerSchool",
         country="Canada",
         country_code="CA",
@@ -530,6 +573,7 @@ def test_canonicalization_service_refreshes_canonical_fields_from_primary_member
     outcome = service.canonicalize_source_incident(session, incident.id)
 
     assert outcome["canonicalized"] is True
+    assert existing_canonical.institution_name == "PowerSchool"
     assert existing_canonical.country == "United States"
     assert existing_canonical.country_code == "US"
     assert existing_canonical.region == "Massachusetts"

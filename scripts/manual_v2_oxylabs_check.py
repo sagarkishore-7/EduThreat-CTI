@@ -43,6 +43,15 @@ def _build_query(incident: dict[str, Any]) -> str:
     return " ".join(part for part in parts if part).strip()
 
 
+def _fetch_detail(api_base: str, canonical_incident_id: str) -> dict[str, Any]:
+    response = requests.get(
+        f"{api_base.rstrip('/')}/api/v2/incidents/{canonical_incident_id}",
+        timeout=60,
+    )
+    response.raise_for_status()
+    return response.json()
+
+
 def _extract_text(html: str) -> str:
     soup = BeautifulSoup(html, "html.parser")
     for tag in soup(["script", "style", "noscript"]):
@@ -82,15 +91,38 @@ def main() -> None:
     client = OxylabsClient()
     payload: list[dict[str, Any]] = []
     for incident in incidents:
+        canonical_incident_id = incident.get("canonical_incident_id")
+        detail = _fetch_detail(args.api_base, canonical_incident_id) if canonical_incident_id else {}
+        selected_source = detail.get("selected_source") or {}
         display_name = incident.get("display_name") or ""
+        selected_url = selected_source.get("article_resolved_url") or selected_source.get("article_url")
+        selected_title = selected_source.get("article_title") or ""
+        direct_html = client.fetch_url(selected_url) if selected_url else None
+        direct_text = _extract_text(direct_html) if direct_html else ""
+
         query = _build_query(incident)
-        serp_results = client.search_news(query, max_results=args.results)
-        top_result = serp_results[0] if serp_results else {}
-        html = client.fetch_url(top_result.get("url", "")) if top_result.get("url") else None
-        article_text = _extract_text(html) if html else ""
-        detail = {
+        serp_results: list[dict[str, Any]] = []
+        top_result: dict[str, Any] = {}
+        article_text = direct_text
+        qa_mode = "selected_source_url"
+
+        if not article_text:
+            serp_results = client.search_news(query, max_results=args.results)
+            top_result = serp_results[0] if serp_results else {}
+            html = client.fetch_url(top_result.get("url", "")) if top_result.get("url") else None
+            article_text = _extract_text(html) if html else ""
+            qa_mode = "serp_fallback"
+
+        if not top_result and selected_url:
+            top_result = {
+                "url": selected_url,
+                "title": selected_title,
+                "source": selected_source.get("source_name"),
+            }
+
+        detail_payload = {
             "incident": {
-                "canonical_incident_id": incident.get("canonical_incident_id"),
+                "canonical_incident_id": canonical_incident_id,
                 "display_name": display_name,
                 "country": incident.get("country"),
                 "country_code": incident.get("country_code"),
@@ -98,17 +130,24 @@ def main() -> None:
                 "attack_category": incident.get("attack_category"),
                 "summary": incident.get("canonical_summary"),
             },
+            "qa_mode": qa_mode,
+            "selected_source": {
+                "source_name": selected_source.get("source_name"),
+                "article_title": selected_title,
+                "article_url": selected_url,
+            },
             "oxylabs_query": query,
             "serp_count": len(serp_results),
             "top_result": top_result,
             "checks": {
                 "institution_in_title": _normalize(display_name) in _normalize(top_result.get("title", "")),
                 "institution_in_text": _normalize(display_name) in _normalize(article_text),
+                "selected_title_in_text": _normalize(selected_title) in _normalize(article_text),
                 "article_text_length": len(article_text),
             },
             "article_snippet": _pick_snippet(article_text, display_name),
         }
-        payload.append(detail)
+        payload.append(detail_payload)
 
     print(json.dumps(payload, indent=2, ensure_ascii=False))
 

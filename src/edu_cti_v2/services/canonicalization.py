@@ -153,6 +153,22 @@ def _resolve_institution_name(source_incident, typed: Dict[str, Any], raw: Dict[
     )
 
 
+def _should_trust_raw_identity_fallback(
+    source_incident,
+    institution_name: Optional[str],
+    vendor_name: Optional[str],
+) -> bool:
+    resolved_identity = clean_institution_name(institution_name or vendor_name)
+    raw_identity = choose_best_institution_name(
+        source_incident.raw_institution_name,
+        source_incident.raw_victim_name,
+        source_incident.raw_title,
+    )
+    if not resolved_identity or not raw_identity:
+        return True
+    return _identity_match_quality(resolved_identity, raw_identity) >= 85
+
+
 def _normalize_country_fields(
     source_incident,
     typed: Dict[str, Any],
@@ -357,9 +373,30 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
         raw.get("institution_type"),
         source_incident.raw_institution_type,
     )
+    vendor_name = _first_present(typed.get("vendor_name"), raw.get("vendor_name"))
+    if not vendor_name and institution_name and institution_type in _VENDOR_LIKE_TYPES:
+        vendor_name = institution_name
+    trust_raw_identity_fallback = _should_trust_raw_identity_fallback(
+        source_incident,
+        institution_name,
+        vendor_name,
+    )
     country, country_code = _normalize_country_fields(source_incident, typed, raw)
-    region = _first_present(typed.get("region"), raw.get("region"), source_incident.raw_region)
-    city = _first_present(typed.get("city"), raw.get("city"), source_incident.raw_city)
+    if not trust_raw_identity_fallback:
+        if typed.get("country") is None and typed.get("institution_country") is None and raw.get("country") is None and raw.get("institution_country") is None:
+            country = None
+        if typed.get("country_code") is None and raw.get("country_code") is None and country is None:
+            country_code = None
+    region = _first_present(
+        typed.get("region"),
+        raw.get("region"),
+        source_incident.raw_region if trust_raw_identity_fallback else None,
+    )
+    city = _first_present(
+        typed.get("city"),
+        raw.get("city"),
+        source_incident.raw_city if trust_raw_identity_fallback else None,
+    )
     incident_date = _parse_date_only(
         _first_present(typed.get("incident_date"), raw.get("incident_date"), source_incident.raw_incident_date)
     )
@@ -393,10 +430,6 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
         raw.get("enriched_summary"),
         source_incident.raw_title,
     )
-    vendor_name = _first_present(typed.get("vendor_name"), raw.get("vendor_name"))
-    if not vendor_name and institution_name and institution_type in _VENDOR_LIKE_TYPES:
-        vendor_name = institution_name
-
     return {
         "institution_name": institution_name,
         "institution_type": institution_type,
@@ -462,11 +495,11 @@ def _apply_projection_to_canonical(
     *,
     authoritative: bool = False,
 ) -> None:
-    canonical.institution_name = _choose_canonical_institution_name(
-        canonical.institution_name,
-        projection.get("institution_name"),
-    )
     if authoritative:
+        canonical.institution_name = _first_present(
+            projection.get("institution_name"),
+            projection.get("vendor_name"),
+        )
         canonical.institution_type = projection.get("institution_type")
         canonical.vendor_name = projection.get("vendor_name")
         canonical.country = projection.get("country")
@@ -479,6 +512,10 @@ def _apply_projection_to_canonical(
         canonical.region = projection.get("region")
         canonical.city = projection.get("city")
     else:
+        canonical.institution_name = _choose_canonical_institution_name(
+            canonical.institution_name,
+            projection.get("institution_name"),
+        )
         if projection.get("institution_type"):
             canonical.institution_type = projection.get("institution_type")
         if projection.get("vendor_name"):
