@@ -56,10 +56,12 @@ def test_collection_service_collects_group_and_records_run():
     dual_writer.write_observation.side_effect = [uuid4(), uuid4()]
 
     run_repo = Mock()
+    task_repo = Mock()
+    task_repo.count_active.return_value = 0
     persisted_run = SimpleNamespace(id=uuid4())
     run_repo.get_by_id.return_value = persisted_run
 
-    sessions = [_FakeSession(), _FakeSession()]
+    sessions = [_FakeSession(), _FakeSession(), _FakeSession()]
 
     def _session_factory():
         return _FakeSessionContext(sessions.pop(0))
@@ -74,6 +76,7 @@ def test_collection_service_collects_group_and_records_run():
         session_factory=_session_factory,
         dual_writer=dual_writer,
         pipeline_run_repository=run_repo,
+        pipeline_task_repository=task_repo,
     )
 
     with patch.dict("src.edu_cti_v2.services.collection._COLLECTORS", {"news": _collector}, clear=False):
@@ -87,3 +90,42 @@ def test_collection_service_collects_group_and_records_run():
     assert run_repo.add.called
     assert run_repo.mark_started.called
     assert run_repo.mark_finished.called
+
+
+def test_collection_service_pauses_when_fetch_backlog_is_above_limit():
+    dual_writer = Mock()
+    dual_writer.write_observation.side_effect = [uuid4()]
+
+    run_repo = Mock()
+    task_repo = Mock()
+    task_repo.count_active.side_effect = [7, 4]
+    sleeps: list[float] = []
+
+    incidents = [_incident("therecord", "story-1")]
+
+    def _collector(*, max_pages, sources, save_callback, incremental):
+        save_callback(incidents)
+        return {"therecord": incidents}
+
+    service = V2CollectionService(
+        session_factory=lambda: _FakeSessionContext(_FakeSession()),
+        dual_writer=dual_writer,
+        pipeline_run_repository=run_repo,
+        pipeline_task_repository=task_repo,
+        sleep_fn=sleeps.append,
+    )
+
+    with patch.dict("src.edu_cti_v2.services.collection._COLLECTORS", {"news": _collector}, clear=False):
+        result = service.collect_into_v2(
+            groups=["news"],
+            sources=["therecord"],
+            persist_run=False,
+            fetch_backlog_limit=5,
+            fetch_backlog_resume_ratio=1.0,
+            backlog_poll_seconds=2.5,
+        )
+
+    assert result["counts"]["fetch_backpressure_wait_cycles"] == 1
+    assert result["counts"]["max_fetch_backlog_observed"] == 7
+    assert sleeps == [2.5]
+    assert task_repo.count_active.call_count == 2

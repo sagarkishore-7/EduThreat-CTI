@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from collections import defaultdict
-from typing import Dict, Iterable, List, Optional, Sequence
+import time
+from typing import Callable, Dict, Iterable, List, Optional, Sequence
 from uuid import uuid4
 
 from sqlalchemy.orm import sessionmaker
@@ -23,7 +24,7 @@ from src.edu_cti.pipeline.phase1.rss import collect_rss_incidents
 from src.edu_cti_v2.db import create_session_factory
 from src.edu_cti_v2.models import PipelineRun
 from src.edu_cti_v2.phase1_dual_write import V2Phase1DualWriter, build_phase1_source_event_key
-from src.edu_cti_v2.repositories import PipelineRunRepository
+from src.edu_cti_v2.repositories import PipelineRunRepository, PipelineTaskRepository
 
 _GROUP_ORDER = ("curated", "news", "rss", "api")
 _GROUP_REGISTRIES = {
@@ -76,22 +77,69 @@ class V2CollectionService:
         session_factory: Optional[sessionmaker] = None,
         dual_writer: Optional[V2Phase1DualWriter] = None,
         pipeline_run_repository: Optional[PipelineRunRepository] = None,
+        pipeline_task_repository: Optional[PipelineTaskRepository] = None,
+        sleep_fn: Optional[Callable[[float], None]] = None,
     ) -> None:
         self.session_factory = session_factory or create_session_factory()
         self.dual_writer = dual_writer or V2Phase1DualWriter(session_factory=self.session_factory)
         self.pipeline_run_repository = pipeline_run_repository or PipelineRunRepository()
+        self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
+        self.sleep_fn = sleep_fn or time.sleep
+
+    def _maybe_wait_for_fetch_backlog(
+        self,
+        *,
+        fetch_backlog_limit: Optional[int],
+        fetch_backlog_resume_ratio: float,
+        backlog_poll_seconds: float,
+        counters: dict[str, int],
+    ) -> None:
+        if not fetch_backlog_limit or fetch_backlog_limit <= 0:
+            return
+
+        resume_ratio = min(max(fetch_backlog_resume_ratio, 0.0), 1.0)
+        resume_threshold = max(1, int(fetch_backlog_limit * resume_ratio))
+
+        with self.session_factory() as session:
+            backlog = self.pipeline_task_repository.count_active(
+                session,
+                task_types=("fetch_article",),
+            )
+        counters["max_fetch_backlog_observed"] = max(counters["max_fetch_backlog_observed"], backlog)
+        if backlog <= fetch_backlog_limit:
+            return
+
+        while backlog > resume_threshold:
+            counters["fetch_backpressure_wait_cycles"] += 1
+            counters["fetch_backpressure_wait_seconds"] += int(max(backlog_poll_seconds, 0.0))
+            self.sleep_fn(max(backlog_poll_seconds, 0.0))
+            with self.session_factory() as session:
+                backlog = self.pipeline_task_repository.count_active(
+                    session,
+                    task_types=("fetch_article",),
+                )
+            counters["max_fetch_backlog_observed"] = max(counters["max_fetch_backlog_observed"], backlog)
 
     def _write_batch(
         self,
         incidents: Iterable[BaseIncident],
         *,
         counters: dict[str, int],
+        fetch_backlog_limit: Optional[int],
+        fetch_backlog_resume_ratio: float,
+        backlog_poll_seconds: float,
     ) -> None:
         for incident in incidents:
             event_key = build_phase1_source_event_key(incident)
             source_incident_id = self.dual_writer.write_observation(incident, event_key, force=True)
             if source_incident_id is not None:
                 counters["observations_processed"] += 1
+        self._maybe_wait_for_fetch_backlog(
+            fetch_backlog_limit=fetch_backlog_limit,
+            fetch_backlog_resume_ratio=fetch_backlog_resume_ratio,
+            backlog_poll_seconds=backlog_poll_seconds,
+            counters=counters,
+        )
 
     def collect_into_v2(
         self,
@@ -103,6 +151,9 @@ class V2CollectionService:
         incremental: bool = True,
         include_paid_rss: bool = False,
         persist_run: bool = True,
+        fetch_backlog_limit: Optional[int] = 1200,
+        fetch_backlog_resume_ratio: float = 0.75,
+        backlog_poll_seconds: float = 5.0,
     ) -> dict:
         groups_to_run = _normalize_groups(groups)
         source_filter = list(dict.fromkeys(sources or []))
@@ -113,6 +164,9 @@ class V2CollectionService:
             "rss_max_age_days": rss_max_age_days,
             "incremental": incremental,
             "include_paid_rss": include_paid_rss,
+            "fetch_backlog_limit": fetch_backlog_limit,
+            "fetch_backlog_resume_ratio": fetch_backlog_resume_ratio,
+            "backlog_poll_seconds": backlog_poll_seconds,
         }
 
         run_id = None
@@ -148,7 +202,13 @@ class V2CollectionService:
                     continue
 
                 def _save_callback(batch: List[BaseIncident]) -> None:
-                    self._write_batch(batch, counters=counters)
+                    self._write_batch(
+                        batch,
+                        counters=counters,
+                        fetch_backlog_limit=fetch_backlog_limit,
+                        fetch_backlog_resume_ratio=fetch_backlog_resume_ratio,
+                        backlog_poll_seconds=backlog_poll_seconds,
+                    )
 
                 if group == "curated":
                     results = _COLLECTORS[group](
@@ -199,6 +259,9 @@ class V2CollectionService:
                     "sources_run": counters["sources_run"],
                     "incidents_collected": counters["incidents_collected"],
                     "observations_processed": counters["observations_processed"],
+                    "fetch_backpressure_wait_cycles": counters["fetch_backpressure_wait_cycles"],
+                    "fetch_backpressure_wait_seconds": counters["fetch_backpressure_wait_seconds"],
+                    "max_fetch_backlog_observed": counters["max_fetch_backlog_observed"],
                 },
                 "per_source_counts": per_source_counts,
             }
