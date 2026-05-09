@@ -21,6 +21,16 @@ class CanonicalIncidentRepository:
     """Repository boundary for canonical incident and membership access."""
 
     @staticmethod
+    def _severity_sort_rank():
+        return case(
+            (CanonicalIncident.severity == "critical", 4),
+            (CanonicalIncident.severity == "high", 3),
+            (CanonicalIncident.severity == "medium", 2),
+            (CanonicalIncident.severity == "low", 1),
+            else_=0,
+        )
+
+    @staticmethod
     def _apply_list_filters(
         stmt: Select,
         *,
@@ -70,6 +80,37 @@ class CanonicalIncidentRepository:
             stmt = stmt.where(CanonicalIncident.incident_date.is_not(None))
             stmt = stmt.where(CanonicalIncident.incident_date <= date_to)
         return stmt
+
+    @staticmethod
+    def _apply_list_sort(
+        stmt: Select,
+        *,
+        sort_by: str = "last_seen_at",
+        sort_order: str = "desc",
+    ) -> Select:
+        descending = sort_order.lower() != "asc"
+        if sort_by == "incident_date":
+            primary = CanonicalIncident.incident_date
+            secondary = CanonicalIncident.last_seen_at
+        elif sort_by == "created_at":
+            primary = CanonicalIncident.created_at
+            secondary = CanonicalIncident.last_seen_at
+        elif sort_by == "institution_name":
+            primary = CanonicalIncident.institution_name
+            secondary = CanonicalIncident.last_seen_at
+        elif sort_by == "country":
+            primary = CanonicalIncident.country
+            secondary = CanonicalIncident.last_seen_at
+        elif sort_by == "severity":
+            primary = CanonicalIncidentRepository._severity_sort_rank()
+            secondary = CanonicalIncident.last_seen_at
+        else:
+            primary = CanonicalIncident.last_seen_at
+            secondary = CanonicalIncident.created_at
+
+        if descending:
+            return stmt.order_by(primary.desc().nullslast(), secondary.desc().nullslast())
+        return stmt.order_by(primary.asc().nullslast(), secondary.asc().nullslast())
 
     @staticmethod
     def build_get_by_id_stmt(canonical_incident_id: str) -> Select:
@@ -127,6 +168,8 @@ class CanonicalIncidentRepository:
         has_vendor: Optional[bool] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
+        sort_by: str = "last_seen_at",
+        sort_order: str = "desc",
     ) -> Select:
         membership_count = (
             select(func.count(CanonicalMembership.id))
@@ -134,27 +177,32 @@ class CanonicalIncidentRepository:
             .correlate(CanonicalIncident)
             .scalar_subquery()
         )
-        return (
-            CanonicalIncidentRepository._apply_list_filters(
-                select(
+        stmt = CanonicalIncidentRepository._apply_list_filters(
+            select(
                 CanonicalIncident,
                 CanonicalEnrichment,
                 membership_count.label("membership_count"),
             )
             .outerjoin(CanonicalEnrichment, CanonicalEnrichment.canonical_incident_id == CanonicalIncident.id)
-                ,
-                statuses=statuses,
-                search=search,
-                country_code=country_code,
-                attack_category=attack_category,
-                institution_type=institution_type,
-                severity=severity,
-                is_education_related=is_education_related,
-                has_vendor=has_vendor,
-                date_from=date_from,
-                date_to=date_to,
-            )
-            .order_by(CanonicalIncident.last_seen_at.desc(), CanonicalIncident.created_at.desc())
+            ,
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        stmt = CanonicalIncidentRepository._apply_list_sort(
+            stmt,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+        return (
+            stmt
             .offset(offset)
             .limit(limit)
         )
@@ -516,6 +564,8 @@ class CanonicalIncidentRepository:
         has_vendor: Optional[bool] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
+        sort_by: str = "last_seen_at",
+        sort_order: str = "desc",
     ):
         stmt = self.build_list_recent_stmt(
             statuses=statuses,
@@ -530,6 +580,8 @@ class CanonicalIncidentRepository:
             has_vendor=has_vendor,
             date_from=date_from,
             date_to=date_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
         return list(session.execute(stmt).all())
 

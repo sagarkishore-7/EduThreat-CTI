@@ -81,8 +81,9 @@ def test_read_service_list_incidents_returns_items_and_total_with_filters():
 
     service = V2CanonicalReadService(canonical_repository=canonical_repo)
 
+    session = Mock()
     result = service.list_incidents(
-        Mock(),
+        session,
         limit=10,
         offset=20,
         statuses=("open", "excluded"),
@@ -95,11 +96,29 @@ def test_read_service_list_incidents_returns_items_and_total_with_filters():
         has_vendor=False,
         date_from=date(2026, 5, 1),
         date_to=date(2026, 5, 9),
+        sort_by="incident_date",
+        sort_order="asc",
     )
 
     assert result["total"] == 17
     assert result["items"][0]["display_name"] == "Stanford University"
-    canonical_repo.list_recent_with_enrichment.assert_called_once()
+    canonical_repo.list_recent_with_enrichment.assert_called_once_with(
+        session,
+        statuses=("open", "excluded"),
+        limit=10,
+        offset=20,
+        search="stanford",
+        country_code="US",
+        attack_category="ransomware_encryption",
+        institution_type="university",
+        severity="high",
+        is_education_related=True,
+        has_vendor=False,
+        date_from=date(2026, 5, 1),
+        date_to=date(2026, 5, 9),
+        sort_by="incident_date",
+        sort_order="asc",
+    )
     canonical_repo.count_recent.assert_called_once()
 
 

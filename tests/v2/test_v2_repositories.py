@@ -119,6 +119,18 @@ def test_canonical_repository_recent_stmt_supports_filters_and_pagination():
     assert "OFFSET 20" in compiled
 
 
+def test_canonical_repository_recent_stmt_supports_sorting():
+    stmt = CanonicalIncidentRepository.build_list_recent_stmt(
+        limit=25,
+        sort_by="incident_date",
+        sort_order="asc",
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "ORDER BY canonical_incidents.incident_date ASC NULLS LAST" in compiled
+    assert "canonical_incidents.last_seen_at ASC NULLS LAST" in compiled
+
+
 def test_canonical_repository_country_facet_stmt_supports_filters():
     stmt = CanonicalIncidentRepository.build_country_facet_stmt(
         statuses=("open", "excluded"),

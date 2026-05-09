@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from datetime import date
-from typing import Iterator, List, Optional
+from typing import Iterator, List, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session, sessionmaker
@@ -59,6 +59,8 @@ async def list_v2_incidents(
     has_vendor: Optional[bool] = Query(None),
     date_from: Optional[date] = Query(None),
     date_to: Optional[date] = Query(None),
+    sort_by: Literal["last_seen_at", "incident_date", "created_at", "institution_name", "country", "severity"] = Query("last_seen_at"),
+    sort_order: Literal["asc", "desc"] = Query("desc"),
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
 ):
@@ -78,6 +80,8 @@ async def list_v2_incidents(
         has_vendor=has_vendor,
         date_from=date_from,
         date_to=date_to,
+        sort_by=sort_by,
+        sort_order=sort_order,
     )
     return {
         "items": result["items"],
@@ -96,6 +100,8 @@ async def list_v2_incidents(
             "has_vendor": has_vendor,
             "date_from": date_from.isoformat() if date_from else None,
             "date_to": date_to.isoformat() if date_to else None,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
         },
     }
 

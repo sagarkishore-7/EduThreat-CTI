@@ -58,6 +58,8 @@ def test_v2_incidents_endpoint_returns_items_and_meta():
             "has_vendor": "false",
             "date_from": "2026-05-01",
             "date_to": "2026-05-09",
+            "sort_by": "incident_date",
+            "sort_order": "asc",
         },
     )
 
@@ -79,7 +81,11 @@ def test_v2_incidents_endpoint_returns_items_and_meta():
         "has_vendor": False,
         "date_from": date(2026, 5, 1),
         "date_to": date(2026, 5, 9),
+        "sort_by": "incident_date",
+        "sort_order": "asc",
     }
+    assert payload["meta"]["sort_by"] == "incident_date"
+    assert payload["meta"]["sort_order"] == "asc"
 
 
 def test_v2_incident_detail_endpoint_returns_404_for_missing_canonical():

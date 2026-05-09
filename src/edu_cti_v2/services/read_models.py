@@ -118,6 +118,8 @@ class V2CanonicalReadService:
         has_vendor: Optional[bool] = None,
         date_from: Optional[date] = None,
         date_to: Optional[date] = None,
+        sort_by: str = "last_seen_at",
+        sort_order: str = "desc",
     ) -> dict[str, Any]:
         rows = self.canonical_repository.list_recent_with_enrichment(
             session,
@@ -133,6 +135,8 @@ class V2CanonicalReadService:
             has_vendor=has_vendor,
             date_from=date_from,
             date_to=date_to,
+            sort_by=sort_by,
+            sort_order=sort_order,
         )
         total = self.canonical_repository.count_recent(
             session,
