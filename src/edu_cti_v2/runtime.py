@@ -21,6 +21,17 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _env_int(name: str) -> Optional[int]:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return int(value)
+    except ValueError:
+        logger.warning("Invalid integer for %s=%r; ignoring override", name, value)
+        return None
+
+
 def _prewarm_ml_models() -> None:
     """Warm the shared process-wide ML helpers once before worker threads start."""
     try:
@@ -56,8 +67,8 @@ class V2RuntimeService:
         self,
         *,
         worker_count: int = 2,
-        fetch_worker_count: int = 1,
-        resolve_worker_count: int = 1,
+        fetch_worker_count: Optional[int] = None,
+        resolve_worker_count: Optional[int] = None,
         task_type: Optional[str] = None,
         poll_interval_seconds: float = 5.0,
         lease_seconds: Optional[int] = None,
@@ -69,6 +80,10 @@ class V2RuntimeService:
         session_factory: Optional[Callable] = None,
     ) -> None:
         self.worker_count = max(worker_count, 1)
+        if fetch_worker_count is None:
+            fetch_worker_count = max(1, min(2, self.worker_count))
+        if resolve_worker_count is None:
+            resolve_worker_count = 1
         self.fetch_worker_count = max(fetch_worker_count, 0)
         self.resolve_worker_count = max(resolve_worker_count, 0)
         self.task_type = task_type
@@ -296,13 +311,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fetch-workers",
         type=int,
-        default=int(os.environ.get("EDU_CTI_V2_FETCH_WORKER_COUNT", "1")),
+        default=_env_int("EDU_CTI_V2_FETCH_WORKER_COUNT"),
         help="Number of dedicated fetch_article worker threads",
     )
     parser.add_argument(
         "--resolve-workers",
         type=int,
-        default=int(os.environ.get("EDU_CTI_V2_RESOLVE_WORKER_COUNT", "1")),
+        default=_env_int("EDU_CTI_V2_RESOLVE_WORKER_COUNT"),
         help="Number of dedicated resolve_url worker threads",
     )
     parser.add_argument("--task-type", type=str, default=None, help="Restrict all workers to one task type")
