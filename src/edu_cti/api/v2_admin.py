@@ -205,6 +205,7 @@ async def run_v2_plan(
     worker_id: str = Query("admin-v2-plan"),
     worker_max_tasks: Optional[int] = Query(None, ge=1, le=20000),
     drain_tasks: Optional[bool] = Query(None),
+    background: bool = Query(True),
     include_paid_rss: Optional[bool] = Query(None),
     orchestration: V2OrchestrationService = Depends(get_v2_orchestration_service),
     _: bool = Depends(authenticate),
@@ -213,6 +214,14 @@ async def run_v2_plan(
     collect_overrides = {}
     if include_paid_rss is not None:
         collect_overrides["include_paid_rss"] = include_paid_rss
+    if background:
+        return orchestration.enqueue_plan(
+            plan_name=plan_name,
+            worker_id=worker_id,
+            collect_overrides=collect_overrides or None,
+            worker_max_tasks=worker_max_tasks,
+            drain_tasks=drain_tasks,
+        )
     return orchestration.run_plan(
         plan_name=plan_name,
         worker_id=worker_id,

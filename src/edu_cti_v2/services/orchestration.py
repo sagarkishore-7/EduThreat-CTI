@@ -2,16 +2,20 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, Optional
+from datetime import datetime, timezone
+from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 from uuid import uuid4
 
 from src.edu_cti_v2.db import create_session_factory
-from src.edu_cti_v2.models import PipelineRun
-from src.edu_cti_v2.repositories import PipelineRunRepository
+from src.edu_cti_v2.models import PipelineRun, PipelineTask
+from src.edu_cti_v2.repositories import PipelineRunRepository, PipelineTaskRepository
 from src.edu_cti_v2.services.collection import V2CollectionService
 from src.edu_cti_v2.services.data_quality import V2DataQualityService
-from src.edu_cti_v2.services.operations import V2OperationsService
+
+if TYPE_CHECKING:
+    from src.edu_cti_v2.services.operations import V2OperationsService
 
 
 @dataclass(frozen=True)
@@ -127,15 +131,21 @@ class V2OrchestrationService:
         *,
         session_factory: Optional[Callable] = None,
         collection_service: Optional[V2CollectionService] = None,
-        operations_service: Optional[V2OperationsService] = None,
+        operations_service: Optional["V2OperationsService"] = None,
         data_quality_service: Optional[V2DataQualityService] = None,
         pipeline_run_repository: Optional[PipelineRunRepository] = None,
+        pipeline_task_repository: Optional[PipelineTaskRepository] = None,
     ) -> None:
         self.session_factory = session_factory or create_session_factory()
         self.collection_service = collection_service or V2CollectionService(session_factory=self.session_factory)
-        self.operations_service = operations_service or V2OperationsService(session_factory=self.session_factory)
+        if operations_service is None:
+            from src.edu_cti_v2.services.operations import V2OperationsService
+
+            operations_service = V2OperationsService(session_factory=self.session_factory)
+        self.operations_service = operations_service
         self.data_quality_service = data_quality_service or V2DataQualityService(session_factory=self.session_factory)
         self.pipeline_run_repository = pipeline_run_repository or PipelineRunRepository()
+        self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
 
     def list_plans(self) -> list[dict[str, Any]]:
         return [
@@ -153,6 +163,186 @@ class V2OrchestrationService:
             for plan in _PLAN_DEFINITIONS.values()
         ]
 
+    def _resolve_request(
+        self,
+        *,
+        plan_name: str,
+        collect_overrides: Optional[dict[str, Any]] = None,
+        worker_max_tasks: Optional[int] = None,
+        drain_tasks: Optional[bool] = None,
+    ) -> tuple[V2PlanDefinition, dict[str, Any], bool, int]:
+        if plan_name not in _PLAN_DEFINITIONS:
+            raise ValueError(f"Unknown v2 plan: {plan_name}")
+        plan = _PLAN_DEFINITIONS[plan_name]
+        collect_kwargs = {**plan.collect_kwargs, **(collect_overrides or {})}
+        should_drain = plan.drain_tasks if drain_tasks is None else drain_tasks
+        effective_worker_max_tasks = worker_max_tasks or plan.worker_max_tasks
+        return plan, collect_kwargs, should_drain, effective_worker_max_tasks
+
+    def enqueue_plan(
+        self,
+        *,
+        plan_name: str,
+        worker_id: str = "admin-v2-plan",
+        collect_overrides: Optional[dict[str, Any]] = None,
+        worker_max_tasks: Optional[int] = None,
+        drain_tasks: Optional[bool] = None,
+    ) -> dict[str, Any]:
+        plan, collect_kwargs, should_drain, effective_worker_max_tasks = self._resolve_request(
+            plan_name=plan_name,
+            collect_overrides=collect_overrides,
+            worker_max_tasks=worker_max_tasks,
+            drain_tasks=drain_tasks,
+        )
+
+        with self.session_factory() as session:
+            run = PipelineRun(
+                run_type="maintenance",
+                status="pending",
+                service_name="v2-plan-orchestrator",
+                params={
+                    "plan_name": plan_name,
+                    "collect_kwargs": collect_kwargs,
+                    "drain_tasks": should_drain,
+                    "worker_max_tasks": effective_worker_max_tasks,
+                    "worker_id": worker_id,
+                    "execution_mode": "queued",
+                },
+                result={},
+            )
+            if run.id is None:
+                run.id = uuid4()
+            self.pipeline_run_repository.add(session, run)
+            task = PipelineTask(
+                run_id=run.id,
+                task_type="orchestrate_plan",
+                target_table="pipeline_runs",
+                target_id=run.id,
+                status="queued",
+                priority=1000,
+                payload={
+                    "plan_name": plan_name,
+                    "collect_kwargs": collect_kwargs,
+                    "drain_tasks": should_drain,
+                    "worker_max_tasks": effective_worker_max_tasks,
+                    "worker_id": worker_id,
+                    "run_data_quality_sweep": plan.run_data_quality_sweep,
+                    "reenrich_worker_max_tasks": plan.reenrich_worker_max_tasks,
+                },
+                result={},
+                available_at=datetime.now(timezone.utc),
+                attempt_count=0,
+                max_attempts=3,
+            )
+            self.pipeline_task_repository.enqueue(session, task)
+            flush = getattr(session, "flush", None)
+            if callable(flush):
+                flush()
+            session.commit()
+            return {
+                "run_id": str(run.id),
+                "task_id": str(task.id),
+                "plan_name": plan_name,
+                "status": "queued",
+                "worker_id": worker_id,
+                "drain_tasks": should_drain,
+                "worker_max_tasks": effective_worker_max_tasks,
+                "collect_kwargs": collect_kwargs,
+            }
+
+    def _wait_for_queue_to_drain(
+        self,
+        *,
+        exclude_task_id,
+        poll_interval_seconds: float = 5.0,
+    ) -> dict[str, Any]:
+        polls = 0
+        while True:
+            with self.session_factory() as session:
+                active_count = self.pipeline_task_repository.count_active(
+                    session,
+                    exclude_task_types=("orchestrate_plan",),
+                    exclude_task_ids=(exclude_task_id,),
+                )
+            if active_count <= 0:
+                return {
+                    "status": "drained",
+                    "polls": polls,
+                    "active_task_count": 0,
+                }
+            polls += 1
+            time.sleep(max(poll_interval_seconds, 0.0))
+
+    def execute_enqueued_plan(self, task: PipelineTask, *, worker_id: str) -> dict[str, Any]:
+        payload = task.payload or {}
+        plan_name = payload["plan_name"]
+        plan, collect_kwargs, should_drain, _ = self._resolve_request(
+            plan_name=plan_name,
+            collect_overrides=payload.get("collect_kwargs"),
+            worker_max_tasks=payload.get("worker_max_tasks"),
+            drain_tasks=payload.get("drain_tasks"),
+        )
+        run_id = task.run_id
+
+        with self.session_factory() as session:
+            persisted_run = self.pipeline_run_repository.get_by_id(session, run_id)
+            if persisted_run is None:
+                raise ValueError(f"Plan run not found for queued task: {run_id}")
+            if persisted_run.status != "running":
+                self.pipeline_run_repository.mark_started(session, persisted_run)
+                session.commit()
+
+        try:
+            collect_result = self.collection_service.collect_into_v2(
+                **collect_kwargs,
+                persist_run=False,
+            )
+            worker_result = None
+            data_quality_result = None
+            reenrich_worker_result = None
+
+            if should_drain:
+                worker_result = self._wait_for_queue_to_drain(exclude_task_id=task.id)
+            if plan.run_data_quality_sweep:
+                data_quality_result = self.data_quality_service.run_sweep()
+                if data_quality_result.get("requeued_for_reenrichment") and should_drain:
+                    reenrich_worker_result = self._wait_for_queue_to_drain(exclude_task_id=task.id)
+
+            result = {
+                "run_id": str(run_id),
+                "plan_name": plan_name,
+                "execution_mode": "queued",
+                "worker_id": worker_id,
+                "collect_result": collect_result,
+                "worker_result": worker_result,
+                "data_quality_result": data_quality_result,
+                "reenrich_worker_result": reenrich_worker_result,
+            }
+            with self.session_factory() as session:
+                persisted_run = self.pipeline_run_repository.get_by_id(session, run_id)
+                if persisted_run is not None:
+                    self.pipeline_run_repository.mark_finished(
+                        session,
+                        persisted_run,
+                        status="completed",
+                        result=result,
+                    )
+                    session.commit()
+            return result
+        except Exception as exc:
+            with self.session_factory() as session:
+                persisted_run = self.pipeline_run_repository.get_by_id(session, run_id)
+                if persisted_run is not None:
+                    self.pipeline_run_repository.mark_finished(
+                        session,
+                        persisted_run,
+                        status="failed",
+                        result={},
+                        error=str(exc),
+                    )
+                    session.commit()
+            raise
+
     def run_plan(
         self,
         *,
@@ -162,13 +352,12 @@ class V2OrchestrationService:
         worker_max_tasks: Optional[int] = None,
         drain_tasks: Optional[bool] = None,
     ) -> dict[str, Any]:
-        if plan_name not in _PLAN_DEFINITIONS:
-            raise ValueError(f"Unknown v2 plan: {plan_name}")
-
-        plan = _PLAN_DEFINITIONS[plan_name]
-        collect_kwargs = {**plan.collect_kwargs, **(collect_overrides or {})}
-        should_drain = plan.drain_tasks if drain_tasks is None else drain_tasks
-        effective_worker_max_tasks = worker_max_tasks or plan.worker_max_tasks
+        plan, collect_kwargs, should_drain, effective_worker_max_tasks = self._resolve_request(
+            plan_name=plan_name,
+            collect_overrides=collect_overrides,
+            worker_max_tasks=worker_max_tasks,
+            drain_tasks=drain_tasks,
+        )
 
         with self.session_factory() as session:
             run = PipelineRun(

@@ -20,9 +20,9 @@ def test_scheduler_service_lists_default_jobs():
     assert "daily_quality_refresh" in names
 
 
-def test_scheduler_service_trigger_job_runs_plan_synchronously():
+def test_scheduler_service_trigger_job_queues_plan():
     orchestration = Mock()
-    orchestration.run_plan.return_value = {"run_id": "plan-1"}
+    orchestration.enqueue_plan.return_value = {"run_id": "plan-1"}
     service = V2SchedulerService(
         orchestration_service=orchestration,
         scheduler=schedule.Scheduler(),
@@ -32,8 +32,8 @@ def test_scheduler_service_trigger_job_runs_plan_synchronously():
     result = service.trigger_job("rss_fast_refresh", background=False)
 
     assert result["job_name"] == "rss_fast_refresh"
-    assert result["status"] == "completed"
-    orchestration.run_plan.assert_called_once_with(
+    assert result["status"] == "queued"
+    orchestration.enqueue_plan.assert_called_once_with(
         plan_name="rss_fast_refresh",
         worker_id="v2-scheduler:rss_fast_refresh",
     )

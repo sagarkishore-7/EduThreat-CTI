@@ -102,6 +102,7 @@ class V2CollectionService:
         rss_max_age_days: int = 30,
         incremental: bool = True,
         include_paid_rss: bool = False,
+        persist_run: bool = True,
     ) -> dict:
         groups_to_run = _normalize_groups(groups)
         source_filter = list(dict.fromkeys(sources or []))
@@ -114,23 +115,25 @@ class V2CollectionService:
             "include_paid_rss": include_paid_rss,
         }
 
-        with self.session_factory() as session:
-            run = PipelineRun(
-                run_type="collect",
-                status="pending",
-                service_name="v2-collection-service",
-                params=run_params,
-                result={},
-            )
-            if run.id is None:
-                run.id = uuid4()
-            self.pipeline_run_repository.add(session, run)
-            self.pipeline_run_repository.mark_started(session, run)
-            flush = getattr(session, "flush", None)
-            if callable(flush):
-                flush()
-            session.commit()
-            run_id = run.id
+        run_id = None
+        if persist_run:
+            with self.session_factory() as session:
+                run = PipelineRun(
+                    run_type="collect",
+                    status="pending",
+                    service_name="v2-collection-service",
+                    params=run_params,
+                    result={},
+                )
+                if run.id is None:
+                    run.id = uuid4()
+                self.pipeline_run_repository.add(session, run)
+                self.pipeline_run_repository.mark_started(session, run)
+                flush = getattr(session, "flush", None)
+                if callable(flush):
+                    flush()
+                session.commit()
+                run_id = run.id
 
         counters: dict[str, int] = defaultdict(int)
         per_source_counts: dict[str, int] = {}
@@ -184,7 +187,7 @@ class V2CollectionService:
                     counters["incidents_collected"] += count
 
             result = {
-                "run_id": str(run_id),
+                "run_id": str(run_id) if run_id else None,
                 "groups": groups_to_run,
                 "sources": source_filter,
                 "incremental": incremental,
@@ -199,27 +202,29 @@ class V2CollectionService:
                 },
                 "per_source_counts": per_source_counts,
             }
-            with self.session_factory() as session:
-                persisted_run = self.pipeline_run_repository.get_by_id(session, run_id)
-                if persisted_run is not None:
-                    self.pipeline_run_repository.mark_finished(
-                        session,
-                        persisted_run,
-                        status="completed",
-                        result=result,
-                    )
-                    session.commit()
+            if run_id is not None:
+                with self.session_factory() as session:
+                    persisted_run = self.pipeline_run_repository.get_by_id(session, run_id)
+                    if persisted_run is not None:
+                        self.pipeline_run_repository.mark_finished(
+                            session,
+                            persisted_run,
+                            status="completed",
+                            result=result,
+                        )
+                        session.commit()
             return result
         except Exception as exc:
-            with self.session_factory() as session:
-                persisted_run = self.pipeline_run_repository.get_by_id(session, run_id)
-                if persisted_run is not None:
-                    self.pipeline_run_repository.mark_finished(
-                        session,
-                        persisted_run,
-                        status="failed",
-                        result={},
-                        error=str(exc),
-                    )
-                    session.commit()
+            if run_id is not None:
+                with self.session_factory() as session:
+                    persisted_run = self.pipeline_run_repository.get_by_id(session, run_id)
+                    if persisted_run is not None:
+                        self.pipeline_run_repository.mark_finished(
+                            session,
+                            persisted_run,
+                            status="failed",
+                            result={},
+                            error=str(exc),
+                        )
+                        session.commit()
             raise

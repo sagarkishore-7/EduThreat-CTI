@@ -197,7 +197,7 @@ def test_v2_admin_plans_endpoint_returns_named_plan_list():
     assert response.json()["items"][0]["name"] == "historical_full"
 
 
-def test_v2_admin_run_plan_endpoint_returns_orchestrated_result():
+def test_v2_admin_run_plan_endpoint_queues_orchestrated_result_by_default():
     class _OperationsService:
         def get_runtime_status(self, _session):
             return {}
@@ -206,9 +206,9 @@ def test_v2_admin_run_plan_endpoint_returns_orchestrated_result():
         def __init__(self):
             self.called = None
 
-        def run_plan(self, **kwargs):
+        def enqueue_plan(self, **kwargs):
             self.called = kwargs
-            return {"run_id": "plan-1", "plan_name": kwargs["plan_name"]}
+            return {"run_id": "plan-1", "plan_name": kwargs["plan_name"], "status": "queued"}
 
     orchestrator = _OrchestrationService()
     app = FastAPI()
@@ -234,9 +234,50 @@ def test_v2_admin_run_plan_endpoint_returns_orchestrated_result():
 
     assert response.status_code == 200
     assert response.json()["run_id"] == "plan-1"
+    assert response.json()["status"] == "queued"
     assert orchestrator.called["plan_name"] == "incremental_refresh"
     assert orchestrator.called["worker_max_tasks"] == 123
     assert orchestrator.called["collect_overrides"] == {"include_paid_rss": True}
+
+
+def test_v2_admin_run_plan_endpoint_can_run_synchronously():
+    class _OperationsService:
+        def get_runtime_status(self, _session):
+            return {}
+
+    class _OrchestrationService:
+        def __init__(self):
+            self.called = None
+
+        def run_plan(self, **kwargs):
+            self.called = kwargs
+            return {"run_id": "plan-sync", "plan_name": kwargs["plan_name"], "status": "completed"}
+
+    orchestrator = _OrchestrationService()
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    def _override_session():
+        yield object()
+
+    app.dependency_overrides[authenticate] = lambda: True
+    app.dependency_overrides[get_v2_session] = _override_session
+    app.dependency_overrides[get_v2_operations_service] = lambda: _OperationsService()
+    app.dependency_overrides[get_v2_collection_service] = lambda: object()
+    app.dependency_overrides[get_v2_orchestration_service] = lambda: orchestrator
+    app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
+    app.dependency_overrides[get_v2_preflight_service] = lambda: object()
+    app.dependency_overrides[get_v2_data_quality_service] = lambda: object()
+    client = TestClient(app)
+
+    response = client.post(
+        "/api/admin/v2/run-plan",
+        params={"plan_name": "incremental_refresh", "background": "false"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] == "plan-sync"
+    assert orchestrator.called["plan_name"] == "incremental_refresh"
 
 
 def test_v2_admin_scheduler_endpoints_proxy_service():

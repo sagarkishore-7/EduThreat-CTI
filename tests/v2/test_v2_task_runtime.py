@@ -217,6 +217,41 @@ def test_task_runtime_processes_refresh_analytics_task_and_marks_complete():
     task_repo.mark_completed.assert_called_once_with(session, task, {"refreshed": True})
 
 
+def test_task_runtime_processes_orchestrate_plan_task_and_marks_complete():
+    task_repo = Mock()
+    source_repo = Mock()
+    fetch_service = Mock()
+    orchestration_service = Mock()
+
+    task = SimpleNamespace(
+        task_type="orchestrate_plan",
+        id=uuid4(),
+        target_id=uuid4(),
+        run_id=uuid4(),
+        payload={"plan_name": "historical_full"},
+    )
+    task_repo.lease_batch.return_value = [task]
+    orchestration_service.execute_enqueued_plan.return_value = {"run_id": str(task.run_id), "status": "completed"}
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        fetch_service=fetch_service,
+        orchestration_service=orchestration_service,
+    )
+    session = Mock()
+
+    processed = runtime.process_next_task(session, worker_id="worker-1")
+
+    assert processed is task
+    orchestration_service.execute_enqueued_plan.assert_called_once_with(task, worker_id="worker-1")
+    task_repo.mark_completed.assert_called_once_with(
+        session,
+        task,
+        {"run_id": str(task.run_id), "status": "completed"},
+    )
+
+
 def test_task_runtime_rolls_back_before_marking_failed():
     task_repo = Mock()
     source_repo = Mock()

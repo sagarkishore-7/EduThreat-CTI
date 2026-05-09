@@ -152,12 +152,12 @@ class V2SchedulerService:
         self._active_plan_name = definition.plan_name
         started_at = datetime.now(timezone.utc)
         try:
-            result = self.orchestration_service.run_plan(
+            result = self.orchestration_service.enqueue_plan(
                 plan_name=definition.plan_name,
                 worker_id=f"v2-scheduler:{job_name}",
             )
             self._last_results[job_name] = {
-                "status": "completed",
+                "status": "queued",
                 "at": started_at.isoformat(),
                 "result": result,
             }

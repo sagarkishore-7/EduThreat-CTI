@@ -66,6 +66,23 @@ class PipelineTaskRepository:
         )
 
     @staticmethod
+    def build_count_active_stmt(
+        *,
+        statuses: Sequence[str] = ("queued", "leased"),
+        task_types: Optional[Sequence[str]] = None,
+        exclude_task_types: Optional[Sequence[str]] = None,
+        exclude_task_ids: Optional[Sequence[object]] = None,
+    ) -> Select:
+        stmt = select(func.count(PipelineTask.id)).where(PipelineTask.status.in_(list(statuses)))
+        if task_types:
+            stmt = stmt.where(PipelineTask.task_type.in_(list(task_types)))
+        if exclude_task_types:
+            stmt = stmt.where(~PipelineTask.task_type.in_(list(exclude_task_types)))
+        if exclude_task_ids:
+            stmt = stmt.where(~PipelineTask.id.in_(list(exclude_task_ids)))
+        return stmt
+
+    @staticmethod
     def build_recent_tasks_stmt(
         *,
         limit: int = 25,
@@ -132,6 +149,23 @@ class PipelineTaskRepository:
             }
             for row in session.execute(stmt).all()
         ]
+
+    def count_active(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("queued", "leased"),
+        task_types: Optional[Sequence[str]] = None,
+        exclude_task_types: Optional[Sequence[str]] = None,
+        exclude_task_ids: Optional[Sequence[object]] = None,
+    ) -> int:
+        stmt = self.build_count_active_stmt(
+            statuses=statuses,
+            task_types=task_types,
+            exclude_task_types=exclude_task_types,
+            exclude_task_ids=exclude_task_ids,
+        )
+        return int(session.execute(stmt).scalar_one() or 0)
 
     def list_recent(
         self,

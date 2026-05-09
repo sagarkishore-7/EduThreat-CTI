@@ -296,7 +296,16 @@ CREATE TABLE IF NOT EXISTS pipeline_tasks (
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT ck_pipeline_task_type CHECK (
-        task_type IN ('collect', 'resolve_url', 'fetch_article', 'enrich_source', 'canonicalize', 'refresh_analytics', 'reenrich')
+        task_type IN (
+            'collect',
+            'resolve_url',
+            'fetch_article',
+            'enrich_source',
+            'canonicalize',
+            'refresh_analytics',
+            'reenrich',
+            'orchestrate_plan'
+        )
     ),
     CONSTRAINT ck_pipeline_task_status CHECK (
         status IN ('queued', 'leased', 'completed', 'failed', 'dead_letter', 'cancelled')

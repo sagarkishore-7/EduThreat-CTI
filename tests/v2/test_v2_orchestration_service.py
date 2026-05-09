@@ -82,6 +82,29 @@ def test_orchestration_service_runs_plan_and_combines_collect_and_worker_results
     assert run_repo.mark_finished.called
 
 
+def test_orchestration_service_enqueue_plan_creates_pending_run_and_task():
+    run_repo = Mock()
+    task_repo = Mock()
+    session = _FakeSession()
+
+    service = V2OrchestrationService(
+        session_factory=lambda: _FakeSessionContext(session),
+        collection_service=Mock(),
+        operations_service=Mock(),
+        data_quality_service=Mock(),
+        pipeline_run_repository=run_repo,
+        pipeline_task_repository=task_repo,
+    )
+
+    result = service.enqueue_plan(plan_name="historical_full", worker_id="tester")
+
+    assert result["plan_name"] == "historical_full"
+    assert result["status"] == "queued"
+    assert run_repo.add.called
+    assert task_repo.enqueue.called
+    assert session.commits == 1
+
+
 def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan():
     collection_service = Mock()
     collection_service.collect_into_v2.return_value = {"run_id": "collect-1"}
@@ -116,3 +139,50 @@ def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan()
     assert operations_service.run_worker_batch.call_count == 2
     second_call = operations_service.run_worker_batch.call_args_list[1]
     assert second_call.kwargs["task_type"] == "reenrich"
+
+
+def test_orchestration_service_execute_enqueued_plan_waits_for_drain(monkeypatch):
+    collection_service = Mock()
+    collection_service.collect_into_v2.return_value = {"run_id": None, "counts": {"incidents_collected": 3}}
+    data_quality_service = Mock()
+    data_quality_service.run_sweep.return_value = {"requeued_for_reenrichment": 0}
+    run_repo = Mock()
+    run_repo.get_by_id.return_value = SimpleNamespace(id=uuid4(), status="pending")
+    task_repo = Mock()
+    task_repo.count_active.side_effect = [2, 0]
+    session = _FakeSession()
+    monkeypatch.setattr("src.edu_cti_v2.services.orchestration.time.sleep", lambda _seconds: None)
+
+    service = V2OrchestrationService(
+        session_factory=lambda: _FakeSessionContext(session),
+        collection_service=collection_service,
+        operations_service=Mock(),
+        data_quality_service=data_quality_service,
+        pipeline_run_repository=run_repo,
+        pipeline_task_repository=task_repo,
+    )
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        run_id=uuid4(),
+        payload={
+            "plan_name": "incremental_refresh",
+            "collect_kwargs": {
+                "groups": ["curated", "news", "rss", "api"],
+                "incremental": True,
+                "include_paid_rss": False,
+                "max_pages": 20,
+                "rss_max_age_days": 30,
+            },
+            "drain_tasks": True,
+            "worker_max_tasks": 1000,
+        },
+    )
+
+    result = service.execute_enqueued_plan(task, worker_id="worker-1")
+
+    assert result["execution_mode"] == "queued"
+    assert collection_service.collect_into_v2.call_args.kwargs["persist_run"] is False
+    assert task_repo.count_active.call_count == 2
+    assert run_repo.mark_started.called
+    assert run_repo.mark_finished.called

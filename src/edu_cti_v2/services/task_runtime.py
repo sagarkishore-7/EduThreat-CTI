@@ -12,6 +12,7 @@ from src.edu_cti_v2.services.analytics import V2AnalyticsRefreshService
 from src.edu_cti_v2.services.canonicalization import V2CanonicalizationService
 from src.edu_cti_v2.services.enrichment import V2EnrichmentService
 from src.edu_cti_v2.services.fetching import V2FetchService
+from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 from src.edu_cti_v2.services.resolution import V2ResolveUrlService
 
 
@@ -28,6 +29,7 @@ class V2TaskRuntime:
         enrichment_service: Optional[V2EnrichmentService] = None,
         canonicalization_service: Optional[V2CanonicalizationService] = None,
         analytics_refresh_service: Optional[V2AnalyticsRefreshService] = None,
+        orchestration_service: Optional[V2OrchestrationService] = None,
     ) -> None:
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
         self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
@@ -38,6 +40,7 @@ class V2TaskRuntime:
         self.enrichment_service = enrichment_service
         self.canonicalization_service = canonicalization_service
         self.analytics_refresh_service = analytics_refresh_service
+        self.orchestration_service = orchestration_service
 
     def process_next_task(
         self,
@@ -59,6 +62,15 @@ class V2TaskRuntime:
 
         task = leased[0]
         try:
+            if task.task_type == "orchestrate_plan":
+                orchestration_service = self.orchestration_service or V2OrchestrationService(
+                    pipeline_task_repository=self.pipeline_task_repository,
+                )
+                self.orchestration_service = orchestration_service
+                result = orchestration_service.execute_enqueued_plan(task, worker_id=worker_id)
+                self.pipeline_task_repository.mark_completed(session, task, result)
+                return task
+
             if task.task_type in {"fetch_article", "resolve_url", "enrich_source", "canonicalize", "reenrich"}:
                 source_incident = self.source_incident_repository.get_by_id(session, task.target_id)
                 if source_incident is None:

@@ -111,6 +111,18 @@ def test_pipeline_task_repository_active_target_stmt_filters_by_target():
     assert "pipeline_tasks.target_id = '00000000-0000-0000-0000-000000000111'" in compiled
 
 
+def test_pipeline_task_repository_count_active_stmt_can_exclude_orchestration_tasks():
+    stmt = PipelineTaskRepository.build_count_active_stmt(
+        exclude_task_types=("orchestrate_plan",),
+        exclude_task_ids=("00000000-0000-0000-0000-000000000111",),
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "pipeline_tasks.status IN ('queued', 'leased')" in compiled
+    assert "pipeline_tasks.task_type NOT IN ('orchestrate_plan')" in compiled
+    assert "pipeline_tasks.id NOT IN ('00000000-0000-0000-0000-000000000111')" in compiled
+
+
 def test_source_state_repository_lookup_stmt_filters_by_scope_and_cursor():
     stmt = SourceStateRepository.build_get_state_stmt(
         "googlenews_rss",

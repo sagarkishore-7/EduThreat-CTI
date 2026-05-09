@@ -59,7 +59,7 @@ class PipelineTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "task_type IN ('collect', 'resolve_url', 'fetch_article', 'enrich_source', 'canonicalize', 'refresh_analytics', 'reenrich')",
+            "task_type IN ('collect', 'resolve_url', 'fetch_article', 'enrich_source', 'canonicalize', 'refresh_analytics', 'reenrich', 'orchestrate_plan')",
             name="pipeline_tasks_task_type",
         ),
         CheckConstraint(
