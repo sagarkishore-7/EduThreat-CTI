@@ -157,6 +157,34 @@ def test_canonical_repository_country_facet_stmt_supports_filters():
     assert "LIMIT 15" in compiled
 
 
+def test_canonical_repository_incident_trend_stmt_supports_bucket_and_filters():
+    stmt = CanonicalIncidentRepository.build_incident_trend_stmt(
+        statuses=("open", "excluded"),
+        search="stanford",
+        country_code="US",
+        attack_category="ransomware_encryption",
+        institution_type="university",
+        severity="high",
+        is_education_related=True,
+        has_vendor=False,
+        date_from=date(2026, 5, 1),
+        date_to=date(2026, 5, 9),
+        bucket="week",
+        limit=18,
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "date_trunc('week', canonical_incidents.incident_date)" in compiled
+    assert "canonical_incidents.country_code = 'US'" in compiled
+    assert "canonical_incidents.attack_category = 'ransomware_encryption'" in compiled
+    assert "canonical_incidents.institution_type = 'university'" in compiled
+    assert "canonical_incidents.severity = 'high'" in compiled
+    assert "canonical_incidents.is_education_related IS true" in compiled
+    assert "canonical_incidents.vendor_name IS NULL" in compiled
+    assert "ORDER BY bucket_start DESC" in compiled
+    assert "LIMIT 18" in compiled
+
+
 def test_canonical_repository_dashboard_rollup_stmt_counts_enriched_rows():
     stmt = CanonicalIncidentRepository.build_dashboard_rollup_stmt()
     compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))

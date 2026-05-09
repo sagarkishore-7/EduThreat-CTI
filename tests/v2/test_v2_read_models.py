@@ -244,3 +244,31 @@ def test_read_service_incident_facets_use_repository_breakdowns():
     canonical_repo.get_attack_category_facets.assert_called_once()
     canonical_repo.get_institution_type_facets.assert_called_once()
     canonical_repo.get_severity_facets.assert_called_once()
+
+
+def test_read_service_incident_trend_delegates_to_repository():
+    canonical_repo = Mock()
+    canonical_repo.get_incident_trend.return_value = [
+        {"bucket_start": "2026-05-01", "incident_count": 4}
+    ]
+
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+
+    result = service.get_incident_trend(
+        Mock(),
+        statuses=("open", "excluded"),
+        search="stanford",
+        country_code="US",
+        attack_category="ransomware_encryption",
+        institution_type="university",
+        severity="high",
+        is_education_related=True,
+        has_vendor=False,
+        date_from=date(2026, 5, 1),
+        date_to=date(2026, 5, 9),
+        bucket="week",
+        limit=18,
+    )
+
+    assert result[0]["incident_count"] == 4
+    canonical_repo.get_incident_trend.assert_called_once()

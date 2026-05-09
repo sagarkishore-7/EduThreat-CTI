@@ -151,3 +151,63 @@ def test_v2_incident_facets_endpoint_returns_filtered_facets():
         "date_to": date(2026, 5, 9),
         "facet_limit": 15,
     }
+
+
+def test_v2_analytics_breakdowns_endpoint_returns_filtered_breakdowns():
+    class _ReadService:
+        def __init__(self):
+            self.called = None
+
+        def get_analytics_breakdowns(self, _session, **kwargs):
+            self.called = kwargs
+            return {"countries": [{"country_code": "US", "incident_count": 5}]}
+
+    service = _ReadService()
+    client = _build_client(service)
+
+    response = client.get(
+        "/api/v2/analytics/breakdowns",
+        params={
+            "status": ["open"],
+            "country_code": "us",
+            "breakdown_limit": 12,
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["countries"][0]["country_code"] == "US"
+    assert service.called["statuses"] == ("open",)
+    assert service.called["country_code"] == "US"
+    assert service.called["breakdown_limit"] == 12
+
+
+def test_v2_analytics_trend_endpoint_returns_bucketed_items():
+    class _ReadService:
+        def __init__(self):
+            self.called = None
+
+        def get_incident_trend(self, _session, **kwargs):
+            self.called = kwargs
+            return [{"bucket_start": "2026-05-01", "incident_count": 4}]
+
+    service = _ReadService()
+    client = _build_client(service)
+
+    response = client.get(
+        "/api/v2/analytics/trend",
+        params={
+            "status": ["open", "excluded"],
+            "attack_category": "ransomware_encryption",
+            "bucket": "week",
+            "limit": 18,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["bucket"] == "week"
+    assert payload["items"][0]["incident_count"] == 4
+    assert service.called["statuses"] == ("open", "excluded")
+    assert service.called["attack_category"] == "ransomware_encryption"
+    assert service.called["bucket"] == "week"
+    assert service.called["limit"] == 18

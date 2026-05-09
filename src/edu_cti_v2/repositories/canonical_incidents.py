@@ -488,6 +488,46 @@ class CanonicalIncidentRepository:
             .limit(limit)
         )
 
+    @staticmethod
+    def build_incident_trend_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        bucket: str = "month",
+        limit: int = 24,
+    ) -> Select:
+        bucket_expr = func.date_trunc(bucket, CanonicalIncident.incident_date).label("bucket_start")
+        stmt = CanonicalIncidentRepository._apply_list_filters(
+            select(
+                bucket_expr,
+                func.count(CanonicalIncident.id).label("incident_count"),
+            ),
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        return (
+            stmt.where(CanonicalIncident.incident_date.is_not(None))
+            .group_by(bucket_expr)
+            .order_by(bucket_expr.desc())
+            .limit(limit)
+        )
+
     def get_by_id(self, session: Session, canonical_incident_id: str) -> CanonicalIncident | None:
         return session.execute(self.build_get_by_id_stmt(canonical_incident_id)).scalar_one_or_none()
 
@@ -809,6 +849,54 @@ class CanonicalIncidentRepository:
             }
             for row in session.execute(stmt).all()
         ]
+
+    def get_incident_trend(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        bucket: str = "month",
+        limit: int = 24,
+    ) -> list[dict[str, object]]:
+        stmt = self.build_incident_trend_stmt(
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+            bucket=bucket,
+            limit=limit,
+        )
+        rows = list(session.execute(stmt).all())
+        rows.reverse()
+        items: list[dict[str, object]] = []
+        for row in rows:
+            bucket_start = row.bucket_start
+            if hasattr(bucket_start, "date"):
+                bucket_value = bucket_start.date().isoformat()
+            else:
+                bucket_value = str(bucket_start)
+            items.append(
+                {
+                    "bucket_start": bucket_value,
+                    "incident_count": int(row.incident_count or 0),
+                }
+            )
+        return items
 
     def add(self, session: Session, canonical_incident: CanonicalIncident) -> CanonicalIncident:
         session.add(canonical_incident)
