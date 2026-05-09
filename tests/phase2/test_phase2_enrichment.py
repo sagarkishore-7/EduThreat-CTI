@@ -899,6 +899,151 @@ class TestFetchingStrategy:
         assert flat_row["country"] == "United States"
         assert flat_row["country_code"] == "US"
 
+    def test_save_enrichment_result_ignores_google_search_locale_country_fallback(self, temp_db):
+        """Google RSS search locale metadata must not override victim geography on re-enrich."""
+        conn, _ = temp_db
+        incident = BaseIncident(
+            incident_id="google_search_locale_country_incident",
+            source="googlenews_rss",
+            source_event_id="https://example.com/georgia-tech-jp",
+            victim_raw_name=None,
+            title="Georgia Tech Security Breach Exposes 1.3 Million Records",
+            subtitle="Georgia Tech Security Breach Exposes 1.3 Million Records Security Magazine",
+            institution_name="Georgia Tech Security Breach Exposes 1.3 Million Records",
+            institution_type="university",
+            country="Japan",
+            city=None,
+            region=None,
+            incident_date="2019-03-31",
+            date_precision="day",
+            source_published_date="2019-03-31",
+            ingested_at=None,
+            primary_url=None,
+            all_urls=["https://example.com/georgia-tech-jp"],
+            attack_type_hint="data breach",
+            status="confirmed",
+            source_confidence="medium",
+            notes="lang=ja;country=JP;query=大学 サイバー攻撃",
+        )
+        insert_incident(conn, incident)
+        save_article(
+            conn,
+            incident.incident_id,
+            "https://example.com/georgia-tech-jp",
+            ArticleContent(
+                url="https://example.com/georgia-tech-jp",
+                title="Georgia Tech Security Breach Exposes 1.3 Million Records",
+                content=(
+                    "Georgia Institute of Technology confirmed the breach. "
+                    "The U.S. Department of Education and University System of Georgia "
+                    "have been notified."
+                ),
+                fetch_successful=True,
+                content_length=160,
+            ),
+            is_primary=True,
+        )
+
+        enrichment = _sample_enrichment_result(
+            primary_url="https://example.com/georgia-tech-jp",
+            institution_name="Georgia Institute of Technology",
+        )
+
+        assert save_enrichment_result(conn, incident.incident_id, enrichment) is True
+
+        row = conn.execute(
+            "SELECT institution_name, country, country_code FROM incidents WHERE incident_id = ?",
+            (incident.incident_id,),
+        ).fetchone()
+
+        assert row["institution_name"] == "Georgia Institute of Technology"
+        assert row["country"] == "United States"
+        assert row["country_code"] == "US"
+
+    def test_save_enrichment_result_clears_headline_only_identity_and_location(self, temp_db):
+        """Roundup headlines without a concrete institution should not keep fake location/type."""
+        conn, _ = temp_db
+        title = (
+            "Canvas cyberattack disrupts multiple North American universities during final exams"
+        )
+        incident = BaseIncident(
+            incident_id="canvas_roundup_incident",
+            source="googlenews_rss",
+            source_event_id="https://example.com/canvas-roundup",
+            victim_raw_name=None,
+            title=title,
+            subtitle=f"{title} mezha.net",
+            institution_name=title,
+            institution_type="university",
+            country="Japan",
+            city=None,
+            region=None,
+            incident_date="2026-05-07",
+            date_precision="day",
+            source_published_date="2026-05-09",
+            ingested_at=None,
+            primary_url=None,
+            all_urls=["https://example.com/canvas-roundup"],
+            attack_type_hint=None,
+            status="suspected",
+            source_confidence="medium",
+            notes="lang=ja;country=JP;query=大学 サイバー攻撃",
+        )
+        insert_incident(conn, incident)
+        save_article(
+            conn,
+            incident.incident_id,
+            "https://example.com/canvas-roundup",
+            ArticleContent(
+                url="https://example.com/canvas-roundup",
+                title=title,
+                content=(
+                    "Multiple universities in the United States and Canada reported "
+                    "service disruptions after the Canvas attack."
+                ),
+                fetch_successful=True,
+                content_length=140,
+            ),
+            is_primary=True,
+        )
+
+        enrichment = _sample_enrichment_result(
+            primary_url="https://example.com/canvas-roundup",
+            summary=(
+                "Multiple North American universities were attacked through a compromise "
+                "of the Canvas learning management system."
+            ),
+            institution_name=None,
+        )
+
+        assert save_enrichment_result(conn, incident.incident_id, enrichment) is True
+
+        incident_row = conn.execute(
+            """
+            SELECT institution_name, institution_type, country, country_code
+            FROM incidents
+            WHERE incident_id = ?
+            """,
+            (incident.incident_id,),
+        ).fetchone()
+        flat_row = conn.execute(
+            """
+            SELECT institution_name, institution_type, country, country_code
+            FROM incident_enrichments_flat
+            WHERE incident_id = ?
+            """,
+            (incident.incident_id,),
+        ).fetchone()
+
+        assert incident_row["institution_name"] is None
+        assert incident_row["institution_type"] is None
+        assert incident_row["country"] is None
+        assert incident_row["country_code"] is None
+        assert flat_row["institution_name"] is None
+        assert flat_row["institution_type"] is None
+        assert flat_row["country"] is None
+        assert flat_row["country_code"] is None
+
     def test_save_enrichment_result_backfills_curated_ransom_fields_from_notes(
         self, temp_db, sample_incident
     ):

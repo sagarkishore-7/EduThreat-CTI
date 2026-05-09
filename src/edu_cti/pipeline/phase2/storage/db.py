@@ -924,6 +924,35 @@ def _derive_country_from_context(
     return None
 
 
+def _notes_encode_search_locale(notes: Optional[str]) -> bool:
+    """True when notes store query locale metadata rather than victim geography."""
+    if not notes:
+        return False
+    text = str(notes)
+    return bool(
+        "query=" in text
+        and re.search(r"\b(?:lang|search_lang)=[A-Za-z-]+\b", text)
+        and re.search(r"\b(?:country|search_country)=[A-Z]{2}\b", text)
+    )
+
+
+def _should_clear_ambiguous_identity(
+    candidate_name: Optional[str],
+    resolved_name: Optional[str],
+    title: Optional[str],
+) -> bool:
+    """
+    Return True when we still do not have a concrete institution and the
+    surviving candidate is just a headline/title artifact.
+    """
+    if resolved_name:
+        return False
+    candidate = (candidate_name or "").strip()
+    if not candidate:
+        return False
+    return bool(is_headline_format(candidate, title))
+
+
 def _extract_institution_from_reasoning(reasoning: Optional[str]) -> Optional[str]:
     """Recover an institution label from the LLM's education-relevance reasoning."""
     if not reasoning:
@@ -1756,6 +1785,8 @@ def save_enrichment_result(
     city_fallback = incident_row["city"] if incident_row else None
     source_published_date_fallback = incident_row["source_published_date"] if incident_row else None
     notes_fallback = incident_row["notes"] if incident_row else None
+    source_fallback = incident_id.split("_", 1)[0] if incident_id else None
+    search_locale_notes = _notes_encode_search_locale(notes_fallback)
 
     # Manually-edited fields are locked — admin set the truth, never overwrite.
     locked_fields: set[str] = set()
@@ -1777,15 +1808,13 @@ def save_enrichment_result(
     _raw_inst_type = _scalar(raw_json_data.get("institution_type")) if raw_json_data else institution_type_fallback
     institution_type = normalize_institution_type(_raw_inst_type)
 
-    country_raw = _scalar(raw_json_data.get("country")) if raw_json_data else country_fallback
+    country_raw = _scalar(raw_json_data.get("country")) if raw_json_data else None
     if not country_raw:
-        # When LLM returned null, use the incidents table value (set at ingestion time)
-        country_raw = country_fallback
-    if not country_raw and notes_fallback:
-        # Google News RSS and similar curated sources embed "lang=XX;country=YY;query=..."
-        _nc = re.search(r"\bcountry=([A-Z]{2})\b", notes_fallback)
-        if _nc:
-            country_raw = _nc.group(1)  # ISO-2 code; normalize_country handles it
+        # Search-locale incidents may carry stale publisher/query geography in
+        # incidents.country from older runs. Re-derive from the article/body
+        # instead of trusting that fallback whenever notes encode query locale.
+        if not search_locale_notes:
+            country_raw = country_fallback
     if not country_raw:
         country_raw = _derive_country_from_context(conn, incident_id, incident_row)
         if isinstance(country_raw, tuple):
@@ -1845,7 +1874,30 @@ def save_enrichment_result(
             incident_row["title"] if incident_row else None,
             incident_row["subtitle"] if incident_row else None,
         )
-    
+    if resolved_institution_name and is_headline_format(
+        resolved_institution_name,
+        incident_row["title"] if incident_row else None,
+    ):
+        resolved_institution_name = None
+
+    ambiguous_identity = _should_clear_ambiguous_identity(
+        institution_name_fallback,
+        resolved_institution_name,
+        incident_row["title"] if incident_row else None,
+    )
+    if ambiguous_identity:
+        logger.info(
+            "Clearing ambiguous headline-only identity/location for %s (source=%s)",
+            incident_id,
+            source_fallback,
+        )
+        resolved_institution_name = None
+        institution_type = None
+        country = None
+        country_code = None
+        region = None
+        city = None
+
     _raw_primary_url = enrichment_result.primary_url
     # Only allow a SERP-discovered URL as primary_url when the incident has no
     # known source URLs. If all_urls is non-empty, the primary_url must come from
@@ -1977,6 +2029,13 @@ def save_enrichment_result(
         if not victim_name_fallback:
             update_fields += ",\n        victim_raw_name = ?"
             update_params.append(resolved_institution_name)
+    elif ambiguous_identity:
+        if "institution_name" not in locked_fields:
+            update_fields += ",\n        institution_name = NULL"
+        if "institution_type" not in locked_fields:
+            update_fields += ",\n        institution_type = NULL"
+        if "country" not in locked_fields:
+            update_fields += ",\n        country = NULL,\n        country_code = NULL,\n        region = NULL,\n        city = NULL"
     normalized_publication_date = str(publication_date)[:10] if publication_date else None
     normalized_source_published_date = (
         str(source_published_date_fallback)[:10]
@@ -2148,6 +2207,9 @@ def save_enrichment_result(
         flat_data['region'] = region
     if not flat_data.get('city'):
         flat_data['city'] = city
+    if ambiguous_identity:
+        for key in ("institution_name", "institution_type", "country", "country_code", "region", "city"):
+            flat_data[key] = None
     _apply_curated_note_fallbacks(flat_data, notes_fallback)
 
     # Inject timeline into flat_data so _fill_timeline_dates() can operate on it.

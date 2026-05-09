@@ -261,7 +261,7 @@ def build_googlenews_rss_incidents(
                     attack_type_hint=None,
                     status="suspected",
                     source_confidence="medium",
-                    notes=f"lang={lang};country={country};query={query[:50]}",
+                    notes=f"search_lang={lang};search_country={country};query={query[:50]}",
                 )
 
                 all_incidents.append(incident)

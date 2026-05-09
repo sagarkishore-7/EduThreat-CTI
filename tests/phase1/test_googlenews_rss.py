@@ -54,5 +54,7 @@ def test_build_googlenews_rss_incidents_serializes_pub_date(monkeypatch):
     assert len(saved) == 1
     assert incidents[0].incident_date == "2026-04-15"
     assert incidents[0].source_published_date == "2026-04-15"
+    assert "search_country=US" in incidents[0].notes
+    assert "search_lang=en" in incidents[0].notes
     assert isinstance(incidents[0].incident_date, str)
     assert isinstance(saved[0].incident_date, str)
