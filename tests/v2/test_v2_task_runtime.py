@@ -113,6 +113,49 @@ def test_task_runtime_processes_enrich_source_task_and_marks_complete():
     task_repo.mark_completed.assert_called_once_with(session, task, {"enriched": True})
 
 
+def test_task_runtime_processes_reenrich_task_and_marks_complete():
+    task_repo = Mock()
+    source_repo = Mock()
+    fetch_service = Mock()
+    resolve_service = Mock()
+    enrich_service = Mock()
+
+    task = SimpleNamespace(
+        task_type="reenrich",
+        target_id=uuid4(),
+        payload={"re_enrich_attempts": 2, "re_enrich_reason": "incident_date='2099-01-01'"},
+    )
+    source_incident = SimpleNamespace(id=task.target_id)
+    task_repo.lease_batch.return_value = [task]
+    source_repo.get_by_id.return_value = source_incident
+    enrich_service.enrich_source_incident.return_value = {"enriched": True, "canonicalize_tasks_enqueued": 1}
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        fetch_service=fetch_service,
+        resolve_url_service=resolve_service,
+        enrichment_service=enrich_service,
+    )
+    session = Mock()
+
+    processed = runtime.process_next_task(session, worker_id="worker-1")
+
+    assert processed is task
+    enrich_service.enrich_source_incident.assert_called_once_with(
+        session,
+        source_incident,
+        re_enrich_attempts=2,
+        re_enrich_reason="incident_date='2099-01-01'",
+        force_canonicalize=True,
+    )
+    task_repo.mark_completed.assert_called_once_with(
+        session,
+        task,
+        {"enriched": True, "canonicalize_tasks_enqueued": 1},
+    )
+
+
 def test_task_runtime_processes_canonicalize_task_and_marks_complete():
     task_repo = Mock()
     source_repo = Mock()

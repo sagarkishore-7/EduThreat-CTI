@@ -17,6 +17,7 @@ def test_scheduler_service_lists_default_jobs():
     names = {job["name"] for job in jobs}
     assert "rss_fast_refresh" in names
     assert "incremental_refresh" in names
+    assert "daily_quality_refresh" in names
 
 
 def test_scheduler_service_trigger_job_runs_plan_synchronously():
@@ -52,10 +53,9 @@ def test_scheduler_service_start_configures_jobs_and_stop_resets_running_flag():
         started = service.start()
 
     assert started["running"] is True
-    assert len(service.scheduler.jobs) == 2
+    assert len(service.scheduler.jobs) == 3
     thread_instance.start.assert_called_once()
 
     thread_instance.is_alive.return_value = False
     stopped = service.stop()
     assert stopped["running"] is False
-

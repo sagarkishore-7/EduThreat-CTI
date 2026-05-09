@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import select
@@ -259,6 +259,79 @@ def _canonical_key_for_projection(projection: Dict[str, Any], source_incident_id
     return hashlib.sha256(base.encode("utf-8")).hexdigest()[:24]
 
 
+def _date_precision_rank(value: Optional[str]) -> int:
+    ranks = {
+        "day": 5,
+        "week": 4,
+        "month": 3,
+        "year": 2,
+        "approximate": 1,
+        "unknown": 0,
+        None: 0,
+    }
+    return ranks.get(value, 0)
+
+
+def _safe_canonical_date(value: Optional[date]) -> bool:
+    if value is None:
+        return True
+    lower_bound = date(1990, 1, 1)
+    upper_bound = date.today() + timedelta(days=3)
+    return lower_bound <= value <= upper_bound
+
+
+def _apply_projection_to_canonical(canonical: CanonicalIncident, projection: Dict[str, Any]) -> None:
+    canonical.institution_name = _choose_canonical_institution_name(
+        canonical.institution_name,
+        projection.get("institution_name"),
+    )
+    if projection.get("institution_type"):
+        canonical.institution_type = projection.get("institution_type")
+    if projection.get("vendor_name"):
+        canonical.vendor_name = projection.get("vendor_name")
+
+    if projection.get("country"):
+        canonical.country = projection.get("country")
+    if projection.get("country_code"):
+        canonical.country_code = projection.get("country_code")
+    elif canonical.country and not canonical.country_code:
+        canonical.country_code = get_country_code(canonical.country)
+
+    if projection.get("region"):
+        canonical.region = projection.get("region")
+    if projection.get("city"):
+        canonical.city = projection.get("city")
+
+    projection_date = projection.get("incident_date")
+    projection_precision = projection.get("date_precision")
+    if projection_date and (
+        canonical.incident_date is None
+        or not _safe_canonical_date(canonical.incident_date)
+        or _date_precision_rank(projection_precision) > _date_precision_rank(canonical.date_precision)
+    ):
+        canonical.incident_date = projection_date
+        canonical.date_precision = projection_precision
+    elif projection_precision and canonical.date_precision is None:
+        canonical.date_precision = projection_precision
+
+    if projection.get("source_published_at"):
+        canonical.source_published_at = projection.get("source_published_at")
+    if projection.get("attack_category"):
+        canonical.attack_category = projection.get("attack_category")
+    if projection.get("attack_vector"):
+        canonical.attack_vector = projection.get("attack_vector")
+    if projection.get("threat_actor_name"):
+        canonical.threat_actor_name = projection.get("threat_actor_name")
+    if projection.get("ransomware_family"):
+        canonical.ransomware_family = projection.get("ransomware_family")
+    if projection.get("is_education_related") is not None:
+        canonical.is_education_related = projection.get("is_education_related")
+    if projection.get("severity"):
+        canonical.severity = projection.get("severity")
+    if projection.get("canonical_summary"):
+        canonical.canonical_summary = projection.get("canonical_summary")
+
+
 def _member_score(source_name: str, projection: Dict[str, Any], source_enrichment: SourceEnrichment) -> int:
     typed = projection.get("typed_enrichment") or {}
     timeline = projection.get("timeline") or []
@@ -452,6 +525,51 @@ class V2CanonicalizationService:
 
         return existing
 
+    def _handle_non_education_source(
+        self,
+        session: Session,
+        *,
+        source_incident,
+        source_enrichment: SourceEnrichment,
+        existing_membership: Optional[CanonicalMembership],
+    ) -> Dict[str, object]:
+        if existing_membership is None:
+            return {"canonicalized": False, "reason": "not_education_related"}
+
+        canonical = self.canonical_repository.get_by_id(session, str(existing_membership.canonical_incident_id))
+        if canonical is None:
+            return {"canonicalized": False, "reason": "dangling_membership"}
+
+        existing_membership.survivor_score = -1
+        existing_membership.field_contribution = {}
+        session.add(existing_membership)
+
+        memberships = self.canonical_repository.list_memberships(session, str(canonical.id))
+        has_valid_member = False
+        for membership in memberships:
+            enrichment = self.source_enrichment_repository.get_by_source_incident(session, membership.source_incident_id)
+            if enrichment and enrichment.is_education_related is not False and enrichment.typed_enrichment:
+                has_valid_member = True
+                break
+
+        canonical.status = "open" if has_valid_member else "excluded"
+        canonical.is_education_related = True if has_valid_member else False
+        canonical.resolution_metadata = {
+            **(canonical.resolution_metadata or {}),
+            "last_match_type": existing_membership.match_type,
+            "last_match_score": float(existing_membership.match_score or 0.0),
+            "last_non_education_source_incident_id": str(source_incident.id),
+        }
+        session.add(canonical)
+        self._recalculate_primary_membership(session, canonical)
+
+        return {
+            "canonicalized": False,
+            "reason": "not_education_related",
+            "canonical_incident_id": str(canonical.id),
+            "canonical_status": canonical.status,
+        }
+
     def canonicalize_source_incident(self, session: Session, source_incident_id) -> Dict[str, object]:
         source_incident = self.source_incident_repository.get_by_id(session, source_incident_id)
         if source_incident is None:
@@ -460,15 +578,20 @@ class V2CanonicalizationService:
         source_enrichment = self.source_enrichment_repository.get_by_source_incident(session, source_incident.id)
         if source_enrichment is None:
             return {"canonicalized": False, "reason": "missing_source_enrichment"}
-        if source_enrichment.is_education_related is False:
-            return {"canonicalized": False, "reason": "not_education_related"}
-        if not source_enrichment.typed_enrichment:
-            return {"canonicalized": False, "reason": "missing_typed_enrichment"}
-
         existing_membership = self.canonical_repository.get_membership_for_source_incident(
             session,
             str(source_incident.id),
         )
+        if source_enrichment.is_education_related is False:
+            return self._handle_non_education_source(
+                session,
+                source_incident=source_incident,
+                source_enrichment=source_enrichment,
+                existing_membership=existing_membership,
+            )
+        if not source_enrichment.typed_enrichment:
+            return {"canonicalized": False, "reason": "missing_typed_enrichment"}
+
         projection = build_source_projection(source_incident, source_enrichment)
         member_score = _member_score(source_incident.source_name, projection, source_enrichment)
         now = datetime.now(timezone.utc)
@@ -510,30 +633,7 @@ class V2CanonicalizationService:
             )
             self.canonical_repository.add_membership(session, membership)
 
-        canonical.institution_name = _choose_canonical_institution_name(
-            canonical.institution_name,
-            projection.get("institution_name"),
-        )
-        canonical.institution_type = canonical.institution_type or projection.get("institution_type")
-        canonical.vendor_name = canonical.vendor_name or projection.get("vendor_name")
-        canonical.country = normalize_country(canonical.country) if canonical.country else projection.get("country")
-        canonical.country_code = canonical.country_code or projection.get("country_code") or get_country_code(canonical.country or "")
-        canonical.region = canonical.region or projection.get("region")
-        canonical.city = canonical.city or projection.get("city")
-        canonical.incident_date = canonical.incident_date or projection.get("incident_date")
-        canonical.date_precision = canonical.date_precision or projection.get("date_precision")
-        canonical.source_published_at = canonical.source_published_at or projection.get("source_published_at")
-        canonical.attack_category = canonical.attack_category or projection.get("attack_category")
-        canonical.attack_vector = canonical.attack_vector or projection.get("attack_vector")
-        canonical.threat_actor_name = canonical.threat_actor_name or projection.get("threat_actor_name")
-        canonical.ransomware_family = canonical.ransomware_family or projection.get("ransomware_family")
-        canonical.is_education_related = (
-            projection.get("is_education_related")
-            if canonical.is_education_related is None
-            else canonical.is_education_related
-        )
-        canonical.severity = canonical.severity or projection.get("severity")
-        canonical.canonical_summary = canonical.canonical_summary or projection.get("canonical_summary")
+        _apply_projection_to_canonical(canonical, projection)
         canonical.first_seen_at = min(canonical.first_seen_at, source_incident.collected_at)
         canonical.last_seen_at = max(canonical.last_seen_at, source_incident.collected_at)
         canonical.resolution_metadata = {

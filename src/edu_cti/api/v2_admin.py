@@ -16,7 +16,7 @@ from src.edu_cti_v2.auth import (
     revoke_session,
     verify_password,
 )
-from src.edu_cti_v2.services import V2OperationsService, V2PreflightService
+from src.edu_cti_v2.services import V2DataQualityService, V2OperationsService, V2PreflightService
 from src.edu_cti_v2.services.collection import V2CollectionService
 from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 from src.edu_cti_v2.services.scheduler import V2SchedulerService
@@ -47,6 +47,11 @@ def get_v2_scheduler_service() -> V2SchedulerService:
 @lru_cache
 def get_v2_preflight_service() -> V2PreflightService:
     return V2PreflightService()
+
+
+@lru_cache
+def get_v2_data_quality_service() -> V2DataQualityService:
+    return V2DataQualityService(session_factory=get_v2_session_factory())
 
 
 @router.post("/login", response_model=V2LoginResponse)
@@ -215,6 +220,34 @@ async def run_v2_plan(
         worker_max_tasks=worker_max_tasks,
         drain_tasks=drain_tasks,
     )
+
+
+@router.post("/data-quality/sweep-now")
+async def run_v2_data_quality_sweep(
+    limit: Optional[int] = Query(None, ge=1, le=50000),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """Sweep v2 source enrichments for invalid dates and headline-style institutions."""
+    return data_quality.run_sweep(limit=limit)
+
+
+@router.get("/manual-review-queue")
+async def list_v2_manual_review_queue(
+    limit: int = Query(100, ge=1, le=1000),
+    session=Depends(get_v2_session),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """List v2 enrichments that exhausted automatic re-enrichment attempts."""
+    items = data_quality.list_manual_review_queue(session, limit=limit)
+    return {
+        "items": items,
+        "meta": {
+            "limit": limit,
+            "returned": len(items),
+        },
+    }
 
 
 @router.get("/scheduler/status")

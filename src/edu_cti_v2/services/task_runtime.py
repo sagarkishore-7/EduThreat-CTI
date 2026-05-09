@@ -59,7 +59,7 @@ class V2TaskRuntime:
 
         task = leased[0]
         try:
-            if task.task_type in {"fetch_article", "resolve_url", "enrich_source", "canonicalize"}:
+            if task.task_type in {"fetch_article", "resolve_url", "enrich_source", "canonicalize", "reenrich"}:
                 source_incident = self.source_incident_repository.get_by_id(session, task.target_id)
                 if source_incident is None:
                     raise ValueError(f"Source incident not found: {task.target_id}")
@@ -87,6 +87,18 @@ class V2TaskRuntime:
                     result = enrichment_service.enrich_source_incident(
                         session,
                         source_incident,
+                    )
+                elif task.task_type == "reenrich":
+                    enrichment_service = self.enrichment_service or V2EnrichmentService(
+                        pipeline_task_repository=self.pipeline_task_repository,
+                    )
+                    self.enrichment_service = enrichment_service
+                    result = enrichment_service.enrich_source_incident(
+                        session,
+                        source_incident,
+                        re_enrich_attempts=task.payload.get("re_enrich_attempts"),
+                        re_enrich_reason=task.payload.get("re_enrich_reason"),
+                        force_canonicalize=True,
                     )
                 else:
                     canonicalization_service = self.canonicalization_service or V2CanonicalizationService(

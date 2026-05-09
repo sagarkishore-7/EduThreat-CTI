@@ -139,12 +139,18 @@ CREATE TABLE IF NOT EXISTS source_enrichments (
     enrichment_confidence numeric(5,2),
     is_education_related boolean,
     failed_reason text,
+    re_enrich_attempts integer NOT NULL DEFAULT 0,
+    re_enrich_reason text,
+    manual_review_required boolean NOT NULL DEFAULT false,
+    manual_review_reason text,
     created_at timestamptz NOT NULL DEFAULT now(),
     updated_at timestamptz NOT NULL DEFAULT now()
 );
 
 CREATE INDEX IF NOT EXISTS idx_source_enrichments_is_education_related
     ON source_enrichments (is_education_related);
+CREATE INDEX IF NOT EXISTS idx_source_enrichments_manual_review_required
+    ON source_enrichments (manual_review_required);
 
 CREATE TABLE IF NOT EXISTS canonical_incidents (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

@@ -37,6 +37,12 @@ _DEFAULT_JOB_DEFINITIONS: dict[str, V2ScheduledJobDefinition] = {
         interval_hours=6,
         description="Six-hour incremental refresh across all source groups.",
     ),
+    "daily_quality_refresh": V2ScheduledJobDefinition(
+        name="daily_quality_refresh",
+        plan_name="daily_quality_refresh",
+        interval_hours=24,
+        description="Daily incremental refresh followed by data-quality re-enrichment.",
+    ),
 }
 
 
@@ -195,4 +201,3 @@ class V2SchedulerService:
             "background": False,
             **last,
         }
-

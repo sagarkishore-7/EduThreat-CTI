@@ -306,3 +306,64 @@ def test_canonicalization_service_reuses_existing_url_matched_canonical():
     assert outcome["match_type"] == "url_exact"
     assert added_memberships
     assert added_memberships[0].canonical_incident_id == existing_canonical.id
+
+
+def test_canonicalization_service_updates_existing_canonical_with_better_projection():
+    canonical_repo = Mock()
+    existing_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="abc",
+        status="open",
+        institution_name="a university in Australia",
+        country="Japan",
+        country_code="JP",
+        incident_date=None,
+        date_precision="unknown",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    existing_membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=existing_canonical.id,
+        source_incident_id=uuid4(),
+        match_type="seed",
+        match_score=100.0,
+        survivor_score=10.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+    canonical_repo.get_membership_for_source_incident.return_value = existing_membership
+    canonical_repo.get_by_id.return_value = existing_canonical
+    canonical_repo.list_memberships.return_value = [existing_membership]
+
+    source_repo = Mock()
+    incident = _source_incident()
+    source_repo.get_by_id.return_value = incident
+
+    enrichment_repo = Mock()
+    enrichment = _source_enrichment(incident)
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = object()
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    service._upsert_canonical_enrichment = Mock(return_value=Mock(id=uuid4()))  # type: ignore[attr-defined]
+    session = Mock()
+    session.flush.return_value = None
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is True
+    assert existing_canonical.institution_name == "Penn State University"
+    assert existing_canonical.country_code == "US"
+    assert existing_canonical.incident_date.isoformat() == "2026-05-08"

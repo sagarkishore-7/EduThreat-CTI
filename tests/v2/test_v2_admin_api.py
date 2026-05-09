@@ -4,6 +4,7 @@ from fastapi.testclient import TestClient
 from src.edu_cti.api.v2 import get_v2_session
 from src.edu_cti.api.v2_admin import (
     get_v2_collection_service,
+    get_v2_data_quality_service,
     get_v2_operations_service,
     get_v2_orchestration_service,
     get_v2_preflight_service,
@@ -48,6 +49,13 @@ def _build_client(operations_service):
         def get_status(self, _session):
             raise AssertionError("unexpected preflight call")
 
+    class _NullDataQualityService:
+        def run_sweep(self, **_kwargs):
+            raise AssertionError("unexpected data quality sweep call")
+
+        def list_manual_review_queue(self, *_args, **_kwargs):
+            raise AssertionError("unexpected manual review queue call")
+
     app.dependency_overrides[authenticate] = lambda: True
     app.dependency_overrides[get_v2_session] = _override_session
     app.dependency_overrides[get_v2_operations_service] = lambda: operations_service
@@ -55,6 +63,7 @@ def _build_client(operations_service):
     app.dependency_overrides[get_v2_orchestration_service] = lambda: _NullOrchestrationService()
     app.dependency_overrides[get_v2_scheduler_service] = lambda: _NullSchedulerService()
     app.dependency_overrides[get_v2_preflight_service] = lambda: _NullPreflightService()
+    app.dependency_overrides[get_v2_data_quality_service] = lambda: _NullDataQualityService()
     return TestClient(app)
 
 
@@ -142,6 +151,7 @@ def test_v2_admin_collect_endpoint_returns_collection_result():
     app.dependency_overrides[get_v2_orchestration_service] = lambda: object()
     app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
     app.dependency_overrides[get_v2_preflight_service] = lambda: object()
+    app.dependency_overrides[get_v2_data_quality_service] = lambda: object()
     client = TestClient(app)
 
     response = client.post(
@@ -178,6 +188,7 @@ def test_v2_admin_plans_endpoint_returns_named_plan_list():
     app.dependency_overrides[get_v2_orchestration_service] = lambda: _OrchestrationService()
     app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
     app.dependency_overrides[get_v2_preflight_service] = lambda: object()
+    app.dependency_overrides[get_v2_data_quality_service] = lambda: object()
     client = TestClient(app)
 
     response = client.get("/api/admin/v2/plans")
@@ -213,6 +224,7 @@ def test_v2_admin_run_plan_endpoint_returns_orchestrated_result():
     app.dependency_overrides[get_v2_orchestration_service] = lambda: orchestrator
     app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
     app.dependency_overrides[get_v2_preflight_service] = lambda: object()
+    app.dependency_overrides[get_v2_data_quality_service] = lambda: object()
     client = TestClient(app)
 
     response = client.post(
@@ -259,6 +271,7 @@ def test_v2_admin_scheduler_endpoints_proxy_service():
     app.dependency_overrides[get_v2_orchestration_service] = lambda: object()
     app.dependency_overrides[get_v2_scheduler_service] = lambda: scheduler
     app.dependency_overrides[get_v2_preflight_service] = lambda: object()
+    app.dependency_overrides[get_v2_data_quality_service] = lambda: object()
     client = TestClient(app)
 
     assert client.get("/api/admin/v2/scheduler/status").json()["running"] is False
@@ -292,6 +305,7 @@ def test_v2_admin_preflight_endpoint_returns_service_payload():
     app.dependency_overrides[get_v2_orchestration_service] = lambda: object()
     app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
     app.dependency_overrides[get_v2_preflight_service] = lambda: _PreflightService()
+    app.dependency_overrides[get_v2_data_quality_service] = lambda: object()
     client = TestClient(app)
 
     response = client.get("/api/admin/v2/preflight")
@@ -323,3 +337,42 @@ def test_v2_admin_login_and_logout_endpoints(monkeypatch):
     )
     assert logout.status_code == 200
     assert logout.json()["success"] is True
+
+
+def test_v2_admin_data_quality_endpoints_proxy_service():
+    class _OperationsService:
+        def get_runtime_status(self, _session):
+            return {}
+
+    class _DataQualityService:
+        def run_sweep(self, **kwargs):
+            return {"requeued_for_reenrichment": 2, "limit": kwargs.get("limit")}
+
+        def list_manual_review_queue(self, _session, *, limit):
+            return [{"source_incident_id": "abc", "limit": limit}]
+
+    quality = _DataQualityService()
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    def _override_session():
+        yield object()
+
+    app.dependency_overrides[authenticate] = lambda: True
+    app.dependency_overrides[get_v2_session] = _override_session
+    app.dependency_overrides[get_v2_operations_service] = lambda: _OperationsService()
+    app.dependency_overrides[get_v2_collection_service] = lambda: object()
+    app.dependency_overrides[get_v2_orchestration_service] = lambda: object()
+    app.dependency_overrides[get_v2_scheduler_service] = lambda: object()
+    app.dependency_overrides[get_v2_preflight_service] = lambda: object()
+    app.dependency_overrides[get_v2_data_quality_service] = lambda: quality
+    client = TestClient(app)
+
+    sweep = client.post("/api/admin/v2/data-quality/sweep-now", params={"limit": 55})
+    queue = client.get("/api/admin/v2/manual-review-queue", params={"limit": 7})
+
+    assert sweep.status_code == 200
+    assert sweep.json()["requeued_for_reenrichment"] == 2
+    assert sweep.json()["limit"] == 55
+    assert queue.status_code == 200
+    assert queue.json()["items"][0]["source_incident_id"] == "abc"

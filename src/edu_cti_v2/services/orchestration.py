@@ -10,6 +10,7 @@ from src.edu_cti_v2.db import create_session_factory
 from src.edu_cti_v2.models import PipelineRun
 from src.edu_cti_v2.repositories import PipelineRunRepository
 from src.edu_cti_v2.services.collection import V2CollectionService
+from src.edu_cti_v2.services.data_quality import V2DataQualityService
 from src.edu_cti_v2.services.operations import V2OperationsService
 
 
@@ -22,6 +23,8 @@ class V2PlanDefinition:
     worker_task_type: str | None = None
     worker_max_tasks: int = 500
     worker_stop_when_idle: bool = True
+    run_data_quality_sweep: bool = False
+    reenrich_worker_max_tasks: int = 250
 
 
 _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
@@ -38,6 +41,8 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         drain_tasks=True,
         worker_task_type=None,
         worker_max_tasks=5000,
+        run_data_quality_sweep=True,
+        reenrich_worker_max_tasks=1000,
     ),
     "historical_max_coverage": V2PlanDefinition(
         name="historical_max_coverage",
@@ -52,6 +57,8 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         drain_tasks=True,
         worker_task_type=None,
         worker_max_tasks=5000,
+        run_data_quality_sweep=True,
+        reenrich_worker_max_tasks=1000,
     ),
     "incremental_refresh": V2PlanDefinition(
         name="incremental_refresh",
@@ -93,6 +100,22 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         },
         drain_tasks=False,
     ),
+    "daily_quality_refresh": V2PlanDefinition(
+        name="daily_quality_refresh",
+        description="Daily incremental refresh followed by a data-quality sweep and re-enrichment pass.",
+        collect_kwargs={
+            "groups": ["curated", "news", "rss", "api"],
+            "incremental": True,
+            "include_paid_rss": False,
+            "max_pages": 20,
+            "rss_max_age_days": 30,
+        },
+        drain_tasks=True,
+        worker_task_type=None,
+        worker_max_tasks=1200,
+        run_data_quality_sweep=True,
+        reenrich_worker_max_tasks=600,
+    ),
 }
 
 
@@ -105,11 +128,13 @@ class V2OrchestrationService:
         session_factory: Optional[Callable] = None,
         collection_service: Optional[V2CollectionService] = None,
         operations_service: Optional[V2OperationsService] = None,
+        data_quality_service: Optional[V2DataQualityService] = None,
         pipeline_run_repository: Optional[PipelineRunRepository] = None,
     ) -> None:
         self.session_factory = session_factory or create_session_factory()
         self.collection_service = collection_service or V2CollectionService(session_factory=self.session_factory)
         self.operations_service = operations_service or V2OperationsService(session_factory=self.session_factory)
+        self.data_quality_service = data_quality_service or V2DataQualityService(session_factory=self.session_factory)
         self.pipeline_run_repository = pipeline_run_repository or PipelineRunRepository()
 
     def list_plans(self) -> list[dict[str, Any]]:
@@ -122,6 +147,8 @@ class V2OrchestrationService:
                 "worker_task_type": plan.worker_task_type,
                 "worker_max_tasks": plan.worker_max_tasks,
                 "worker_stop_when_idle": plan.worker_stop_when_idle,
+                "run_data_quality_sweep": plan.run_data_quality_sweep,
+                "reenrich_worker_max_tasks": plan.reenrich_worker_max_tasks,
             }
             for plan in _PLAN_DEFINITIONS.values()
         ]
@@ -170,6 +197,8 @@ class V2OrchestrationService:
         try:
             collect_result = self.collection_service.collect_into_v2(**collect_kwargs)
             worker_result = None
+            data_quality_result = None
+            reenrich_worker_result = None
             if should_drain:
                 worker_result = self.operations_service.run_worker_batch(
                     worker_id=worker_id,
@@ -177,12 +206,23 @@ class V2OrchestrationService:
                     max_tasks=effective_worker_max_tasks,
                     stop_when_idle=plan.worker_stop_when_idle,
                 )
+            if plan.run_data_quality_sweep:
+                data_quality_result = self.data_quality_service.run_sweep()
+                if data_quality_result.get("requeued_for_reenrichment"):
+                    reenrich_worker_result = self.operations_service.run_worker_batch(
+                        worker_id=f"{worker_id}:reenrich",
+                        task_type="reenrich",
+                        max_tasks=plan.reenrich_worker_max_tasks,
+                        stop_when_idle=True,
+                    )
 
             result = {
                 "run_id": str(run_id),
                 "plan_name": plan_name,
                 "collect_result": collect_result,
                 "worker_result": worker_result,
+                "data_quality_result": data_quality_result,
+                "reenrich_worker_result": reenrich_worker_result,
             }
             with self.session_factory() as session:
                 persisted_run = self.pipeline_run_repository.get_by_id(session, run_id)

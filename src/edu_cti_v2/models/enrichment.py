@@ -35,6 +35,10 @@ class SourceEnrichment(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     enrichment_confidence: Mapped[Optional[float]] = mapped_column(Numeric(5, 2))
     is_education_related: Mapped[Optional[bool]] = mapped_column(Boolean)
     failed_reason: Mapped[Optional[str]] = mapped_column(Text)
+    re_enrich_attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    re_enrich_reason: Mapped[Optional[str]] = mapped_column(Text)
+    manual_review_required: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    manual_review_reason: Mapped[Optional[str]] = mapped_column(Text)
 
 
 class CanonicalEnrichment(UUIDPrimaryKeyMixin, TimestampMixin, Base):

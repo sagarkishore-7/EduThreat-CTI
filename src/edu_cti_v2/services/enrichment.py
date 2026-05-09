@@ -17,7 +17,13 @@ from src.edu_cti_v2.repositories import (
 )
 
 
-def source_incident_to_base_incident(source_incident, article_url: str) -> BaseIncident:
+def source_incident_to_base_incident(
+    source_incident,
+    article_url: str,
+    *,
+    re_enrich_attempts: int | None = None,
+    re_enrich_reason: str | None = None,
+) -> BaseIncident:
     """Adapt a v2 source incident into the current Phase 2 BaseIncident shape."""
     all_urls = [
         row.url
@@ -57,6 +63,8 @@ def source_incident_to_base_incident(source_incident, article_url: str) -> BaseI
         source_confidence=source_incident.source_confidence or "medium",
         notes=source_incident.raw_notes,
         threat_actor=source_incident.raw_threat_actor,
+        re_enrich_attempts=re_enrich_attempts,
+        re_enrich_reason=re_enrich_reason,
     )
 
 
@@ -114,7 +122,15 @@ class V2EnrichmentService:
         )
         return article, document, url
 
-    def enrich_source_incident(self, session, source_incident) -> Dict[str, object]:
+    def enrich_source_incident(
+        self,
+        session,
+        source_incident,
+        *,
+        re_enrich_attempts: int | None = None,
+        re_enrich_reason: str | None = None,
+        force_canonicalize: bool = False,
+    ) -> Dict[str, object]:
         article_content, document, article_url = self._select_article(session, source_incident)
         if article_content is None or document is None or not article_url:
             enrichment = self.source_enrichment_repository.get_by_source_incident(session, source_incident.id)
@@ -123,8 +139,14 @@ class V2EnrichmentService:
                     source_incident_id=source_incident.id,
                     article_document_id=None,
                 )
+            if re_enrich_attempts is not None:
+                enrichment.re_enrich_attempts = int(re_enrich_attempts)
+            if re_enrich_reason is not None:
+                enrichment.re_enrich_reason = re_enrich_reason
             enrichment.failed_reason = "No selected article available for enrichment"
             enrichment.is_education_related = None
+            enrichment.manual_review_required = False
+            enrichment.manual_review_reason = None
             self.source_enrichment_repository.add(session, enrichment)
             return {
                 "enriched": False,
@@ -132,7 +154,24 @@ class V2EnrichmentService:
                 "canonicalize_tasks_enqueued": 0,
             }
 
-        base_incident = source_incident_to_base_incident(source_incident, article_url)
+        existing_enrichment = self.source_enrichment_repository.get_by_source_incident(session, source_incident.id)
+        effective_attempts = (
+            int(re_enrich_attempts)
+            if re_enrich_attempts is not None
+            else int(existing_enrichment.re_enrich_attempts or 0) if existing_enrichment is not None else None
+        )
+        effective_reason = (
+            re_enrich_reason
+            if re_enrich_reason is not None
+            else existing_enrichment.re_enrich_reason if existing_enrichment is not None else None
+        )
+
+        base_incident = source_incident_to_base_incident(
+            source_incident,
+            article_url,
+            re_enrich_attempts=effective_attempts,
+            re_enrich_reason=effective_reason,
+        )
         result, raw_json_data = self.enricher._enrich_article(
             base_incident,
             {article_url: article_content},
@@ -148,7 +187,7 @@ class V2EnrichmentService:
             if is_education_related is None and raw_json_data.get("_not_education_related"):
                 is_education_related = False
 
-        enrichment = self.source_enrichment_repository.get_by_source_incident(session, source_incident.id)
+        enrichment = existing_enrichment
         if enrichment is None:
             enrichment = SourceEnrichment(
                 source_incident_id=source_incident.id,
@@ -171,6 +210,10 @@ class V2EnrichmentService:
             else None
         )
         enrichment.is_education_related = is_education_related
+        enrichment.re_enrich_attempts = int(effective_attempts or 0)
+        enrichment.re_enrich_reason = effective_reason
+        enrichment.manual_review_required = False
+        enrichment.manual_review_reason = None
         enrichment.failed_reason = None
         if result is None:
             if isinstance(raw_json_data, dict):
@@ -181,7 +224,7 @@ class V2EnrichmentService:
         self.source_enrichment_repository.add(session, enrichment)
 
         canonicalize_tasks_enqueued = 0
-        if result is not None and is_education_related is not False:
+        if force_canonicalize or (result is not None and is_education_related is not False):
             existing_canonicalize_task = self.pipeline_task_repository.get_active_for_target(
                 session,
                 task_type="canonicalize",
@@ -201,6 +244,7 @@ class V2EnrichmentService:
                         payload={
                             "source_incident_id": str(source_incident.id),
                             "source_name": source_incident.source_name,
+                            "trigger": "reenrich" if force_canonicalize else "enrich_source",
                         },
                         result={},
                         available_at=datetime.now(timezone.utc),

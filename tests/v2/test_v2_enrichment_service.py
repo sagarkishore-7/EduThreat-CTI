@@ -155,3 +155,48 @@ def test_enrichment_service_records_missing_article_failure():
     assert outcome == {"enriched": False, "reason": "missing_article", "canonicalize_tasks_enqueued": 0}
     saved = source_enrichment_repo.add.call_args.args[1]
     assert saved.failed_reason == "No selected article available for enrichment"
+
+
+def test_enrichment_service_passes_reenrich_hint_and_forces_canonicalize():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {"institution_name": "Penn State University"}
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": False,
+            "_reason": "roundup article",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    document = _article_document(incident)
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(
+        session,
+        incident,
+        re_enrich_attempts=2,
+        re_enrich_reason="incident_date='2099-01-01'",
+        force_canonicalize=True,
+    )
+
+    base_incident = enricher._enrich_article.call_args.args[0]
+    assert base_incident.re_enrich_attempts == 2
+    assert base_incident.re_enrich_reason == "incident_date='2099-01-01'"
+    assert outcome["canonicalize_tasks_enqueued"] == 1
+    queued = pipeline_task_repo.enqueue.call_args.args[1]
+    assert queued.payload["trigger"] == "reenrich"
