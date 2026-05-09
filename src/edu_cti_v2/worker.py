@@ -65,9 +65,10 @@ def run_worker_loop(
                 worker_id=worker_id,
                 task_type=task_type,
             )
+
         with session_factory() as session:
             try:
-                processed = runtime.process_next_task(
+                leased_task_id = runtime.lease_next_task(
                     session,
                     worker_id=worker_id,
                     task_type=task_type,
@@ -79,7 +80,7 @@ def run_worker_loop(
                 session.rollback()
                 raise
 
-        if processed is None:
+        if leased_task_id is None:
             idle_polls += 1
             if stop_when_idle:
                 return V2WorkerRunSummary(
@@ -93,6 +94,21 @@ def run_worker_loop(
                 stop_event.wait(max(poll_interval, 0.0))
             else:
                 time.sleep(max(poll_interval, 0.0))
+            continue
+
+        with session_factory() as session:
+            try:
+                processed = runtime.process_leased_task(
+                    session,
+                    task_id=leased_task_id,
+                    worker_id=worker_id,
+                )
+                session.commit()
+            except Exception:
+                session.rollback()
+                raise
+
+        if processed is None:
             continue
 
         processed_tasks += 1

@@ -10,7 +10,7 @@ def test_task_runtime_processes_fetch_article_task_and_marks_complete():
     source_repo = Mock()
     fetch_service = Mock()
 
-    task = SimpleNamespace(task_type="fetch_article", target_id=uuid4())
+    task = SimpleNamespace(id=uuid4(), task_type="fetch_article", target_id=uuid4())
     source_incident = SimpleNamespace(id=task.target_id)
     task_repo.lease_batch.return_value = [task]
     source_repo.get_by_id.return_value = source_incident
@@ -22,6 +22,7 @@ def test_task_runtime_processes_fetch_article_task_and_marks_complete():
         fetch_service=fetch_service,
     )
     session = Mock()
+    session.get.return_value = task
 
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
@@ -40,7 +41,7 @@ def test_task_runtime_prefers_fetch_over_resolve_when_unspecified():
     fetch_service = Mock()
     resolve_service = Mock()
 
-    fetch_task = SimpleNamespace(task_type="fetch_article", target_id=uuid4())
+    fetch_task = SimpleNamespace(id=uuid4(), task_type="fetch_article", target_id=uuid4())
     fetch_source_incident = SimpleNamespace(id=fetch_task.target_id)
     source_repo.get_by_id.return_value = fetch_source_incident
     fetch_service.fetch_articles_for_source_incident.return_value = {"articles_saved": 1}
@@ -61,6 +62,7 @@ def test_task_runtime_prefers_fetch_over_resolve_when_unspecified():
         resolve_url_service=resolve_service,
     )
     session = Mock()
+    session.get.return_value = fetch_task
 
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
@@ -78,7 +80,7 @@ def test_task_runtime_can_exclude_task_types():
     source_repo = Mock()
     fetch_service = Mock()
 
-    fetch_task = SimpleNamespace(task_type="fetch_article", target_id=uuid4())
+    fetch_task = SimpleNamespace(id=uuid4(), task_type="fetch_article", target_id=uuid4())
     fetch_source_incident = SimpleNamespace(id=fetch_task.target_id)
     source_repo.get_by_id.return_value = fetch_source_incident
     fetch_service.fetch_articles_for_source_incident.return_value = {"articles_saved": 1}
@@ -98,6 +100,7 @@ def test_task_runtime_can_exclude_task_types():
         fetch_service=fetch_service,
     )
     session = Mock()
+    session.get.return_value = fetch_task
 
     processed = runtime.process_next_task(
         session,
@@ -113,7 +116,7 @@ def test_task_runtime_dead_letters_unimplemented_task_types():
     task_repo = Mock()
     source_repo = Mock()
     fetch_service = Mock()
-    task = SimpleNamespace(task_type="collect", target_id=uuid4(), payload={})
+    task = SimpleNamespace(id=uuid4(), task_type="collect", target_id=uuid4(), payload={})
     task_repo.lease_batch.return_value = [task]
 
     runtime = V2TaskRuntime(
@@ -122,6 +125,7 @@ def test_task_runtime_dead_letters_unimplemented_task_types():
         fetch_service=fetch_service,
     )
     session = Mock()
+    session.get.return_value = task
 
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
@@ -137,7 +141,7 @@ def test_task_runtime_processes_resolve_url_task_and_marks_complete():
     resolve_service = Mock()
     enrich_service = Mock()
 
-    task = SimpleNamespace(task_type="resolve_url", target_id=uuid4())
+    task = SimpleNamespace(id=uuid4(), task_type="resolve_url", target_id=uuid4())
     source_incident = SimpleNamespace(id=task.target_id)
     task_repo.lease_batch.return_value = [task]
     source_repo.get_by_id.return_value = source_incident
@@ -151,6 +155,7 @@ def test_task_runtime_processes_resolve_url_task_and_marks_complete():
         enrichment_service=enrich_service,
     )
     session = Mock()
+    session.get.return_value = task
 
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
@@ -166,7 +171,7 @@ def test_task_runtime_processes_enrich_source_task_and_marks_complete():
     resolve_service = Mock()
     enrich_service = Mock()
 
-    task = SimpleNamespace(task_type="enrich_source", target_id=uuid4())
+    task = SimpleNamespace(id=uuid4(), task_type="enrich_source", target_id=uuid4())
     source_incident = SimpleNamespace(id=task.target_id)
     task_repo.lease_batch.return_value = [task]
     source_repo.get_by_id.return_value = source_incident
@@ -180,6 +185,7 @@ def test_task_runtime_processes_enrich_source_task_and_marks_complete():
         enrichment_service=enrich_service,
     )
     session = Mock()
+    session.get.return_value = task
 
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
@@ -196,6 +202,7 @@ def test_task_runtime_processes_reenrich_task_and_marks_complete():
     enrich_service = Mock()
 
     task = SimpleNamespace(
+        id=uuid4(),
         task_type="reenrich",
         target_id=uuid4(),
         payload={"re_enrich_attempts": 2, "re_enrich_reason": "incident_date='2099-01-01'"},
@@ -213,6 +220,7 @@ def test_task_runtime_processes_reenrich_task_and_marks_complete():
         enrichment_service=enrich_service,
     )
     session = Mock()
+    session.get.return_value = task
 
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
@@ -239,7 +247,7 @@ def test_task_runtime_processes_canonicalize_task_and_marks_complete():
     enrich_service = Mock()
     canonicalization_service = Mock()
 
-    task = SimpleNamespace(task_type="canonicalize", target_id=uuid4())
+    task = SimpleNamespace(id=uuid4(), task_type="canonicalize", target_id=uuid4())
     source_incident = SimpleNamespace(id=task.target_id)
     task_repo.lease_batch.return_value = [task]
     source_repo.get_by_id.return_value = source_incident
@@ -254,6 +262,7 @@ def test_task_runtime_processes_canonicalize_task_and_marks_complete():
         canonicalization_service=canonicalization_service,
     )
     session = Mock()
+    session.get.return_value = task
 
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
@@ -270,6 +279,7 @@ def test_task_runtime_processes_refresh_analytics_task_and_marks_complete():
 
     canonical_id = uuid4()
     task = SimpleNamespace(
+        id=uuid4(),
         task_type="refresh_analytics",
         target_id=canonical_id,
         payload={"canonical_incident_id": str(canonical_id)},
@@ -284,6 +294,7 @@ def test_task_runtime_processes_refresh_analytics_task_and_marks_complete():
         analytics_refresh_service=analytics_service,
     )
     session = Mock()
+    session.get.return_value = task
 
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
@@ -315,6 +326,7 @@ def test_task_runtime_processes_orchestrate_plan_task_and_marks_complete():
         orchestration_service=orchestration_service,
     )
     session = Mock()
+    session.get.return_value = task
 
     processed = runtime.process_next_task(session, worker_id="worker-1")
 

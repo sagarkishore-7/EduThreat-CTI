@@ -34,7 +34,8 @@ def test_worker_loop_drains_until_idle():
         return _FakeSessionContext(session)
 
     runtime = Mock()
-    runtime.process_next_task.side_effect = [object(), object(), None]
+    runtime.lease_next_task.side_effect = ["task-1", "task-2", None]
+    runtime.process_leased_task.side_effect = [object(), object()]
 
     summary = run_worker_loop(
         session_factory=_session_factory,
@@ -48,7 +49,7 @@ def test_worker_loop_drains_until_idle():
     assert summary.stop_reason == "idle"
     assert summary.processed_tasks == 2
     assert summary.idle_polls == 1
-    assert session.committed == 3
+    assert session.committed == 5
 
 
 def test_worker_loop_stops_after_max_tasks():
@@ -58,7 +59,8 @@ def test_worker_loop_stops_after_max_tasks():
         return _FakeSessionContext(session)
 
     runtime = Mock()
-    runtime.process_next_task.side_effect = [object(), object()]
+    runtime.lease_next_task.side_effect = ["task-1", "task-2"]
+    runtime.process_leased_task.side_effect = [object(), object()]
 
     summary = run_worker_loop(
         session_factory=_session_factory,
@@ -73,7 +75,7 @@ def test_worker_loop_stops_after_max_tasks():
     assert summary.stop_reason == "max_tasks"
     assert summary.processed_tasks == 1
     assert summary.idle_polls == 0
-    assert session.committed == 1
+    assert session.committed == 2
 
 
 def test_worker_loop_stops_when_stop_event_is_set():
@@ -84,7 +86,7 @@ def test_worker_loop_stops_when_stop_event_is_set():
         return _FakeSessionContext(session)
 
     runtime = Mock()
-    runtime.process_next_task.side_effect = [None]
+    runtime.lease_next_task.side_effect = [None]
 
     stop_event.set()
     summary = run_worker_loop(
@@ -100,4 +102,4 @@ def test_worker_loop_stops_when_stop_event_is_set():
     assert summary.stop_reason == "stopped"
     assert summary.processed_tasks == 0
     assert summary.idle_polls == 0
-    runtime.process_next_task.assert_not_called()
+    runtime.lease_next_task.assert_not_called()
