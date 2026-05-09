@@ -141,6 +141,30 @@ class CanonicalIncidentRepository:
         )
 
     @staticmethod
+    def build_list_membership_details_stmt(canonical_incident_id: str) -> Select:
+        return (
+            select(
+                CanonicalMembership,
+                SourceIncident.id.label("source_incident_id"),
+                SourceIncident.source_name,
+                SourceIncident.source_group,
+                SourceIncident.collected_at,
+                SourceIncident.source_published_at,
+                SourceIncident.raw_title,
+                SourceIncident.raw_subtitle,
+                SourceIncident.raw_victim_name,
+                SourceIncident.raw_institution_name,
+                SourceIncident.raw_institution_type,
+                SourceIncident.raw_country,
+                SourceIncident.raw_region,
+                SourceIncident.raw_city,
+            )
+            .join(SourceIncident, SourceIncident.id == CanonicalMembership.source_incident_id)
+            .where(CanonicalMembership.canonical_incident_id == canonical_incident_id)
+            .order_by(CanonicalMembership.is_primary_member.desc(), CanonicalMembership.matched_at.asc())
+        )
+
+    @staticmethod
     def build_get_enrichment_stmt(canonical_incident_id: str) -> Select:
         return (
             select(CanonicalEnrichment)
@@ -594,6 +618,39 @@ class CanonicalIncidentRepository:
     ) -> list[CanonicalMembership]:
         stmt = self.build_list_memberships_stmt(canonical_incident_id)
         return list(session.execute(stmt).scalars().all())
+
+    def list_membership_details(
+        self,
+        session: Session,
+        canonical_incident_id: str,
+    ) -> list[dict[str, object]]:
+        stmt = self.build_list_membership_details_stmt(canonical_incident_id)
+        rows = session.execute(stmt).all()
+        details: list[dict[str, object]] = []
+        for row in rows:
+            data = row._mapping
+            membership = data[CanonicalMembership]
+            details.append(
+                {
+                    "membership": membership,
+                    "source_incident_id": str(data["source_incident_id"]) if data["source_incident_id"] else None,
+                    "source_name": data["source_name"],
+                    "source_group": data["source_group"],
+                    "collected_at": data["collected_at"].isoformat() if data["collected_at"] else None,
+                    "source_published_at": (
+                        data["source_published_at"].isoformat() if data["source_published_at"] else None
+                    ),
+                    "raw_title": data["raw_title"],
+                    "raw_subtitle": data["raw_subtitle"],
+                    "raw_victim_name": data["raw_victim_name"],
+                    "raw_institution_name": data["raw_institution_name"],
+                    "raw_institution_type": data["raw_institution_type"],
+                    "raw_country": data["raw_country"],
+                    "raw_region": data["raw_region"],
+                    "raw_city": data["raw_city"],
+                }
+            )
+        return details
 
     def find_by_url_candidates(
         self,

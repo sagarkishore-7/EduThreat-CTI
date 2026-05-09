@@ -169,6 +169,17 @@ def test_canonical_repository_selected_source_stmt_joins_source_and_article_tabl
     assert "canonical_enrichments.canonical_incident_id = '00000000-0000-0000-0000-000000000111'" in compiled
 
 
+def test_canonical_repository_membership_detail_stmt_joins_source_incidents():
+    stmt = CanonicalIncidentRepository.build_list_membership_details_stmt(
+        "00000000-0000-0000-0000-000000000111"
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "JOIN source_incidents" in compiled
+    assert "canonical_memberships.canonical_incident_id = '00000000-0000-0000-0000-000000000111'" in compiled
+    assert "ORDER BY canonical_memberships.is_primary_member DESC" in compiled
+
+
 def test_canonical_repository_country_facet_stmt_supports_filters():
     stmt = CanonicalIncidentRepository.build_country_facet_stmt(
         statuses=("open", "excluded"),

@@ -17,8 +17,12 @@ from src.edu_cti_v2.models import (
 from src.edu_cti_v2.repositories import AnalyticsRefreshRepository, ArticleRepository, CanonicalIncidentRepository
 
 
-def _serialize_membership(membership: CanonicalMembership) -> dict[str, Any]:
-    return {
+def _serialize_membership(
+    membership: CanonicalMembership,
+    *,
+    source_details: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    payload = {
         "source_incident_id": str(membership.source_incident_id),
         "match_type": membership.match_type,
         "match_score": float(membership.match_score or 0.0),
@@ -28,6 +32,24 @@ def _serialize_membership(membership: CanonicalMembership) -> dict[str, Any]:
         "matcher_version": membership.matcher_version,
         "matched_at": membership.matched_at.isoformat() if membership.matched_at else None,
     }
+    if source_details:
+        payload.update(
+            {
+                "source_name": source_details.get("source_name"),
+                "source_group": source_details.get("source_group"),
+                "collected_at": source_details.get("collected_at"),
+                "source_published_at": source_details.get("source_published_at"),
+                "raw_title": source_details.get("raw_title"),
+                "raw_subtitle": source_details.get("raw_subtitle"),
+                "raw_victim_name": source_details.get("raw_victim_name"),
+                "raw_institution_name": source_details.get("raw_institution_name"),
+                "raw_institution_type": source_details.get("raw_institution_type"),
+                "raw_country": source_details.get("raw_country"),
+                "raw_region": source_details.get("raw_region"),
+                "raw_city": source_details.get("raw_city"),
+            }
+        )
+    return payload
 
 
 def _serialize_timeline_event(event: CanonicalTimelineEvent) -> dict[str, Any]:
@@ -193,7 +215,7 @@ class V2CanonicalReadService:
         if canonical is None:
             return None
         enrichment = self.canonical_repository.get_enrichment(session, canonical_incident_id)
-        memberships = self.canonical_repository.list_memberships(session, canonical_incident_id)
+        membership_details = self.canonical_repository.list_membership_details(session, canonical_incident_id)
         timeline = self.canonical_repository.list_timeline_events(session, canonical_incident_id)
         selected_source = self.canonical_repository.get_selected_source_details(session, canonical_incident_id)
         fetch_attempts = []
@@ -214,14 +236,17 @@ class V2CanonicalReadService:
             **_summary_from_canonical(
                 canonical,
                 enrichment,
-                membership_count=len(memberships),
+                membership_count=len(membership_details),
             ),
             "resolution_metadata": canonical.resolution_metadata or {},
             "field_provenance": (enrichment.field_provenance if enrichment else None) or {},
             "canonical_projection": (enrichment.canonical_projection if enrichment else None) or {},
             "selected_source": selected_source,
             "fetch_attempts": fetch_attempts,
-            "memberships": [_serialize_membership(member) for member in memberships],
+            "memberships": [
+                _serialize_membership(detail["membership"], source_details=detail)
+                for detail in membership_details
+            ],
             "timeline": [_serialize_timeline_event(event) for event in timeline],
             "snapshot": (snapshot.state_payload if snapshot else None) or {},
         }

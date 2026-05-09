@@ -178,7 +178,24 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     canonical_repo = Mock()
     canonical_repo.get_by_id.return_value = canonical
     canonical_repo.get_enrichment.return_value = enrichment
-    canonical_repo.list_memberships.return_value = [membership]
+    canonical_repo.list_membership_details.return_value = [
+        {
+            "membership": membership,
+            "source_incident_id": str(membership.source_incident_id),
+            "source_name": "googlenews_rss",
+            "source_group": "rss",
+            "collected_at": "2026-05-09T09:00:00+00:00",
+            "source_published_at": "2026-05-09T08:30:00+00:00",
+            "raw_title": "Penn State ransomware update",
+            "raw_subtitle": None,
+            "raw_victim_name": "Penn State University",
+            "raw_institution_name": "Penn State University",
+            "raw_institution_type": "university",
+            "raw_country": "United States",
+            "raw_region": "Pennsylvania",
+            "raw_city": "State College",
+        }
+    ]
     canonical_repo.list_timeline_events.return_value = [timeline_event]
     canonical_repo.get_selected_source_details.return_value = {
         "source_incident_id": "00000000-0000-0000-0000-000000000111",
@@ -218,6 +235,8 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     assert detail is not None
     assert detail["display_name"] == "Penn State University"
     assert detail["memberships"][0]["match_type"] == "url_exact"
+    assert detail["memberships"][0]["source_name"] == "googlenews_rss"
+    assert detail["memberships"][0]["raw_institution_name"] == "Penn State University"
     assert detail["timeline"][0]["event_description"] == "Systems were encrypted."
     assert detail["snapshot"]["timeline_count"] == 1
     assert detail["selected_source"]["source_name"] == "googlenews_rss"
