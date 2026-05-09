@@ -104,6 +104,7 @@ def test_build_source_projection_maps_typed_enrichment_into_canonical_fields():
     assert projection["attack_vector"] == "phishing_email"
     assert projection["ransomware_family"] == "LockBit"
     assert projection["incident_date"].isoformat() == "2026-05-08"
+    assert projection["date_precision"] == "day"
 
 
 def test_canonicalization_service_creates_seed_canonical_and_membership():

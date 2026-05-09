@@ -6,6 +6,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from src.edu_cti_v2.models import PipelineTask
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceIncidentRepository
 from src.edu_cti_v2.services.analytics import V2AnalyticsRefreshService
 from src.edu_cti_v2.services.canonicalization import V2CanonicalizationService
@@ -112,10 +113,14 @@ class V2TaskRuntime:
 
             raise NotImplementedError(f"Task type not implemented yet: {task.task_type}")
         except Exception as exc:
+            session.rollback()
+            failed_task = session.get(PipelineTask, task.id) if getattr(task, "id", None) is not None else task
+            if failed_task is None:
+                raise
             self.pipeline_task_repository.mark_failed(
                 session,
-                task,
+                failed_task,
                 error=str(exc),
                 dead_letter=isinstance(exc, NotImplementedError),
             )
-            return task
+            return failed_task

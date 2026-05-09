@@ -51,6 +51,32 @@ def _parse_date_only(value: Any) -> Optional[date]:
     return parsed.date() if parsed else None
 
 
+def _normalize_canonical_date_precision(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+
+    text = str(value).strip().lower()
+    if not text:
+        return None
+
+    mapping = {
+        "exact": "day",
+        "day_exact": "day",
+        "day": "day",
+        "week": "week",
+        "week_only": "week",
+        "month": "month",
+        "month_only": "month",
+        "year": "year",
+        "year_only": "year",
+        "approx": "approximate",
+        "approximate": "approximate",
+        "estimated": "approximate",
+        "unknown": "unknown",
+    }
+    return mapping.get(text, "approximate")
+
+
 def _count_present_fields(payload: Any) -> int:
     if payload is None:
         return 0
@@ -88,12 +114,14 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
     incident_date = _parse_date_only(
         _first_present(typed.get("incident_date"), raw.get("incident_date"), source_incident.raw_incident_date)
     )
-    date_precision = _first_present(
-        typed.get("incident_date_precision"),
-        raw.get("incident_date_precision"),
-        typed.get("date_precision"),
-        raw.get("date_precision"),
-        source_incident.raw_date_precision,
+    date_precision = _normalize_canonical_date_precision(
+        _first_present(
+            typed.get("incident_date_precision"),
+            raw.get("incident_date_precision"),
+            typed.get("date_precision"),
+            raw.get("date_precision"),
+            source_incident.raw_date_precision,
+        )
     )
     attack_category = _first_present(typed.get("attack_category"), raw.get("attack_category"))
     attack_vector = _first_present(
@@ -338,7 +366,7 @@ class V2CanonicalizationService:
                     canonical_incident_id=canonical.id,
                     seq_order=index,
                     event_date=_parse_date_only(event.get("date")),
-                    date_precision=event.get("date_precision"),
+                    date_precision=_normalize_canonical_date_precision(event.get("date_precision")),
                     event_type=event.get("event_type") or "other",
                     event_description=event.get("event_description"),
                     actor_attribution=event.get("actor_attribution"),

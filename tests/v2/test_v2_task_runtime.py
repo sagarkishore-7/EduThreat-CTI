@@ -172,3 +172,34 @@ def test_task_runtime_processes_refresh_analytics_task_and_marks_complete():
     assert processed is task
     analytics_service.refresh_for_canonical_incident.assert_called_once_with(session, str(canonical_id))
     task_repo.mark_completed.assert_called_once_with(session, task, {"refreshed": True})
+
+
+def test_task_runtime_rolls_back_before_marking_failed():
+    task_repo = Mock()
+    source_repo = Mock()
+    fetch_service = Mock()
+
+    task = SimpleNamespace(id=uuid4(), task_type="fetch_article", target_id=uuid4(), attempt_count=1, max_attempts=5)
+    source_incident = SimpleNamespace(id=task.target_id)
+    task_repo.lease_batch.return_value = [task]
+    source_repo.get_by_id.return_value = source_incident
+    fetch_service.fetch_articles_for_source_incident.side_effect = RuntimeError("boom")
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        fetch_service=fetch_service,
+    )
+    session = Mock()
+    session.get.return_value = task
+
+    processed = runtime.process_next_task(session, worker_id="worker-1")
+
+    assert processed is task
+    session.rollback.assert_called_once()
+    task_repo.mark_failed.assert_called_once_with(
+        session,
+        task,
+        error="boom",
+        dead_letter=False,
+    )
