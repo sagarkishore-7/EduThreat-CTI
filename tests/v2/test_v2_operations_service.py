@@ -159,3 +159,67 @@ def test_operations_service_requeues_dead_letter_tasks():
         task_type="canonicalize",
         limit=25,
     )
+
+
+def test_operations_service_queues_recanonicalization_for_one_canonical():
+    task_repo = Mock()
+    task_repo.get_active_for_target.side_effect = [None, object()]
+
+    canonical_repo = Mock()
+    canonical_repo.get_by_id.return_value = SimpleNamespace(id="canonical-1")
+    canonical_repo.list_memberships.return_value = [
+        SimpleNamespace(source_incident_id="sid-1"),
+        SimpleNamespace(source_incident_id="sid-2"),
+    ]
+
+    queued_tasks = []
+
+    def _capture_enqueue(_session, task):
+        queued_tasks.append(task)
+        return task
+
+    task_repo.enqueue.side_effect = _capture_enqueue
+
+    service = V2OperationsService(
+        pipeline_task_repository=task_repo,
+        canonical_incident_repository=canonical_repo,
+    )
+
+    session = _FakeSession()
+    result = service.queue_recanonicalization_for_canonical(
+        session,
+        canonical_incident_id="canonical-1",
+    )
+
+    assert result == {
+        "canonical_incident_id": "canonical-1",
+        "found": True,
+        "membership_count": 2,
+        "queued": 1,
+        "skipped_existing": 1,
+    }
+    assert len(queued_tasks) == 1
+    assert queued_tasks[0].payload["trigger"] == "recanonicalize_canonical"
+
+
+def test_operations_service_returns_not_found_for_missing_canonical_recanonicalization_request():
+    canonical_repo = Mock()
+    canonical_repo.get_by_id.return_value = None
+
+    service = V2OperationsService(
+        canonical_incident_repository=canonical_repo,
+    )
+
+    session = _FakeSession()
+    result = service.queue_recanonicalization_for_canonical(
+        session,
+        canonical_incident_id="missing",
+    )
+
+    assert result == {
+        "canonical_incident_id": "missing",
+        "found": False,
+        "membership_count": 0,
+        "queued": 0,
+        "skipped_existing": 0,
+    }

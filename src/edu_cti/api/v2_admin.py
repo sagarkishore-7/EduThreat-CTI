@@ -256,6 +256,24 @@ async def queue_v2_recanonicalization_sweep(
     return result
 
 
+@router.post("/canonicalize/by-canonical/{canonical_incident_id}")
+async def queue_v2_recanonicalization_for_canonical(
+    canonical_incident_id: str,
+    session=Depends(get_v2_session),
+    operations: V2OperationsService = Depends(get_v2_operations_service),
+    _: bool = Depends(authenticate),
+):
+    """Queue recanonicalization for all current members of one canonical incident."""
+    result = operations.queue_recanonicalization_for_canonical(
+        session,
+        canonical_incident_id=canonical_incident_id,
+    )
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        commit()
+    return result
+
+
 @router.post("/tasks/requeue-dead-letter")
 async def requeue_v2_dead_letter_tasks(
     task_type: Optional[str] = Query(None),

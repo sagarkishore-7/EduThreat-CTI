@@ -21,6 +21,7 @@ from src.edu_cti_v2.models import (
 )
 from src.edu_cti_v2.repositories import (
     AnalyticsRefreshRepository,
+    CanonicalIncidentRepository,
     PipelineRunRepository,
     PipelineTaskRepository,
     SourceEnrichmentRepository,
@@ -73,12 +74,14 @@ class V2OperationsService:
         pipeline_task_repository: Optional[PipelineTaskRepository] = None,
         pipeline_run_repository: Optional[PipelineRunRepository] = None,
         analytics_refresh_repository: Optional[AnalyticsRefreshRepository] = None,
+        canonical_incident_repository: Optional[CanonicalIncidentRepository] = None,
         source_enrichment_repository: Optional[SourceEnrichmentRepository] = None,
         session_factory: Optional[Callable] = None,
     ) -> None:
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
         self.pipeline_run_repository = pipeline_run_repository or PipelineRunRepository()
         self.analytics_refresh_repository = analytics_refresh_repository or AnalyticsRefreshRepository()
+        self.canonical_incident_repository = canonical_incident_repository or CanonicalIncidentRepository()
         self.source_enrichment_repository = source_enrichment_repository or SourceEnrichmentRepository()
         self.session_factory = session_factory
 
@@ -274,6 +277,69 @@ class V2OperationsService:
         return {
             "limit": limit,
             "candidates_considered": len(source_incident_ids),
+            "queued": queued,
+            "skipped_existing": skipped_existing,
+        }
+
+    def queue_recanonicalization_for_canonical(
+        self,
+        session: Session,
+        *,
+        canonical_incident_id: str,
+        priority: int = 110,
+    ) -> dict[str, Any]:
+        canonical = self.canonical_incident_repository.get_by_id(session, canonical_incident_id)
+        if canonical is None:
+            return {
+                "canonical_incident_id": canonical_incident_id,
+                "found": False,
+                "membership_count": 0,
+                "queued": 0,
+                "skipped_existing": 0,
+            }
+
+        memberships = self.canonical_incident_repository.list_memberships(session, canonical_incident_id)
+        queued = 0
+        skipped_existing = 0
+        now = datetime.now(timezone.utc)
+
+        for membership in memberships:
+            source_incident_id = membership.source_incident_id
+            existing_task = self.pipeline_task_repository.get_active_for_target(
+                session,
+                task_type="canonicalize",
+                target_table="source_incidents",
+                target_id=source_incident_id,
+            )
+            if existing_task is not None:
+                skipped_existing += 1
+                continue
+
+            self.pipeline_task_repository.enqueue(
+                session,
+                PipelineTask(
+                    run_id=None,
+                    task_type="canonicalize",
+                    target_table="source_incidents",
+                    target_id=source_incident_id,
+                    status="queued",
+                    priority=priority,
+                    payload={
+                        "trigger": "recanonicalize_canonical",
+                        "canonical_incident_id": canonical_incident_id,
+                    },
+                    result={},
+                    available_at=now,
+                    attempt_count=0,
+                    max_attempts=5,
+                ),
+            )
+            queued += 1
+
+        return {
+            "canonical_incident_id": canonical_incident_id,
+            "found": True,
+            "membership_count": len(memberships),
             "queued": queued,
             "skipped_existing": skipped_existing,
         }

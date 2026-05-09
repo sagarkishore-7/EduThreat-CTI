@@ -143,6 +143,31 @@ def test_v2_admin_canonicalize_sweep_endpoint_queues_recanonicalization():
     assert service.called == 250
 
 
+def test_v2_admin_canonicalize_by_canonical_endpoint_queues_targeted_recanonicalization():
+    class _OperationsService:
+        def __init__(self):
+            self.called = None
+
+        def queue_recanonicalization_for_canonical(self, _session, *, canonical_incident_id):
+            self.called = canonical_incident_id
+            return {
+                "canonical_incident_id": canonical_incident_id,
+                "found": True,
+                "membership_count": 3,
+                "queued": 2,
+                "skipped_existing": 1,
+            }
+
+    service = _OperationsService()
+    client = _build_client(service)
+
+    response = client.post("/api/admin/v2/canonicalize/by-canonical/canonical-123")
+
+    assert response.status_code == 200
+    assert response.json()["queued"] == 2
+    assert service.called == "canonical-123"
+
+
 def test_v2_admin_requeue_dead_letter_endpoint_requeues_tasks():
     class _OperationsService:
         def __init__(self):
