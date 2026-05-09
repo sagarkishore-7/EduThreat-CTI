@@ -583,13 +583,20 @@ class V2CanonicalizationService:
         session: Session,
         source_incident,
         projection: Dict[str, Any],
+        *,
+        exclude_canonical_ids: Optional[Sequence[object]] = None,
     ) -> Tuple[Optional[CanonicalIncident], str, float]:
+        excluded_ids = {str(value) for value in (exclude_canonical_ids or ()) if value is not None}
         normalized_urls = [
             row.normalized_url
             for row in (source_incident.urls or [])
             if row.url_kind == "article" and not row.is_wrapper and row.normalized_url
         ]
-        url_candidates = self.canonical_repository.find_by_url_candidates(session, normalized_urls)
+        url_candidates = [
+            candidate
+            for candidate in self.canonical_repository.find_by_url_candidates(session, normalized_urls)
+            if str(candidate.id) not in excluded_ids
+        ]
         if url_candidates:
             return url_candidates[0], "url_exact", 100.0
 
@@ -597,11 +604,15 @@ class V2CanonicalizationService:
         if not candidate_name:
             return None, "seed", 0.0
 
-        candidates = self.canonical_repository.find_name_date_candidates(
-            session,
-            incident_date=projection.get("incident_date"),
-            country_code=projection.get("country_code"),
-        )
+        candidates = [
+            candidate
+            for candidate in self.canonical_repository.find_name_date_candidates(
+                session,
+                incident_date=projection.get("incident_date"),
+                country_code=projection.get("country_code"),
+            )
+            if str(candidate.id) not in excluded_ids
+        ]
         best_candidate: Optional[CanonicalIncident] = None
         best_match_type = "seed"
         best_score = 0.0
@@ -625,7 +636,11 @@ class V2CanonicalizationService:
                 )
                 if value
             ]
-            relaxed_candidates = self.canonical_repository.find_identity_candidates(session, identity_values)
+            relaxed_candidates = [
+                candidate
+                for candidate in self.canonical_repository.find_identity_candidates(session, identity_values)
+                if str(candidate.id) not in excluded_ids
+            ]
             best_candidate = None
             best_score = 0.0
             for candidate in relaxed_candidates:
@@ -643,6 +658,62 @@ class V2CanonicalizationService:
                 return best_candidate, "vendor_followup", best_score
 
         return None, "seed", 0.0
+
+    def _enqueue_refresh_tasks(
+        self,
+        session: Session,
+        *,
+        canonical_id,
+        now: datetime,
+    ) -> int:
+        existing_refresh = self.pipeline_task_repository.get_active_for_target(
+            session,
+            task_type="refresh_analytics",
+            target_table="canonical_incidents",
+            target_id=canonical_id,
+        )
+        if existing_refresh is not None:
+            return 0
+        self.pipeline_task_repository.enqueue(
+            session,
+            PipelineTask(
+                run_id=None,
+                task_type="refresh_analytics",
+                target_table="canonical_incidents",
+                target_id=canonical_id,
+                status="queued",
+                priority=150,
+                payload={"canonical_incident_id": str(canonical_id)},
+                result={},
+                available_at=now,
+                attempt_count=0,
+                max_attempts=5,
+            ),
+        )
+        return 1
+
+    def _retire_empty_canonical(
+        self,
+        session: Session,
+        *,
+        canonical: CanonicalIncident,
+        now: datetime,
+    ) -> int:
+        memberships = self.canonical_repository.list_memberships(session, str(canonical.id))
+        if memberships:
+            self._recalculate_primary_membership(session, canonical)
+            session.add(canonical)
+            return 0
+
+        canonical.status = "excluded"
+        canonical.primary_source_incident_id = None
+        canonical.resolution_metadata = {
+            **(canonical.resolution_metadata or {}),
+            "retired_reason": "membership_moved",
+            "retired_at": now.isoformat(),
+        }
+        session.add(canonical)
+        return self._enqueue_refresh_tasks(session, canonical_id=canonical.id, now=now)
 
     def _recalculate_primary_membership(
         self,
@@ -794,10 +865,24 @@ class V2CanonicalizationService:
         member_score = _member_score(source_incident.source_name, projection, source_enrichment)
         now = datetime.now(timezone.utc)
 
+        old_canonical = None
         if existing_membership is not None:
-            canonical = self.canonical_repository.get_by_id(session, str(existing_membership.canonical_incident_id))
+            old_canonical = self.canonical_repository.get_by_id(session, str(existing_membership.canonical_incident_id))
+            canonical = old_canonical
             if canonical is None:
                 return {"canonicalized": False, "reason": "dangling_membership"}
+            replacement_canonical, replacement_match_type, replacement_match_score = self._find_existing_canonical(
+                session,
+                source_incident,
+                projection,
+                exclude_canonical_ids=(canonical.id,),
+            )
+            if replacement_canonical is not None and str(replacement_canonical.id) != str(canonical.id):
+                existing_membership.canonical_incident_id = replacement_canonical.id
+                existing_membership.match_type = replacement_match_type
+                existing_membership.match_score = replacement_match_score
+                existing_membership.matched_at = now
+                canonical = replacement_canonical
             existing_membership.survivor_score = member_score
             existing_membership.field_contribution = _build_field_provenance(projection, source_enrichment.id)
             session.add(existing_membership)
@@ -850,31 +935,19 @@ class V2CanonicalizationService:
             projection,
         )
 
-        existing_refresh = self.pipeline_task_repository.get_active_for_target(
+        refresh_task_enqueued = self._enqueue_refresh_tasks(
             session,
-            task_type="refresh_analytics",
-            target_table="canonical_incidents",
-            target_id=canonical.id,
+            canonical_id=canonical.id,
+            now=now,
         )
-        refresh_task_enqueued = 0
-        if existing_refresh is None:
-            self.pipeline_task_repository.enqueue(
+        retired_refresh_tasks_enqueued = 0
+        if old_canonical is not None and str(old_canonical.id) != str(canonical.id):
+            session.flush()
+            retired_refresh_tasks_enqueued = self._retire_empty_canonical(
                 session,
-                PipelineTask(
-                    run_id=None,
-                    task_type="refresh_analytics",
-                    target_table="canonical_incidents",
-                    target_id=canonical.id,
-                    status="queued",
-                    priority=150,
-                    payload={"canonical_incident_id": str(canonical.id)},
-                    result={},
-                    available_at=now,
-                    attempt_count=0,
-                    max_attempts=5,
-                ),
+                canonical=old_canonical,
+                now=now,
             )
-            refresh_task_enqueued = 1
 
         self.analytics_refresh_repository.mark_needs_refresh(
             session,
@@ -920,5 +993,6 @@ class V2CanonicalizationService:
             "primary_source_incident_id": str(canonical.primary_source_incident_id) if canonical.primary_source_incident_id else None,
             "canonical_enrichment_id": str(canonical_enrichment.id) if canonical_enrichment.id else None,
             "refresh_tasks_enqueued": refresh_task_enqueued,
+            "retired_refresh_tasks_enqueued": retired_refresh_tasks_enqueued,
             "dashboard_refresh_tasks_enqueued": dashboard_refresh_enqueued,
         }

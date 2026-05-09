@@ -392,6 +392,9 @@ def test_canonicalization_service_updates_existing_canonical_with_better_project
     canonical_repo.get_membership_for_source_incident.return_value = existing_membership
     canonical_repo.get_by_id.return_value = existing_canonical
     canonical_repo.list_memberships.return_value = [existing_membership]
+    canonical_repo.find_by_url_candidates.return_value = []
+    canonical_repo.find_name_date_candidates.return_value = []
+    canonical_repo.find_identity_candidates.return_value = []
 
     source_repo = Mock()
     incident = _source_incident()
@@ -667,3 +670,128 @@ def test_canonicalization_service_merges_vendor_followup_candidates_across_count
     assert outcome["match_type"] == "vendor_followup"
     assert added_memberships
     assert added_memberships[0].canonical_incident_id == existing_canonical.id
+
+
+def test_canonicalization_service_reassigns_existing_membership_to_better_vendor_followup_canonical():
+    canonical_repo = Mock()
+    old_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="old-powerschool",
+        status="open",
+        institution_name="PowerSchool",
+        vendor_name=None,
+        country="Canada",
+        country_code="CA",
+        incident_date=datetime(2023, 12, 1, tzinfo=timezone.utc).date(),
+        date_precision="month",
+        attack_category="data_breach_external",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    better_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="better-powerschool",
+        status="open",
+        institution_name="PowerSchool",
+        vendor_name="PowerSchool",
+        country="United States",
+        country_code="US",
+        incident_date=datetime(2024, 12, 1, tzinfo=timezone.utc).date(),
+        date_precision="month",
+        attack_category="data_breach_external",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    existing_membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=old_canonical.id,
+        source_incident_id=uuid4(),
+        match_type="seed",
+        match_score=100.0,
+        survivor_score=10.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+
+    canonical_repo.get_membership_for_source_incident.return_value = existing_membership
+    canonical_repo.find_by_url_candidates.return_value = []
+    canonical_repo.find_name_date_candidates.return_value = []
+    canonical_repo.find_identity_candidates.return_value = [better_canonical]
+    canonical_repo.get_by_id.side_effect = lambda _session, canonical_id: (
+        old_canonical if str(canonical_id) == str(old_canonical.id) else better_canonical
+    )
+    canonical_repo.list_memberships.side_effect = [
+        [],
+        [],
+        [existing_membership],
+    ]
+
+    source_repo = Mock()
+    incident = _source_incident(event_key="powerschool-followup-reassign", url="https://example.com/powerschool-followup-reassign")
+    incident.raw_institution_name = "PowerSchool"
+    incident.raw_victim_name = "PowerSchool"
+    incident.raw_institution_type = "education_technology_provider"
+    incident.raw_country = "Canada"
+    incident.raw_region = "Ontario"
+    incident.raw_city = "Toronto"
+    incident.raw_title = "Canadian privacy regulators say schools share blame for PowerSchool hack"
+    source_repo.get_by_id.return_value = incident
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "country": "Canada",
+            "country_code": "CA",
+            "region": "Ontario",
+            "city": "Toronto",
+            "incident_date": "2023-12-01",
+            "incident_date_precision": "month",
+            "attack_category": "data_breach_external",
+            "enriched_summary": "Canadian regulators say schools share blame for the PowerSchool hack.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "country_code": "CA",
+            "incident_date": "2023-12-01",
+            "attack_category": "data_breach_external",
+        },
+        is_education_related=True,
+    )
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+    session.flush.return_value = None
+    session.execute.return_value.scalars.return_value.all.return_value = [enrichment]
+    session.query.return_value.filter_by.return_value.delete.return_value = None
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is True
+    assert outcome["match_type"] == "vendor_followup"
+    assert str(existing_membership.canonical_incident_id) == str(better_canonical.id)
+    assert old_canonical.status == "excluded"
+    assert old_canonical.primary_source_incident_id is None
