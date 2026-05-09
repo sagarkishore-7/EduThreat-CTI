@@ -283,6 +283,163 @@ class CanonicalIncidentRepository:
             )
         return stmt
 
+    @staticmethod
+    def build_country_facet_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        limit: int = 20,
+    ) -> Select:
+        stmt = select(
+            CanonicalIncident.country_code,
+            CanonicalIncident.country,
+            func.count(CanonicalIncident.id).label("incident_count"),
+        )
+        stmt = CanonicalIncidentRepository._apply_list_filters(
+            stmt,
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        return (
+            stmt.where(CanonicalIncident.country_code.is_not(None))
+            .group_by(CanonicalIncident.country_code, CanonicalIncident.country)
+            .order_by(func.count(CanonicalIncident.id).desc(), CanonicalIncident.country.asc())
+            .limit(limit)
+        )
+
+    @staticmethod
+    def build_attack_category_facet_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        limit: int = 20,
+    ) -> Select:
+        stmt = select(
+            CanonicalIncident.attack_category,
+            func.count(CanonicalIncident.id).label("incident_count"),
+        )
+        stmt = CanonicalIncidentRepository._apply_list_filters(
+            stmt,
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        return (
+            stmt.where(CanonicalIncident.attack_category.is_not(None))
+            .group_by(CanonicalIncident.attack_category)
+            .order_by(func.count(CanonicalIncident.id).desc(), CanonicalIncident.attack_category.asc())
+            .limit(limit)
+        )
+
+    @staticmethod
+    def build_institution_type_facet_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        limit: int = 20,
+    ) -> Select:
+        stmt = select(
+            CanonicalIncident.institution_type,
+            func.count(CanonicalIncident.id).label("incident_count"),
+        )
+        stmt = CanonicalIncidentRepository._apply_list_filters(
+            stmt,
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        return (
+            stmt.where(CanonicalIncident.institution_type.is_not(None))
+            .group_by(CanonicalIncident.institution_type)
+            .order_by(func.count(CanonicalIncident.id).desc(), CanonicalIncident.institution_type.asc())
+            .limit(limit)
+        )
+
+    @staticmethod
+    def build_severity_facet_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        limit: int = 20,
+    ) -> Select:
+        stmt = select(
+            CanonicalIncident.severity,
+            func.count(CanonicalIncident.id).label("incident_count"),
+        )
+        stmt = CanonicalIncidentRepository._apply_list_filters(
+            stmt,
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        return (
+            stmt.where(CanonicalIncident.severity.is_not(None))
+            .group_by(CanonicalIncident.severity)
+            .order_by(func.count(CanonicalIncident.id).desc(), CanonicalIncident.severity.asc())
+            .limit(limit)
+        )
+
     def get_by_id(self, session: Session, canonical_incident_id: str) -> CanonicalIncident | None:
         return session.execute(self.build_get_by_id_stmt(canonical_incident_id)).scalar_one_or_none()
 
@@ -436,6 +593,44 @@ class CanonicalIncidentRepository:
             for row in session.execute(stmt).all()
         ]
 
+    def get_country_facets(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        stmt = self.build_country_facet_stmt(
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+        return [
+            {
+                "country_code": row.country_code,
+                "country": row.country,
+                "incident_count": int(row.incident_count or 0),
+            }
+            for row in session.execute(stmt).all()
+        ]
+
     def get_attack_breakdown(
         self,
         session: Session,
@@ -447,6 +642,117 @@ class CanonicalIncidentRepository:
         return [
             {
                 "attack_category": row.attack_category,
+                "incident_count": int(row.incident_count or 0),
+            }
+            for row in session.execute(stmt).all()
+        ]
+
+    def get_attack_category_facets(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        stmt = self.build_attack_category_facet_stmt(
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+        return [
+            {
+                "attack_category": row.attack_category,
+                "incident_count": int(row.incident_count or 0),
+            }
+            for row in session.execute(stmt).all()
+        ]
+
+    def get_institution_type_facets(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        stmt = self.build_institution_type_facet_stmt(
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+        return [
+            {
+                "institution_type": row.institution_type,
+                "incident_count": int(row.incident_count or 0),
+            }
+            for row in session.execute(stmt).all()
+        ]
+
+    def get_severity_facets(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+        limit: int = 20,
+    ) -> list[dict[str, object]]:
+        stmt = self.build_severity_facet_stmt(
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+        return [
+            {
+                "severity": row.severity,
                 "incident_count": int(row.incident_count or 0),
             }
             for row in session.execute(stmt).all()

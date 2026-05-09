@@ -93,3 +93,55 @@ def test_v2_incident_detail_endpoint_returns_404_for_missing_canonical():
 
     assert response.status_code == 404
     assert response.json()["detail"] == "Canonical incident not found"
+
+
+def test_v2_incident_facets_endpoint_returns_filtered_facets():
+    class _ReadService:
+        def __init__(self):
+            self.called = None
+
+        def get_incident_facets(self, _session, **kwargs):
+            self.called = kwargs
+            return {
+                "countries": [{"country_code": "US", "incident_count": 5}],
+                "attack_categories": [{"attack_category": "ransomware_encryption", "incident_count": 4}],
+                "institution_types": [{"institution_type": "university", "incident_count": 3}],
+                "severities": [{"severity": "high", "incident_count": 2}],
+            }
+
+    service = _ReadService()
+    client = _build_client(service)
+
+    response = client.get(
+        "/api/v2/incidents/facets",
+        params={
+            "status": ["open", "excluded"],
+            "search": "stanford",
+            "country_code": "us",
+            "attack_category": "ransomware_encryption",
+            "institution_type": "university",
+            "severity": "high",
+            "is_education_related": "true",
+            "has_vendor": "false",
+            "date_from": "2026-05-01",
+            "date_to": "2026-05-09",
+            "facet_limit": 15,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["countries"][0]["country_code"] == "US"
+    assert service.called == {
+        "statuses": ("open", "excluded"),
+        "search": "stanford",
+        "country_code": "US",
+        "attack_category": "ransomware_encryption",
+        "institution_type": "university",
+        "severity": "high",
+        "is_education_related": True,
+        "has_vendor": False,
+        "date_from": date(2026, 5, 1),
+        "date_to": date(2026, 5, 9),
+        "facet_limit": 15,
+    }

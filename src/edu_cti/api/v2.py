@@ -100,6 +100,40 @@ async def list_v2_incidents(
     }
 
 
+@router.get("/incidents/facets")
+async def get_v2_incident_facets(
+    status: Optional[List[str]] = Query(None),
+    search: Optional[str] = Query(None, min_length=1, max_length=200),
+    country_code: Optional[str] = Query(None, min_length=2, max_length=2),
+    attack_category: Optional[str] = Query(None),
+    institution_type: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+    is_education_related: Optional[bool] = Query(None),
+    has_vendor: Optional[bool] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
+    facet_limit: int = Query(20, ge=1, le=100),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Return filtered facet counts for canonical incidents from the v2 Postgres layer."""
+    statuses = tuple(status) if status else ("open",)
+    return read_service.get_incident_facets(
+        session,
+        statuses=statuses,
+        search=search,
+        country_code=country_code.upper() if country_code else None,
+        attack_category=attack_category,
+        institution_type=institution_type,
+        severity=severity,
+        is_education_related=is_education_related,
+        has_vendor=has_vendor,
+        date_from=date_from,
+        date_to=date_to,
+        facet_limit=facet_limit,
+    )
+
+
 @router.get("/incidents/{canonical_incident_id}")
 async def get_v2_incident_detail(
     canonical_incident_id: str,

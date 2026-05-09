@@ -194,3 +194,34 @@ def test_read_service_dashboard_summary_prefers_cached_snapshot():
 
     assert summary == dashboard_snapshot
     canonical_repo.get_dashboard_rollup.assert_not_called()
+
+
+def test_read_service_incident_facets_use_repository_breakdowns():
+    canonical_repo = Mock()
+    canonical_repo.get_country_facets.return_value = [{"country_code": "US", "incident_count": 5}]
+    canonical_repo.get_attack_category_facets.return_value = [{"attack_category": "ransomware_encryption", "incident_count": 4}]
+    canonical_repo.get_institution_type_facets.return_value = [{"institution_type": "university", "incident_count": 3}]
+    canonical_repo.get_severity_facets.return_value = [{"severity": "high", "incident_count": 2}]
+
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+
+    facets = service.get_incident_facets(
+        Mock(),
+        statuses=("open", "excluded"),
+        search="stanford",
+        country_code="US",
+        attack_category="ransomware_encryption",
+        institution_type="university",
+        severity="high",
+        is_education_related=True,
+        has_vendor=False,
+        date_from=date(2026, 5, 1),
+        date_to=date(2026, 5, 9),
+        facet_limit=15,
+    )
+
+    assert facets["countries"][0]["country_code"] == "US"
+    canonical_repo.get_country_facets.assert_called_once()
+    canonical_repo.get_attack_category_facets.assert_called_once()
+    canonical_repo.get_institution_type_facets.assert_called_once()
+    canonical_repo.get_severity_facets.assert_called_once()
