@@ -682,6 +682,31 @@ class PipelineManager:
         memory_pause: Dict[str, Any] = {"requested": False, "reason": None}
         _enrich_re = re.compile(r"Enriching \[(\d+)/(\d+) this run")
         _fetch_re = re.compile(r"Fetching \[(\d+)/(\d+)\]")
+
+        def _relay_phase2_line(raw_line: str) -> None:
+            """
+            Relay a Phase 2 child-process line to both:
+            1. Railway/stdout immediately
+            2. the in-memory PipelineRun log buffer for the admin UI
+
+            This bypasses any ambiguity in the parent process's logger hierarchy.
+            We still use the normal logging stack for manager-owned events, but
+            subprocess passthrough needs to be deterministic even if Uvicorn /
+            Railway logging config changes.
+            """
+            relay_line = f"[phase2] {raw_line}"
+            try:
+                sys.stdout.write(relay_line + "\n")
+                sys.stdout.flush()
+            except Exception:
+                pass
+
+            try:
+                ts = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S,%f")[:-3]
+                run.logs.append(f"{ts} [INFO] {__name__}: {relay_line}")
+            except Exception:
+                pass
+
         def _stream_logs():
             try:
                 assert proc.stdout is not None
@@ -689,10 +714,7 @@ class PipelineManager:
                     line = line.rstrip()
                     if not line:
                         continue
-                    # Relay child-process logs through the manager logger so they
-                    # always follow the same stdout path the API already uses on
-                    # Railway, while still being captured by RunLogHandler.
-                    logger.info("[phase2] %s", line)
+                    _relay_phase2_line(line)
                     # Map "Enriching [X/Y this run | A/B enriched in DB]" → percent
                     m_enr = _enrich_re.search(line)
                     if m_enr:

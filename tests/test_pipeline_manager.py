@@ -315,6 +315,7 @@ def test_run_one_enrich_batch_launches_unbuffered_subprocess():
     manager = PipelineManager()
     run = PipelineRun("enrich-run", "enrich", {})
     captured = {}
+    fake_stdout = io.StringIO()
 
     class _FakeConn:
         def close(self):
@@ -352,7 +353,9 @@ def test_run_one_enrich_batch_launches_unbuffered_subprocess():
         captured["env"] = env
         return _FakeProc()
 
-    with patch("src.edu_cti.pipeline.manager.threading.Thread", _ImmediateThread), patch(
+    with patch("src.edu_cti.pipeline.manager.threading.Thread", _ImmediateThread), patch.object(
+        sys, "stdout", fake_stdout
+    ), patch(
         "src.edu_cti.core.db.get_connection", side_effect=[_FakeConn(), _FakeConn()]
     ), patch(
         "src.edu_cti.core.db.init_db"
@@ -373,3 +376,5 @@ def test_run_one_enrich_batch_launches_unbuffered_subprocess():
     assert captured["cmd"][3] == "src.edu_cti.pipeline.phase2"
     assert captured["env"]["PYTHONUNBUFFERED"] == "1"
     assert result["run_stats"]["enriched"] == 1
+    assert "[phase2] child log line" in fake_stdout.getvalue()
+    assert any("[phase2] child log line" in line for line in run.logs)
