@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Callable, Optional, Sequence
 from uuid import uuid4
 
@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from src.edu_cti_v2.models import (
     AnalyticsRefreshState,
     ArticleDocument,
+    CanonicalEnrichment,
     CanonicalIncident,
     PipelineRun,
     PipelineTask,
@@ -27,6 +28,59 @@ from src.edu_cti_v2.repositories import (
     SourceEnrichmentRepository,
 )
 from src.edu_cti_v2.worker import run_worker_loop
+
+_CANONICAL_CONSISTENCY_FIELDS = (
+    "institution_name",
+    "institution_type",
+    "vendor_name",
+    "country",
+    "country_code",
+    "region",
+    "city",
+    "incident_date",
+    "attack_category",
+    "attack_vector",
+    "threat_actor_name",
+    "ransomware_family",
+    "severity",
+    "is_education_related",
+)
+
+
+def _serialize_consistency_value(value: Any) -> Any:
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    return value
+
+
+def _normalized_consistency_value(value: Any) -> Any:
+    serialized = _serialize_consistency_value(value)
+    if serialized is None:
+        return None
+    if isinstance(serialized, str):
+        collapsed = " ".join(serialized.split()).strip().casefold()
+        return collapsed or None
+    return serialized
+
+
+def _canonical_consistency_mismatches(
+    canonical: CanonicalIncident,
+    analytics_projection: dict[str, Any] | None,
+) -> dict[str, dict[str, Any]]:
+    projection = analytics_projection if isinstance(analytics_projection, dict) else {}
+    mismatches: dict[str, dict[str, Any]] = {}
+    for field in _CANONICAL_CONSISTENCY_FIELDS:
+        actual = _serialize_consistency_value(getattr(canonical, field, None))
+        expected = _serialize_consistency_value(projection.get(field))
+        if _normalized_consistency_value(actual) == _normalized_consistency_value(expected):
+            continue
+        if actual is None and expected is None:
+            continue
+        mismatches[field] = {
+            "canonical": actual,
+            "analytics_projection": expected,
+        }
+    return mismatches
 
 
 def _serialize_task(task: PipelineTask) -> dict[str, Any]:
@@ -342,6 +396,82 @@ class V2OperationsService:
             "membership_count": len(memberships),
             "queued": queued,
             "skipped_existing": skipped_existing,
+        }
+
+    def list_canonical_consistency_candidates(
+        self,
+        session: Session,
+        *,
+        limit: int = 100,
+        scan_limit: int = 1000,
+    ) -> list[dict[str, Any]]:
+        rows = (
+            session.execute(
+                select(CanonicalIncident, CanonicalEnrichment)
+                .join(
+                    CanonicalEnrichment,
+                    CanonicalEnrichment.canonical_incident_id == CanonicalIncident.id,
+                )
+                .where(CanonicalIncident.status == "open")
+                .order_by(CanonicalIncident.updated_at.desc(), CanonicalIncident.created_at.desc())
+                .limit(scan_limit)
+            )
+            .all()
+        )
+        items: list[dict[str, Any]] = []
+        for canonical, canonical_enrichment in rows:
+            mismatches = _canonical_consistency_mismatches(
+                canonical,
+                canonical_enrichment.analytics_projection,
+            )
+            if not mismatches:
+                continue
+            items.append(
+                {
+                    "canonical_incident_id": str(canonical.id),
+                    "display_name": canonical.institution_name or canonical.vendor_name,
+                    "institution_name": canonical.institution_name,
+                    "vendor_name": canonical.vendor_name,
+                    "institution_type": canonical.institution_type,
+                    "updated_at": canonical.updated_at.isoformat() if canonical.updated_at else None,
+                    "mismatch_fields": sorted(mismatches.keys()),
+                    "mismatches": mismatches,
+                }
+            )
+            if len(items) >= limit:
+                break
+        return items
+
+    def queue_canonical_consistency_sweep(
+        self,
+        session: Session,
+        *,
+        limit: int = 100,
+        scan_limit: int = 1000,
+    ) -> dict[str, Any]:
+        candidates = self.list_canonical_consistency_candidates(
+            session,
+            limit=limit,
+            scan_limit=scan_limit,
+        )
+        canonicals_queued = 0
+        queued_tasks = 0
+        skipped_existing_tasks = 0
+        for candidate in candidates:
+            result = self.queue_recanonicalization_for_canonical(
+                session,
+                canonical_incident_id=str(candidate["canonical_incident_id"]),
+            )
+            if result.get("found"):
+                canonicals_queued += 1
+            queued_tasks += int(result.get("queued", 0) or 0)
+            skipped_existing_tasks += int(result.get("skipped_existing", 0) or 0)
+        return {
+            "scan_limit": scan_limit,
+            "candidates_considered": len(candidates),
+            "canonicals_queued": canonicals_queued,
+            "queued_tasks": queued_tasks,
+            "skipped_existing_tasks": skipped_existing_tasks,
         }
 
     def requeue_dead_letter_tasks(

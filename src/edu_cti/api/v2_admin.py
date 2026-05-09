@@ -274,6 +274,50 @@ async def queue_v2_recanonicalization_for_canonical(
     return result
 
 
+@router.get("/canonicalize/consistency-candidates")
+async def list_v2_canonical_consistency_candidates(
+    limit: int = Query(100, ge=1, le=1000),
+    scan_limit: int = Query(1000, ge=1, le=10000),
+    session=Depends(get_v2_session),
+    operations: V2OperationsService = Depends(get_v2_operations_service),
+    _: bool = Depends(authenticate),
+):
+    """List canonicals whose top-level fields diverge from authoritative analytics projection."""
+    items = operations.list_canonical_consistency_candidates(
+        session,
+        limit=limit,
+        scan_limit=scan_limit,
+    )
+    return {
+        "items": items,
+        "meta": {
+            "limit": limit,
+            "scan_limit": scan_limit,
+            "returned": len(items),
+        },
+    }
+
+
+@router.post("/canonicalize/consistency-sweep-now")
+async def queue_v2_canonical_consistency_sweep(
+    limit: int = Query(100, ge=1, le=1000),
+    scan_limit: int = Query(1000, ge=1, le=10000),
+    session=Depends(get_v2_session),
+    operations: V2OperationsService = Depends(get_v2_operations_service),
+    _: bool = Depends(authenticate),
+):
+    """Queue recanonicalization for canonicals with detected projection drift."""
+    result = operations.queue_canonical_consistency_sweep(
+        session,
+        limit=limit,
+        scan_limit=scan_limit,
+    )
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        commit()
+    return result
+
+
 @router.post("/tasks/requeue-dead-letter")
 async def requeue_v2_dead_letter_tasks(
     task_type: Optional[str] = Query(None),

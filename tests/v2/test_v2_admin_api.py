@@ -168,6 +168,56 @@ def test_v2_admin_canonicalize_by_canonical_endpoint_queues_targeted_recanonical
     assert service.called == "canonical-123"
 
 
+def test_v2_admin_canonicalize_consistency_candidates_endpoint_lists_items():
+    class _OperationsService:
+        def __init__(self):
+            self.called = None
+
+        def list_canonical_consistency_candidates(self, _session, *, limit, scan_limit):
+            self.called = (limit, scan_limit)
+            return [{"canonical_incident_id": "canonical-123", "mismatch_fields": ["institution_name"]}]
+
+    service = _OperationsService()
+    client = _build_client(service)
+
+    response = client.get(
+        "/api/admin/v2/canonicalize/consistency-candidates",
+        params={"limit": 25, "scan_limit": 400},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["meta"]["returned"] == 1
+    assert service.called == (25, 400)
+
+
+def test_v2_admin_canonicalize_consistency_sweep_endpoint_queues_candidates():
+    class _OperationsService:
+        def __init__(self):
+            self.called = None
+
+        def queue_canonical_consistency_sweep(self, _session, *, limit, scan_limit):
+            self.called = (limit, scan_limit)
+            return {
+                "scan_limit": scan_limit,
+                "candidates_considered": 3,
+                "canonicals_queued": 2,
+                "queued_tasks": 5,
+                "skipped_existing_tasks": 1,
+            }
+
+    service = _OperationsService()
+    client = _build_client(service)
+
+    response = client.post(
+        "/api/admin/v2/canonicalize/consistency-sweep-now",
+        params={"limit": 30, "scan_limit": 500},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["queued_tasks"] == 5
+    assert service.called == (30, 500)
+
+
 def test_v2_admin_requeue_dead_letter_endpoint_requeues_tasks():
     class _OperationsService:
         def __init__(self):

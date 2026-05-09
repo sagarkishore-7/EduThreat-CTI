@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from datetime import date, datetime, timezone
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
@@ -40,6 +41,22 @@ class _FakeSessionContext:
 
     def __exit__(self, exc_type, exc, tb):
         return False
+
+
+class _AllRowsResult:
+    def __init__(self, rows):
+        self._rows = rows
+
+    def all(self):
+        return list(self._rows)
+
+
+class _RowsSession:
+    def __init__(self, rows):
+        self.rows = rows
+
+    def execute(self, _stmt):
+        return _AllRowsResult(self.rows)
 
 
 def test_operations_service_runtime_status_uses_repo_and_count_queries():
@@ -222,4 +239,82 @@ def test_operations_service_returns_not_found_for_missing_canonical_recanonicali
         "membership_count": 0,
         "queued": 0,
         "skipped_existing": 0,
+    }
+
+
+def test_operations_service_lists_canonical_consistency_candidates():
+    canonical = SimpleNamespace(
+        id=uuid4(),
+        institution_name="Cincinnati Public Schools",
+        vendor_name="PowerSchool",
+        institution_type="education_technology_provider",
+        country="United States",
+        country_code="US",
+        region="Arkansas",
+        city="Forrest City",
+        incident_date=date(2024, 12, 28),
+        attack_category="third_party_compromise",
+        attack_vector="stolen_credentials",
+        threat_actor_name=None,
+        ransomware_family=None,
+        severity=None,
+        is_education_related=True,
+        status="open",
+        updated_at=datetime(2026, 5, 9, 21, 40, tzinfo=timezone.utc),
+        created_at=datetime(2026, 5, 9, 17, 21, tzinfo=timezone.utc),
+    )
+    canonical_enrichment = SimpleNamespace(
+        analytics_projection={
+            "institution_name": "PowerSchool",
+            "institution_type": "education_technology_provider",
+            "vendor_name": "PowerSchool",
+            "country": "United States",
+            "country_code": "US",
+            "region": None,
+            "city": None,
+            "incident_date": "2024-12-28",
+            "attack_category": "third_party_compromise",
+            "attack_vector": "stolen_credentials",
+            "threat_actor_name": None,
+            "ransomware_family": None,
+            "severity": None,
+            "is_education_related": True,
+        }
+    )
+    session = _RowsSession([(canonical, canonical_enrichment)])
+    service = V2OperationsService()
+
+    items = service.list_canonical_consistency_candidates(session, limit=10, scan_limit=50)
+
+    assert len(items) == 1
+    assert items[0]["display_name"] == "Cincinnati Public Schools"
+    assert "institution_name" in items[0]["mismatch_fields"]
+    assert "region" in items[0]["mismatch_fields"]
+    assert "city" in items[0]["mismatch_fields"]
+
+
+def test_operations_service_queues_canonical_consistency_sweep():
+    service = V2OperationsService()
+    service.list_canonical_consistency_candidates = Mock(
+        return_value=[
+            {"canonical_incident_id": "canonical-1"},
+            {"canonical_incident_id": "canonical-2"},
+        ]
+    )
+    service.queue_recanonicalization_for_canonical = Mock(
+        side_effect=[
+            {"found": True, "queued": 2, "skipped_existing": 0},
+            {"found": True, "queued": 1, "skipped_existing": 1},
+        ]
+    )
+
+    session = _FakeSession()
+    result = service.queue_canonical_consistency_sweep(session, limit=2, scan_limit=20)
+
+    assert result == {
+        "scan_limit": 20,
+        "candidates_considered": 2,
+        "canonicals_queued": 2,
+        "queued_tasks": 3,
+        "skipped_existing_tasks": 1,
     }
