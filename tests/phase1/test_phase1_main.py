@@ -56,3 +56,18 @@ def test_ingest_group_saves_incremental_batches_without_reingesting():
 
     assert total_new == 2
     assert mock_ingest_batch.call_count == 2
+
+
+def test_ingest_batch_dual_writes_before_early_source_event_skip():
+    incident = _incident("therecord", "story-1")
+    conn = Mock()
+
+    with patch.object(phase1_main, "write_phase1_source_observation") as mock_dual_write, \
+         patch.object(phase1_main, "source_event_exists", return_value=True), \
+         patch.object(phase1_main, "find_duplicate_incident_by_urls", return_value=None), \
+         patch.object(phase1_main, "run_with_sqlite_lock_retry", side_effect=lambda _conn, func, operation=None: func()):
+        added = phase1_main._ingest_batch(conn, [incident])
+
+    assert added == 0
+    mock_dual_write.assert_called_once_with(incident, "story-1")
+    conn.commit.assert_not_called()

@@ -29,6 +29,7 @@ from src.edu_cti.pipeline.phase1.curated import collect_curated_incidents
 from src.edu_cti.pipeline.phase1.news import collect_news_incidents, NEWS_SOURCE_BUILDERS
 from src.edu_cti.pipeline.phase1.rss import collect_rss_incidents
 from src.edu_cti.pipeline.phase1.api_sources import collect_api_incidents
+from src.edu_cti_v2.phase1_dual_write import write_phase1_source_observation
 from src.edu_cti.core.sources import (
     RSS_SOURCE_REGISTRY,
     PAID_RSS_SOURCE_REGISTRY,
@@ -147,6 +148,8 @@ def _ingest_batch(conn, incidents: List[BaseIncident], is_rss: bool = False) -> 
 
             if not event_key:
                 event_key = inc.incident_id
+
+            write_phase1_source_observation(inc, event_key)
 
             local_new_count = 0
 
