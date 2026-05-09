@@ -2,6 +2,7 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
+from src.edu_cti_v2.models import PipelineTask
 from src.edu_cti_v2.services.operations import V2OperationsService
 from src.edu_cti_v2.worker import V2WorkerRunSummary
 
@@ -100,3 +101,38 @@ def test_operations_service_run_worker_batch_records_completed_run():
     assert run_repo.add.called
     assert run_repo.mark_started.called
     assert run_repo.mark_finished.called
+
+
+def test_operations_service_queues_recanonicalization_tasks_without_duplicates():
+    task_repo = Mock()
+    task_repo.get_active_for_target.side_effect = [None, object(), None]
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.list_source_incident_ids_for_recanonicalize.return_value = [
+        "sid-1",
+        "sid-2",
+        "sid-3",
+    ]
+
+    queued_tasks = []
+
+    def _capture_enqueue(_session, task):
+        queued_tasks.append(task)
+        return task
+
+    task_repo.enqueue.side_effect = _capture_enqueue
+
+    service = V2OperationsService(
+        pipeline_task_repository=task_repo,
+        source_enrichment_repository=source_enrichment_repo,
+    )
+
+    session = _FakeSession()
+    result = service.queue_recanonicalization_sweep(session, limit=3)
+
+    assert result["candidates_considered"] == 3
+    assert result["queued"] == 2
+    assert result["skipped_existing"] == 1
+    assert len(queued_tasks) == 2
+    assert all(isinstance(task, PipelineTask) for task in queued_tasks)
+    assert all(task.task_type == "canonicalize" for task in queued_tasks)
+    assert all(task.payload["trigger"] == "recanonicalize_sweep" for task in queued_tasks)

@@ -241,6 +241,21 @@ async def run_v2_data_quality_sweep(
     return data_quality.run_sweep(limit=limit)
 
 
+@router.post("/canonicalize/sweep-now")
+async def queue_v2_recanonicalization_sweep(
+    limit: int = Query(500, ge=1, le=50000),
+    session=Depends(get_v2_session),
+    operations: V2OperationsService = Depends(get_v2_operations_service),
+    _: bool = Depends(authenticate),
+):
+    """Queue a bounded canonicalization sweep for already-enriched v2 source incidents."""
+    result = operations.queue_recanonicalization_sweep(session, limit=limit)
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        commit()
+    return result
+
+
 @router.get("/manual-review-queue")
 async def list_v2_manual_review_queue(
     limit: int = Query(100, ge=1, le=1000),

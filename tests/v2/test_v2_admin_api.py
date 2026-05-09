@@ -124,6 +124,25 @@ def test_v2_admin_worker_run_endpoint_returns_batch_result():
     assert payload["result"]["task_type"] == "canonicalize"
 
 
+def test_v2_admin_canonicalize_sweep_endpoint_queues_recanonicalization():
+    class _OperationsService:
+        def __init__(self):
+            self.called = None
+
+        def queue_recanonicalization_sweep(self, _session, *, limit):
+            self.called = limit
+            return {"limit": limit, "queued": 12, "skipped_existing": 3}
+
+    service = _OperationsService()
+    client = _build_client(service)
+
+    response = client.post("/api/admin/v2/canonicalize/sweep-now", params={"limit": 250})
+
+    assert response.status_code == 200
+    assert response.json()["queued"] == 12
+    assert service.called == 250
+
+
 def test_v2_admin_collect_endpoint_returns_collection_result():
     class _OperationsService:
         def get_runtime_status(self, _session):

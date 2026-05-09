@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional, Sequence
 from uuid import uuid4
 
@@ -22,6 +23,7 @@ from src.edu_cti_v2.repositories import (
     AnalyticsRefreshRepository,
     PipelineRunRepository,
     PipelineTaskRepository,
+    SourceEnrichmentRepository,
 )
 from src.edu_cti_v2.worker import run_worker_loop
 
@@ -71,11 +73,13 @@ class V2OperationsService:
         pipeline_task_repository: Optional[PipelineTaskRepository] = None,
         pipeline_run_repository: Optional[PipelineRunRepository] = None,
         analytics_refresh_repository: Optional[AnalyticsRefreshRepository] = None,
+        source_enrichment_repository: Optional[SourceEnrichmentRepository] = None,
         session_factory: Optional[Callable] = None,
     ) -> None:
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
         self.pipeline_run_repository = pipeline_run_repository or PipelineRunRepository()
         self.analytics_refresh_repository = analytics_refresh_repository or AnalyticsRefreshRepository()
+        self.source_enrichment_repository = source_enrichment_repository or SourceEnrichmentRepository()
         self.session_factory = session_factory
 
     def get_runtime_status(self, session: Session, *, recent_limit: int = 10) -> dict[str, Any]:
@@ -222,3 +226,54 @@ class V2OperationsService:
                     )
                     session.commit()
             raise
+
+    def queue_recanonicalization_sweep(
+        self,
+        session: Session,
+        *,
+        limit: int = 500,
+        priority: int = 125,
+    ) -> dict[str, Any]:
+        source_incident_ids = self.source_enrichment_repository.list_source_incident_ids_for_recanonicalize(
+            session,
+            limit=limit,
+        )
+        queued = 0
+        skipped_existing = 0
+        now = datetime.now(timezone.utc)
+
+        for source_incident_id in source_incident_ids:
+            existing_task = self.pipeline_task_repository.get_active_for_target(
+                session,
+                task_type="canonicalize",
+                target_table="source_incidents",
+                target_id=source_incident_id,
+            )
+            if existing_task is not None:
+                skipped_existing += 1
+                continue
+
+            task = PipelineTask(
+                run_id=None,
+                task_type="canonicalize",
+                target_table="source_incidents",
+                target_id=source_incident_id,
+                status="queued",
+                priority=priority,
+                payload={
+                    "trigger": "recanonicalize_sweep",
+                },
+                result={},
+                available_at=now,
+                attempt_count=0,
+                max_attempts=5,
+            )
+            self.pipeline_task_repository.enqueue(session, task)
+            queued += 1
+
+        return {
+            "limit": limit,
+            "candidates_considered": len(source_incident_ids),
+            "queued": queued,
+            "skipped_existing": skipped_existing,
+        }
