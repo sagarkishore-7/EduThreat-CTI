@@ -682,8 +682,6 @@ class PipelineManager:
         memory_pause: Dict[str, Any] = {"requested": False, "reason": None}
         _enrich_re = re.compile(r"Enriching \[(\d+)/(\d+) this run")
         _fetch_re = re.compile(r"Fetching \[(\d+)/(\d+)\]")
-        _phase2_logger = logging.getLogger("phase2")
-
         def _stream_logs():
             try:
                 assert proc.stdout is not None
@@ -691,7 +689,10 @@ class PipelineManager:
                     line = line.rstrip()
                     if not line:
                         continue
-                    _phase2_logger.info(line)
+                    # Relay child-process logs through the manager logger so they
+                    # always follow the same stdout path the API already uses on
+                    # Railway, while still being captured by RunLogHandler.
+                    logger.info("[phase2] %s", line)
                     # Map "Enriching [X/Y this run | A/B enriched in DB]" → percent
                     m_enr = _enrich_re.search(line)
                     if m_enr:
@@ -1195,7 +1196,8 @@ class PipelineManager:
         - RSS feeds: every rss_interval_hours (default 1h) — ingest only
         - API sources: every api_interval_hours (default 6h) — ingest only
         - Enrichment: every enrich_interval_minutes (default 30min) — enrich any unenriched
-        - Daily pipeline (all sources + enrich): every daily_interval_hours (default 24h)
+        - Daily refresh: every daily_interval_hours (default 24h) — curated/news ingest,
+          then enrich, then a data-quality sweep, then a final re-enrichment pass
 
         Enrichment runs frequently so new incidents from RSS/API are enriched
         within 30 minutes and appear on the dashboard in near real-time.
@@ -1233,20 +1235,15 @@ class PipelineManager:
             id="enrichment", replace_existing=True,
         )
         self._scheduler_schedule.add_job(
-            self._scheduler_run_job, "interval", hours=daily_interval_hours,
-            args=["daily", {}], id="daily_pipeline", replace_existing=True,
-        )
-        # Data-quality sweep: find rows with bad dates / headline-as-institution
-        # and queue them for re-enrichment (or flag for manual review).
-        self._scheduler_schedule.add_job(
-            self._scheduler_run_data_quality_sweep, "interval", hours=6,
-            id="data_quality_sweep", replace_existing=True,
+            self._scheduler_run_daily_refresh, "interval", hours=daily_interval_hours,
+            id="daily_refresh", replace_existing=True,
         )
 
         logger.info(
             f"[SCHEDULER] Started — RSS every {rss_interval_hours}h, "
             f"API every {api_interval_hours}h, Enrich every {enrich_interval_minutes}min, "
-            f"Daily every {daily_interval_hours}h, Data-quality sweep every 6h"
+            f"Daily curated/news refresh every {daily_interval_hours}h "
+            "(with post-refresh data-quality re-enrichment)"
         )
 
         # Run initial catch-up in yet another thread so start_scheduler returns immediately
@@ -1299,9 +1296,45 @@ class PipelineManager:
     # --- internal helpers ---
 
     def _scheduler_catchup(self):
-        """Run an initial catch-up: daily pipeline to ingest recent incidents."""
-        logger.info("[SCHEDULER] Running initial catch-up cycle...")
-        self._scheduler_run_job("daily", {})
+        """
+        Run an initial lightweight catch-up.
+
+        Do not start the heavier daily refresh immediately on scheduler start;
+        that can monopolize the single pipeline slot and cause the hourly RSS /
+        6-hour API jobs to wait or skip. Instead, pull the most time-sensitive
+        sources first, then enrich whatever lands.
+        """
+        logger.info("[SCHEDULER] Running initial catch-up cycle (rss + api + enrich)...")
+        self._scheduler_run_job("rss", {"max_age_days": 7})
+        self._scheduler_run_job("ingest_source", {"group": "api"})
+        self._scheduler_run_enrich_if_needed()
+
+    def _scheduler_run_daily_refresh(self):
+        """
+        Run the daily curated/news refresh, then the post-refresh maintenance.
+
+        Sequence:
+        1. curated + news incremental ingest
+        2. enrich newly actionable incidents
+        3. data-quality sweep (queue bad rows for re-enrichment)
+        4. enrich again so queued repairs are processed after the daily jobs
+        """
+        if not self._scheduler_running:
+            return
+
+        logger.info("[SCHEDULER] Job triggered: daily_refresh")
+        self._scheduler_run_job("weekly", {"max_pages": 20})
+        if not self._scheduler_running:
+            return
+        self._scheduler_run_enrich_if_needed()
+        if not self._scheduler_running:
+            return
+        self._scheduler_run_data_quality_sweep()
+        if not self._scheduler_running:
+            return
+        self._scheduler_run_enrich_if_needed()
+        self._scheduler_last_runs["daily"] = datetime.utcnow().isoformat()
+        logger.info("[SCHEDULER] Completed daily_refresh")
 
     def _scheduler_run_data_quality_sweep(self):
         """

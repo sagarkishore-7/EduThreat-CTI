@@ -3,7 +3,7 @@
 import io
 import sys
 import types
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 import pytest
 
@@ -201,6 +201,39 @@ def test_scheduler_enrichment_does_not_request_csv_export():
         "enrich",
         {"rate_limit_delay": 2.0, "export_csv": False},
     )
+
+
+def test_scheduler_catchup_uses_lightweight_jobs():
+    manager = PipelineManager()
+    manager._scheduler_running = True
+
+    with patch.object(manager, "_scheduler_run_job") as mock_run_job, patch.object(
+        manager, "_scheduler_run_enrich_if_needed"
+    ) as mock_enrich:
+        manager._scheduler_catchup()
+
+    assert mock_run_job.call_args_list == [
+        call("rss", {"max_age_days": 7}),
+        call("ingest_source", {"group": "api"}),
+    ]
+    mock_enrich.assert_called_once_with()
+
+
+def test_scheduler_daily_refresh_runs_sweep_after_daily_jobs():
+    manager = PipelineManager()
+    manager._scheduler_running = True
+
+    with patch.object(manager, "_scheduler_run_job") as mock_run_job, patch.object(
+        manager, "_scheduler_run_enrich_if_needed"
+    ) as mock_enrich, patch.object(
+        manager, "_scheduler_run_data_quality_sweep"
+    ) as mock_sweep:
+        manager._scheduler_run_daily_refresh()
+
+    mock_run_job.assert_called_once_with("weekly", {"max_pages": 20})
+    assert mock_enrich.call_count == 2
+    mock_sweep.assert_called_once_with()
+    assert manager._scheduler_last_runs["daily"] is not None
 
 
 def test_auto_resume_interrupted_historical_run():

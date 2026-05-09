@@ -933,9 +933,11 @@ async def start_scheduler(
     Runs recurring jobs:
     - RSS feeds: every rss_interval_hours (default 1h)
     - API sources: every api_interval_hours (default 6h)
-    - Daily pipeline (all sources + enrich): every daily_interval_hours (default 24h)
+    - Daily curated/news refresh: every daily_interval_hours (default 24h)
+      followed by enrichment and a data-quality re-enrichment sweep
 
-    On first start, runs an immediate catch-up cycle to fetch recent incidents.
+    On first start, runs a lightweight catch-up cycle (RSS + API + enrich),
+    not the full daily refresh.
     """
     from src.edu_cti.pipeline.manager import get_pipeline_manager
 
