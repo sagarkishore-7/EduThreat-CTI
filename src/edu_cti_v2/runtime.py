@@ -25,6 +25,8 @@ def _env_flag(name: str, default: str = "0") -> bool:
 class _WorkerThreadState:
     worker_id: str
     thread: Optional[threading.Thread]
+    task_type: Optional[str] = None
+    exclude_task_types: tuple[str, ...] = ()
     summary: Optional[V2WorkerRunSummary] = None
     error: Optional[str] = None
 
@@ -61,18 +63,20 @@ class V2RuntimeService:
         state.error = None
         thread = threading.Thread(
             target=self._worker_target,
-            args=(state.worker_id, state),
+            args=(state,),
             name=state.worker_id.replace(":", "-"),
             daemon=True,
         )
         state.thread = thread
         thread.start()
 
-    def _worker_target(self, worker_id: str, state: _WorkerThreadState) -> None:
+    def _worker_target(self, state: _WorkerThreadState) -> None:
+        worker_id = state.worker_id
         try:
             state.summary = run_worker_loop(
                 worker_id=worker_id,
-                task_type=self.task_type,
+                task_type=state.task_type,
+                exclude_task_types=state.exclude_task_types,
                 poll_interval=self.poll_interval_seconds,
                 lease_seconds=self.lease_seconds,
                 stop_event=self._stop_event,
@@ -98,11 +102,34 @@ class V2RuntimeService:
         if self.enable_scheduler:
             self.scheduler_service.start()
 
-        for index in range(self.worker_count):
-            worker_id = f"v2-runtime:{index + 1}"
-            state = _WorkerThreadState(worker_id=worker_id, thread=None)
-            self._worker_states.append(state)
-            self._start_worker_thread(state)
+        if self.task_type is None:
+            orchestrator_state = _WorkerThreadState(
+                worker_id="v2-runtime:orchestrator",
+                thread=None,
+                task_type="orchestrate_plan",
+            )
+            self._worker_states.append(orchestrator_state)
+            self._start_worker_thread(orchestrator_state)
+
+            for index in range(self.worker_count):
+                worker_id = f"v2-runtime:{index + 1}"
+                state = _WorkerThreadState(
+                    worker_id=worker_id,
+                    thread=None,
+                    exclude_task_types=("orchestrate_plan",),
+                )
+                self._worker_states.append(state)
+                self._start_worker_thread(state)
+        else:
+            for index in range(self.worker_count):
+                worker_id = f"v2-runtime:{index + 1}"
+                state = _WorkerThreadState(
+                    worker_id=worker_id,
+                    thread=None,
+                    task_type=self.task_type,
+                )
+                self._worker_states.append(state)
+                self._start_worker_thread(state)
 
         self._running = True
         logger.info(

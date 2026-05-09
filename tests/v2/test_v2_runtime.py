@@ -23,8 +23,8 @@ def test_v2_runtime_service_starts_and_stops_workers_and_scheduler(monkeypatch):
         def get_status(self):
             return {"running": self.started > self.stopped}
 
-    def _fake_run_worker_loop(*, worker_id, stop_event, **_kwargs):
-        seen.append(worker_id)
+    def _fake_run_worker_loop(*, worker_id, stop_event, task_type=None, exclude_task_types=None, **_kwargs):
+        seen.append((worker_id, task_type, tuple(exclude_task_types or ())))
         stop_event.wait(0.05)
         return V2WorkerRunSummary(
             processed_tasks=0,
@@ -47,7 +47,9 @@ def test_v2_runtime_service_starts_and_stops_workers_and_scheduler(monkeypatch):
     stopped = runtime.stop()
     assert stopped["running"] is False
     assert scheduler.stopped == 1
-    assert seen == ["v2-runtime:1", "v2-runtime:2"]
+    assert ("v2-runtime:orchestrator", "orchestrate_plan", ()) in seen
+    assert ("v2-runtime:1", None, ("orchestrate_plan",)) in seen
+    assert ("v2-runtime:2", None, ("orchestrate_plan",)) in seen
     assert all(worker["summary"]["stop_reason"] == "stopped" for worker in stopped["workers"])
 
 
@@ -91,7 +93,7 @@ def test_v2_runtime_service_restarts_dead_worker_threads(monkeypatch):
 
     monkeypatch.setattr("src.edu_cti_v2.runtime.run_worker_loop", _fake_run_worker_loop)
 
-    runtime = V2RuntimeService(worker_count=1, enable_scheduler=False)
+    runtime = V2RuntimeService(worker_count=1, task_type="fetch_article", enable_scheduler=False)
     runtime.start()
     time.sleep(0.02)
     runtime.tick()

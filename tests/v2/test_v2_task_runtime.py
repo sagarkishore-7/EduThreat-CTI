@@ -45,7 +45,7 @@ def test_task_runtime_prefers_fetch_over_resolve_when_unspecified():
     source_repo.get_by_id.return_value = fetch_source_incident
     fetch_service.fetch_articles_for_source_incident.return_value = {"articles_saved": 1}
 
-    def _lease_batch(_session, *, worker_id, task_type, limit, lease_seconds):
+    def _lease_batch(_session, *, worker_id, task_type, exclude_task_types=None, limit, lease_seconds):
         if task_type == "fetch_article":
             return [fetch_task]
         if task_type == "resolve_url":
@@ -71,6 +71,42 @@ def test_task_runtime_prefers_fetch_over_resolve_when_unspecified():
         worker_id="worker-1",
     )
     resolve_service.resolve_source_incident_urls.assert_not_called()
+
+
+def test_task_runtime_can_exclude_task_types():
+    task_repo = Mock()
+    source_repo = Mock()
+    fetch_service = Mock()
+
+    fetch_task = SimpleNamespace(task_type="fetch_article", target_id=uuid4())
+    fetch_source_incident = SimpleNamespace(id=fetch_task.target_id)
+    source_repo.get_by_id.return_value = fetch_source_incident
+    fetch_service.fetch_articles_for_source_incident.return_value = {"articles_saved": 1}
+
+    def _lease_batch(_session, *, worker_id, task_type, exclude_task_types=None, limit, lease_seconds):
+        if task_type == "orchestrate_plan":
+            return [SimpleNamespace(task_type="orchestrate_plan", target_id=uuid4())]
+        if task_type == "fetch_article":
+            return [fetch_task]
+        return []
+
+    task_repo.lease_batch.side_effect = _lease_batch
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        fetch_service=fetch_service,
+    )
+    session = Mock()
+
+    processed = runtime.process_next_task(
+        session,
+        worker_id="worker-1",
+        exclude_task_types=("orchestrate_plan",),
+    )
+
+    assert processed is fetch_task
+    fetch_service.fetch_articles_for_source_incident.assert_called_once()
 
 
 def test_task_runtime_dead_letters_unimplemented_task_types():

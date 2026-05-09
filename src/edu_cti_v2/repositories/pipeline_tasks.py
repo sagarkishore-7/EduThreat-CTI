@@ -37,6 +37,7 @@ class PipelineTaskRepository:
     def build_lease_batch_stmt(
         *,
         task_type: Optional[str] = None,
+        exclude_task_types: Optional[Sequence[str]] = None,
         limit: int = 10,
         now: Optional[datetime] = None,
     ) -> Select:
@@ -51,6 +52,8 @@ class PipelineTaskRepository:
         )
         if task_type:
             stmt = stmt.where(PipelineTask.task_type == task_type)
+        if exclude_task_types:
+            stmt = stmt.where(~PipelineTask.task_type.in_(list(exclude_task_types)))
         return stmt
 
     @staticmethod
@@ -123,12 +126,18 @@ class PipelineTaskRepository:
         *,
         worker_id: str,
         task_type: Optional[str] = None,
+        exclude_task_types: Optional[Sequence[str]] = None,
         limit: int = 10,
         lease_seconds: int = 300,
     ) -> List[PipelineTask]:
         now = datetime.now(timezone.utc)
         lease_token = str(uuid4())
-        stmt = self.build_lease_batch_stmt(task_type=task_type, limit=limit, now=now)
+        stmt = self.build_lease_batch_stmt(
+            task_type=task_type,
+            exclude_task_types=exclude_task_types,
+            limit=limit,
+            now=now,
+        )
         tasks = list(session.execute(stmt).scalars().all())
         expires_at = now + timedelta(seconds=lease_seconds)
         for task in tasks:

@@ -22,6 +22,16 @@ def test_pipeline_task_repository_lease_stmt_uses_skip_locked():
     assert "ORDER BY pipeline_tasks.priority DESC" in compiled
 
 
+def test_pipeline_task_repository_lease_stmt_can_exclude_task_types():
+    stmt = PipelineTaskRepository.build_lease_batch_stmt(
+        exclude_task_types=("orchestrate_plan",),
+        limit=5,
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "pipeline_tasks.task_type NOT IN ('orchestrate_plan')" in compiled
+
+
 def test_source_incident_repository_lookup_stmt_filters_by_source_and_event_key():
     stmt = SourceIncidentRepository.build_get_by_source_event_key_stmt("googlenews_rss", "abc123")
     compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))

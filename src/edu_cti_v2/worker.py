@@ -10,7 +10,7 @@ import time
 from contextlib import AbstractContextManager
 from dataclasses import dataclass
 from threading import Event
-from typing import Callable, Optional
+from typing import Callable, Optional, Sequence
 
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -39,6 +39,7 @@ def run_worker_loop(
     runtime: Optional[V2TaskRuntime] = None,
     worker_id: Optional[str] = None,
     task_type: Optional[str] = None,
+    exclude_task_types: Optional[Sequence[str]] = None,
     poll_interval: float = 5.0,
     max_tasks: Optional[int] = None,
     stop_when_idle: bool = False,
@@ -71,6 +72,7 @@ def run_worker_loop(
                     worker_id=worker_id,
                     task_type=task_type,
                     lease_seconds=lease_seconds,
+                    exclude_task_types=exclude_task_types,
                 )
                 session.commit()
             except Exception:

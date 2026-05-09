@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Optional
+from typing import Optional, Sequence
 
 from sqlalchemy.orm import Session
 
@@ -59,12 +59,16 @@ class V2TaskRuntime:
         worker_id: str,
         task_type: Optional[str],
         lease_seconds: int,
+        exclude_task_types: Optional[Sequence[str]] = None,
     ):
         if task_type:
+            if exclude_task_types and task_type in set(exclude_task_types):
+                return None
             leased = self.pipeline_task_repository.lease_batch(
                 session,
                 worker_id=worker_id,
                 task_type=task_type,
+                exclude_task_types=exclude_task_types,
                 limit=1,
                 lease_seconds=lease_seconds,
             )
@@ -74,10 +78,13 @@ class V2TaskRuntime:
         # expanding the queue, otherwise fetch/enrich work starves behind URL
         # resolution during large historical runs.
         for candidate_type in DEFAULT_TASK_LEASE_ORDER:
+            if exclude_task_types and candidate_type in set(exclude_task_types):
+                continue
             leased = self.pipeline_task_repository.lease_batch(
                 session,
                 worker_id=worker_id,
                 task_type=candidate_type,
+                exclude_task_types=exclude_task_types,
                 limit=1,
                 lease_seconds=lease_seconds,
             )
@@ -92,12 +99,14 @@ class V2TaskRuntime:
         worker_id: str,
         task_type: Optional[str] = None,
         lease_seconds: int = 300,
+        exclude_task_types: Optional[Sequence[str]] = None,
     ):
         task = self._lease_next_task(
             session,
             worker_id=worker_id,
             task_type=task_type,
             lease_seconds=lease_seconds,
+            exclude_task_types=exclude_task_types,
         )
         if task is None:
             return None
