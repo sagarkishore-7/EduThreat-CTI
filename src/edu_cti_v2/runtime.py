@@ -9,7 +9,7 @@ import signal
 import threading
 import time
 from dataclasses import asdict, dataclass
-from typing import Optional
+from typing import Callable, Optional
 
 from src.edu_cti_v2.services.scheduler import V2SchedulerService
 from src.edu_cti_v2.worker import V2WorkerRunSummary, run_worker_loop
@@ -63,6 +63,8 @@ class V2RuntimeService:
         scheduler_service: Optional[V2SchedulerService] = None,
         scheduler_poll_interval_seconds: float = 5.0,
         prewarm_models: bool = True,
+        lease_recovery_interval_seconds: float = 15.0,
+        session_factory: Optional[Callable] = None,
     ) -> None:
         self.worker_count = max(worker_count, 1)
         self.task_type = task_type
@@ -70,6 +72,8 @@ class V2RuntimeService:
         self.lease_seconds = lease_seconds
         self.enable_scheduler = enable_scheduler
         self.prewarm_models = prewarm_models
+        self.lease_recovery_interval_seconds = max(float(lease_recovery_interval_seconds), 0.0)
+        self.session_factory = session_factory
         self.scheduler_service = scheduler_service or V2SchedulerService(
             poll_interval_seconds=scheduler_poll_interval_seconds,
         )
@@ -77,6 +81,7 @@ class V2RuntimeService:
         self._stop_event = threading.Event()
         self._worker_states: list[_WorkerThreadState] = []
         self._running = False
+        self._last_lease_recovery_monotonic = 0.0
 
     def _start_worker_thread(self, state: _WorkerThreadState) -> None:
         state.summary = None
@@ -118,6 +123,7 @@ class V2RuntimeService:
 
         self._stop_event.clear()
         self._worker_states = []
+        self._last_lease_recovery_monotonic = 0.0
 
         if self.prewarm_models and (self.task_type is None or self.task_type in {"enrich_source", "reenrich"}):
             _prewarm_ml_models()
@@ -185,10 +191,38 @@ class V2RuntimeService:
         logger.info("Stopped v2 runtime")
         return self.get_status()
 
+    def _recover_expired_leases(self) -> int:
+        try:
+            from src.edu_cti_v2.db import V2DatabaseSettings, create_session_factory
+            from src.edu_cti_v2.repositories import PipelineTaskRepository
+
+            session_factory = self.session_factory or create_session_factory(V2DatabaseSettings.from_env())
+            task_repository = PipelineTaskRepository()
+            with session_factory() as session:
+                recovered = task_repository.requeue_expired_leases(session, limit=200)
+                session.commit()
+            if recovered:
+                logger.warning("Recovered %d expired v2 task lease(s)", recovered)
+            return recovered
+        except Exception as exc:
+            logger.warning("v2 expired-lease recovery failed (non-fatal): %s", exc)
+            return 0
+
     def tick(self) -> None:
         """Restart any dead worker thread while the runtime is supposed to be running."""
         if not self._running or self._stop_event.is_set():
             return
+
+        now = time.monotonic()
+        if (
+            self.lease_recovery_interval_seconds > 0
+            and (
+                self._last_lease_recovery_monotonic == 0.0
+                or now - self._last_lease_recovery_monotonic >= self.lease_recovery_interval_seconds
+            )
+        ):
+            self._recover_expired_leases()
+            self._last_lease_recovery_monotonic = now
 
         for state in self._worker_states:
             if state.thread and state.thread.is_alive():

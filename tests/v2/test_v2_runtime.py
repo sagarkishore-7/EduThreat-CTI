@@ -110,6 +110,36 @@ def test_v2_runtime_service_restarts_dead_worker_threads(monkeypatch):
     assert stopped["workers"][0]["summary"]["stop_reason"] == "stopped"
 
 
+def test_v2_runtime_service_tick_recovers_expired_leases(monkeypatch):
+    def _fake_run_worker_loop(*, worker_id, stop_event, **_kwargs):
+        stop_event.wait(0.01)
+        return V2WorkerRunSummary(
+            processed_tasks=0,
+            idle_polls=0,
+            stop_reason="stopped",
+            worker_id=worker_id,
+            task_type=None,
+        )
+
+    recovered = []
+
+    monkeypatch.setattr("src.edu_cti_v2.runtime.run_worker_loop", _fake_run_worker_loop)
+    monkeypatch.setattr("src.edu_cti_v2.runtime._prewarm_ml_models", lambda: None)
+
+    runtime = V2RuntimeService(
+        worker_count=1,
+        enable_scheduler=False,
+        lease_recovery_interval_seconds=0.01,
+    )
+    runtime.start()
+    monkeypatch.setattr(runtime, "_recover_expired_leases", lambda: recovered.append(True) or 1)
+    runtime._last_lease_recovery_monotonic = 0.0
+    runtime.tick()
+    runtime.stop()
+
+    assert recovered == [True]
+
+
 def test_v2_runtime_service_skips_prewarm_for_fetch_only_workers(monkeypatch):
     prewarmed = []
 
