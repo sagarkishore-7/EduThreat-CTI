@@ -69,6 +69,7 @@ class V2RuntimeService:
         worker_count: int = 2,
         fetch_worker_count: Optional[int] = None,
         resolve_worker_count: Optional[int] = None,
+        canonicalize_worker_count: Optional[int] = None,
         task_type: Optional[str] = None,
         poll_interval_seconds: float = 5.0,
         lease_seconds: Optional[int] = None,
@@ -84,8 +85,11 @@ class V2RuntimeService:
             fetch_worker_count = max(1, min(2, self.worker_count))
         if resolve_worker_count is None:
             resolve_worker_count = 1
+        if canonicalize_worker_count is None:
+            canonicalize_worker_count = 1 if task_type is None else 0
         self.fetch_worker_count = max(fetch_worker_count, 0)
         self.resolve_worker_count = max(resolve_worker_count, 0)
+        self.canonicalize_worker_count = max(canonicalize_worker_count, 0)
         self.task_type = task_type
         self.poll_interval_seconds = poll_interval_seconds
         self.lease_seconds = lease_seconds
@@ -172,7 +176,13 @@ class V2RuntimeService:
                 state = _WorkerThreadState(
                     worker_id=worker_id,
                     thread=None,
-                    exclude_task_types=("orchestrate_plan", "refresh_analytics", "fetch_article", "resolve_url"),
+                    exclude_task_types=(
+                        "orchestrate_plan",
+                        "refresh_analytics",
+                        "fetch_article",
+                        "resolve_url",
+                        "canonicalize",
+                    ),
                 )
                 self._worker_states.append(state)
                 self._start_worker_thread(state)
@@ -196,6 +206,16 @@ class V2RuntimeService:
                 )
                 self._worker_states.append(state)
                 self._start_worker_thread(state)
+
+            for index in range(self.canonicalize_worker_count):
+                worker_id = f"v2-runtime:canonicalize:{index + 1}"
+                state = _WorkerThreadState(
+                    worker_id=worker_id,
+                    thread=None,
+                    task_type="canonicalize",
+                )
+                self._worker_states.append(state)
+                self._start_worker_thread(state)
         else:
             for index in range(self.worker_count):
                 worker_id = f"v2-runtime:{index + 1}"
@@ -209,10 +229,11 @@ class V2RuntimeService:
 
         self._running = True
         logger.info(
-            "Started v2 runtime: workers=%s fetch_workers=%s resolve_workers=%s task_type=%s scheduler=%s",
+            "Started v2 runtime: workers=%s fetch_workers=%s resolve_workers=%s canonicalize_workers=%s task_type=%s scheduler=%s",
             self.worker_count,
             self.fetch_worker_count,
             self.resolve_worker_count,
+            self.canonicalize_worker_count,
             self.task_type,
             self.enable_scheduler,
         )
@@ -284,6 +305,7 @@ class V2RuntimeService:
             "worker_count": self.worker_count,
             "fetch_worker_count": self.fetch_worker_count,
             "resolve_worker_count": self.resolve_worker_count,
+            "canonicalize_worker_count": self.canonicalize_worker_count,
             "task_type": self.task_type,
             "scheduler_enabled": self.enable_scheduler,
             "scheduler": self.scheduler_service.get_status() if self.enable_scheduler else None,
@@ -319,6 +341,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=_env_int("EDU_CTI_V2_RESOLVE_WORKER_COUNT"),
         help="Number of dedicated resolve_url worker threads",
+    )
+    parser.add_argument(
+        "--canonicalize-workers",
+        type=int,
+        default=_env_int("EDU_CTI_V2_CANONICALIZE_WORKER_COUNT"),
+        help="Number of dedicated canonicalize worker threads",
     )
     parser.add_argument("--task-type", type=str, default=None, help="Restrict all workers to one task type")
     parser.add_argument(
@@ -363,6 +391,7 @@ def main() -> None:
         worker_count=args.workers,
         fetch_worker_count=args.fetch_workers,
         resolve_worker_count=args.resolve_workers,
+        canonicalize_worker_count=args.canonicalize_workers,
         task_type=args.task_type,
         poll_interval_seconds=args.poll_interval,
         lease_seconds=args.lease_seconds,
