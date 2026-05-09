@@ -28,6 +28,15 @@ class ArticleRepository:
             .limit(1)
         )
 
+    @staticmethod
+    def build_list_fetch_attempts_stmt(source_incident_id, *, limit: int = 10) -> Select:
+        return (
+            select(ArticleFetchAttempt)
+            .where(ArticleFetchAttempt.source_incident_id == source_incident_id)
+            .order_by(ArticleFetchAttempt.attempted_at.desc())
+            .limit(limit)
+        )
+
     def get_selected_document(
         self,
         session: Session,
@@ -43,6 +52,16 @@ class ArticleRepository:
     ) -> ArticleDocument | None:
         stmt = self.build_get_document_by_source_url_stmt(source_incident_url_id)
         return session.execute(stmt).scalar_one_or_none()
+
+    def list_fetch_attempts(
+        self,
+        session: Session,
+        source_incident_id,
+        *,
+        limit: int = 10,
+    ) -> list[ArticleFetchAttempt]:
+        stmt = self.build_list_fetch_attempts_stmt(source_incident_id, limit=limit)
+        return list(session.execute(stmt).scalars().all())
 
     def add_document(self, session: Session, document: ArticleDocument) -> ArticleDocument:
         session.add(document)

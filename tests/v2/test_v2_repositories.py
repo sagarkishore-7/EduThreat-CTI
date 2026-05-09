@@ -4,6 +4,7 @@ from sqlalchemy.dialects import postgresql
 
 from src.edu_cti_v2.repositories import (
     AnalyticsRefreshRepository,
+    ArticleRepository,
     CanonicalIncidentRepository,
     PipelineRunRepository,
     PipelineTaskRepository,
@@ -91,6 +92,18 @@ def test_canonical_repository_identity_candidate_stmt_matches_institution_or_ven
     assert "canonical_incidents.status IN ('open', 'excluded')" in compiled
     assert "canonical_incidents.institution_name IN ('PowerSchool', 'Canvas')" in compiled
     assert "canonical_incidents.vendor_name IN ('PowerSchool', 'Canvas')" in compiled
+
+
+def test_article_repository_fetch_attempt_stmt_orders_newest_first():
+    stmt = ArticleRepository.build_list_fetch_attempts_stmt(
+        "00000000-0000-0000-0000-000000000111",
+        limit=5,
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "article_fetch_attempts.source_incident_id = '00000000-0000-0000-0000-000000000111'" in compiled
+    assert "ORDER BY article_fetch_attempts.attempted_at DESC" in compiled
+    assert "LIMIT 5" in compiled
 
 
 def test_canonical_repository_recent_stmt_joins_enrichment_and_orders_by_recency():

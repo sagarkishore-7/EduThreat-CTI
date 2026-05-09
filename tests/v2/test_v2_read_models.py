@@ -181,6 +181,7 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     canonical_repo.list_memberships.return_value = [membership]
     canonical_repo.list_timeline_events.return_value = [timeline_event]
     canonical_repo.get_selected_source_details.return_value = {
+        "source_incident_id": "00000000-0000-0000-0000-000000000111",
         "source_name": "googlenews_rss",
         "article_title": "Penn State ransomware update",
         "article_publish_date": "2026-05-09",
@@ -190,10 +191,26 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
 
     analytics_repo = Mock()
     analytics_repo.get_by_key.return_value = snapshot
+    article_repo = Mock()
+    article_repo.list_fetch_attempts.return_value = [
+        SimpleNamespace(
+            fetch_tier="oxylabs",
+            attempted_at=datetime(2026, 5, 9, 9, 15, tzinfo=timezone.utc),
+            worker_id="v2-runtime:fetch:0",
+            success=True,
+            http_status=200,
+            latency_ms=512,
+            content_length=12000,
+            error_code=None,
+            error_message=None,
+            response_metadata={"domain": "example.com"},
+        )
+    ]
 
     service = V2CanonicalReadService(
         canonical_repository=canonical_repo,
         analytics_refresh_repository=analytics_repo,
+        article_repository=article_repo,
     )
 
     detail = service.get_incident_detail(Mock(), canonical_id)
@@ -205,6 +222,8 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     assert detail["snapshot"]["timeline_count"] == 1
     assert detail["selected_source"]["source_name"] == "googlenews_rss"
     assert detail["selected_source"]["article_url"] == "https://example.com/article"
+    assert detail["fetch_attempts"][0]["fetch_tier"] == "oxylabs"
+    assert detail["fetch_attempts"][0]["http_status"] == 200
 
 
 def test_read_service_dashboard_summary_prefers_cached_snapshot():

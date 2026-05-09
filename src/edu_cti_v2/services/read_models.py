@@ -7,8 +7,14 @@ from typing import Any, Optional, Sequence
 
 from sqlalchemy.orm import Session
 
-from src.edu_cti_v2.models import CanonicalEnrichment, CanonicalIncident, CanonicalMembership, CanonicalTimelineEvent
-from src.edu_cti_v2.repositories import AnalyticsRefreshRepository, CanonicalIncidentRepository
+from src.edu_cti_v2.models import (
+    ArticleFetchAttempt,
+    CanonicalEnrichment,
+    CanonicalIncident,
+    CanonicalMembership,
+    CanonicalTimelineEvent,
+)
+from src.edu_cti_v2.repositories import AnalyticsRefreshRepository, ArticleRepository, CanonicalIncidentRepository
 
 
 def _serialize_membership(membership: CanonicalMembership) -> dict[str, Any]:
@@ -33,6 +39,21 @@ def _serialize_timeline_event(event: CanonicalTimelineEvent) -> dict[str, Any]:
         "event_description": event.event_description,
         "actor_attribution": event.actor_attribution,
         "source_enrichment_id": str(event.source_enrichment_id) if event.source_enrichment_id else None,
+    }
+
+
+def _serialize_fetch_attempt(attempt: ArticleFetchAttempt) -> dict[str, Any]:
+    return {
+        "fetch_tier": attempt.fetch_tier,
+        "attempted_at": attempt.attempted_at.isoformat() if attempt.attempted_at else None,
+        "worker_id": attempt.worker_id,
+        "success": bool(attempt.success),
+        "http_status": attempt.http_status,
+        "latency_ms": attempt.latency_ms,
+        "content_length": attempt.content_length,
+        "error_code": attempt.error_code,
+        "error_message": attempt.error_message,
+        "response_metadata": attempt.response_metadata or {},
     }
 
 
@@ -85,9 +106,11 @@ class V2CanonicalReadService:
         *,
         canonical_repository: Optional[CanonicalIncidentRepository] = None,
         analytics_refresh_repository: Optional[AnalyticsRefreshRepository] = None,
+        article_repository: Optional[ArticleRepository] = None,
     ) -> None:
         self.canonical_repository = canonical_repository or CanonicalIncidentRepository()
         self.analytics_refresh_repository = analytics_refresh_repository or AnalyticsRefreshRepository()
+        self.article_repository = article_repository or ArticleRepository()
 
     def list_recent_incidents(
         self,
@@ -173,6 +196,16 @@ class V2CanonicalReadService:
         memberships = self.canonical_repository.list_memberships(session, canonical_incident_id)
         timeline = self.canonical_repository.list_timeline_events(session, canonical_incident_id)
         selected_source = self.canonical_repository.get_selected_source_details(session, canonical_incident_id)
+        fetch_attempts = []
+        if selected_source and selected_source.get("source_incident_id"):
+            fetch_attempts = [
+                _serialize_fetch_attempt(attempt)
+                for attempt in self.article_repository.list_fetch_attempts(
+                    session,
+                    selected_source["source_incident_id"],
+                    limit=10,
+                )
+            ]
         snapshot = self.analytics_refresh_repository.get_by_key(
             session,
             f"canonical:{canonical_incident_id}",
@@ -187,6 +220,7 @@ class V2CanonicalReadService:
             "field_provenance": (enrichment.field_provenance if enrichment else None) or {},
             "canonical_projection": (enrichment.canonical_projection if enrichment else None) or {},
             "selected_source": selected_source,
+            "fetch_attempts": fetch_attempts,
             "memberships": [_serialize_membership(member) for member in memberships],
             "timeline": [_serialize_timeline_event(event) for event in timeline],
             "snapshot": (snapshot.state_payload if snapshot else None) or {},
