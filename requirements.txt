@@ -15,6 +15,11 @@ pandas>=2.1.0
 pydantic>=2.0.0
 python-dateutil>=2.8.0
 
+# Postgres v2 foundation
+sqlalchemy>=2.0.36
+psycopg[binary]>=3.2.3
+alembic>=1.14.0
+
 # Article extraction
 newspaper3k>=0.2.8
 lxml_html_clean>=0.1.0
