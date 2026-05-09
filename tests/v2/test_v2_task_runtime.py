@@ -205,6 +205,71 @@ def test_task_runtime_processes_resolve_url_task_and_marks_complete():
     task_repo.mark_completed.assert_called_once_with(session, task, {"urls_added": 1})
 
 
+def test_task_runtime_pauses_resolve_when_fetch_backlog_is_too_high():
+    task_repo = Mock()
+    source_repo = Mock()
+    resolve_service = Mock()
+
+    task_repo.count_active.return_value = 700
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        resolve_url_service=resolve_service,
+        max_fetch_backlog=600,
+    )
+    session = Mock()
+
+    processed = runtime.process_next_task(
+        session,
+        worker_id="resolve-worker-1",
+        task_type="resolve_url",
+    )
+
+    assert processed is None
+    task_repo.count_active.assert_called_once_with(
+        session,
+        task_types=("fetch_article",),
+    )
+    task_repo.lease_batch.assert_not_called()
+    resolve_service.resolve_source_incident_urls.assert_not_called()
+
+
+def test_task_runtime_still_leases_resolve_when_fetch_backlog_is_below_threshold():
+    task_repo = Mock()
+    source_repo = Mock()
+    resolve_service = Mock()
+
+    task = SimpleNamespace(id=uuid4(), task_type="resolve_url", target_id=uuid4())
+    source_incident = SimpleNamespace(id=task.target_id)
+    task_repo.count_active.return_value = 200
+    task_repo.lease_batch.return_value = [task]
+    source_repo.get_by_id.return_value = source_incident
+    resolve_service.resolve_source_incident_urls.return_value = {"urls_added": 1}
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        resolve_url_service=resolve_service,
+        max_fetch_backlog=600,
+    )
+    session = Mock()
+    session.get.return_value = task
+
+    processed = runtime.process_next_task(
+        session,
+        worker_id="resolve-worker-1",
+        task_type="resolve_url",
+    )
+
+    assert processed is task
+    task_repo.count_active.assert_called_once_with(
+        session,
+        task_types=("fetch_article",),
+    )
+    resolve_service.resolve_source_incident_urls.assert_called_once_with(session, source_incident)
+
+
 def test_task_runtime_processes_enrich_source_task_and_marks_complete():
     task_repo = Mock()
     source_repo = Mock()

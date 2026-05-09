@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from typing import Optional, Sequence
 
 from sqlalchemy.orm import Session
@@ -40,6 +41,7 @@ class V2TaskRuntime:
         canonicalization_service: Optional[V2CanonicalizationService] = None,
         analytics_refresh_service: Optional[V2AnalyticsRefreshService] = None,
         orchestration_service: Optional[V2OrchestrationService] = None,
+        max_fetch_backlog: Optional[int] = None,
     ) -> None:
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
         self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
@@ -51,6 +53,9 @@ class V2TaskRuntime:
         self.canonicalization_service = canonicalization_service
         self.analytics_refresh_service = analytics_refresh_service
         self.orchestration_service = orchestration_service
+        self.max_fetch_backlog = max_fetch_backlog if max_fetch_backlog is not None else int(
+            os.environ.get("EDU_CTI_V2_MAX_FETCH_BACKLOG", "600")
+        )
 
     def _lease_next_task(
         self,
@@ -64,6 +69,13 @@ class V2TaskRuntime:
         if task_type:
             if exclude_task_types and task_type in set(exclude_task_types):
                 return None
+            if task_type == "resolve_url" and self.max_fetch_backlog > 0:
+                fetch_backlog = self.pipeline_task_repository.count_active(
+                    session,
+                    task_types=("fetch_article",),
+                )
+                if fetch_backlog >= self.max_fetch_backlog:
+                    return None
             leased = self.pipeline_task_repository.lease_batch(
                 session,
                 worker_id=worker_id,
