@@ -77,15 +77,11 @@ class V2AnalyticsRefreshService:
         last_trigger_canonical_incident_id: str | None = None,
     ) -> dict[str, Any]:
         now = datetime.now(timezone.utc)
-
-        rollup = self.canonical_repository.get_dashboard_rollup(session)
-        dashboard_snapshot = {
-            "totals": rollup,
-            "top_countries": self.canonical_repository.get_country_breakdown(session),
-            "top_attack_categories": self.canonical_repository.get_attack_breakdown(session),
-            "refreshed_at": now.isoformat(),
-            "last_trigger_canonical_incident_id": last_trigger_canonical_incident_id,
-        }
+        dashboard_snapshot = self.read_service.build_dashboard_payload(
+            session,
+            refreshed_at=now.isoformat(),
+        )
+        dashboard_snapshot["last_trigger_canonical_incident_id"] = last_trigger_canonical_incident_id
         self.analytics_refresh_repository.upsert_snapshot(
             session,
             refresh_key="dashboard:global",
@@ -99,7 +95,7 @@ class V2AnalyticsRefreshService:
             "refreshed": True,
             "canonical_incident_id": last_trigger_canonical_incident_id,
             "snapshot_scope": "global",
-            "dashboard_totals": rollup,
+            "dashboard_totals": dashboard_snapshot.get("totals", {}),
             "snapshots_updated": 1,
         }
 

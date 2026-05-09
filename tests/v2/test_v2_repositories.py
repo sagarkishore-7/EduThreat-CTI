@@ -249,6 +249,21 @@ def test_canonical_repository_dashboard_rollup_stmt_counts_enriched_rows():
 
     assert "count(canonical_incidents.id)" in compiled.lower()
     assert "count(canonical_enrichments.id)" in compiled.lower()
+    assert "count(distinct(canonical_incidents.country_code))" in compiled.lower()
+    assert "count(distinct(canonical_incidents.ransomware_family))" in compiled.lower()
+
+
+def test_canonical_repository_ransomware_breakdown_stmt_orders_and_limits():
+    stmt = CanonicalIncidentRepository.build_ransomware_breakdown_stmt(
+        statuses=("open", "excluded"),
+        limit=12,
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "canonical_incidents.status IN ('open', 'excluded')" in compiled
+    assert "canonical_incidents.ransomware_family IS NOT NULL" in compiled
+    assert "GROUP BY canonical_incidents.ransomware_family" in compiled
+    assert "LIMIT 12" in compiled
 
 
 def test_analytics_refresh_repository_lookup_stmt_filters_by_refresh_key():

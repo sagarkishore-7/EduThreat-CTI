@@ -21,7 +21,15 @@ def _build_client(read_service):
 def test_v2_dashboard_endpoint_returns_read_service_payload():
     class _ReadService:
         def get_dashboard_summary(self, _session):
-            return {"totals": {"canonical_incident_count": 3}}
+            return {
+                "totals": {"canonical_incident_count": 3},
+                "stats": {"total_incidents": 3},
+                "incidents_by_country": [{"category": "United States", "count": 2}],
+                "incidents_by_attack_type": [],
+                "incidents_by_ransomware": [],
+                "incidents_over_time": [],
+                "recent_incidents": [],
+            }
 
     client = _build_client(_ReadService())
 
@@ -29,6 +37,8 @@ def test_v2_dashboard_endpoint_returns_read_service_payload():
 
     assert response.status_code == 200
     assert response.json()["totals"]["canonical_incident_count"] == 3
+    assert response.json()["stats"]["total_incidents"] == 3
+    assert response.json()["incidents_by_country"][0]["category"] == "United States"
 
 
 def test_v2_incidents_endpoint_returns_items_and_meta():

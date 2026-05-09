@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Any, Optional, Sequence
 
 from sqlalchemy.orm import Session
@@ -118,6 +118,93 @@ def _summary_from_canonical(
         "last_seen_at": canonical.last_seen_at.isoformat() if canonical.last_seen_at else None,
         "updated_at": canonical.updated_at.isoformat() if canonical.updated_at else None,
     }
+
+
+def _to_count_by_category(
+    items: list[dict[str, Any]],
+    *,
+    label_key: str,
+    count_key: str = "incident_count",
+    country_code_key: Optional[str] = None,
+) -> list[dict[str, Any]]:
+    total = sum(int(item.get(count_key) or 0) for item in items) or 0
+    results: list[dict[str, Any]] = []
+    for item in items:
+        count = int(item.get(count_key) or 0)
+        label = item.get(label_key)
+        if label is None:
+            continue
+        payload = {
+            "category": label,
+            "count": count,
+            "percentage": (count / total * 100.0) if total else 0.0,
+        }
+        if country_code_key:
+            payload["country_code"] = item.get(country_code_key)
+        results.append(payload)
+    return results
+
+
+def _to_time_series(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "date": str(item.get("bucket_start")),
+            "count": int(item.get("incident_count") or 0),
+        }
+        for item in items
+        if item.get("bucket_start") is not None
+    ]
+
+
+def _to_recent_incidents(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "incident_id": item["canonical_incident_id"],
+            "institution_name": item.get("display_name") or item.get("institution_name") or "Unknown",
+            "country": item.get("country"),
+            "attack_category": item.get("attack_category"),
+            "ransomware_family": item.get("ransomware_family"),
+            "incident_date": item.get("incident_date"),
+            "title": item.get("canonical_summary"),
+            "enriched_summary": item.get("canonical_summary"),
+            "threat_actor_name": item.get("threat_actor_name"),
+        }
+        for item in items
+    ]
+
+
+def _dashboard_stats_from_rollup(rollup: dict[str, Any], *, refreshed_at: str) -> dict[str, Any]:
+    total_incidents = int(rollup.get("canonical_incident_count") or 0)
+    enriched_incidents = int(rollup.get("enriched_canonical_count") or 0)
+    return {
+        "total_incidents": total_incidents,
+        "education_incidents": int(rollup.get("education_related_count") or 0),
+        "enriched_incidents": enriched_incidents,
+        "unenriched_incidents": max(total_incidents - enriched_incidents, 0),
+        "incidents_with_ransomware": int(rollup.get("incidents_with_ransomware") or 0),
+        "incidents_with_data_breach": int(rollup.get("incidents_with_data_breach") or 0),
+        "countries_affected": int(rollup.get("countries_affected") or 0),
+        "unique_threat_actors": int(rollup.get("unique_threat_actors") or 0),
+        "unique_ransomware_families": int(rollup.get("unique_ransomware_families") or 0),
+        "data_sources": 0,
+        "avg_recovery_days": None,
+        "total_financial_impact": 0,
+        "incidents_with_mitre": 0,
+        "last_updated": refreshed_at,
+    }
+
+
+def _is_full_dashboard_snapshot(payload: dict[str, Any]) -> bool:
+    required = {
+        "totals",
+        "stats",
+        "incidents_by_country",
+        "incidents_by_attack_type",
+        "incidents_by_ransomware",
+        "incidents_over_time",
+        "recent_incidents",
+    }
+    return required.issubset(payload.keys())
 
 
 class V2CanonicalReadService:
@@ -253,14 +340,60 @@ class V2CanonicalReadService:
 
     def get_dashboard_summary(self, session: Session) -> dict[str, Any]:
         snapshot = self.analytics_refresh_repository.get_by_key(session, "dashboard:global")
-        if snapshot is not None and snapshot.state_payload:
+        if snapshot is not None and snapshot.state_payload and _is_full_dashboard_snapshot(snapshot.state_payload):
             return snapshot.state_payload
 
-        rollup = self.canonical_repository.get_dashboard_rollup(session)
+        return self.build_dashboard_payload(session)
+
+    def build_dashboard_payload(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        refreshed_at: Optional[str] = None,
+    ) -> dict[str, Any]:
+        effective_refreshed_at = refreshed_at or datetime.now(timezone.utc).isoformat()
+        rollup = self.canonical_repository.get_dashboard_rollup(session, statuses=statuses)
+        countries = self.canonical_repository.get_country_breakdown(session, statuses=statuses)
+        attacks = self.canonical_repository.get_attack_breakdown(session, statuses=statuses)
+        ransomware = self.canonical_repository.get_ransomware_breakdown(session, statuses=statuses)
+        trend = self.canonical_repository.get_incident_trend(
+            session,
+            statuses=statuses,
+            bucket="month",
+            limit=24,
+        )
+        recent = self.list_incidents(
+            session,
+            limit=10,
+            offset=0,
+            statuses=statuses,
+            sort_by="incident_date",
+            sort_order="desc",
+        )["items"]
+
         return {
             "totals": rollup,
-            "top_countries": self.canonical_repository.get_country_breakdown(session),
-            "top_attack_categories": self.canonical_repository.get_attack_breakdown(session),
+            "stats": _dashboard_stats_from_rollup(rollup, refreshed_at=effective_refreshed_at),
+            "incidents_by_country": _to_count_by_category(
+                countries,
+                label_key="country",
+                country_code_key="country_code",
+            ),
+            "incidents_by_attack_type": _to_count_by_category(
+                attacks,
+                label_key="attack_category",
+            ),
+            "incidents_by_ransomware": _to_count_by_category(
+                ransomware,
+                label_key="ransomware_family",
+            ),
+            "incidents_over_time": _to_time_series(trend),
+            "recent_incidents": _to_recent_incidents(recent),
+            "top_countries": countries,
+            "top_attack_categories": attacks,
+            "top_ransomware_families": ransomware,
+            "refreshed_at": effective_refreshed_at,
         }
 
     def get_incident_facets(

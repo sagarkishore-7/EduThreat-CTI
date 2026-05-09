@@ -246,7 +246,15 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
 
 
 def test_read_service_dashboard_summary_prefers_cached_snapshot():
-    dashboard_snapshot = {"totals": {"canonical_incident_count": 5}}
+    dashboard_snapshot = {
+        "totals": {"canonical_incident_count": 5},
+        "stats": {"total_incidents": 5},
+        "incidents_by_country": [],
+        "incidents_by_attack_type": [],
+        "incidents_by_ransomware": [],
+        "incidents_over_time": [],
+        "recent_incidents": [],
+    }
     canonical_repo = Mock()
     analytics_repo = Mock()
     analytics_repo.get_by_key.return_value = SimpleNamespace(state_payload=dashboard_snapshot)
@@ -260,6 +268,78 @@ def test_read_service_dashboard_summary_prefers_cached_snapshot():
 
     assert summary == dashboard_snapshot
     canonical_repo.get_dashboard_rollup.assert_not_called()
+
+
+def test_read_service_dashboard_summary_rebuilds_when_cached_snapshot_is_legacy_shape():
+    canonical_repo = Mock()
+    canonical_repo.get_dashboard_rollup.return_value = {
+        "canonical_incident_count": 5,
+        "enriched_canonical_count": 4,
+        "education_related_count": 5,
+        "incidents_with_ransomware": 3,
+        "incidents_with_data_breach": 2,
+        "countries_affected": 2,
+        "unique_threat_actors": 2,
+        "unique_ransomware_families": 2,
+    }
+    canonical_repo.get_country_breakdown.return_value = [
+        {"country_code": "US", "country": "United States", "incident_count": 3}
+    ]
+    canonical_repo.get_attack_breakdown.return_value = [
+        {"attack_category": "ransomware_encryption", "incident_count": 2}
+    ]
+    canonical_repo.get_ransomware_breakdown.return_value = [
+        {"ransomware_family": "LockBit", "incident_count": 2}
+    ]
+    canonical_repo.get_incident_trend.return_value = [
+        {"bucket_start": "2026-05-01", "incident_count": 4}
+    ]
+    canonical_repo.list_recent_with_enrichment.return_value = [(
+        SimpleNamespace(
+            id=uuid4(),
+            institution_name="Penn State University",
+            vendor_name=None,
+            institution_type="university",
+            country="United States",
+            country_code="US",
+            region="Pennsylvania",
+            city="State College",
+            incident_date=date(2026, 5, 8),
+            date_precision="day",
+            attack_category="ransomware_encryption",
+            attack_vector="phishing_email",
+            threat_actor_name="SomeGroup",
+            ransomware_family="LockBit",
+            is_education_related=True,
+            severity="high",
+            canonical_summary="Penn State suffered a ransomware incident.",
+            status="open",
+            first_seen_at=datetime(2026, 5, 8, 8, 0, tzinfo=timezone.utc),
+            last_seen_at=datetime(2026, 5, 9, 8, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 5, 9, 9, 0, tzinfo=timezone.utc),
+        ),
+        SimpleNamespace(
+            selected_source_enrichment_id=uuid4(),
+            analytics_projection={"attack_category": "ransomware_encryption"},
+        ),
+        2,
+    )]
+    canonical_repo.count_recent.return_value = 1
+
+    analytics_repo = Mock()
+    analytics_repo.get_by_key.return_value = SimpleNamespace(state_payload={"totals": {"canonical_incident_count": 5}})
+
+    service = V2CanonicalReadService(
+        canonical_repository=canonical_repo,
+        analytics_refresh_repository=analytics_repo,
+    )
+
+    summary = service.get_dashboard_summary(Mock())
+
+    assert summary["stats"]["total_incidents"] == 5
+    assert summary["incidents_by_ransomware"][0]["category"] == "LockBit"
+    assert summary["recent_incidents"][0]["institution_name"] == "Penn State University"
+    canonical_repo.get_dashboard_rollup.assert_called_once()
 
 
 def test_read_service_incident_facets_use_repository_breakdowns():
@@ -319,3 +399,74 @@ def test_read_service_incident_trend_delegates_to_repository():
 
     assert result[0]["incident_count"] == 4
     canonical_repo.get_incident_trend.assert_called_once()
+
+
+def test_read_service_build_dashboard_payload_shapes_full_dashboard_response():
+    canonical_repo = Mock()
+    canonical_repo.get_dashboard_rollup.return_value = {
+        "canonical_incident_count": 8,
+        "enriched_canonical_count": 6,
+        "education_related_count": 7,
+        "incidents_with_ransomware": 4,
+        "incidents_with_data_breach": 3,
+        "countries_affected": 5,
+        "unique_threat_actors": 2,
+        "unique_ransomware_families": 3,
+    }
+    canonical_repo.get_country_breakdown.return_value = [
+        {"country_code": "US", "country": "United States", "incident_count": 4}
+    ]
+    canonical_repo.get_attack_breakdown.return_value = [
+        {"attack_category": "ransomware_encryption", "incident_count": 3}
+    ]
+    canonical_repo.get_ransomware_breakdown.return_value = [
+        {"ransomware_family": "LockBit", "incident_count": 2}
+    ]
+    canonical_repo.get_incident_trend.return_value = [
+        {"bucket_start": "2026-05-01", "incident_count": 4}
+    ]
+    canonical_repo.list_recent_with_enrichment.return_value = [(
+        SimpleNamespace(
+            id=uuid4(),
+            institution_name="Stanford University",
+            vendor_name=None,
+            institution_type="university",
+            country="United States",
+            country_code="US",
+            region="California",
+            city="Stanford",
+            incident_date=date(2026, 5, 8),
+            date_precision="day",
+            attack_category="ransomware_encryption",
+            attack_vector="phishing_email",
+            threat_actor_name="SomeGroup",
+            ransomware_family="LockBit",
+            is_education_related=True,
+            severity="high",
+            canonical_summary="Stanford suffered a ransomware incident.",
+            status="open",
+            first_seen_at=datetime(2026, 5, 8, 8, 0, tzinfo=timezone.utc),
+            last_seen_at=datetime(2026, 5, 9, 8, 0, tzinfo=timezone.utc),
+            updated_at=datetime(2026, 5, 9, 9, 0, tzinfo=timezone.utc),
+        ),
+        SimpleNamespace(
+            selected_source_enrichment_id=uuid4(),
+            analytics_projection={"attack_category": "ransomware_encryption"},
+        ),
+        3,
+    )]
+    canonical_repo.count_recent.return_value = 1
+
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+
+    payload = service.build_dashboard_payload(Mock(), refreshed_at="2026-05-10T10:00:00+00:00")
+
+    assert payload["totals"]["canonical_incident_count"] == 8
+    assert payload["stats"]["enriched_incidents"] == 6
+    assert payload["stats"]["unenriched_incidents"] == 2
+    assert payload["incidents_by_country"][0]["category"] == "United States"
+    assert payload["incidents_by_attack_type"][0]["category"] == "ransomware_encryption"
+    assert payload["incidents_by_ransomware"][0]["category"] == "LockBit"
+    assert payload["incidents_over_time"][0]["date"] == "2026-05-01"
+    assert payload["recent_incidents"][0]["incident_id"]
+    assert payload["top_ransomware_families"][0]["ransomware_family"] == "LockBit"

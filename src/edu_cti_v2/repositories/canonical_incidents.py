@@ -304,6 +304,21 @@ class CanonicalIncidentRepository:
                         else_=0,
                     )
                 ).label("education_related_count"),
+                func.sum(
+                    case(
+                        (CanonicalIncident.ransomware_family.is_not(None), 1),
+                        else_=0,
+                    )
+                ).label("incidents_with_ransomware"),
+                func.sum(
+                    case(
+                        (CanonicalIncident.attack_category.ilike("data_breach%"), 1),
+                        else_=0,
+                    )
+                ).label("incidents_with_data_breach"),
+                func.count(func.distinct(CanonicalIncident.country_code)).label("countries_affected"),
+                func.count(func.distinct(CanonicalIncident.threat_actor_name)).label("unique_threat_actors"),
+                func.count(func.distinct(CanonicalIncident.ransomware_family)).label("unique_ransomware_families"),
             )
             .select_from(CanonicalIncident)
             .outerjoin(CanonicalEnrichment, CanonicalEnrichment.canonical_incident_id == CanonicalIncident.id)
@@ -344,6 +359,24 @@ class CanonicalIncidentRepository:
             .where(CanonicalIncident.attack_category.is_not(None))
             .group_by(CanonicalIncident.attack_category)
             .order_by(func.count(CanonicalIncident.id).desc(), CanonicalIncident.attack_category.asc())
+            .limit(limit)
+        )
+
+    @staticmethod
+    def build_ransomware_breakdown_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+        limit: int = 10,
+    ) -> Select:
+        return (
+            select(
+                CanonicalIncident.ransomware_family,
+                func.count(CanonicalIncident.id).label("incident_count"),
+            )
+            .where(CanonicalIncident.status.in_(list(statuses)))
+            .where(CanonicalIncident.ransomware_family.is_not(None))
+            .group_by(CanonicalIncident.ransomware_family)
+            .order_by(func.count(CanonicalIncident.id).desc(), CanonicalIncident.ransomware_family.asc())
             .limit(limit)
         )
 
@@ -811,6 +844,11 @@ class CanonicalIncidentRepository:
             "canonical_incident_count": int(row.canonical_incident_count or 0),
             "enriched_canonical_count": int(row.enriched_canonical_count or 0),
             "education_related_count": int(row.education_related_count or 0),
+            "incidents_with_ransomware": int(row.incidents_with_ransomware or 0),
+            "incidents_with_data_breach": int(row.incidents_with_data_breach or 0),
+            "countries_affected": int(row.countries_affected or 0),
+            "unique_threat_actors": int(row.unique_threat_actors or 0),
+            "unique_ransomware_families": int(row.unique_ransomware_families or 0),
         }
 
     def get_country_breakdown(
@@ -879,6 +917,22 @@ class CanonicalIncidentRepository:
         return [
             {
                 "attack_category": row.attack_category,
+                "incident_count": int(row.incident_count or 0),
+            }
+            for row in session.execute(stmt).all()
+        ]
+
+    def get_ransomware_breakdown(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        limit: int = 10,
+    ) -> list[dict[str, object]]:
+        stmt = self.build_ransomware_breakdown_stmt(statuses=statuses, limit=limit)
+        return [
+            {
+                "ransomware_family": row.ransomware_family,
                 "incident_count": int(row.incident_count or 0),
             }
             for row in session.execute(stmt).all()
