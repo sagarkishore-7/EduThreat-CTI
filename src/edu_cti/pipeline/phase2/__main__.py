@@ -15,6 +15,7 @@ import sys
 import time
 import queue
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
@@ -781,11 +782,272 @@ def dict_to_incident(incident_dict: Dict, conn) -> BaseIncident:
     )
 
 
+_UNENRICHABLE_NAMES = {
+    "unknown", "unknown school", "unknown institution", "unknown university",
+    "unnamed", "unnamed school", "undisclosed", "n/a", "none",
+    "redacted", "unidentified",
+}
+
+
+def _build_queue_payload(incident: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "incident_id": incident["incident_id"],
+        "institution_name": incident.get("institution_name") or incident.get("victim_raw_name") or "Unknown",
+        "victim_raw_name": incident.get("victim_raw_name"),
+        "institution_type": None,
+        "country": incident.get("country"),
+        "region": incident.get("region"),
+        "city": incident.get("city"),
+        "incident_date": incident.get("incident_date"),
+        "date_precision": incident.get("date_precision") or "unknown",
+        "source_published_date": incident.get("source_published_date"),
+        "ingested_at": None,
+        "title": incident.get("title"),
+        "subtitle": None,
+        "primary_url": None,
+        "all_urls": incident.get("all_urls") or [],
+        "attack_type_hint": incident.get("attack_type_hint"),
+        "status": incident.get("status") or "suspected",
+        "source_confidence": incident.get("source_confidence") or "medium",
+        "notes": incident.get("notes"),
+        "re_enrich_attempts": incident.get("re_enrich_attempts"),
+        "re_enrich_reason": incident.get("re_enrich_reason"),
+    }
+
+
+def _fetch_single_incident_for_queue(
+    incident: Dict[str, Any],
+    *,
+    shared_rate_limiter,
+    min_delay_seconds: float,
+    max_delay_seconds: float,
+) -> Dict[str, Any]:
+    """
+    Fetch and prepare exactly one incident for the enrichment queue.
+
+    Runs in a fetch worker thread with its own DB connection and ArticleFetcher,
+    then returns a queue payload as soon as this incident's article state is ready.
+    """
+    from src.edu_cti.pipeline.phase2.utils.fetching_strategy import (
+        SmartArticleFetchingStrategy,
+        discover_articles_via_serp,
+    )
+    from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleFetcher, ArticleContent
+    from src.edu_cti.pipeline.phase2.storage.article_storage import get_all_articles_for_incident, save_article
+    from src.edu_cti.core.db import clear_broken_urls, mark_urls_as_broken
+    from src.edu_cti.pipeline.phase2.storage.db import mark_incident_skipped
+
+    incident_id = incident["incident_id"]
+    thread_conn = get_connection()
+    article_fetcher = ArticleFetcher()
+    fetching_strategy = SmartArticleFetchingStrategy(
+        conn=thread_conn,
+        rate_limiter=shared_rate_limiter,
+        article_fetcher=article_fetcher,
+    )
+    result = {
+        "incident_id": incident_id,
+        "processed": 1,
+        "articles_fetched": 0,
+        "errors": 0,
+        "queue_payload": None,
+        "checkpoint_phase": None,
+    }
+
+    try:
+        if _cancel_event.is_set():
+            result["processed"] = 0
+            return result
+
+        incident_name = (incident.get("institution_name") or incident.get("victim_raw_name") or "").strip()
+        incident_urls = incident.get("all_urls") or []
+        if not incident_urls and incident_name.lower() in _UNENRICHABLE_NAMES:
+            logger.info(
+                "Skipping unenrichable stub %s (name=%r, no URLs) — marking skipped",
+                incident_id,
+                incident_name,
+            )
+            mark_incident_skipped(
+                thread_conn,
+                incident_id,
+                reason=f"No URLs and unidentifiable institution name: {incident_name!r}",
+            )
+            thread_conn.commit()
+            return result
+
+        source_prefix = incident_id.split("_")[0]
+        if source_prefix in SKIP_ENRICHMENT_SOURCES:
+            logger.debug("Skipping fetch for IOC source incident: %s", incident_id)
+            return result
+
+        if source_prefix in FETCH_IMPOSSIBLE_SOURCES:
+            existing_articles = get_all_articles_for_incident(thread_conn, incident_id)
+            usable_existing_articles = [
+                article
+                for article in existing_articles
+                if article.get("fetch_successful")
+                and article.get("content")
+                and len(article["content"].strip()) > 50
+            ]
+            if usable_existing_articles:
+                result["queue_payload"] = _build_queue_payload(incident)
+                result["articles_fetched"] = 1
+                result["checkpoint_phase"] = "article_fetch"
+                return result
+
+            serp_urls = discover_articles_via_serp(incident)
+            fetched_any = False
+            for serp_url in serp_urls:
+                domain = fetching_strategy.rate_limiter.extract_domain(serp_url)
+                if not domain or not fetching_strategy.rate_limiter.can_fetch_from_domain(domain):
+                    continue
+                fetching_strategy.rate_limiter.wait_if_needed(domain)
+                try:
+                    ac = fetching_strategy.article_fetcher.fetch_article(serp_url)
+                    fetching_strategy.rate_limiter.record_fetch(domain, success=ac.fetch_successful)
+                    save_article(thread_conn, incident_id=incident_id, url=serp_url, article=ac)
+                    if ac.fetch_successful:
+                        thread_conn.commit()
+                        fetched_any = True
+                        break
+                except Exception as exc:
+                    logger.debug("SERP fetch error %s: %s", serp_url, exc)
+                    save_article(
+                        thread_conn,
+                        incident_id=incident_id,
+                        url=serp_url,
+                        article=ArticleContent(
+                            url=serp_url,
+                            title="",
+                            content="",
+                            fetch_successful=False,
+                            error_message=str(exc),
+                            content_length=0,
+                        ),
+                    )
+            if fetched_any:
+                result["queue_payload"] = _build_queue_payload(incident)
+                result["articles_fetched"] = 1
+                result["checkpoint_phase"] = "article_fetch"
+            else:
+                _record_serp_failure(thread_conn, incident_id)
+            return result
+
+        existing_articles = get_all_articles_for_incident(thread_conn, incident_id)
+        usable_existing_articles = [
+            article
+            for article in existing_articles
+            if article.get("fetch_successful")
+            and article.get("content")
+            and len(article["content"].strip()) > 50
+        ]
+        has_existing_articles = len(usable_existing_articles) > 0
+
+        results = fetching_strategy.fetch_articles_for_incidents([incident])
+        articles = results.get(incident_id, [])
+        successful_articles = [a for a in articles if a.fetch_successful]
+        failed_articles = [a for a in articles if not a.fetch_successful]
+
+        if failed_articles:
+            broken_urls = [a.url for a in failed_articles if a.url]
+            if broken_urls:
+                mark_urls_as_broken(thread_conn, incident_id, broken_urls)
+                logger.info("Marked %d URL(s) as broken for incident %s", len(broken_urls), incident_id)
+                thread_conn.commit()
+
+        should_queue = False
+        if successful_articles:
+            successful_urls = [a.url for a in successful_articles if a.url]
+            if successful_urls:
+                clear_broken_urls(thread_conn, incident_id, successful_urls)
+                thread_conn.commit()
+            should_queue = True
+            result["articles_fetched"] = 1
+            logger.info("Fetched %d articles for %s", len(successful_articles), incident_id)
+        elif has_existing_articles:
+            current_urls = set(incident.get("all_urls") or [])
+            existing_urls = {a["url"] for a in usable_existing_articles if a.get("url")}
+            aligned = current_urls & existing_urls if current_urls else existing_urls
+            if current_urls and not aligned:
+                thread_conn.execute("DELETE FROM articles WHERE incident_id = ?", (incident_id,))
+                thread_conn.commit()
+                logger.warning(
+                    "Purged %d stale article(s) for %s (DB URLs %s ∉ current all_urls %s)",
+                    len(existing_articles),
+                    incident_id,
+                    existing_urls,
+                    current_urls,
+                )
+            else:
+                should_queue = True
+                result["articles_fetched"] = 1
+                logger.info("Incident %s has %d aligned articles in DB", incident_id, len(existing_articles))
+
+        if should_queue:
+            result["queue_payload"] = _build_queue_payload(incident)
+            result["checkpoint_phase"] = "article_fetch"
+        elif not successful_articles and not has_existing_articles:
+            if source_prefix == "comparitech":
+                inc_name = incident.get("institution_name") or incident.get("victim_raw_name") or "an educational institution"
+                inc_date = incident.get("incident_date") or ""
+                inc_city = incident.get("city") or ""
+                inc_region = incident.get("region") or ""
+                inc_country = incident.get("country") or "US"
+                inc_notes = incident.get("notes") or ""
+                inc_title = incident.get("title") or f"Ransomware attack on {inc_name}"
+                location_parts = [p for p in [inc_city, inc_region, inc_country] if p]
+                location_str = ", ".join(location_parts) if location_parts else inc_country
+                synthetic_content = (
+                    f"{inc_title}\n\n"
+                    f"{inc_name} suffered a ransomware cyberattack"
+                    + (f" in {inc_date[:4]}" if inc_date else "") + "."
+                    + (f" Location: {location_str}." if location_str else "")
+                    + (f"\n\nDetails from Comparitech tracker: {inc_notes}" if inc_notes else "")
+                    + "\n\nThis is a confirmed ransomware incident targeting an educational institution "
+                    "recorded in the Comparitech ransomware attack database."
+                )
+                synthetic_article = ArticleContent(
+                    url=f"comparitech://synthetic/{incident_id}",
+                    title=inc_title,
+                    content=synthetic_content,
+                    fetch_successful=True,
+                )
+                save_article(
+                    thread_conn,
+                    incident_id=incident_id,
+                    url=synthetic_article.url,
+                    article=synthetic_article,
+                )
+                thread_conn.commit()
+                result["queue_payload"] = _build_queue_payload(incident)
+                result["checkpoint_phase"] = "article_fetch"
+                result["articles_fetched"] = 1
+                logger.info("Comparitech: synthesized article for %s (%s)", incident_id, inc_name)
+            else:
+                deleted = _record_serp_failure(thread_conn, incident_id)
+                result["errors"] += 1
+                if deleted:
+                    logger.info("Deleted unenrichable incident %s after exhausted SERP retries", incident_id)
+
+        return result
+    except Exception as exc:
+        logger.error("Error fetching articles for %s: %s", incident_id, exc, exc_info=True)
+        result["errors"] += 1
+        return result
+    finally:
+        try:
+            article_fetcher.http_client.close()
+        except Exception:
+            pass
+        thread_conn.close()
+
+
 def fetch_articles_phase(
     conn,
     unenriched: List[Dict],
     incident_queue: queue.Queue,
     limit: Optional[int] = None,
+    fetch_workers: Optional[int] = None,
     min_delay_seconds: float = 0.5,  # Oxylabs rotates IPs — no need for long domain delays
     max_delay_seconds: float = 1.5,
 ) -> Dict[str, int]:
@@ -802,6 +1064,8 @@ def fetch_articles_phase(
         unenriched: List of unenriched incidents
         incident_queue: Queue to push incidents with fetched articles
         limit: Maximum number of incidents to process
+        fetch_workers: Number of concurrent article fetch workers. Defaults to
+            a small bounded value based on workload if not provided.
         min_delay_seconds: Minimum delay between fetches
         max_delay_seconds: Maximum delay between fetches
     
@@ -902,32 +1166,18 @@ def fetch_articles_phase(
     if fast_path:
         logger.info(f"Fast-pathing {len(fast_path)} incidents with existing aligned articles straight to LLM queue")
         for fp_incident in fast_path:
-            incident_queue.put({
-                "incident_id": fp_incident["incident_id"],
-                "institution_name": fp_incident.get("institution_name") or "Unknown",
-                "victim_raw_name": fp_incident.get("victim_raw_name"),
-                "institution_type": None,
-                "country": fp_incident.get("country"),
-                "region": fp_incident.get("region"),
-                "city": fp_incident.get("city"),
-                "incident_date": fp_incident.get("incident_date"),
-                "date_precision": "unknown",
-                "source_published_date": fp_incident.get("source_published_date"),
-                "ingested_at": None,
-                "title": fp_incident.get("title"),
-                "subtitle": None,
-                "primary_url": None,
-                "all_urls": fp_incident.get("all_urls") or [],
-                "attack_type_hint": fp_incident.get("attack_type_hint"),
-                "status": "suspected",
-                "source_confidence": "medium",
-                "notes": fp_incident.get("notes"),
-                "re_enrich_attempts": fp_incident.get("re_enrich_attempts"),
-                "re_enrich_reason": fp_incident.get("re_enrich_reason"),
-            })
+            incident_queue.put(_build_queue_payload(fp_incident))
             stats["processed"] += 1
             stats["articles_fetched"] += 1
     incidents_to_process = needs_fetch
+
+    if not incidents_to_process:
+        logger.info("No fresh article fetch work after fast-path; returning queued incidents immediately")
+        try:
+            article_fetcher.http_client.close()
+        except Exception:
+            pass
+        return stats
 
     # Keep the watchdog alive during the fetch phase via a background thread.
     # The main loop heartbeats once per incident, but a single slow fetch_article()
@@ -947,330 +1197,76 @@ def fetch_articles_phase(
     _keepalive_thread.start()
 
     try:
-        # Process incidents one by one and push to queue as soon as articles are fetched
         total_incidents = len(incidents_to_process)
-        for idx, incident in enumerate(incidents_to_process, 1):
-            # Check for cancellation
-            if _cancel_event.is_set():
-                logger.info(f"Cancel requested — stopping article fetching at [{idx}/{total_incidents}]")
-                break
+        if fetch_workers is None:
+            fetch_workers = 1 if total_incidents <= 1 else min(2, total_incidents)
+        else:
+            fetch_workers = max(1, min(int(fetch_workers), total_incidents or 1))
+        logger.info(
+            "Starting %d fetch worker(s); incidents will be queued for LLM enrichment as soon as each fetch completes",
+            fetch_workers,
+        )
 
-            incident_id = incident["incident_id"]
+        future_map = {}
+        with ThreadPoolExecutor(max_workers=fetch_workers, thread_name_prefix="fetcher") as executor:
+            for incident in incidents_to_process:
+                if _cancel_event.is_set():
+                    logger.info("Cancel requested — stopping fetch submissions")
+                    break
+                future = executor.submit(
+                    _fetch_single_incident_for_queue,
+                    incident,
+                    shared_rate_limiter=rate_limiter,
+                    min_delay_seconds=min_delay_seconds,
+                    max_delay_seconds=max_delay_seconds,
+                )
+                future_map[future] = incident["incident_id"]
 
-            # Skip URL-less incidents with no identifiable institution name.
-            # These can never be enriched: SERP can't build a query and the LLM
-            # prompt hint would be empty. Mark them skipped to stop retry loops.
-            _UNENRICHABLE_NAMES = {
-                "unknown", "unknown school", "unknown institution", "unknown university",
-                "unnamed", "unnamed school", "undisclosed", "n/a", "none",
-                "redacted", "unidentified",
-            }
-            incident_name = (incident.get("institution_name") or incident.get("victim_raw_name") or "").strip()
-            incident_urls = incident.get("all_urls") or []
-            if not incident_urls and incident_name.lower() in _UNENRICHABLE_NAMES:
-                logger.info(f"Skipping unenrichable stub {incident_id} (name={incident_name!r}, no URLs) — marking skipped")
-                from src.edu_cti.pipeline.phase2.storage.db import mark_incident_skipped
-                mark_incident_skipped(conn, incident_id, reason=f"No URLs and unidentifiable institution name: {incident_name!r}")
-                conn.commit()
-                stats["processed"] += 1
-                continue
+            completed = 0
+            for future in as_completed(future_map):
+                completed += 1
+                progress_pct = (completed / total_incidents) * 100 if total_incidents else 100
+                _progress["step"] = "Fetching articles"
+                _progress["detail"] = f"{completed}/{total_incidents} ({stats['articles_fetched']} fetched)"
+                _progress["percent"] = int(progress_pct * 0.30)
+                if completed % 10 == 0 or completed == total_incidents:
+                    logger.info("Fetching [%d/%d] (%.1f%%)", completed, total_incidents, progress_pct)
+                if _watchdog:
+                    _watchdog.heartbeat()
 
-            # Skip IOC-only sources at fetch time — no point fetching abuse.ch/censys URLs
-            source_prefix = incident_id.split("_")[0]
-            if source_prefix in SKIP_ENRICHMENT_SOURCES:
-                logger.debug(f"Skipping fetch for IOC source incident: {incident_id}")
-                stats["processed"] += 1
-                continue
+                try:
+                    fetch_result = future.result()
+                except Exception as e:
+                    stats["errors"] += 1
+                    logger.error(
+                        "Unhandled fetch worker error for %s: %s",
+                        future_map.get(future, "unknown"),
+                        e,
+                        exc_info=True,
+                    )
+                    continue
 
-            # For paywall sources (e.g. securityweek), skip all 4 fetch tiers immediately.
-            # securityweek.com is now in BLOCKED_FETCH_DOMAINS so fetch_article() would
-            # return instantly with an error anyway — skip directly to SERP fallback.
-            if source_prefix in FETCH_IMPOSSIBLE_SOURCES:
-                from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
-                from src.edu_cti.pipeline.phase2.storage.article_storage import save_article, get_all_articles_for_incident
-                existing_articles = get_all_articles_for_incident(conn, incident_id)
-                usable_existing_articles = [
-                    article
-                    for article in existing_articles
-                    if article.get("fetch_successful")
-                    and article.get("content")
-                    and len(article["content"].strip()) > 50
-                ]
-                if not usable_existing_articles:
-                    serp_urls = discover_articles_via_serp(incident)
-                    fetched_any = False
-                    for serp_url in serp_urls:
-                        domain = fetching_strategy.rate_limiter.extract_domain(serp_url)
-                        if not domain or not fetching_strategy.rate_limiter.can_fetch_from_domain(domain):
-                            continue
-                        fetching_strategy.rate_limiter.wait_if_needed(domain)
-                        try:
-                            ac = fetching_strategy.article_fetcher.fetch_article(serp_url)
-                            fetching_strategy.rate_limiter.record_fetch(domain, success=ac.fetch_successful)
-                            save_article(conn, incident_id=incident_id, url=serp_url, article=ac)
-                            if ac.fetch_successful:
-                                conn.commit()
-                                fetched_any = True
-                                break
-                        except Exception as _e:
-                            logger.debug(f"SERP fetch error {serp_url}: {_e}")
-                            from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
-                            save_article(
-                                conn,
-                                incident_id=incident_id,
-                                url=serp_url,
-                                article=ArticleContent(
-                                    url=serp_url,
-                                    title="",
-                                    content="",
-                                    fetch_successful=False,
-                                    error_message=str(_e),
-                                    content_length=0,
-                                ),
-                            )
-                    if fetched_any:
-                        incident_queue.put({**incident, "incident_id": incident_id})
-                        stats["articles_fetched"] += 1
-                    else:
-                        _record_serp_failure(conn, incident_id)
-                else:
-                    incident_queue.put({**incident, "incident_id": incident_id})
-                stats["processed"] += 1
-                continue
+                stats["processed"] += fetch_result.get("processed", 0)
+                stats["articles_fetched"] += fetch_result.get("articles_fetched", 0)
+                stats["errors"] += fetch_result.get("errors", 0)
 
-            progress_pct = (idx / total_incidents) * 100
-            # Update module-level progress for pipeline manager
-            # Fetch phase maps to 0-30% of overall enrichment progress
-            _progress["step"] = "Fetching articles"
-            _progress["detail"] = f"{idx}/{total_incidents} ({stats['articles_fetched']} fetched)"
-            _progress["percent"] = int(progress_pct * 0.30)  # 0-30% range
-            if idx % 10 == 0 or idx == total_incidents:  # Log every 10th or last
-                logger.info(f"Fetching [{idx}/{total_incidents}] ({progress_pct:.1f}%)")
-            # Heartbeat on every fetch iteration so the watchdog knows the pipeline
-            # is alive even when enricher workers are blocked on an empty queue.
-            if _watchdog:
-                _watchdog.heartbeat()
-            
-            try:
-                # Check if incident already has articles in database
-                from src.edu_cti.pipeline.phase2.storage.article_storage import get_all_articles_for_incident
-                existing_articles = get_all_articles_for_incident(conn, incident_id)
-                usable_existing_articles = [
-                    article
-                    for article in existing_articles
-                    if article.get("fetch_successful")
-                    and article.get("content")
-                    and len(article["content"].strip()) > 50
-                ]
-                has_existing_articles = len(usable_existing_articles) > 0
-                
-                # Fetch articles for this single incident
-                results = fetching_strategy.fetch_articles_for_incidents([incident])
-                
-                articles = results.get(incident_id, [])
-                successful_articles = [a for a in articles if a.fetch_successful]
-                failed_articles = [a for a in articles if not a.fetch_successful]
-                
-                # Mark broken URLs in database
-                if failed_articles:
-                    from src.edu_cti.core.db import mark_urls_as_broken
-                    broken_urls = [a.url for a in failed_articles if a.url]
-                    if broken_urls:
-                        mark_urls_as_broken(conn, incident_id, broken_urls)
-                        logger.info(f"Marked {len(broken_urls)} URL(s) as broken for incident {incident_id}")
-                        conn.commit()
-                
-                # Determine if we should push to queue:
-                # 1. If we fetched new successful articles, OR
-                # 2. If incident already has articles in database (from previous runs)
-                should_push_to_queue = False
-                
-                if successful_articles:
-                    stats["articles_fetched"] += 1
-                    logger.info(f"Fetched {len(successful_articles)} articles for {incident_id}")
-                    
-                    # Clear broken status for successfully fetched URLs
-                    from src.edu_cti.core.db import clear_broken_urls
-                    successful_urls = [a.url for a in successful_articles if a.url]
-                    if successful_urls:
-                        clear_broken_urls(conn, incident_id, successful_urls)
-                        conn.commit()
-                    
-                    should_push_to_queue = True
-                elif has_existing_articles:
-                    # Validate that existing articles are actually from the incident's
-                    # current all_urls.  If all_urls changed between runs (e.g. scraper
-                    # re-ingested a different URL for the same incident), the DB articles
-                    # come from a stale URL set and will produce misaligned enrichment
-                    # (wrong primary_url vs all_urls, wrong article content).
-                    current_urls = set(incident.get("all_urls") or [])
-                    existing_urls = {a["url"] for a in usable_existing_articles if a.get("url")}
-                    aligned = current_urls & existing_urls if current_urls else existing_urls
-                    if current_urls and not aligned:
-                        # No overlap — stale articles from a different URL set.  Delete
-                        # them so the next SERP/fetch attempt starts fresh.
-                        conn.execute(
-                            "DELETE FROM articles WHERE incident_id = ?", (incident_id,)
-                        )
-                        conn.commit()
-                        logger.warning(
-                            f"Purged {len(existing_articles)} stale article(s) for {incident_id} "
-                            f"(DB URLs {existing_urls} ∉ current all_urls {current_urls})"
-                        )
-                        should_push_to_queue = False
-                    else:
-                        logger.info(f"Incident {incident_id} has {len(existing_articles)} aligned articles in DB")
-                        should_push_to_queue = True
-                else:
-                    # No articles fetched and nothing in DB.
-                    # For URL-less incidents (e.g. secondary stubs from roundup articles),
-                    # try SERP to find a dedicated article before giving up.
-                    incident_urls = incident.get("all_urls") or []
-                    serp_found = False
-                    if not incident_urls:
-                        from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
-                        from src.edu_cti.pipeline.phase2.storage.article_storage import save_article
-                        from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
-                        serp_urls = discover_articles_via_serp(incident)
-
-                        # Filter out the roundup URL that spawned this stub so SERP
-                        # doesn't loop back to the same multi-school article.
-                        # The roundup URL is stored in notes as "Extracted from roundup: <url>"
-                        notes_text = incident.get("notes") or ""
-                        roundup_url = None
-                        if notes_text.startswith("Extracted from roundup: "):
-                            roundup_url = notes_text.split("Extracted from roundup: ", 1)[1].split("\n")[0].strip()
-                        if roundup_url:
-                            before = len(serp_urls)
-                            serp_urls = [u for u in serp_urls if u.rstrip("/") != roundup_url.rstrip("/")]
-                            if len(serp_urls) < before:
-                                logger.debug(f"Filtered roundup URL from SERP results for {incident_id}")
-
-                        for serp_url in serp_urls:
-                            s_domain = fetching_strategy.rate_limiter.extract_domain(serp_url)
-                            if not s_domain or not fetching_strategy.rate_limiter.can_fetch_from_domain(s_domain):
-                                continue
-                            fetching_strategy.rate_limiter.wait_if_needed(s_domain)
-                            try:
-                                ac = fetching_strategy.article_fetcher.fetch_article(serp_url)
-                                fetching_strategy.rate_limiter.record_fetch(s_domain, success=ac.fetch_successful)
-                                save_article(conn, incident_id=incident_id, url=serp_url, article=ac)
-                                if ac.fetch_successful:
-                                    conn.commit()
-                                    serp_found = True
-                                    stats["articles_fetched"] += 1
-                                    logger.info(f"SERP found article for {incident_id}: {serp_url[:80]}")
-                                    should_push_to_queue = True
-                                    break
-                            except Exception as _se:
-                                logger.debug(f"SERP fetch error {serp_url}: {_se}")
-                                save_article(
-                                    conn,
-                                    incident_id=incident_id,
-                                    url=serp_url,
-                                    article=ArticleContent(
-                                        url=serp_url,
-                                        title="",
-                                        content="",
-                                        fetch_successful=False,
-                                        error_message=str(_se),
-                                        content_length=0,
-                                    ),
-                                )
-
-                    if not serp_found:
-                        source = incident_id.split("_")[0]
-
-                        # Comparitech incidents already carry fully structured metadata
-                        # (school name, date, ransomware strain, ransom amount/paid,
-                        # records affected) in the `notes` and `title` fields.
-                        # Synthesize an article from that data so the LLM can produce
-                        # a valid enrichment record without needing a real news article.
-                        if source == "comparitech":
-                            from src.edu_cti.pipeline.phase2.storage.article_storage import save_article
-                            from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent
-                            inc_name = incident.get("institution_name") or incident.get("victim_raw_name") or "an educational institution"
-                            inc_date = incident.get("incident_date") or ""
-                            inc_city = incident.get("city") or ""
-                            inc_region = incident.get("region") or ""
-                            inc_country = incident.get("country") or "US"
-                            inc_notes = incident.get("notes") or ""
-                            inc_title = incident.get("title") or f"Ransomware attack on {inc_name}"
-                            location_parts = [p for p in [inc_city, inc_region, inc_country] if p]
-                            location_str = ", ".join(location_parts) if location_parts else inc_country
-                            synthetic_content = (
-                                f"{inc_title}\n\n"
-                                f"{inc_name} suffered a ransomware cyberattack"
-                                + (f" in {inc_date[:4]}" if inc_date else "") + "."
-                                + (f" Location: {location_str}." if location_str else "")
-                                + (f"\n\nDetails from Comparitech tracker: {inc_notes}" if inc_notes else "")
-                                + "\n\nThis is a confirmed ransomware incident targeting an educational institution "
-                                "recorded in the Comparitech ransomware attack database."
-                            )
-                            synthetic_article = ArticleContent(
-                                url=f"comparitech://synthetic/{incident_id}",
-                                title=inc_title,
-                                content=synthetic_content,
-                                fetch_successful=True,
-                            )
-                            save_article(conn, incident_id=incident_id,
-                                         url=synthetic_article.url, article=synthetic_article)
-                            conn.commit()
-                            should_push_to_queue = True
-                            stats["articles_fetched"] += 1
-                            logger.info(f"Comparitech: synthesized article for {incident_id} ({inc_name})")
-                        else:
-                            # Track the failed SERP attempt. After SERP_MAX_ATTEMPTS the
-                            # incident is permanently deleted — it has no articles and
-                            # SERP consistently finds nothing, so it can never be enriched.
-                            deleted = _record_serp_failure(conn, incident_id)
-                            stats["errors"] += 1
-                            should_push_to_queue = False
-                            if deleted:
-                                stats["processed"] += 1  # count deletion as processed
-
-                # Push incident to queue for enrichment (with or without articles)
-                if should_push_to_queue:
-                    # Push incident to queue immediately after fetching articles
-                    # This allows enrichment to start processing while we continue fetching
-                    incident_dict = {
-                        "incident_id": incident_id,
-                        "institution_name": incident.get("institution_name") or incident.get("victim_raw_name") or "Unknown",
-                        "victim_raw_name": incident.get("victim_raw_name"),
-                        "institution_type": None,  # Will be read from DB
-                        "country": None,  # Will be read from DB
-                        "region": None,  # Will be read from DB
-                        "city": None,  # Will be read from DB
-                        "incident_date": None,  # Will be read from DB
-                        "date_precision": "unknown",  # Will be read from DB
-                        "source_published_date": incident.get("source_published_date"),
-                        "ingested_at": None,  # Will be read from DB
-                        "title": incident.get("title"),
-                        "subtitle": None,  # Will be read from DB
-                        "primary_url": None,  # Will be read from DB
-                        "all_urls": incident.get("all_urls", []),
-                        "attack_type_hint": None,  # Will be read from DB
-                        "status": "suspected",  # Will be read from DB
-                        "source_confidence": "medium",  # Will be read from DB
-                        "notes": None,  # Will be read from DB
-                    }
-                    
-                    # Push to queue - enrichment consumer will pick it up
-                    incident_queue.put(incident_dict)
+                incident_payload = fetch_result.get("queue_payload")
+                if incident_payload:
+                    incident_queue.put(incident_payload)
                     _metrics.set_gauge("pipeline_queue_depth", float(incident_queue.qsize()))
-                    logger.debug(f"Pushed {incident_id} to queue (size: {incident_queue.qsize()})")
-                    # Checkpoint: record that article fetch completed for this incident.
-                    # On crash+restart, incidents already checkpointed skip re-fetch.
-                    checkpoint_mark(conn, incident_id, phase="article_fetch")
+                    logger.debug(
+                        "Pushed %s to queue (size: %s)",
+                        incident_payload["incident_id"],
+                        incident_queue.qsize(),
+                    )
+                    checkpoint_mark(
+                        conn,
+                        incident_payload["incident_id"],
+                        phase=fetch_result.get("checkpoint_phase") or "article_fetch",
+                    )
 
-                stats["processed"] += 1
-                
-            except Exception as e:
-                stats["errors"] += 1
-                logger.error(f"Error fetching articles for {incident_id}: {e}")
-        
     except Exception as e:
-        stats["errors"] += len(incidents_to_process)
+        stats["errors"] += max(1, len(incidents_to_process))
         logger.error(f"Error during article fetching: {e}")
     finally:
         # Stop the keepalive thread — fetch phase is done.
@@ -2128,6 +2124,7 @@ def main() -> Optional[Dict[str, Any]]:
                 unenriched,
                 incident_queue=incident_queue,
                 limit=args.limit,
+                fetch_workers=max(1, min(num_workers, 4)),
                 min_delay_seconds=2.0,
                 max_delay_seconds=5.0,
             )

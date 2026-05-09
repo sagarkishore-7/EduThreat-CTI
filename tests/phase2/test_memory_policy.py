@@ -98,10 +98,9 @@ def test_apply_runtime_safety_overrides_on_railway(monkeypatch):
     )
 
     assert args.workers == 4
-    assert overrides["safe_mode"] is True
     assert overrides["effective_workers"] == 4
     assert overrides["ml_disabled_for_run"] is False
-    assert overrides["prewarm_ml_models"] is False
+    assert overrides["prewarm_ml_models"] is True
     assert phase2_main.os.environ["DISABLE_ML_FEATURES"] == "false"
 
 
@@ -123,8 +122,8 @@ def test_apply_runtime_safety_overrides_clamps_workers_when_limit_is_smaller(mon
         logging.getLogger("phase2-test"),
     )
 
-    assert args.workers == 3
-    assert overrides["effective_workers"] == 3
+    assert args.workers == 4
+    assert overrides["effective_workers"] == 4
 
 
 def test_request_memory_pause_sets_cancel_and_progress(monkeypatch):

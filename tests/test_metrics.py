@@ -371,6 +371,7 @@ class TestArticleFetcherMetrics:
 
         patched = patch.object(af_module, "_metrics", m)
         patched.start()
+        af_module._DYNAMIC_FAILED_DOMAINS.clear()
         fetcher = ArticleFetcher.__new__(ArticleFetcher)
         fetcher.http_client = MagicMock()
         fetcher.oxylabs_client = MagicMock()

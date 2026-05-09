@@ -2,6 +2,9 @@
 
 import importlib
 import json
+import queue
+import threading
+import time
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Optional
@@ -435,6 +438,69 @@ class TestEnrichmentDatabase:
 
 
 class TestFetchingStrategy:
+    def test_fetch_articles_phase_streams_fast_incidents_while_slow_fetch_is_running(self, temp_db):
+        conn, _ = temp_db
+        phase2_main = importlib.import_module("src.edu_cti.pipeline.phase2.__main__")
+        phase2_main._cancel_event.clear()
+
+        incidents = [
+            {
+                "incident_id": "slow_incident",
+                "institution_name": "Slow University",
+                "victim_raw_name": "Slow University",
+                "title": "Slow University breach",
+                "all_urls": ["https://example.com/slow"],
+                "has_articles": False,
+            },
+            {
+                "incident_id": "fast_incident",
+                "institution_name": "Fast University",
+                "victim_raw_name": "Fast University",
+                "title": "Fast University breach",
+                "all_urls": ["https://example.com/fast"],
+                "has_articles": False,
+            },
+        ]
+
+        q = queue.Queue()
+
+        def _fake_fetch_single(incident, **_kwargs):
+            if incident["incident_id"] == "slow_incident":
+                time.sleep(0.35)
+            else:
+                time.sleep(0.05)
+            return {
+                "incident_id": incident["incident_id"],
+                "processed": 1,
+                "articles_fetched": 1,
+                "errors": 0,
+                "queue_payload": {"incident_id": incident["incident_id"]},
+                "checkpoint_phase": "article_fetch",
+            }
+
+        selector_instance = Mock()
+        selector_instance.get_random_incidents_for_enrichment.return_value = incidents
+
+        def _run():
+            phase2_main.fetch_articles_phase(conn, incidents, incident_queue=q, limit=2)
+
+        with patch(
+            "src.edu_cti.pipeline.phase2.utils.fetching_strategy.SmartArticleFetchingStrategy",
+            return_value=selector_instance,
+        ), patch(
+            "src.edu_cti.pipeline.phase2.__main__._fetch_single_incident_for_queue",
+            side_effect=_fake_fetch_single,
+        ), patch.object(
+            phase2_main, "checkpoint_mark"
+        ):
+            thread = threading.Thread(target=_run, daemon=True)
+            thread.start()
+            queued = q.get(timeout=0.2)
+            assert queued["incident_id"] == "fast_incident"
+            assert thread.is_alive()
+            thread.join(timeout=2)
+            assert not thread.is_alive()
+
     def test_get_random_incidents_strips_internal_placeholder_urls(self, temp_db):
         conn, _ = temp_db
         incident = BaseIncident(

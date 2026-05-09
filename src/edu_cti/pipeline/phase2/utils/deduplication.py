@@ -11,6 +11,7 @@ from __future__ import annotations
 import logging
 import re
 import sqlite3
+import json
 from datetime import datetime, timedelta, timezone
 from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
@@ -459,8 +460,217 @@ _COMPARABLE_FLAT_FIELDS = [
     "dwell_time_days", "primary_cve_id", "malware_families",
 ]
 
+_FLAT_PROTECTED_COLUMNS = {"incident_id", "created_at", "updated_at"}
+
+
+def _is_missing_merge_value(value: Any) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, str):
+        return value.strip() == ""
+    if isinstance(value, (list, dict, tuple, set)):
+        return len(value) == 0
+    return False
+
+
+def _deep_fill_missing(target: Any, source: Any) -> Any:
+    """Fill missing fields in target from source without overwriting present values."""
+    if isinstance(target, dict) and isinstance(source, dict):
+        merged = dict(target)
+        for key, src_value in source.items():
+            if key not in merged or _is_missing_merge_value(merged.get(key)):
+                merged[key] = src_value
+            else:
+                merged[key] = _deep_fill_missing(merged[key], src_value)
+        return merged
+    if isinstance(target, list) and isinstance(source, list) and not target and source:
+        return list(source)
+    if _is_missing_merge_value(target) and not _is_missing_merge_value(source):
+        return source
+    return target
+
+
+def _merge_flat_rows(
+    keep_row: Optional[sqlite3.Row],
+    dup_row: Optional[sqlite3.Row],
+    *,
+    best_name: Optional[str],
+    now: str,
+) -> Optional[Dict[str, Any]]:
+    if not keep_row and not dup_row:
+        return None
+
+    base = dict(keep_row) if keep_row else {}
+    dup = dict(dup_row) if dup_row else {}
+    merged = dict(base) if base else dict(dup)
+
+    for key, dup_value in dup.items():
+        if key in _FLAT_PROTECTED_COLUMNS:
+            continue
+        if _is_missing_merge_value(merged.get(key)) and not _is_missing_merge_value(dup_value):
+            merged[key] = dup_value
+
+    if best_name:
+        merged["institution_name"] = best_name
+    if keep_row and "created_at" in keep_row.keys() and keep_row["created_at"]:
+        merged["created_at"] = keep_row["created_at"]
+    elif dup_row and "created_at" in dup_row.keys() and dup_row["created_at"]:
+        merged["created_at"] = dup_row["created_at"]
+    merged["updated_at"] = now
+    return merged
+
+
+def _load_json_blob(blob: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not blob or not isinstance(blob, str):
+        return None
+    try:
+        payload = json.loads(blob)
+    except Exception:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _sync_final_payload_with_flat(
+    payload: Dict[str, Any],
+    merged_flat: Dict[str, Any],
+) -> Dict[str, Any]:
+    canonical = dict(payload.get("canonical") or {})
+    canonical.update(merged_flat)
+    analytics = dict(payload.get("analytics_projection") or {})
+    analytics.update(merged_flat)
+
+    synced = dict(payload)
+    synced["canonical"] = canonical
+    synced["analytics_projection"] = analytics
+
+    for key, value in merged_flat.items():
+        if key == "incident_id":
+            continue
+        synced[key] = value
+
+    raw_extraction = payload.get("raw_extraction")
+    if isinstance(raw_extraction, dict):
+        synced["raw_extraction"] = _deep_fill_missing(raw_extraction, analytics)
+
+    typed = payload.get("typed_enrichment")
+    if isinstance(typed, dict):
+        synced["typed_enrichment"] = _deep_fill_missing(typed, canonical)
+
+    return synced
+
+
+def _merge_latest_enrichment_snapshots(
+    conn: sqlite3.Connection,
+    keep_id: str,
+    dup_id: str,
+    merged_flat: Optional[Dict[str, Any]],
+    now: str,
+) -> None:
+    keep_snapshot = conn.execute(
+        """
+        SELECT raw_response_payload, raw_extraction_json, final_enrichment_json, storage_metadata,
+               enrichment_version, enrichment_confidence, llm_provider, llm_model,
+               extraction_mode, prompt_version, schema_version, mapper_version,
+               post_processing_version, created_at, updated_at
+        FROM incident_enrichments
+        WHERE incident_id = ?
+        """,
+        (keep_id,),
+    ).fetchone()
+    dup_snapshot = conn.execute(
+        """
+        SELECT raw_response_payload, raw_extraction_json, final_enrichment_json, storage_metadata,
+               enrichment_version, enrichment_confidence, llm_provider, llm_model,
+               extraction_mode, prompt_version, schema_version, mapper_version,
+               post_processing_version, created_at, updated_at
+        FROM incident_enrichments
+        WHERE incident_id = ?
+        """,
+        (dup_id,),
+    ).fetchone()
+
+    if not keep_snapshot and not dup_snapshot:
+        return
+
+    keep_data = dict(keep_snapshot) if keep_snapshot else {}
+    dup_data = dict(dup_snapshot) if dup_snapshot else {}
+    merged = dict(keep_data) if keep_data else dict(dup_data)
+
+    for field in (
+        "raw_response_payload",
+        "storage_metadata",
+        "enrichment_version",
+        "enrichment_confidence",
+        "llm_provider",
+        "llm_model",
+        "extraction_mode",
+        "prompt_version",
+        "schema_version",
+        "mapper_version",
+        "post_processing_version",
+    ):
+        if _is_missing_merge_value(merged.get(field)) and not _is_missing_merge_value(dup_data.get(field)):
+            merged[field] = dup_data.get(field)
+
+    keep_raw = _load_json_blob(keep_data.get("raw_extraction_json"))
+    dup_raw = _load_json_blob(dup_data.get("raw_extraction_json"))
+    if keep_raw or dup_raw:
+        merged_raw = _deep_fill_missing(keep_raw or {}, dup_raw or {})
+        merged["raw_extraction_json"] = json.dumps(merged_raw, indent=2)
+
+    keep_final = _load_json_blob(keep_data.get("final_enrichment_json"))
+    dup_final = _load_json_blob(dup_data.get("final_enrichment_json"))
+    if keep_final or dup_final:
+        merged_final = _deep_fill_missing(keep_final or {}, dup_final or {})
+        if merged_flat:
+            merged_final = _sync_final_payload_with_flat(merged_final, merged_flat)
+        merged["final_enrichment_json"] = json.dumps(merged_final, indent=2)
+
+    created_at = keep_data.get("created_at") or dup_data.get("created_at") or now
+    merged["created_at"] = created_at
+    merged["updated_at"] = now
+
+    exists = keep_snapshot is not None
+    columns = [
+        "raw_response_payload",
+        "raw_extraction_json",
+        "final_enrichment_json",
+        "storage_metadata",
+        "enrichment_version",
+        "enrichment_confidence",
+        "llm_provider",
+        "llm_model",
+        "extraction_mode",
+        "prompt_version",
+        "schema_version",
+        "mapper_version",
+        "post_processing_version",
+        "created_at",
+        "updated_at",
+    ]
+    values = [merged.get(col) for col in columns]
+
+    if exists:
+        conn.execute(
+            f"""
+            UPDATE incident_enrichments
+            SET {', '.join(f'{col} = ?' for col in columns)}
+            WHERE incident_id = ?
+            """,
+            (*values, keep_id),
+        )
+    else:
+        conn.execute(
+            f"""
+            INSERT INTO incident_enrichments (incident_id, {', '.join(columns)})
+            VALUES (?, {', '.join('?' for _ in columns)})
+            """,
+            (keep_id, *values),
+        )
+
 
 def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id: str) -> None:
+    now = datetime.utcnow().isoformat()
     keep_row = conn.execute(
         """
         SELECT i.*,
@@ -486,6 +696,14 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
         return
 
     # Read flat rows NOW before the deletion loop removes them
+    keep_flat_full = conn.execute(
+        "SELECT * FROM incident_enrichments_flat WHERE incident_id = ?",
+        (keep_id,),
+    ).fetchone()
+    dup_flat_full = conn.execute(
+        "SELECT * FROM incident_enrichments_flat WHERE incident_id = ?",
+        (dup_id,),
+    ).fetchone()
     _keep_flat = conn.execute(
         f"SELECT {', '.join(_COMPARABLE_FLAT_FIELDS)} FROM incident_enrichments_flat WHERE incident_id = ?",
         (keep_id,),
@@ -524,6 +742,7 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
         "screenshot_url": keep_row["screenshot_url"] or dup_row["screenshot_url"],
         "source_detail_url": keep_row["source_detail_url"] or dup_row["source_detail_url"],
         "attack_type_hint": keep_row["attack_type_hint"] or dup_row["attack_type_hint"],
+        "institution_type": keep_row["institution_type"] or dup_row["institution_type"],
         "country": keep_row["country"] or dup_row["country"],
         "country_code": keep_row["country_code"] or dup_row["country_code"],
         "region": keep_row["region"] or dup_row["region"],
@@ -543,6 +762,7 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
             screenshot_url = ?,
             source_detail_url = ?,
             attack_type_hint = ?,
+            institution_type = ?,
             country = ?,
             country_code = ?,
             region = ?,
@@ -561,6 +781,7 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
             keep_fields["screenshot_url"],
             keep_fields["source_detail_url"],
             keep_fields["attack_type_hint"],
+            keep_fields["institution_type"],
             keep_fields["country"],
             keep_fields["country_code"],
             keep_fields["region"],
@@ -570,20 +791,40 @@ def _merge_duplicate_into_keeper(conn: sqlite3.Connection, keep_id: str, dup_id:
             keep_fields["institution_name"],
             keep_fields["victim_raw_name"],
             keep_fields["notes"],
-            datetime.utcnow().isoformat(),
+            now,
             keep_id,
         ),
     )
 
-    if best_name:
-        conn.execute(
-            """
-            UPDATE incident_enrichments_flat
-            SET institution_name = ?, updated_at = ?
-            WHERE incident_id = ?
-            """,
-            (best_name, datetime.utcnow().isoformat(), keep_id),
-        )
+    merged_flat = _merge_flat_rows(
+        keep_flat_full,
+        dup_flat_full,
+        best_name=best_name,
+        now=now,
+    )
+    if merged_flat:
+        flat_columns = list(merged_flat.keys())
+        if keep_flat_full:
+            update_columns = [key for key in flat_columns if key != "incident_id"]
+            conn.execute(
+                f"""
+                UPDATE incident_enrichments_flat
+                SET {', '.join(f'{col} = ?' for col in update_columns)}
+                WHERE incident_id = ?
+                """,
+                (*[merged_flat[col] for col in update_columns], keep_id),
+            )
+        else:
+            conn.execute(
+                f"""
+                INSERT INTO incident_enrichments_flat ({', '.join(flat_columns)})
+                VALUES ({', '.join('?' for _ in flat_columns)})
+                """,
+                tuple(merged_flat[col] for col in flat_columns),
+            )
+        _merge_latest_enrichment_snapshots(conn, keep_id, dup_id, merged_flat, now)
+    else:
+        _merge_latest_enrichment_snapshots(conn, keep_id, dup_id, None, now)
 
     conn.execute(
         """

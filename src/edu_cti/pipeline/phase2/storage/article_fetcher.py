@@ -34,6 +34,17 @@ logger = logging.getLogger(__name__)
 from src.edu_cti.core import metrics as _metrics
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _prefer_oxylabs_before_browser() -> bool:
+    """Railway safe mode prefers the cloud fetch tier before local browser work."""
+    if not _env_flag("PHASE2_RAILWAY_SAFE_MODE", "0"):
+        return False
+    return bool(os.environ.get("RAILWAY_SERVICE_ID") or os.environ.get("RAILWAY_ENVIRONMENT"))
+
+
 def _fetch_domain(url: str) -> str:
     """Extract eTLD+1 domain label from a URL for metric labels."""
     try:
@@ -587,14 +598,24 @@ class ArticleFetcher:
             logger.info(f"FETCH FAIL tier=Oxylabs domain={domain}")
             return None
 
-        # Standard tier order: try the local Chromium / curl_cffi fallback
-        # first (free), then the paid Oxylabs cloud scraper.
-        article_content = _try_httpclient()
-        if article_content:
-            return article_content
-        oxylabs_content = _try_oxylabs()
-        if oxylabs_content:
-            return oxylabs_content
+        # Railway safe mode prefers Oxylabs before local browser work to avoid
+        # burning memory on Chromium for cases the cloud fetcher can satisfy.
+        if _prefer_oxylabs_before_browser():
+            oxylabs_content = _try_oxylabs()
+            if oxylabs_content:
+                return oxylabs_content
+            article_content = _try_httpclient()
+            if article_content:
+                return article_content
+        else:
+            # Standard tier order: try the local Chromium / curl_cffi fallback
+            # first (free), then the paid Oxylabs cloud scraper.
+            article_content = _try_httpclient()
+            if article_content:
+                return article_content
+            oxylabs_content = _try_oxylabs()
+            if oxylabs_content:
+                return oxylabs_content
 
         # --- Tier 4: archive.org (free, historical fallback) ---
         _t0 = time.time()

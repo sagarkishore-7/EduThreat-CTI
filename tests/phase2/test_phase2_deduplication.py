@@ -1,5 +1,6 @@
 """Tests for Phase 2 post-enrichment deduplication."""
 
+import json
 from datetime import datetime
 
 import pytest
@@ -336,6 +337,59 @@ class TestDeduplication:
             "SELECT 1 FROM incidents WHERE incident_id = ?",
             (incident1.incident_id,),
         ).fetchone() is None
+
+    def test_deduplicate_by_institution_null_fills_missing_structured_fields(self, temp_db):
+        conn, _ = temp_db
+
+        keeper = _incident("darkreading", "https://example.com/merge-keeper", "2026-04-09", "Test University")
+        duplicate = _incident("oxylabs_news", "https://example.com/merge-dup", "2026-04-09", "Test University")
+
+        insert_incident(conn, keeper)
+        insert_incident(conn, duplicate)
+
+        save_enrichment_result(
+            conn,
+            keeper.incident_id,
+            _enrichment(
+                "This is the longer survivor summary that should keep the darkreading row alive.",
+                keeper.all_urls[0],
+                institution_name="Test University",
+            ),
+            raw_json_data={
+                "institution_name": "Test University",
+                "attack_category": "ransomware",
+            },
+        )
+        save_enrichment_result(
+            conn,
+            duplicate.incident_id,
+            _enrichment(
+                "short",
+                duplicate.all_urls[0],
+                institution_name="Test University",
+            ),
+            raw_json_data={
+                "institution_name": "Test University",
+                "attack_category": "ransomware",
+                "vendor_name": "Instructure Holdings",
+            },
+        )
+
+        stats = deduplicate_by_institution(conn, window_days=14)
+
+        assert stats["removed"] == 1
+        flat_row = conn.execute(
+            "SELECT vendor_name FROM incident_enrichments_flat WHERE incident_id = ?",
+            (keeper.incident_id,),
+        ).fetchone()
+        assert flat_row["vendor_name"] == "Instructure Holdings"
+
+        latest_row = conn.execute(
+            "SELECT final_enrichment_json FROM incident_enrichments WHERE incident_id = ?",
+            (keeper.incident_id,),
+        ).fetchone()
+        latest_payload = json.loads(latest_row["final_enrichment_json"])
+        assert latest_payload["analytics_projection"]["vendor_name"] == "Instructure Holdings"
 
     def test_deduplicate_skips_unenriched_incidents_with_same_institution_name(self, temp_db):
         """Unenriched incidents should remain separate until each has Phase 2 output."""

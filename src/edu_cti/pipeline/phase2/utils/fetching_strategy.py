@@ -8,6 +8,7 @@ to avoid bot detection and ensure efficient article fetching.
 import random
 import time
 import logging
+import threading
 from typing import List, Dict, Set, Optional, Tuple
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -217,6 +218,7 @@ class DomainRateLimiter:
         
         # Permanently blocked domains
         self.permanently_blocked: Set[str] = set()
+        self._lock = threading.Lock()
     
     def extract_domain(self, url: str) -> str:
         """Extract domain from URL."""
@@ -233,28 +235,30 @@ class DomainRateLimiter:
     
     def is_domain_blocked(self, domain: str) -> bool:
         """Check if domain is currently blocked."""
-        if domain in self.permanently_blocked:
-            return True
-        
-        if domain in self.domain_blocks:
-            block_until = self.domain_blocks[domain]
-            if datetime.utcnow() < block_until:
+        with self._lock:
+            if domain in self.permanently_blocked:
                 return True
-            else:
-                # Block expired, remove it
-                del self.domain_blocks[domain]
-        
-        return False
+            
+            if domain in self.domain_blocks:
+                block_until = self.domain_blocks[domain]
+                if datetime.utcnow() < block_until:
+                    return True
+                else:
+                    # Block expired, remove it
+                    del self.domain_blocks[domain]
+            
+            return False
     
     def block_domain(self, domain: str, permanent: bool = False) -> None:
         """Block a domain temporarily or permanently."""
-        if permanent:
-            self.permanently_blocked.add(domain)
-            logger.warning(f"Permanently blocked domain: {domain}")
-        else:
-            block_until = datetime.utcnow() + timedelta(seconds=self.block_duration_seconds)
-            self.domain_blocks[domain] = block_until
-            logger.warning(f"Temporarily blocked domain {domain} until {block_until}")
+        with self._lock:
+            if permanent:
+                self.permanently_blocked.add(domain)
+                logger.warning(f"Permanently blocked domain: {domain}")
+            else:
+                block_until = datetime.utcnow() + timedelta(seconds=self.block_duration_seconds)
+                self.domain_blocks[domain] = block_until
+                logger.warning(f"Temporarily blocked domain {domain} until {block_until}")
     
     def can_fetch_from_domain(self, domain: str) -> bool:
         """Check if we can fetch from this domain right now."""
@@ -270,14 +274,15 @@ class DomainRateLimiter:
         one_hour_ago = now - timedelta(hours=1)
         
         # Clean up old fetch times
-        if domain in self.domain_fetch_counts:
-            self.domain_fetch_counts[domain] = [
-                fetch_time for fetch_time in self.domain_fetch_counts[domain]
-                if fetch_time > one_hour_ago
-            ]
-        
-        # Check if we've exceeded rate limit
-        recent_fetches = len(self.domain_fetch_counts.get(domain, []))
+        with self._lock:
+            if domain in self.domain_fetch_counts:
+                self.domain_fetch_counts[domain] = [
+                    fetch_time for fetch_time in self.domain_fetch_counts[domain]
+                    if fetch_time > one_hour_ago
+                ]
+            
+            # Check if we've exceeded rate limit
+            recent_fetches = len(self.domain_fetch_counts.get(domain, []))
         if recent_fetches >= self.max_fetches_per_hour:
             logger.debug(f"Rate limit exceeded for domain {domain} ({recent_fetches} fetches in last hour)")
             _metrics.increment("domain_perm_blocked_total", labels={"domain": domain})
@@ -290,8 +295,9 @@ class DomainRateLimiter:
         if not domain:
             return
         
-        if domain in self.domain_last_fetch:
-            last_fetch = self.domain_last_fetch[domain]
+        with self._lock:
+            last_fetch = self.domain_last_fetch.get(domain)
+        if last_fetch:
             elapsed = (datetime.utcnow() - last_fetch).total_seconds()
             
             # Random delay between min and max
@@ -309,14 +315,15 @@ class DomainRateLimiter:
             return
         
         now = datetime.utcnow()
-        self.domain_last_fetch[domain] = now
-        
-        if success:
-            self.domain_fetch_counts[domain].append(now)
-        else:
-            # Multiple failures might indicate bot detection
-            # Track failures and potentially block domain
-            pass
+        with self._lock:
+            self.domain_last_fetch[domain] = now
+            
+            if success:
+                self.domain_fetch_counts[domain].append(now)
+            else:
+                # Multiple failures might indicate bot detection
+                # Track failures and potentially block domain
+                pass
 
 
 class SmartArticleFetchingStrategy:
