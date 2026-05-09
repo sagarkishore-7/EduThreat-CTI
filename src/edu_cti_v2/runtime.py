@@ -17,6 +17,10 @@ from src.edu_cti_v2.worker import V2WorkerRunSummary, run_worker_loop
 logger = logging.getLogger(__name__)
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass
 class _WorkerThreadState:
     worker_id: str
@@ -138,6 +142,7 @@ class V2RuntimeService:
 
 
 def build_parser() -> argparse.ArgumentParser:
+    default_enable_scheduler = _env_flag("EDU_CTI_V2_ENABLE_SCHEDULER", "1")
     parser = argparse.ArgumentParser(description="Run the EduThreat-CTI v2 unified worker runtime")
     parser.add_argument(
         "--workers",
@@ -169,6 +174,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable recurring plan scheduling and run workers only",
     )
+    parser.set_defaults(enable_scheduler=default_enable_scheduler)
     return parser
 
 
@@ -183,7 +189,7 @@ def main() -> None:
         task_type=args.task_type,
         poll_interval_seconds=args.poll_interval,
         lease_seconds=args.lease_seconds,
-        enable_scheduler=not args.no_scheduler,
+        enable_scheduler=args.enable_scheduler and not args.no_scheduler,
         scheduler_poll_interval_seconds=args.scheduler_poll_interval,
     )
 

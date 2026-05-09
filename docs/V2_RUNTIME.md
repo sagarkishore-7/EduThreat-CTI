@@ -2,6 +2,9 @@
 
 This document describes the operational entrypoints for the fresh Postgres-backed `v2` stack.
 
+For the full Railway service-by-service deployment guide, see
+[RAILWAY_V2_DEPLOY.md](RAILWAY_V2_DEPLOY.md).
+
 ## Service Split
 
 The `v2` rollout is designed around two long-running services:
@@ -23,6 +26,7 @@ These commands are installed from `pyproject.toml`:
 - `eduthreat-v2-scheduler`
 - `eduthreat-v2-runtime`
 - `eduthreat-v2-migrate`
+- `eduthreat-v2-preflight`
 
 ## Recommended Production Commands
 
@@ -34,6 +38,7 @@ eduthreat-v2-migrate upgrade head
 
 Optional preflight after deploy:
 
+- `eduthreat-v2-preflight --require-ready`
 - `GET /api/admin/v2/preflight`
 - `POST /api/admin/v2/login`
 
@@ -76,6 +81,7 @@ eduthreat-v2-runtime --workers 2 --no-scheduler
 ### Runtime
 
 - `EDU_CTI_V2_WORKER_COUNT`
+- `EDU_CTI_V2_ENABLE_SCHEDULER`
 - `LOG_LEVEL`
 - existing source/API credentials used by collection and enrichment
 

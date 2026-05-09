@@ -12,6 +12,7 @@ Welcome to the EduThreat-CTI documentation. This index helps you find the right 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**: System architecture and design
 - **[POSTGRES_V2_BLUEPRINT.md](POSTGRES_V2_BLUEPRINT.md)**: Approved v2 redesign for Postgres, split services, and canonical lineage
 - **[V2_RUNTIME.md](V2_RUNTIME.md)**: v2 API/worker runtime commands and deployment notes
+- **[RAILWAY_V2_DEPLOY.md](RAILWAY_V2_DEPLOY.md)**: step-by-step Railway deployment plan for the new v2 stack
 - **[ADDING_SOURCES.md](ADDING_SOURCES.md)**: Guide for adding new data sources
 - **[CONTRIBUTING.md](../CONTRIBUTING.md)**: Contribution guidelines
 - **[DATABASE.md](DATABASE.md)**: Database schema and operations
@@ -43,6 +44,7 @@ Welcome to the EduThreat-CTI documentation. This index helps you find the right 
 - **[ARCHITECTURE.md](ARCHITECTURE.md)**: Complete system architecture, data flow, and module organization
 - **[POSTGRES_V2_BLUEPRINT.md](POSTGRES_V2_BLUEPRINT.md)**: Fresh-start v2 architecture and rollout target
 - **[V2_RUNTIME.md](V2_RUNTIME.md)**: Runtime and deployment guide for the Postgres-backed v2 stack
+- **[RAILWAY_V2_DEPLOY.md](RAILWAY_V2_DEPLOY.md)**: concrete Railway deployment and bring-up checklist for v2
 
 ### Database
 
@@ -95,6 +97,7 @@ Welcome to the EduThreat-CTI documentation. This index helps you find the right 
 - [ARCHITECTURE.md](ARCHITECTURE.md)
 - [POSTGRES_V2_BLUEPRINT.md](POSTGRES_V2_BLUEPRINT.md)
 - [V2_RUNTIME.md](V2_RUNTIME.md)
+- [RAILWAY_V2_DEPLOY.md](RAILWAY_V2_DEPLOY.md)
 
 ### Database
 - [DATABASE.md](DATABASE.md)
