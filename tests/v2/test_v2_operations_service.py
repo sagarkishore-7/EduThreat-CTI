@@ -45,6 +45,7 @@ def test_operations_service_runtime_status_uses_repo_and_count_queries():
     task_repo = Mock()
     task_repo.get_status_summary.return_value = [{"task_type": "fetch_article", "status": "queued", "task_count": 3}]
     task_repo.list_recent.return_value = []
+    task_repo.count_expired_leases.return_value = 2
 
     run_repo = Mock()
     run_repo.list_recent.return_value = []
@@ -63,6 +64,7 @@ def test_operations_service_runtime_status_uses_repo_and_count_queries():
 
     assert payload["counts"]["source_incidents"] == 12
     assert payload["counts"]["canonical_incidents"] == 4
+    assert payload["queue_health"]["expired_leases"] == 2
     assert payload["task_summary"][0]["task_count"] == 3
 
 

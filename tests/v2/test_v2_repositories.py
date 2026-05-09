@@ -25,6 +25,15 @@ def test_pipeline_task_repository_lease_stmt_uses_skip_locked():
     assert "pipeline_tasks.lease_expires_at <" in compiled
 
 
+def test_pipeline_task_repository_expired_lease_stmt_uses_skip_locked():
+    stmt = PipelineTaskRepository.build_expired_leases_stmt(limit=10)
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "FOR UPDATE SKIP LOCKED" in compiled
+    assert "pipeline_tasks.status = 'leased'" in compiled
+    assert "pipeline_tasks.lease_expires_at <" in compiled
+
+
 def test_pipeline_task_repository_lease_stmt_can_exclude_task_types():
     stmt = PipelineTaskRepository.build_lease_batch_stmt(
         exclude_task_types=("orchestrate_plan",),

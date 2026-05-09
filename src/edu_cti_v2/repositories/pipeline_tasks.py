@@ -80,6 +80,23 @@ class PipelineTaskRepository:
         )
 
     @staticmethod
+    def build_expired_leases_stmt(
+        *,
+        now: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> Select:
+        now = now or datetime.now(timezone.utc)
+        return (
+            select(PipelineTask)
+            .where(PipelineTask.status == "leased")
+            .where(PipelineTask.lease_expires_at.is_not(None))
+            .where(PipelineTask.lease_expires_at < now)
+            .order_by(PipelineTask.lease_expires_at.asc(), PipelineTask.created_at.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+
+    @staticmethod
     def build_count_active_stmt(
         *,
         statuses: Sequence[str] = ("queued", "leased"),
@@ -176,6 +193,25 @@ class PipelineTaskRepository:
         session.add(task)
         return True
 
+    def requeue_expired_leases(
+        self,
+        session: Session,
+        *,
+        now: Optional[datetime] = None,
+        limit: int = 50,
+    ) -> int:
+        now = now or datetime.now(timezone.utc)
+        stmt = self.build_expired_leases_stmt(now=now, limit=limit)
+        tasks = list(session.execute(stmt).scalars().all())
+        for task in tasks:
+            task.status = "queued"
+            task.lease_owner = None
+            task.lease_token = None
+            task.lease_expires_at = None
+            task.available_at = now
+            session.add(task)
+        return len(tasks)
+
     def get_status_summary(self, session: Session) -> list[dict[str, object]]:
         stmt = self.build_status_summary_stmt()
         return [
@@ -186,6 +222,16 @@ class PipelineTaskRepository:
             }
             for row in session.execute(stmt).all()
         ]
+
+    def count_expired_leases(self, session: Session, *, now: Optional[datetime] = None) -> int:
+        now = now or datetime.now(timezone.utc)
+        stmt = (
+            select(func.count(PipelineTask.id))
+            .where(PipelineTask.status == "leased")
+            .where(PipelineTask.lease_expires_at.is_not(None))
+            .where(PipelineTask.lease_expires_at < now)
+        )
+        return int(session.execute(stmt).scalar_one() or 0)
 
     def count_active(
         self,

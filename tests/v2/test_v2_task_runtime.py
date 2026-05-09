@@ -27,6 +27,7 @@ def test_task_runtime_processes_fetch_article_task_and_marks_complete():
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
     assert processed is task
+    task_repo.requeue_expired_leases.assert_called_once_with(session, limit=50)
     fetch_service.fetch_articles_for_source_incident.assert_called_once_with(
         session,
         source_incident,
@@ -67,6 +68,7 @@ def test_task_runtime_prefers_fetch_over_resolve_when_unspecified():
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
     assert processed is fetch_task
+    task_repo.requeue_expired_leases.assert_called_once_with(session, limit=50)
     fetch_service.fetch_articles_for_source_incident.assert_called_once_with(
         session,
         fetch_source_incident,

@@ -101,6 +101,7 @@ class V2TaskRuntime:
         lease_seconds: int = 300,
         exclude_task_types: Optional[Sequence[str]] = None,
     ):
+        self.pipeline_task_repository.requeue_expired_leases(session, limit=50)
         task = self._lease_next_task(
             session,
             worker_id=worker_id,
@@ -236,13 +237,13 @@ class V2TaskRuntime:
         lease_seconds: int = 300,
         exclude_task_types: Optional[Sequence[str]] = None,
     ):
-        task = self._lease_next_task(
+        task_id = self.lease_next_task(
             session,
             worker_id=worker_id,
             task_type=task_type,
             lease_seconds=lease_seconds,
             exclude_task_types=exclude_task_types,
         )
-        if task is None:
+        if task_id is None:
             return None
-        return self.process_leased_task(session, task_id=task.id, worker_id=worker_id)
+        return self.process_leased_task(session, task_id=task_id, worker_id=worker_id)

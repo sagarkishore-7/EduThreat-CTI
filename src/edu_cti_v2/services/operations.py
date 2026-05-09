@@ -99,6 +99,9 @@ class V2OperationsService:
                 "source_enrichments": source_enrichment_count,
                 "canonical_incidents": canonical_incident_count,
             },
+            "queue_health": {
+                "expired_leases": self.pipeline_task_repository.count_expired_leases(session),
+            },
             "task_summary": self.pipeline_task_repository.get_status_summary(session),
             "recent_tasks": recent_tasks,
             "recent_runs": latest_runs,
