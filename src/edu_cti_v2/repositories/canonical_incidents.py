@@ -21,6 +21,57 @@ class CanonicalIncidentRepository:
     """Repository boundary for canonical incident and membership access."""
 
     @staticmethod
+    def _apply_list_filters(
+        stmt: Select,
+        *,
+        statuses: Sequence[str],
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> Select:
+        stmt = stmt.where(CanonicalIncident.status.in_(list(statuses)))
+
+        if search:
+            pattern = f"%{search.strip()}%"
+            stmt = stmt.where(
+                or_(
+                    CanonicalIncident.institution_name.ilike(pattern),
+                    CanonicalIncident.vendor_name.ilike(pattern),
+                    CanonicalIncident.canonical_summary.ilike(pattern),
+                    CanonicalIncident.threat_actor_name.ilike(pattern),
+                    CanonicalIncident.ransomware_family.ilike(pattern),
+                    CanonicalIncident.attack_category.ilike(pattern),
+                )
+            )
+        if country_code:
+            stmt = stmt.where(CanonicalIncident.country_code == country_code.upper())
+        if attack_category:
+            stmt = stmt.where(CanonicalIncident.attack_category == attack_category)
+        if institution_type:
+            stmt = stmt.where(CanonicalIncident.institution_type == institution_type)
+        if severity:
+            stmt = stmt.where(CanonicalIncident.severity == severity)
+        if is_education_related is not None:
+            stmt = stmt.where(CanonicalIncident.is_education_related.is_(is_education_related))
+        if has_vendor is True:
+            stmt = stmt.where(CanonicalIncident.vendor_name.is_not(None))
+        elif has_vendor is False:
+            stmt = stmt.where(CanonicalIncident.vendor_name.is_(None))
+        if date_from:
+            stmt = stmt.where(CanonicalIncident.incident_date.is_not(None))
+            stmt = stmt.where(CanonicalIncident.incident_date >= date_from)
+        if date_to:
+            stmt = stmt.where(CanonicalIncident.incident_date.is_not(None))
+            stmt = stmt.where(CanonicalIncident.incident_date <= date_to)
+        return stmt
+
+    @staticmethod
     def build_get_by_id_stmt(canonical_incident_id: str) -> Select:
         return (
             select(CanonicalIncident)
@@ -66,6 +117,16 @@ class CanonicalIncidentRepository:
         *,
         statuses: Sequence[str] = ("open",),
         limit: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ) -> Select:
         membership_count = (
             select(func.count(CanonicalMembership.id))
@@ -74,15 +135,57 @@ class CanonicalIncidentRepository:
             .scalar_subquery()
         )
         return (
-            select(
+            CanonicalIncidentRepository._apply_list_filters(
+                select(
                 CanonicalIncident,
                 CanonicalEnrichment,
                 membership_count.label("membership_count"),
             )
             .outerjoin(CanonicalEnrichment, CanonicalEnrichment.canonical_incident_id == CanonicalIncident.id)
-            .where(CanonicalIncident.status.in_(list(statuses)))
+                ,
+                statuses=statuses,
+                search=search,
+                country_code=country_code,
+                attack_category=attack_category,
+                institution_type=institution_type,
+                severity=severity,
+                is_education_related=is_education_related,
+                has_vendor=has_vendor,
+                date_from=date_from,
+                date_to=date_to,
+            )
             .order_by(CanonicalIncident.last_seen_at.desc(), CanonicalIncident.created_at.desc())
+            .offset(offset)
             .limit(limit)
+        )
+
+    @staticmethod
+    def build_count_recent_stmt(
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> Select:
+        stmt = select(func.count(CanonicalIncident.id))
+        return CanonicalIncidentRepository._apply_list_filters(
+            stmt,
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
         )
 
     @staticmethod
@@ -246,9 +349,61 @@ class CanonicalIncidentRepository:
         *,
         statuses: Sequence[str] = ("open",),
         limit: int = 50,
+        offset: int = 0,
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
     ):
-        stmt = self.build_list_recent_stmt(statuses=statuses, limit=limit)
+        stmt = self.build_list_recent_stmt(
+            statuses=statuses,
+            limit=limit,
+            offset=offset,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+        )
         return list(session.execute(stmt).all())
+
+    def count_recent(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> int:
+        stmt = self.build_count_recent_stmt(
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        return int(session.execute(stmt).scalar_one() or 0)
 
     def get_dashboard_rollup(
         self,

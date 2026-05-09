@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from datetime import date
 from typing import Iterator, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -47,23 +48,54 @@ async def get_v2_dashboard(
 @router.get("/incidents")
 async def list_v2_incidents(
     limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=100000),
     status: Optional[List[str]] = Query(None),
+    search: Optional[str] = Query(None, min_length=1, max_length=200),
+    country_code: Optional[str] = Query(None, min_length=2, max_length=2),
+    attack_category: Optional[str] = Query(None),
+    institution_type: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+    is_education_related: Optional[bool] = Query(None),
+    has_vendor: Optional[bool] = Query(None),
+    date_from: Optional[date] = Query(None),
+    date_to: Optional[date] = Query(None),
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
 ):
     """List recent canonical incidents from the v2 Postgres layer."""
     statuses = tuple(status) if status else ("open",)
-    items = read_service.list_recent_incidents(
+    result = read_service.list_incidents(
         session,
         limit=limit,
+        offset=offset,
         statuses=statuses,
+        search=search,
+        country_code=country_code.upper() if country_code else None,
+        attack_category=attack_category,
+        institution_type=institution_type,
+        severity=severity,
+        is_education_related=is_education_related,
+        has_vendor=has_vendor,
+        date_from=date_from,
+        date_to=date_to,
     )
     return {
-        "items": items,
+        "items": result["items"],
         "meta": {
             "limit": limit,
-            "returned": len(items),
+            "offset": offset,
+            "returned": len(result["items"]),
+            "total": result["total"],
             "statuses": list(statuses),
+            "search": search,
+            "country_code": country_code.upper() if country_code else None,
+            "attack_category": attack_category,
+            "institution_type": institution_type,
+            "severity": severity,
+            "is_education_related": is_education_related,
+            "has_vendor": has_vendor,
+            "date_from": date_from.isoformat() if date_from else None,
+            "date_to": date_to.isoformat() if date_to else None,
         },
     }
 

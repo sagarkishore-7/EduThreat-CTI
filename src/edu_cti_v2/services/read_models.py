@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Optional, Sequence
 
 from sqlalchemy.orm import Session
@@ -95,10 +96,56 @@ class V2CanonicalReadService:
         limit: int = 50,
         statuses: Sequence[str] = ("open",),
     ) -> list[dict[str, Any]]:
+        return self.list_incidents(
+            session,
+            limit=limit,
+            statuses=statuses,
+        )["items"]
+
+    def list_incidents(
+        self,
+        session: Session,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        statuses: Sequence[str] = ("open",),
+        search: Optional[str] = None,
+        country_code: Optional[str] = None,
+        attack_category: Optional[str] = None,
+        institution_type: Optional[str] = None,
+        severity: Optional[str] = None,
+        is_education_related: Optional[bool] = None,
+        has_vendor: Optional[bool] = None,
+        date_from: Optional[date] = None,
+        date_to: Optional[date] = None,
+    ) -> dict[str, Any]:
         rows = self.canonical_repository.list_recent_with_enrichment(
             session,
             statuses=statuses,
             limit=limit,
+            offset=offset,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
+        )
+        total = self.canonical_repository.count_recent(
+            session,
+            statuses=statuses,
+            search=search,
+            country_code=country_code,
+            attack_category=attack_category,
+            institution_type=institution_type,
+            severity=severity,
+            is_education_related=is_education_related,
+            has_vendor=has_vendor,
+            date_from=date_from,
+            date_to=date_to,
         )
         items: list[dict[str, Any]] = []
         for canonical, enrichment, membership_count in rows:
@@ -109,7 +156,10 @@ class V2CanonicalReadService:
                     membership_count=int(membership_count or 0),
                 )
             )
-        return items
+        return {
+            "items": items,
+            "total": total,
+        }
 
     def get_incident_detail(self, session: Session, canonical_incident_id: str) -> dict[str, Any] | None:
         canonical = self.canonical_repository.get_by_id(session, canonical_incident_id)
@@ -147,4 +197,3 @@ class V2CanonicalReadService:
             "top_countries": self.canonical_repository.get_country_breakdown(session),
             "top_attack_categories": self.canonical_repository.get_attack_breakdown(session),
         }
-
