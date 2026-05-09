@@ -97,8 +97,25 @@ def test_ensure_initial_processing_task_enqueues_fetch_task_once():
     assert task.task_type == "fetch_article"
     assert task.target_table == "source_incidents"
     assert task.target_id == incident.id
-    assert task.priority == 40
+    assert task.priority == 60
     assert task.payload["source_incident_id"] == str(incident.id)
+
+
+def test_ensure_initial_processing_task_enqueues_lower_priority_resolve_task():
+    state_repo = Mock()
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    service = V2IntakeService(
+        source_state_repository=state_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+    incident = _source_incident(with_article_url=False)
+
+    task = service.ensure_initial_processing_task(session, incident)
+
+    assert task.task_type == "resolve_url"
+    assert task.priority == 20
 
 
 def test_ensure_initial_processing_task_reuses_existing_active_task():

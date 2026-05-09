@@ -84,7 +84,7 @@ class V2IntakeService:
             target_table="source_incidents",
             target_id=source_incident.id,
             status="queued",
-            priority=40 if task_type == "fetch_article" else 60,
+            priority=60 if task_type == "fetch_article" else 20,
             payload={
                 "source_incident_id": str(source_incident.id),
                 "source_name": source_incident.source_name,

@@ -15,6 +15,16 @@ from src.edu_cti_v2.services.fetching import V2FetchService
 from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 from src.edu_cti_v2.services.resolution import V2ResolveUrlService
 
+DEFAULT_TASK_LEASE_ORDER = (
+    "orchestrate_plan",
+    "reenrich",
+    "enrich_source",
+    "fetch_article",
+    "canonicalize",
+    "refresh_analytics",
+    "resolve_url",
+)
+
 
 class V2TaskRuntime:
     """Lease and process one v2 task at a time."""
@@ -42,6 +52,39 @@ class V2TaskRuntime:
         self.analytics_refresh_service = analytics_refresh_service
         self.orchestration_service = orchestration_service
 
+    def _lease_next_task(
+        self,
+        session: Session,
+        *,
+        worker_id: str,
+        task_type: Optional[str],
+        lease_seconds: int,
+    ):
+        if task_type:
+            leased = self.pipeline_task_repository.lease_batch(
+                session,
+                worker_id=worker_id,
+                task_type=task_type,
+                limit=1,
+                lease_seconds=lease_seconds,
+            )
+            return leased[0] if leased else None
+
+        # Keep the expensive pipeline stages flowing before discovery keeps
+        # expanding the queue, otherwise fetch/enrich work starves behind URL
+        # resolution during large historical runs.
+        for candidate_type in DEFAULT_TASK_LEASE_ORDER:
+            leased = self.pipeline_task_repository.lease_batch(
+                session,
+                worker_id=worker_id,
+                task_type=candidate_type,
+                limit=1,
+                lease_seconds=lease_seconds,
+            )
+            if leased:
+                return leased[0]
+        return None
+
     def process_next_task(
         self,
         session: Session,
@@ -50,17 +93,14 @@ class V2TaskRuntime:
         task_type: Optional[str] = None,
         lease_seconds: int = 300,
     ):
-        leased = self.pipeline_task_repository.lease_batch(
+        task = self._lease_next_task(
             session,
             worker_id=worker_id,
             task_type=task_type,
-            limit=1,
             lease_seconds=lease_seconds,
         )
-        if not leased:
+        if task is None:
             return None
-
-        task = leased[0]
         try:
             if task.task_type == "orchestrate_plan":
                 orchestration_service = self.orchestration_service or V2OrchestrationService(

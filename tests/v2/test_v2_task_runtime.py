@@ -34,6 +34,45 @@ def test_task_runtime_processes_fetch_article_task_and_marks_complete():
     task_repo.mark_completed.assert_called_once_with(session, task, {"articles_saved": 1})
 
 
+def test_task_runtime_prefers_fetch_over_resolve_when_unspecified():
+    task_repo = Mock()
+    source_repo = Mock()
+    fetch_service = Mock()
+    resolve_service = Mock()
+
+    fetch_task = SimpleNamespace(task_type="fetch_article", target_id=uuid4())
+    fetch_source_incident = SimpleNamespace(id=fetch_task.target_id)
+    source_repo.get_by_id.return_value = fetch_source_incident
+    fetch_service.fetch_articles_for_source_incident.return_value = {"articles_saved": 1}
+
+    def _lease_batch(_session, *, worker_id, task_type, limit, lease_seconds):
+        if task_type == "fetch_article":
+            return [fetch_task]
+        if task_type == "resolve_url":
+            return [SimpleNamespace(task_type="resolve_url", target_id=uuid4())]
+        return []
+
+    task_repo.lease_batch.side_effect = _lease_batch
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        fetch_service=fetch_service,
+        resolve_url_service=resolve_service,
+    )
+    session = Mock()
+
+    processed = runtime.process_next_task(session, worker_id="worker-1")
+
+    assert processed is fetch_task
+    fetch_service.fetch_articles_for_source_incident.assert_called_once_with(
+        session,
+        fetch_source_incident,
+        worker_id="worker-1",
+    )
+    resolve_service.resolve_source_incident_urls.assert_not_called()
+
+
 def test_task_runtime_dead_letters_unimplemented_task_types():
     task_repo = Mock()
     source_repo = Mock()

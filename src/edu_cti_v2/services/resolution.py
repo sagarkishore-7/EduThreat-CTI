@@ -114,7 +114,7 @@ class V2ResolveUrlService:
                     target_table="source_incidents",
                     target_id=source_incident.id,
                     status="queued",
-                    priority=40,
+                    priority=60,
                     payload={
                         "source_incident_id": str(source_incident.id),
                         "source_name": source_incident.source_name,
