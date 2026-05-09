@@ -256,6 +256,26 @@ async def queue_v2_recanonicalization_sweep(
     return result
 
 
+@router.post("/tasks/requeue-dead-letter")
+async def requeue_v2_dead_letter_tasks(
+    task_type: Optional[str] = Query(None),
+    limit: int = Query(100, ge=1, le=5000),
+    session=Depends(get_v2_session),
+    operations: V2OperationsService = Depends(get_v2_operations_service),
+    _: bool = Depends(authenticate),
+):
+    """Requeue dead-letter v2 tasks after a code or schema fix is deployed."""
+    result = operations.requeue_dead_letter_tasks(
+        session,
+        task_type=task_type,
+        limit=limit,
+    )
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        commit()
+    return result
+
+
 @router.get("/manual-review-queue")
 async def list_v2_manual_review_queue(
     limit: int = Query(100, ge=1, le=1000),

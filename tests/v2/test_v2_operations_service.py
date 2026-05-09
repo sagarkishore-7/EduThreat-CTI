@@ -136,3 +136,26 @@ def test_operations_service_queues_recanonicalization_tasks_without_duplicates()
     assert all(isinstance(task, PipelineTask) for task in queued_tasks)
     assert all(task.task_type == "canonicalize" for task in queued_tasks)
     assert all(task.payload["trigger"] == "recanonicalize_sweep" for task in queued_tasks)
+
+
+def test_operations_service_requeues_dead_letter_tasks():
+    task_repo = Mock()
+    task_repo.requeue_dead_letters.return_value = 7
+
+    service = V2OperationsService(
+        pipeline_task_repository=task_repo,
+    )
+
+    session = _FakeSession()
+    result = service.requeue_dead_letter_tasks(session, task_type="canonicalize", limit=25)
+
+    assert result == {
+        "task_type": "canonicalize",
+        "limit": 25,
+        "requeued": 7,
+    }
+    task_repo.requeue_dead_letters.assert_called_once_with(
+        session,
+        task_type="canonicalize",
+        limit=25,
+    )

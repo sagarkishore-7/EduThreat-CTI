@@ -143,6 +143,28 @@ def test_v2_admin_canonicalize_sweep_endpoint_queues_recanonicalization():
     assert service.called == 250
 
 
+def test_v2_admin_requeue_dead_letter_endpoint_requeues_tasks():
+    class _OperationsService:
+        def __init__(self):
+            self.called = None
+
+        def requeue_dead_letter_tasks(self, _session, *, task_type, limit):
+            self.called = (task_type, limit)
+            return {"task_type": task_type, "limit": limit, "requeued": 7}
+
+    service = _OperationsService()
+    client = _build_client(service)
+
+    response = client.post(
+        "/api/admin/v2/tasks/requeue-dead-letter",
+        params={"task_type": "canonicalize", "limit": 25},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["requeued"] == 7
+    assert service.called == ("canonicalize", 25)
+
+
 def test_v2_admin_collect_endpoint_returns_collection_result():
     class _OperationsService:
         def get_runtime_status(self, _session):

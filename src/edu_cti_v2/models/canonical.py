@@ -69,8 +69,8 @@ class CanonicalMembership(UUIDPrimaryKeyMixin, Base):
         unique=True,
     )
     match_type: Mapped[str] = mapped_column(Text, nullable=False)
-    match_score: Mapped[Optional[float]] = mapped_column(Numeric(5, 2))
-    survivor_score: Mapped[Optional[float]] = mapped_column(Numeric(5, 2))
+    match_score: Mapped[Optional[float]] = mapped_column(Numeric(7, 2))
+    survivor_score: Mapped[Optional[float]] = mapped_column(Numeric(7, 2))
     is_primary_member: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     field_contribution: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     matcher_version: Mapped[str] = mapped_column(Text, nullable=False)
@@ -80,7 +80,7 @@ class CanonicalMembership(UUIDPrimaryKeyMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "match_type IN ('url_exact', 'url_resolved', 'name_date', 'vendor_platform', 'manual', 'seed')",
+            "match_type IN ('url_exact', 'url_resolved', 'name_date', 'vendor_platform', 'vendor_date', 'vendor_followup', 'manual', 'seed')",
             name="canonical_memberships_match_type",
         ),
         UniqueConstraint("source_incident_id", name="uq_canonical_memberships_source_incident_id"),

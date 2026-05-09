@@ -204,14 +204,14 @@ CREATE TABLE IF NOT EXISTS canonical_memberships (
     canonical_incident_id uuid NOT NULL REFERENCES canonical_incidents(id) ON DELETE CASCADE,
     source_incident_id uuid NOT NULL UNIQUE REFERENCES source_incidents(id) ON DELETE CASCADE,
     match_type text NOT NULL,
-    match_score numeric(5,2),
-    survivor_score numeric(5,2),
+    match_score numeric(7,2),
+    survivor_score numeric(7,2),
     is_primary_member boolean NOT NULL DEFAULT false,
     field_contribution jsonb NOT NULL DEFAULT '{}'::jsonb,
     matcher_version text NOT NULL,
     matched_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT ck_membership_match_type CHECK (
-        match_type IN ('url_exact', 'url_resolved', 'name_date', 'vendor_platform', 'manual', 'seed')
+        match_type IN ('url_exact', 'url_resolved', 'name_date', 'vendor_platform', 'vendor_date', 'vendor_followup', 'manual', 'seed')
     )
 );
 

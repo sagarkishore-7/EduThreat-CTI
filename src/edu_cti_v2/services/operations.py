@@ -277,3 +277,21 @@ class V2OperationsService:
             "queued": queued,
             "skipped_existing": skipped_existing,
         }
+
+    def requeue_dead_letter_tasks(
+        self,
+        session: Session,
+        *,
+        task_type: Optional[str] = None,
+        limit: int = 100,
+    ) -> dict[str, int | str | None]:
+        requeued = self.pipeline_task_repository.requeue_dead_letters(
+            session,
+            task_type=task_type,
+            limit=limit,
+        )
+        return {
+            "task_type": task_type,
+            "limit": limit,
+            "requeued": requeued,
+        }

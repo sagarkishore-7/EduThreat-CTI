@@ -97,6 +97,23 @@ class PipelineTaskRepository:
         )
 
     @staticmethod
+    def build_dead_letter_batch_stmt(
+        *,
+        task_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> Select:
+        stmt = (
+            select(PipelineTask)
+            .where(PipelineTask.status == "dead_letter")
+            .order_by(PipelineTask.updated_at.asc().nullsfirst(), PipelineTask.created_at.asc())
+            .limit(limit)
+            .with_for_update(skip_locked=True)
+        )
+        if task_type:
+            stmt = stmt.where(PipelineTask.task_type == task_type)
+        return stmt
+
+    @staticmethod
     def build_count_active_stmt(
         *,
         statuses: Sequence[str] = ("queued", "leased"),
@@ -205,6 +222,28 @@ class PipelineTaskRepository:
         tasks = list(session.execute(stmt).scalars().all())
         for task in tasks:
             task.status = "queued"
+            task.lease_owner = None
+            task.lease_token = None
+            task.lease_expires_at = None
+            task.available_at = now
+            session.add(task)
+        return len(tasks)
+
+    def requeue_dead_letters(
+        self,
+        session: Session,
+        *,
+        now: Optional[datetime] = None,
+        task_type: Optional[str] = None,
+        limit: int = 50,
+    ) -> int:
+        now = now or datetime.now(timezone.utc)
+        stmt = self.build_dead_letter_batch_stmt(task_type=task_type, limit=limit)
+        tasks = list(session.execute(stmt).scalars().all())
+        for task in tasks:
+            task.status = "queued"
+            task.error = None
+            task.attempt_count = 0
             task.lease_owner = None
             task.lease_token = None
             task.lease_expires_at = None
