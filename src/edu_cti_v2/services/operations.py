@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 from datetime import date, datetime, timezone
+import re
 from typing import Any, Callable, Optional, Sequence
 from uuid import uuid4
 
@@ -51,6 +52,15 @@ _OPTIONAL_ANALYTICS_FIELDS = {
     "city",
 }
 
+_GENERIC_CANONICAL_LABEL_RE = re.compile(
+    r"^(?:a|an)?\s*"
+    r"(?:public\s+|private\s+|state\s+|local\s+|regional\s+|major\s+|leading\s+)?"
+    r"(?:school district|district|university|college|school|academy|institute|polytechnic|"
+    r"library|community college|technical college|research university|research institute)"
+    r"(?:\s+in\b.*)?$",
+    re.IGNORECASE,
+)
+
 
 def _serialize_consistency_value(value: Any) -> Any:
     if isinstance(value, (datetime, date)):
@@ -88,6 +98,11 @@ def _canonical_consistency_mismatches(
             "analytics_projection": expected,
         }
     return mismatches
+
+
+def _looks_generic_canonical_label(value: Any) -> bool:
+    text = str(value or "").strip()
+    return bool(text and _GENERIC_CANONICAL_LABEL_RE.match(text))
 
 
 def _serialize_task(task: PipelineTask) -> dict[str, Any]:
@@ -431,12 +446,24 @@ class V2OperationsService:
                 canonical,
                 canonical_enrichment.analytics_projection,
             )
+            display_name = canonical.institution_name or canonical.vendor_name
+            if _looks_generic_canonical_label(display_name):
+                mismatches.setdefault(
+                    "generic_display_name",
+                    {
+                        "canonical": display_name,
+                        "analytics_projection": _serialize_consistency_value(
+                            (canonical_enrichment.analytics_projection or {}).get("institution_name")
+                            or (canonical_enrichment.analytics_projection or {}).get("vendor_name")
+                        ),
+                    },
+                )
             if not mismatches:
                 continue
             items.append(
                 {
                     "canonical_incident_id": str(canonical.id),
-                    "display_name": canonical.institution_name or canonical.vendor_name,
+                    "display_name": display_name,
                     "institution_name": canonical.institution_name,
                     "vendor_name": canonical.vendor_name,
                     "institution_type": canonical.institution_type,

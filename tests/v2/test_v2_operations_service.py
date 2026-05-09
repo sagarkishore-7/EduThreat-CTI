@@ -291,6 +291,55 @@ def test_operations_service_lists_canonical_consistency_candidates():
     assert items[0]["mismatch_fields"] == ["institution_name"]
 
 
+def test_operations_service_flags_generic_canonical_display_name_even_without_projection_drift():
+    canonical = SimpleNamespace(
+        id=uuid4(),
+        institution_name="school district",
+        vendor_name=None,
+        institution_type="k12_school_district",
+        country="United States",
+        country_code="US",
+        region=None,
+        city=None,
+        incident_date=None,
+        attack_category="data_breach_external",
+        attack_vector=None,
+        threat_actor_name=None,
+        ransomware_family=None,
+        severity=None,
+        is_education_related=True,
+        status="open",
+        updated_at=datetime(2026, 5, 10, 0, 0, tzinfo=timezone.utc),
+        created_at=datetime(2026, 5, 9, 17, 21, tzinfo=timezone.utc),
+    )
+    canonical_enrichment = SimpleNamespace(
+        analytics_projection={
+            "institution_name": "school district",
+            "institution_type": "k12_school_district",
+            "vendor_name": None,
+            "country": "United States",
+            "country_code": "US",
+            "region": None,
+            "city": None,
+            "incident_date": None,
+            "attack_category": "data_breach_external",
+            "attack_vector": None,
+            "threat_actor_name": None,
+            "ransomware_family": None,
+            "severity": None,
+            "is_education_related": True,
+        }
+    )
+    session = _RowsSession([(canonical, canonical_enrichment)])
+    service = V2OperationsService()
+
+    items = service.list_canonical_consistency_candidates(session, limit=10, scan_limit=50)
+
+    assert len(items) == 1
+    assert items[0]["display_name"] == "school district"
+    assert items[0]["mismatch_fields"] == ["generic_display_name"]
+
+
 def test_operations_service_queues_canonical_consistency_sweep():
     service = V2OperationsService()
     service.list_canonical_consistency_candidates = Mock(
