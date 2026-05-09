@@ -4,6 +4,7 @@ from src.edu_cti_v2.repositories import (
     CanonicalIncidentRepository,
     PipelineTaskRepository,
     SourceIncidentRepository,
+    SourceStateRepository,
 )
 
 
@@ -28,3 +29,29 @@ def test_canonical_repository_membership_stmt_filters_by_source_incident():
     compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
 
     assert "canonical_memberships.source_incident_id" in compiled
+
+
+def test_pipeline_task_repository_active_target_stmt_filters_by_target():
+    stmt = PipelineTaskRepository.build_active_target_task_stmt(
+        task_type="fetch_article",
+        target_table="source_incidents",
+        target_id="00000000-0000-0000-0000-000000000111",
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "pipeline_tasks.task_type = 'fetch_article'" in compiled
+    assert "pipeline_tasks.target_table = 'source_incidents'" in compiled
+    assert "pipeline_tasks.target_id = '00000000-0000-0000-0000-000000000111'" in compiled
+
+
+def test_source_state_repository_lookup_stmt_filters_by_scope_and_cursor():
+    stmt = SourceStateRepository.build_get_state_stmt(
+        "googlenews_rss",
+        state_scope="historical",
+        cursor_key="2026-01-01:2026-07-01",
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "source_state.source_name = 'googlenews_rss'" in compiled
+    assert "source_state.state_scope = 'historical'" in compiled
+    assert "source_state.cursor_key = '2026-01-01:2026-07-01'" in compiled

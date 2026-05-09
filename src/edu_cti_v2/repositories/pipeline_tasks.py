@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+from typing import List, Optional, Sequence
 from uuid import uuid4
 
 from sqlalchemy import Select, select
@@ -14,6 +14,24 @@ from src.edu_cti_v2.models import PipelineTask
 
 class PipelineTaskRepository:
     """Repository boundary for queueing and leasing pipeline tasks."""
+
+    @staticmethod
+    def build_active_target_task_stmt(
+        *,
+        task_type: str,
+        target_table: str,
+        target_id,
+        statuses: Sequence[str] = ("queued", "leased"),
+    ) -> Select:
+        return (
+            select(PipelineTask)
+            .where(PipelineTask.task_type == task_type)
+            .where(PipelineTask.target_table == target_table)
+            .where(PipelineTask.target_id == target_id)
+            .where(PipelineTask.status.in_(list(statuses)))
+            .order_by(PipelineTask.created_at.desc())
+            .limit(1)
+        )
 
     @staticmethod
     def build_lease_batch_stmt(
@@ -38,6 +56,23 @@ class PipelineTaskRepository:
     def enqueue(self, session: Session, task: PipelineTask) -> PipelineTask:
         session.add(task)
         return task
+
+    def get_active_for_target(
+        self,
+        session: Session,
+        *,
+        task_type: str,
+        target_table: str,
+        target_id,
+        statuses: Sequence[str] = ("queued", "leased"),
+    ) -> Optional[PipelineTask]:
+        stmt = self.build_active_target_task_stmt(
+            task_type=task_type,
+            target_table=target_table,
+            target_id=target_id,
+            statuses=statuses,
+        )
+        return session.execute(stmt).scalar_one_or_none()
 
     def lease_batch(
         self,

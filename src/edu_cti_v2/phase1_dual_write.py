@@ -21,6 +21,7 @@ from src.edu_cti.core.sources import (
 from src.edu_cti_v2.db.connection import create_session_factory
 from src.edu_cti_v2.models import SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.repositories import SourceIncidentRepository
+from src.edu_cti_v2.services import V2IntakeService
 
 logger = logging.getLogger(__name__)
 
@@ -231,9 +232,11 @@ class V2Phase1DualWriter:
         self,
         session_factory: Optional[sessionmaker] = None,
         repository: Optional[SourceIncidentRepository] = None,
+        intake_service: Optional[V2IntakeService] = None,
     ) -> None:
         self._session_factory = session_factory
         self._repository = repository or SourceIncidentRepository()
+        self._intake_service = intake_service or V2IntakeService()
 
     @property
     def session_factory(self) -> sessionmaker:
@@ -252,6 +255,9 @@ class V2Phase1DualWriter:
                 source_incident = build_source_incident_record(incident, event_key)
                 source_incident.urls = build_source_incident_urls(incident, created_at=source_incident.collected_at)
                 self._repository.add(session, source_incident)
+                session.flush()
+                self._intake_service.record_incremental_state(session, source_incident)
+                self._intake_service.ensure_initial_processing_task(session, source_incident)
                 session.commit()
                 return source_incident.id
 
@@ -281,6 +287,9 @@ class V2Phase1DualWriter:
                     created_at=parse_datetime_like(incident.ingested_at) or datetime.now(timezone.utc),
                 ),
             )
+            session.flush()
+            self._intake_service.record_incremental_state(session, existing)
+            self._intake_service.ensure_initial_processing_task(session, existing)
             session.commit()
             return existing.id
         except Exception:
