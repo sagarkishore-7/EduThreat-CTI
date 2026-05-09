@@ -12,35 +12,32 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        "source_enrichments",
-        sa.Column("re_enrich_attempts", sa.Integer(), nullable=False, server_default="0"),
+    op.execute(
+        "ALTER TABLE source_enrichments ADD COLUMN IF NOT EXISTS re_enrich_attempts INTEGER DEFAULT 0 NOT NULL"
     )
-    op.add_column(
-        "source_enrichments",
-        sa.Column("re_enrich_reason", sa.Text(), nullable=True),
+    op.execute(
+        "ALTER TABLE source_enrichments ADD COLUMN IF NOT EXISTS re_enrich_reason TEXT"
     )
-    op.add_column(
-        "source_enrichments",
-        sa.Column("manual_review_required", sa.Boolean(), nullable=False, server_default=sa.text("false")),
+    op.execute(
+        "ALTER TABLE source_enrichments ADD COLUMN IF NOT EXISTS manual_review_required BOOLEAN DEFAULT false NOT NULL"
     )
-    op.add_column(
-        "source_enrichments",
-        sa.Column("manual_review_reason", sa.Text(), nullable=True),
+    op.execute(
+        "ALTER TABLE source_enrichments ADD COLUMN IF NOT EXISTS manual_review_reason TEXT"
     )
-    op.create_index(
-        "idx_source_enrichments_manual_review_required",
-        "source_enrichments",
-        ["manual_review_required"],
-        unique=False,
+    op.execute(
+        "CREATE INDEX IF NOT EXISTS idx_source_enrichments_manual_review_required ON source_enrichments (manual_review_required)"
     )
-    op.alter_column("source_enrichments", "re_enrich_attempts", server_default=None)
-    op.alter_column("source_enrichments", "manual_review_required", server_default=None)
+    op.execute(
+        "ALTER TABLE source_enrichments ALTER COLUMN re_enrich_attempts DROP DEFAULT"
+    )
+    op.execute(
+        "ALTER TABLE source_enrichments ALTER COLUMN manual_review_required DROP DEFAULT"
+    )
 
 
 def downgrade() -> None:
-    op.drop_index("idx_source_enrichments_manual_review_required", table_name="source_enrichments")
-    op.drop_column("source_enrichments", "manual_review_reason")
-    op.drop_column("source_enrichments", "manual_review_required")
-    op.drop_column("source_enrichments", "re_enrich_reason")
-    op.drop_column("source_enrichments", "re_enrich_attempts")
+    op.execute("DROP INDEX IF EXISTS idx_source_enrichments_manual_review_required")
+    op.execute("ALTER TABLE IF EXISTS source_enrichments DROP COLUMN IF EXISTS manual_review_reason")
+    op.execute("ALTER TABLE IF EXISTS source_enrichments DROP COLUMN IF EXISTS manual_review_required")
+    op.execute("ALTER TABLE IF EXISTS source_enrichments DROP COLUMN IF EXISTS re_enrich_reason")
+    op.execute("ALTER TABLE IF EXISTS source_enrichments DROP COLUMN IF EXISTS re_enrich_attempts")

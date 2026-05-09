@@ -11,10 +11,10 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.execute("ALTER TABLE pipeline_tasks DROP CONSTRAINT IF EXISTS ck_pipeline_tasks_pipeline_tasks_task_type")
+    op.execute("ALTER TABLE IF EXISTS pipeline_tasks DROP CONSTRAINT IF EXISTS ck_pipeline_tasks_pipeline_tasks_task_type")
     op.execute(
         """
-        ALTER TABLE pipeline_tasks
+        ALTER TABLE IF EXISTS pipeline_tasks
         ADD CONSTRAINT ck_pipeline_tasks_pipeline_tasks_task_type
         CHECK (
             task_type IN (
@@ -33,10 +33,10 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.execute("ALTER TABLE pipeline_tasks DROP CONSTRAINT IF EXISTS ck_pipeline_tasks_pipeline_tasks_task_type")
+    op.execute("ALTER TABLE IF EXISTS pipeline_tasks DROP CONSTRAINT IF EXISTS ck_pipeline_tasks_pipeline_tasks_task_type")
     op.execute(
         """
-        ALTER TABLE pipeline_tasks
+        ALTER TABLE IF EXISTS pipeline_tasks
         ADD CONSTRAINT ck_pipeline_tasks_pipeline_tasks_task_type
         CHECK (
             task_type IN (
