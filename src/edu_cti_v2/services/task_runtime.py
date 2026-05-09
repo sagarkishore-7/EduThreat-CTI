@@ -7,6 +7,7 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceIncidentRepository
+from src.edu_cti_v2.services.analytics import V2AnalyticsRefreshService
 from src.edu_cti_v2.services.canonicalization import V2CanonicalizationService
 from src.edu_cti_v2.services.enrichment import V2EnrichmentService
 from src.edu_cti_v2.services.fetching import V2FetchService
@@ -25,6 +26,7 @@ class V2TaskRuntime:
         resolve_url_service: Optional[V2ResolveUrlService] = None,
         enrichment_service: Optional[V2EnrichmentService] = None,
         canonicalization_service: Optional[V2CanonicalizationService] = None,
+        analytics_refresh_service: Optional[V2AnalyticsRefreshService] = None,
     ) -> None:
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
         self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
@@ -34,6 +36,7 @@ class V2TaskRuntime:
         self.resolve_url_service = resolve_url_service
         self.enrichment_service = enrichment_service
         self.canonicalization_service = canonicalization_service
+        self.analytics_refresh_service = analytics_refresh_service
 
     def process_next_task(
         self,
@@ -94,6 +97,16 @@ class V2TaskRuntime:
                         session,
                         source_incident.id,
                     )
+                self.pipeline_task_repository.mark_completed(session, task, result)
+                return task
+            if task.task_type == "refresh_analytics":
+                analytics_refresh_service = self.analytics_refresh_service or V2AnalyticsRefreshService()
+                self.analytics_refresh_service = analytics_refresh_service
+                canonical_incident_id = task.payload.get("canonical_incident_id") or task.target_id
+                result = analytics_refresh_service.refresh_for_canonical_incident(
+                    session,
+                    canonical_incident_id,
+                )
                 self.pipeline_task_repository.mark_completed(session, task, result)
                 return task
 

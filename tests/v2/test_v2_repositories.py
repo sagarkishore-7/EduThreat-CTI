@@ -3,6 +3,7 @@ from datetime import date
 from sqlalchemy.dialects import postgresql
 
 from src.edu_cti_v2.repositories import (
+    AnalyticsRefreshRepository,
     CanonicalIncidentRepository,
     PipelineTaskRepository,
     SourceEnrichmentRepository,
@@ -54,6 +55,30 @@ def test_canonical_repository_name_date_candidate_stmt_filters_country_and_windo
 
     assert "canonical_incidents.country_code = 'US'" in compiled
     assert "canonical_incidents.incident_date BETWEEN '2026-04-25'" in compiled
+
+
+def test_canonical_repository_recent_stmt_joins_enrichment_and_orders_by_recency():
+    stmt = CanonicalIncidentRepository.build_list_recent_stmt(limit=25)
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "LEFT OUTER JOIN canonical_enrichments" in compiled
+    assert "ORDER BY canonical_incidents.last_seen_at DESC" in compiled
+    assert "LIMIT 25" in compiled
+
+
+def test_canonical_repository_dashboard_rollup_stmt_counts_enriched_rows():
+    stmt = CanonicalIncidentRepository.build_dashboard_rollup_stmt()
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "count(canonical_incidents.id)" in compiled.lower()
+    assert "count(canonical_enrichments.id)" in compiled.lower()
+
+
+def test_analytics_refresh_repository_lookup_stmt_filters_by_refresh_key():
+    stmt = AnalyticsRefreshRepository.build_get_by_key_stmt("dashboard:global")
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "analytics_refresh_state.refresh_key = 'dashboard:global'" in compiled
 
 
 def test_pipeline_task_repository_active_target_stmt_filters_by_target():
