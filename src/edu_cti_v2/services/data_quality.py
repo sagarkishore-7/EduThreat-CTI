@@ -18,10 +18,11 @@ MAX_REENRICH_ATTEMPTS = 3
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]|$)")
 _GENERIC_INSTITUTION_RE = re.compile(
-    r"^(?:a|an)\s+"
+    r"^(?:(?:a|an)\s+)?"
     r"(?:public\s+|private\s+|state\s+|local\s+|regional\s+|major\s+|leading\s+)?"
-    r"(?:university|college|school|academy|institute|polytechnic|library|"
-    r"school district|community college|technical college|research institute)\b",
+    r"(?:university|college|school|academy|institute|polytechnic|library|district|"
+    r"school district|community college|technical college|research university|research institute)"
+    r"(?:\s+in\b.*)?$",
     re.IGNORECASE,
 )
 

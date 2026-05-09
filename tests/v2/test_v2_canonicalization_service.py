@@ -268,6 +268,42 @@ def test_build_source_projection_normalizes_country_from_institution_country():
     assert projection["country_code"] == "US"
 
 
+def test_build_source_projection_drops_generic_identity_labels():
+    incident = _source_incident(event_key="generic-placeholder")
+    incident.raw_title = "Officials disclose cyber incident affecting unnamed district"
+    incident.raw_institution_name = "school district"
+    incident.raw_victim_name = "school district"
+    incident.raw_institution_type = "school_district"
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "research university in Southern District of Texas",
+            "institution_type": "university",
+            "incident_date": "2026-05-08",
+            "incident_date_precision": "day",
+            "attack_category": "data_breach_external",
+            "enriched_summary": "An unnamed research university was affected.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "school district",
+            "institution_type": "school_district",
+            "incident_date": "2026-05-08",
+            "attack_category": "data_breach_external",
+        },
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] is None
+
+
 def test_canonicalization_service_creates_seed_canonical_and_membership():
     canonical_repo = Mock()
     canonical_repo.get_membership_for_source_incident.return_value = None
@@ -404,6 +440,62 @@ def test_canonicalization_service_reuses_existing_url_matched_canonical():
     analytics_repo.mark_needs_refresh.assert_called_once()
 
 
+def test_canonicalization_service_skips_new_generic_identity_seed():
+    canonical_repo = Mock()
+    canonical_repo.get_membership_for_source_incident.return_value = None
+
+    source_repo = Mock()
+    incident = _source_incident(event_key="generic-seed")
+    incident.raw_title = "Officials disclose cyber incident affecting unnamed district"
+    incident.raw_institution_name = "school district"
+    incident.raw_victim_name = "school district"
+    incident.raw_institution_type = "school_district"
+    source_repo.get_by_id.return_value = incident
+
+    enrichment_repo = Mock()
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "research university in Southern District of Texas",
+            "institution_type": "university",
+            "incident_date": "2026-05-08",
+            "incident_date_precision": "day",
+            "attack_category": "data_breach_external",
+            "enriched_summary": "An unnamed research university was affected.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "school district",
+            "institution_type": "school_district",
+            "incident_date": "2026-05-08",
+            "attack_category": "data_breach_external",
+        },
+        is_education_related=True,
+    )
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome == {"canonicalized": False, "reason": "missing_identity"}
+    canonical_repo.add.assert_not_called()
+    canonical_repo.add_membership.assert_not_called()
+    task_repo.enqueue.assert_not_called()
+
+
 def test_canonicalization_service_updates_existing_canonical_with_better_projection():
     canonical_repo = Mock()
     existing_canonical = CanonicalIncident(
@@ -466,6 +558,112 @@ def test_canonicalization_service_updates_existing_canonical_with_better_project
     assert existing_canonical.institution_name == "Penn State University"
     assert existing_canonical.country_code == "US"
     assert existing_canonical.incident_date.isoformat() == "2026-05-08"
+
+
+def test_canonicalization_service_refreshes_existing_canonical_after_generic_member_is_dropped():
+    canonical_repo = Mock()
+    canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="generic-cleanup",
+        status="open",
+        institution_name="school district",
+        country="United States",
+        country_code="US",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    invalid_incident = _source_incident(event_key="generic-member")
+    invalid_incident.raw_title = "Officials disclose cyber incident affecting unnamed district"
+    invalid_incident.raw_institution_name = "school district"
+    invalid_incident.raw_victim_name = "school district"
+    invalid_incident.raw_institution_type = "school_district"
+    invalid_membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=canonical.id,
+        source_incident_id=invalid_incident.id,
+        match_type="seed",
+        match_score=100.0,
+        survivor_score=5.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+    valid_incident = _source_incident(event_key="valid-member", url="https://example.com/valid-member")
+    valid_membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=canonical.id,
+        source_incident_id=valid_incident.id,
+        match_type="name_date",
+        match_score=96.0,
+        survivor_score=90.0,
+        is_primary_member=False,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+    canonical_repo.get_membership_for_source_incident.return_value = invalid_membership
+    canonical_repo.get_by_id.return_value = canonical
+    canonical_repo.list_memberships.return_value = [invalid_membership, valid_membership]
+
+    source_repo = Mock()
+    source_repo.get_by_id.side_effect = lambda _session, source_incident_id: (
+        invalid_incident if str(source_incident_id) == str(invalid_incident.id) else valid_incident
+    )
+
+    invalid_enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=invalid_incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "research university in Southern District of Texas",
+            "institution_type": "university",
+            "incident_date": "2026-05-08",
+            "incident_date_precision": "day",
+            "attack_category": "data_breach_external",
+            "enriched_summary": "An unnamed research university was affected.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "school district",
+            "institution_type": "school_district",
+            "incident_date": "2026-05-08",
+            "attack_category": "data_breach_external",
+        },
+        is_education_related=True,
+    )
+    valid_enrichment = _source_enrichment(valid_incident)
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.side_effect = lambda _session, source_incident_id: (
+        invalid_enrichment if str(source_incident_id) == str(invalid_incident.id) else valid_enrichment
+    )
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.side_effect = [None, None]
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    service._upsert_canonical_enrichment = Mock(return_value=Mock(id=uuid4()))  # type: ignore[attr-defined]
+    session = Mock()
+
+    outcome = service.canonicalize_source_incident(session, invalid_incident.id)
+
+    assert outcome["canonicalized"] is False
+    assert outcome["reason"] == "missing_identity"
+    assert outcome["canonical_status"] == "open"
+    assert canonical.institution_name == "Penn State University"
+    assert canonical.primary_source_incident_id == valid_incident.id
+    assert invalid_membership.is_primary_member is False
+    assert valid_membership.is_primary_member is True
+    assert task_repo.enqueue.call_count == 2
 
 
 def test_canonicalization_service_refreshes_canonical_fields_from_primary_member_projection():

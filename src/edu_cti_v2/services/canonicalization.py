@@ -62,11 +62,12 @@ _VENDOR_FOLLOWUP_CUES = (
     "sues",
     "sued",
 )
-_GENERIC_INDEFINITE_INSTITUTION_RE = re.compile(
-    r"^(?:a|an)\s+"
+_GENERIC_INSTITUTION_RE = re.compile(
+    r"^(?:(?:a|an)\s+)?"
     r"(?:public\s+|private\s+|state\s+|local\s+|regional\s+|major\s+|leading\s+)?"
-    r"(?:university|college|school|academy|institute|polytechnic|library|"
-    r"school district|community college|technical college|research institute)\b",
+    r"(?:university|college|school|academy|institute|polytechnic|library|district|"
+    r"school district|community college|technical college|research university|research institute)"
+    r"(?:\s+in\b.*)?$",
     re.IGNORECASE,
 )
 
@@ -130,7 +131,7 @@ def _looks_generic_institution_label(value: Optional[str]) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    return bool(_GENERIC_INDEFINITE_INSTITUTION_RE.match(text))
+    return bool(_GENERIC_INSTITUTION_RE.match(text))
 
 
 def _resolve_institution_name(source_incident, typed: Dict[str, Any], raw: Dict[str, Any]) -> Optional[str]:
@@ -145,12 +146,23 @@ def _resolve_institution_name(source_incident, typed: Dict[str, Any], raw: Dict[
         if cleaned and not _looks_generic_institution_label(cleaned):
             return cleaned
 
-    return choose_best_institution_name(
+    resolved = choose_best_institution_name(
         *extracted_candidates,
         source_incident.raw_institution_name,
         source_incident.raw_victim_name,
         source_incident.raw_title,
     )
+    if _looks_generic_institution_label(resolved):
+        return None
+    return resolved
+
+
+def _resolved_projection_identity(projection: Dict[str, Any]) -> Optional[str]:
+    for candidate in (projection.get("vendor_name"), projection.get("institution_name")):
+        cleaned = clean_institution_name(candidate)
+        if cleaned and not _looks_generic_institution_label(cleaned):
+            return cleaned
+    return None
 
 
 def _should_trust_raw_identity_fallback(
@@ -762,6 +774,49 @@ class V2CanonicalizationService:
         )
         return 1
 
+    def _enqueue_dashboard_refresh_task(
+        self,
+        session: Session,
+        *,
+        canonical_id,
+        now: datetime,
+    ) -> int:
+        self.analytics_refresh_repository.mark_needs_refresh(
+            session,
+            refresh_key="dashboard:global",
+            refresh_scope="global",
+            default_state_payload={},
+        )
+        existing_dashboard_refresh = self.pipeline_task_repository.get_active_for_target(
+            session,
+            task_type="refresh_analytics",
+            target_table="analytics_refresh_state",
+            target_id=None,
+        )
+        if existing_dashboard_refresh is not None:
+            return 0
+        self.pipeline_task_repository.enqueue(
+            session,
+            PipelineTask(
+                run_id=None,
+                task_type="refresh_analytics",
+                target_table="analytics_refresh_state",
+                target_id=None,
+                status="queued",
+                priority=160,
+                payload={
+                    "refresh_key": "dashboard:global",
+                    "refresh_scope": "global",
+                    "canonical_incident_id": str(canonical_id),
+                },
+                result={},
+                available_at=now,
+                attempt_count=0,
+                max_attempts=5,
+            ),
+        )
+        return 1
+
     def _retire_empty_canonical(
         self,
         session: Session,
@@ -883,6 +938,112 @@ class V2CanonicalizationService:
         primary_projection = build_source_projection(primary_source_incident, primary_source_enrichment)
         return primary_source_enrichment, primary_projection
 
+    def _refresh_canonical_from_valid_members(
+        self,
+        session: Session,
+        *,
+        canonical: CanonicalIncident,
+    ) -> Tuple[bool, Optional[SourceEnrichment], Optional[Dict[str, Any]]]:
+        memberships = self.canonical_repository.list_memberships(session, str(canonical.id))
+        if not memberships:
+            canonical.primary_source_incident_id = None
+            session.add(canonical)
+            return False, None, None
+
+        valid_members: List[Tuple[CanonicalMembership, SourceEnrichment, Dict[str, Any]]] = []
+        for membership in memberships:
+            enrichment = self.source_enrichment_repository.get_by_source_incident(session, membership.source_incident_id)
+            if enrichment is None or enrichment.is_education_related is False or not enrichment.typed_enrichment:
+                continue
+            source_incident = self.source_incident_repository.get_by_id(session, membership.source_incident_id)
+            if source_incident is None:
+                continue
+            projection = build_source_projection(source_incident, enrichment)
+            if _resolved_projection_identity(projection) is None:
+                continue
+            valid_members.append((membership, enrichment, projection))
+
+        if not valid_members:
+            for membership in memberships:
+                membership.is_primary_member = False
+                session.add(membership)
+            canonical.primary_source_incident_id = None
+            session.add(canonical)
+            return False, None, None
+
+        best_membership, best_enrichment, best_projection = max(
+            valid_members,
+            key=lambda item: float(item[0].survivor_score or 0.0),
+        )
+        for membership in memberships:
+            membership.is_primary_member = membership.id == best_membership.id
+            session.add(membership)
+        canonical.primary_source_incident_id = best_membership.source_incident_id
+        session.add(canonical)
+        return True, best_enrichment, best_projection
+
+    def _handle_invalid_source_membership(
+        self,
+        session: Session,
+        *,
+        source_incident,
+        existing_membership: Optional[CanonicalMembership],
+        reason: str,
+        metadata_field: str,
+    ) -> Dict[str, object]:
+        if existing_membership is None:
+            return {"canonicalized": False, "reason": reason}
+
+        canonical = self.canonical_repository.get_by_id(session, str(existing_membership.canonical_incident_id))
+        if canonical is None:
+            return {"canonicalized": False, "reason": "dangling_membership"}
+
+        now = datetime.now(timezone.utc)
+        existing_membership.survivor_score = -1
+        existing_membership.field_contribution = {}
+        session.add(existing_membership)
+
+        has_valid_member, primary_source_enrichment, primary_projection = self._refresh_canonical_from_valid_members(
+            session,
+            canonical=canonical,
+        )
+        canonical.status = "open" if has_valid_member else "excluded"
+        canonical.is_education_related = True if has_valid_member else False
+        if has_valid_member and primary_source_enrichment is not None and primary_projection is not None:
+            _apply_projection_to_canonical(canonical, primary_projection, authoritative=True)
+            self._upsert_canonical_enrichment(
+                session,
+                canonical,
+                primary_source_enrichment,
+                primary_projection,
+            )
+        canonical.resolution_metadata = {
+            **(canonical.resolution_metadata or {}),
+            "last_match_type": existing_membership.match_type,
+            "last_match_score": float(existing_membership.match_score or 0.0),
+            metadata_field: str(source_incident.id),
+        }
+        session.add(canonical)
+        refresh_tasks_enqueued = self._enqueue_refresh_tasks(
+            session,
+            canonical_id=canonical.id,
+            now=now,
+        )
+        dashboard_refresh_tasks_enqueued = self._enqueue_dashboard_refresh_task(
+            session,
+            canonical_id=canonical.id,
+            now=now,
+        )
+
+        return {
+            "canonicalized": False,
+            "reason": reason,
+            "canonical_incident_id": str(canonical.id),
+            "canonical_status": canonical.status,
+            "refresh_tasks_enqueued": refresh_tasks_enqueued,
+            "dashboard_refresh_tasks_enqueued": dashboard_refresh_tasks_enqueued,
+        }
+
     def _handle_non_education_source(
         self,
         session: Session,
@@ -891,42 +1052,13 @@ class V2CanonicalizationService:
         source_enrichment: SourceEnrichment,
         existing_membership: Optional[CanonicalMembership],
     ) -> Dict[str, object]:
-        if existing_membership is None:
-            return {"canonicalized": False, "reason": "not_education_related"}
-
-        canonical = self.canonical_repository.get_by_id(session, str(existing_membership.canonical_incident_id))
-        if canonical is None:
-            return {"canonicalized": False, "reason": "dangling_membership"}
-
-        existing_membership.survivor_score = -1
-        existing_membership.field_contribution = {}
-        session.add(existing_membership)
-
-        memberships = self.canonical_repository.list_memberships(session, str(canonical.id))
-        has_valid_member = False
-        for membership in memberships:
-            enrichment = self.source_enrichment_repository.get_by_source_incident(session, membership.source_incident_id)
-            if enrichment and enrichment.is_education_related is not False and enrichment.typed_enrichment:
-                has_valid_member = True
-                break
-
-        canonical.status = "open" if has_valid_member else "excluded"
-        canonical.is_education_related = True if has_valid_member else False
-        canonical.resolution_metadata = {
-            **(canonical.resolution_metadata or {}),
-            "last_match_type": existing_membership.match_type,
-            "last_match_score": float(existing_membership.match_score or 0.0),
-            "last_non_education_source_incident_id": str(source_incident.id),
-        }
-        session.add(canonical)
-        self._recalculate_primary_membership(session, canonical)
-
-        return {
-            "canonicalized": False,
-            "reason": "not_education_related",
-            "canonical_incident_id": str(canonical.id),
-            "canonical_status": canonical.status,
-        }
+        return self._handle_invalid_source_membership(
+            session,
+            source_incident=source_incident,
+            existing_membership=existing_membership,
+            reason="not_education_related",
+            metadata_field="last_non_education_source_incident_id",
+        )
 
     def canonicalize_source_incident(self, session: Session, source_incident_id) -> Dict[str, object]:
         source_incident = self.source_incident_repository.get_by_id(session, source_incident_id)
@@ -951,6 +1083,14 @@ class V2CanonicalizationService:
             return {"canonicalized": False, "reason": "missing_typed_enrichment"}
 
         projection = build_source_projection(source_incident, source_enrichment)
+        if _resolved_projection_identity(projection) is None:
+            return self._handle_invalid_source_membership(
+                session,
+                source_incident=source_incident,
+                existing_membership=existing_membership,
+                reason="missing_identity",
+                metadata_field="last_missing_identity_source_incident_id",
+            )
         member_score = _member_score(source_incident.source_name, projection, source_enrichment)
         now = datetime.now(timezone.utc)
 
@@ -1044,41 +1184,11 @@ class V2CanonicalizationService:
                 now=now,
             )
 
-        self.analytics_refresh_repository.mark_needs_refresh(
+        dashboard_refresh_enqueued = self._enqueue_dashboard_refresh_task(
             session,
-            refresh_key="dashboard:global",
-            refresh_scope="global",
-            default_state_payload={},
+            canonical_id=canonical.id,
+            now=now,
         )
-        existing_dashboard_refresh = self.pipeline_task_repository.get_active_for_target(
-            session,
-            task_type="refresh_analytics",
-            target_table="analytics_refresh_state",
-            target_id=None,
-        )
-        dashboard_refresh_enqueued = 0
-        if existing_dashboard_refresh is None:
-            self.pipeline_task_repository.enqueue(
-                session,
-                PipelineTask(
-                    run_id=None,
-                    task_type="refresh_analytics",
-                    target_table="analytics_refresh_state",
-                    target_id=None,
-                    status="queued",
-                    priority=160,
-                    payload={
-                        "refresh_key": "dashboard:global",
-                        "refresh_scope": "global",
-                        "canonical_incident_id": str(canonical.id),
-                    },
-                    result={},
-                    available_at=now,
-                    attempt_count=0,
-                    max_attempts=5,
-                ),
-            )
-            dashboard_refresh_enqueued = 1
 
         return {
             "canonicalized": True,
