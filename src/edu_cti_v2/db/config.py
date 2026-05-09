@@ -27,6 +27,15 @@ def build_database_url(
     )
 
 
+def normalize_database_url(database_url: str, *, default_driver: str = "psycopg") -> str:
+    """Normalize plain Postgres URLs to the SQLAlchemy driver form we install."""
+    prefix = "postgresql://"
+    driver_prefix = "postgresql+"
+    if database_url.startswith(prefix) and not database_url.startswith(driver_prefix):
+        return database_url.replace(prefix, f"postgresql+{default_driver}://", 1)
+    return database_url
+
+
 @dataclass(frozen=True)
 class V2DatabaseSettings:
     """Runtime settings for the v2 Postgres layer."""
@@ -55,10 +64,18 @@ class V2DatabaseSettings:
                 database=os.environ.get("EDU_CTI_V2_DB_NAME", "eduthreat_cti_v2"),
                 driver=os.environ.get("EDU_CTI_V2_DB_DRIVER", "psycopg"),
             )
+        database_url = normalize_database_url(
+            database_url,
+            default_driver=os.environ.get("EDU_CTI_V2_DB_DRIVER", "psycopg"),
+        )
+        alembic_database_url = normalize_database_url(
+            os.environ.get("ALEMBIC_DATABASE_URL", database_url),
+            default_driver=os.environ.get("EDU_CTI_V2_DB_DRIVER", "psycopg"),
+        )
 
         return cls(
             database_url=database_url,
-            alembic_database_url=os.environ.get("ALEMBIC_DATABASE_URL", database_url),
+            alembic_database_url=alembic_database_url,
             echo_sql=_env_flag("EDU_CTI_V2_DB_ECHO", "0"),
             pool_size=int(os.environ.get("EDU_CTI_V2_DB_POOL_SIZE", "10")),
             max_overflow=int(os.environ.get("EDU_CTI_V2_DB_MAX_OVERFLOW", "20")),

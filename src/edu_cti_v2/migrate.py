@@ -5,14 +5,27 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from alembic import command
-from alembic.config import Config
-
 from src.edu_cti_v2.db import V2DatabaseSettings
 
 
-def build_alembic_config() -> Config:
-    repo_root = Path(__file__).resolve().parents[2]
+def detect_repo_root() -> Path:
+    """Locate the deployed/app repo root that contains Alembic assets."""
+    candidates = [Path.cwd(), *Path(__file__).resolve().parents]
+    seen: set[Path] = set()
+    for candidate in candidates:
+        candidate = candidate.resolve()
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        if (candidate / "alembic.ini").exists() and (candidate / "alembic").is_dir():
+            return candidate
+    raise FileNotFoundError("Could not locate repo root containing alembic.ini and alembic/")
+
+
+def build_alembic_config():
+    from alembic.config import Config
+
+    repo_root = detect_repo_root()
     config = Config(str(repo_root / "alembic.ini"))
     config.set_main_option("script_location", str(repo_root / "alembic"))
     config.set_main_option(
@@ -43,6 +56,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
+    from alembic import command
+
     args = build_parser().parse_args()
     config = build_alembic_config()
 
@@ -62,4 +77,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

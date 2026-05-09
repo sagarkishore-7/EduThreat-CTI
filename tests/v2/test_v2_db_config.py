@@ -1,6 +1,10 @@
 import os
 
-from src.edu_cti_v2.db.config import V2DatabaseSettings, build_database_url
+from src.edu_cti_v2.db.config import (
+    V2DatabaseSettings,
+    build_database_url,
+    normalize_database_url,
+)
 
 
 def test_build_database_url_uses_psycopg_driver():
@@ -39,3 +43,18 @@ def test_v2_database_settings_default_url_is_postgres(monkeypatch):
     settings = V2DatabaseSettings.from_env()
 
     assert settings.database_url.startswith("postgresql+psycopg://")
+
+
+def test_normalize_database_url_adds_psycopg_driver_for_plain_postgres_url():
+    normalized = normalize_database_url("postgresql://u:p@localhost:5432/db")
+    assert normalized == "postgresql+psycopg://u:p@localhost:5432/db"
+
+
+def test_v2_database_settings_normalizes_railway_style_database_urls(monkeypatch):
+    monkeypatch.setenv("EDU_CTI_V2_DATABASE_URL", "postgresql://u:p@localhost:5432/db")
+    monkeypatch.setenv("ALEMBIC_DATABASE_URL", "postgresql://u:p@localhost:5432/db")
+
+    settings = V2DatabaseSettings.from_env()
+
+    assert settings.database_url == "postgresql+psycopg://u:p@localhost:5432/db"
+    assert settings.alembic_database_url == "postgresql+psycopg://u:p@localhost:5432/db"
