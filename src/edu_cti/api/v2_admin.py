@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from src.edu_cti.api.admin import authenticate
 from src.edu_cti.api.v2 import get_v2_session, get_v2_session_factory
 from src.edu_cti_v2.services import V2OperationsService
+from src.edu_cti_v2.services.collection import V2CollectionService
 
 router = APIRouter(prefix="/admin/v2", tags=["Admin", "V2"])
 
@@ -17,6 +18,11 @@ router = APIRouter(prefix="/admin/v2", tags=["Admin", "V2"])
 @lru_cache
 def get_v2_operations_service() -> V2OperationsService:
     return V2OperationsService(session_factory=get_v2_session_factory())
+
+
+@lru_cache
+def get_v2_collection_service() -> V2CollectionService:
+    return V2CollectionService(session_factory=get_v2_session_factory())
 
 
 @router.get("/status")
@@ -93,3 +99,24 @@ async def run_v2_worker_batch(
         stop_when_idle=stop_when_idle,
     )
 
+
+@router.post("/collect")
+async def run_v2_collection(
+    groups: Optional[List[str]] = Query(None),
+    sources: Optional[List[str]] = Query(None),
+    max_pages: Optional[int] = Query(None, ge=1),
+    rss_max_age_days: int = Query(30, ge=1, le=3650),
+    incremental: bool = Query(True),
+    include_paid_rss: bool = Query(False),
+    collection: V2CollectionService = Depends(get_v2_collection_service),
+    _: bool = Depends(authenticate),
+):
+    """Collect fresh raw source observations directly into v2/Postgres."""
+    return collection.collect_into_v2(
+        groups=groups,
+        sources=sources,
+        max_pages=max_pages,
+        rss_max_age_days=rss_max_age_days,
+        incremental=incremental,
+        include_paid_rss=include_paid_rss,
+    )

@@ -21,7 +21,7 @@ from src.edu_cti.core.sources import (
 from src.edu_cti_v2.db.connection import create_session_factory
 from src.edu_cti_v2.models import SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.repositories import SourceIncidentRepository
-from src.edu_cti_v2.services import V2IntakeService
+from src.edu_cti_v2.services.intake import V2IntakeService
 
 logger = logging.getLogger(__name__)
 
@@ -88,6 +88,17 @@ def parse_datetime_like(value: Optional[str]) -> Optional[datetime]:
         return None
 
     return datetime.combine(parsed_date, time.min, tzinfo=timezone.utc)
+
+
+def build_phase1_source_event_key(incident: BaseIncident) -> str:
+    """Derive the source event key used for v2 raw observation identity."""
+    if incident.source_event_id:
+        return incident.source_event_id
+    if incident.all_urls and len(incident.all_urls) > 0:
+        return incident.all_urls[0]
+    if incident.primary_url:
+        return incident.primary_url
+    return incident.incident_id
 
 
 def _incident_payload(incident: BaseIncident, event_key: str) -> dict:
@@ -244,8 +255,8 @@ class V2Phase1DualWriter:
             self._session_factory = create_session_factory()
         return self._session_factory
 
-    def write_observation(self, incident: BaseIncident, event_key: str) -> Optional[str]:
-        if not is_phase1_dual_write_enabled():
+    def write_observation(self, incident: BaseIncident, event_key: str, *, force: bool = False) -> Optional[str]:
+        if not force and not is_phase1_dual_write_enabled():
             return None
 
         session: Session = self.session_factory()
