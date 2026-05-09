@@ -1,440 +1,243 @@
 # REST API Documentation
 
-**Version**: 2.7.1  
-**Base URL**: `https://eduthreat-cti-production.up.railway.app` (Production)  
-**Local URL**: `http://localhost:8000` (Development)
+**Version**: 2.8.0  
+**Current Public Surface**: Postgres-backed `v2` API  
+**Base URL**: `https://<your-v2-api-domain>`  
+**Local URL**: `http://localhost:8000`
 
 ## Overview
 
-The EduThreat-CTI REST API provides programmatic access to cyber threat intelligence data for the education sector. Built with FastAPI, it offers comprehensive endpoints for querying incidents, analytics, and administrative operations.
-
-## Authentication
-
-### Public Endpoints
-
-Most endpoints are public and require no authentication:
-- Dashboard data
-- Incident queries
-- Analytics endpoints
-- Filter options
-
-### Admin Endpoints
-
-Admin endpoints require authentication via token:
-- Database exports
-- Scheduler controls
-- Data maintenance operations
-
-**Authentication**: Token-based via `Authorization: Bearer <token>` header
-
-## Base Endpoints
-
-### Dashboard Data
-
-#### `GET /api/dashboard`
-
-Get complete dashboard data including statistics, recent incidents, and analytics.
-
-**Response**:
-```json
-{
-  "stats": {
-    "total_incidents": 4500,
-    "enriched_incidents": 3200,
-    "ransomware_attacks": 1800,
-    "data_breaches": 1200,
-    "countries_affected": 45
-  },
-  "recent_incidents": [...],
-  "analytics": {
-    "by_country": [...],
-    "by_attack_type": [...],
-    "by_ransomware": [...]
-  }
-}
-```
-
-### Statistics
-
-#### `GET /api/stats`
-
-Get summary statistics.
-
-**Response**:
-```json
-{
-  "total_incidents": 4500,
-  "enriched_incidents": 3200,
-  "ransomware_attacks": 1800,
-  "data_breaches": 1200,
-  "countries_affected": 45,
-  "threat_actors": 120
-}
-```
-
-### Incidents
-
-#### `GET /api/incidents`
-
-Get paginated list of incidents with filtering and sorting.
-
-**Query Parameters**:
-- `page` (int, default: 1): Page number
-- `page_size` (int, default: 20): Items per page
-- `country` (string, optional): Filter by country (full name or code)
-- `attack_type` (string, optional): Filter by attack type
-- `ransomware` (string, optional): Filter by ransomware family
-- `threat_actor` (string, optional): Filter by threat actor
-- `year` (int, optional): Filter by year
-- `enriched_only` (bool, default: false): Only enriched incidents
-- `education_only` (bool, default: true): Only education-related incidents
-- `search` (string, optional): Full-text search
-- `sort_by` (string, default: "incident_date"): Sort field
-- `sort_order` (string, default: "desc"): "asc" or "desc"
-
-**Response**:
-```json
-{
-  "incidents": [...],
-  "pagination": {
-    "page": 1,
-    "page_size": 20,
-    "total": 4500,
-    "total_pages": 225
-  }
-}
-```
-
-#### `GET /api/incidents/{incident_id}`
-
-Get detailed information for a specific incident.
-
-**Response**:
-```json
-{
-  "incident_id": "konbriefing_abc123",
-  "title": "University Cyber Attack",
-  "incident_date": "2024-03-15",
-  "country": "United States",
-  "country_code": "US",
-  "enrichment": {
-    "is_education_related": true,
-    "attack_category": "ransomware",
-    "ransomware_family": "LockBit",
-    "timeline": [...],
-    "mitre_attack": [...],
-    "impact": {...}
-  },
-  "sources": [...]
-}
-```
-
-#### `GET /api/incidents/{incident_id}/report`
+EduThreat-CTI now serves the dashboard and operator workflows from the
+canonical Postgres-backed `v2` API.
 
-Download comprehensive CTI report in Markdown format.
+Use:
 
-**Response**: Markdown text file
+- public data: `/api/v2/*`
+- operator controls: `/api/admin/v2/*`
 
-**Headers**:
-- `Content-Type: text/markdown`
-- `Content-Disposition: attachment; filename=cti-report-{incident_id}.md`
+The older SQLite-era `/api/*` surface is considered legacy and should not be
+used for new integrations.
 
-### Filters
+## Health
 
-#### `GET /api/filters`
+### `GET /health`
 
-Get available filter options.
+Basic service liveness.
 
-**Response**:
-```json
-{
-  "countries": [
-    {"name": "United States", "code": "US", "flag_emoji": "🇺🇸", "count": 293},
-    {"name": "United Kingdom", "code": "GB", "flag_emoji": "🇬🇧", "count": 45}
-  ],
-  "attack_types": [...],
-  "ransomware_families": [...],
-  "threat_actors": [...],
-  "years": [2020, 2021, 2022, 2023, 2024]
-}
-```
+### `GET /api/health`
 
-### Analytics
+Compatibility liveness endpoint for platform health checks.
 
-#### `GET /api/analytics/countries`
+### `GET /api/v2/health`
 
-Get country breakdown with incident counts.
+Returns the `v2` layer health explicitly.
 
-**Response**:
-```json
-[
-  {
-    "country": "United States",
-    "country_code": "US",
-    "flag_emoji": "🇺🇸",
-    "count": 293
-  },
-  ...
-]
-```
+## Public `v2` Endpoints
 
-#### `GET /api/analytics/attack-types`
+### `GET /api/v2/dashboard`
 
-Get attack type breakdown.
+Returns the main dashboard payload:
 
-**Response**:
-```json
-[
-  {"attack_type": "ransomware", "count": 1800},
-  {"attack_type": "data_breach", "count": 1200},
-  ...
-]
-```
+- `stats`
+- `incidents_by_country`
+- `incidents_by_attack_type`
+- `incidents_by_ransomware`
+- `incidents_over_time`
+- `recent_incidents`
 
-#### `GET /api/analytics/ransomware`
+### `GET /api/v2/stats`
 
-Get ransomware family statistics.
+Returns the dashboard statistics subset only.
 
-**Response**:
-```json
-[
-  {"family": "LockBit", "count": 450},
-  {"family": "BlackCat", "count": 320},
-  ...
-]
-```
+### `GET /api/v2/incidents`
 
-#### `GET /api/analytics/threat-actors`
+Canonical incident listing. Supports:
 
-Get threat actor statistics.
+- `limit`
+- `offset`
+- `search`
+- `country_code`
+- `attack_category`
+- `institution_type`
+- `severity`
+- `date_from`
+- `date_to`
+- `sort_by`
+- `sort_order`
 
-**Response**:
-```json
-[
-  {"actor": "LockBit", "count": 450, "type": "ransomware_gang"},
-  ...
-]
-```
+Compatibility mode:
 
-## Admin Endpoints
+- `format=legacy`
 
-All admin endpoints require authentication.
+Use `format=legacy` if you need the old incident-list response shape.
 
-### Database Export
+### `GET /api/v2/incidents/{canonical_incident_id}`
 
-#### `GET /api/admin/export/database`
+Canonical incident detail.
 
-Download full database file.
+Compatibility mode:
 
-**Authentication**: Required
+- `format=legacy`
 
-**Response**: SQLite database file
+This is what the migrated dashboard now uses for incident detail pages.
 
-#### `GET /api/admin/export/csv/enriched`
+### `GET /api/v2/incidents/{canonical_incident_id}/report`
 
-Export enriched incidents to CSV.
+Downloads the CTI report for a canonical incident.
 
-**Query Parameters**:
-- `education_only` (bool, default: true): Only education-related incidents
+### `GET /api/v2/filters`
 
-**Authentication**: Required
+Returns:
 
-**Response**: CSV file
+- `countries`
+- `attack_categories`
+- `ransomware_families`
+- `threat_actors`
+- `institution_types`
+- `years`
 
-#### `GET /api/admin/export/csv/full`
+### `GET /api/v2/incidents/facets`
 
-Export all incidents to CSV.
+Filtered facet counts for:
 
-**Query Parameters**:
-- `education_only` (bool, default: true): Only education-related incidents
+- countries
+- attack categories
+- institution types
+- severities
 
-**Authentication**: Required
+### `GET /api/v2/analytics/breakdowns`
 
-**Response**: CSV file
+Filtered analytics breakdowns with the same main facet families used by the
+dashboard.
 
-### Scheduler Controls
+### `GET /api/v2/analytics/trend`
 
-#### `POST /api/admin/scheduler/trigger/{job_type}`
+Filtered trend series.
 
-Trigger a scheduler job.
+Query parameters:
 
-**Path Parameters**:
-- `job_type`: "rss", "weekly", or "enrich"
+- `bucket=month|week|year`
+- `limit`
 
-**Authentication**: Required
+### Compatibility Analytics Endpoints
 
-**Response**:
-```json
-{
-  "success": true,
-  "job_type": "enrich",
-  "message": "Job triggered successfully"
-}
-```
+These keep the dashboard cutover simple while still reading from the `v2`
+canonical model:
 
-### Data Maintenance
+- `GET /api/v2/analytics/countries`
+- `GET /api/v2/analytics/attack-types`
+- `GET /api/v2/analytics/ransomware`
+- `GET /api/v2/analytics/timeline`
+- `GET /api/v2/analytics/threat-actors`
 
-#### `POST /api/admin/normalize-countries`
+## Admin `v2` Endpoints
 
-Normalize all country codes to full names in the database.
+### `POST /api/admin/v2/login`
 
-**Authentication**: Required
+Authenticate into the operator console.
 
-**Response**:
-```json
-{
-  "success": true,
-  "updated": 4500,
-  "message": "Normalized 4500 country entries"
-}
-```
+### `POST /api/admin/v2/logout`
 
-#### `POST /api/admin/fix-incident-dates`
+Invalidate the current session.
 
-Fix incident dates using LLM-extracted timeline data.
+### `GET /api/admin/v2/preflight`
 
-**Query Parameters**:
-- `apply` (bool, default: false): If false, dry run only
+Checks:
 
-**Authentication**: Required
+- Postgres connectivity
+- Alembic revision
+- Ollama config
+- Oxylabs config
+- admin auth readiness
 
-**Response**:
-```json
-{
-  "success": true,
-  "apply": true,
-  "fixed": 148,
-  "skipped": 141,
-  "total_checked": 313,
-  "message": "Fixed 148 incidents"
-}
-```
+### `GET /api/admin/v2/status`
 
-## Error Responses
+Returns runtime status including:
 
-### 400 Bad Request
+- canonical/source/article/enrichment counts
+- queue health
+- task summary
+- recent tasks
+- recent runs
+- dashboard snapshot freshness
 
-```json
-{
-  "detail": "Invalid query parameter"
-}
-```
+### `GET /api/admin/v2/plans`
 
-### 404 Not Found
+Lists named orchestration plans.
 
-```json
-{
-  "detail": "Incident not found"
-}
-```
+### `POST /api/admin/v2/run-plan?plan_name=...`
 
-### 500 Internal Server Error
+Queues a named collection/enrichment plan.
 
-```json
-{
-  "detail": "Internal server error"
-}
-```
+### `POST /api/admin/v2/data-quality/sweep-now`
 
-## Rate Limiting
+Queues a data-quality sweep over source enrichments.
 
-- No rate limiting currently implemented
-- Recommended: Implement rate limiting for production use
-- Consider adding authentication for sensitive endpoints
+### `POST /api/admin/v2/canonicalize/sweep-now`
 
-## CORS
+Queues a bounded recanonicalization sweep.
 
-CORS is enabled for the dashboard domain:
-- `Access-Control-Allow-Origin: *` (configurable)
+### `GET /api/admin/v2/canonicalize/consistency-candidates`
 
-## Interactive Documentation
+Lists canonicals whose top-level fields appear to have drifted from their
+authoritative projection.
 
-### Swagger UI
+### `POST /api/admin/v2/canonicalize/consistency-sweep-now`
 
-Available at: `http://localhost:8000/docs` (development)
+Queues recanonicalization for consistency-drift candidates.
 
-### ReDoc
+### `GET /api/admin/v2/manual-review-queue`
 
-Available at: `http://localhost:8000/redoc` (development)
+Lists enrichments that exhausted automatic cleanup and need operator review.
 
-## Example Usage
+## Example Requests
 
-### Python
-
-```python
-import requests
-
-# Get dashboard data
-response = requests.get("https://eduthreat-cti-production.up.railway.app/api/dashboard")
-data = response.json()
-
-# Get incidents with filters
-params = {
-    "country": "United States",
-    "attack_type": "ransomware",
-    "page": 1,
-    "page_size": 20
-}
-response = requests.get(
-    "https://eduthreat-cti-production.up.railway.app/api/incidents",
-    params=params
-)
-incidents = response.json()
-
-# Get specific incident
-response = requests.get(
-    "https://eduthreat-cti-production.up.railway.app/api/incidents/konbriefing_abc123"
-)
-incident = response.json()
-```
-
-### JavaScript/TypeScript
-
-```typescript
-// Get dashboard data
-const response = await fetch('https://eduthreat-cti-production.up.railway.app/api/dashboard');
-const data = await response.json();
-
-// Get incidents with filters
-const params = new URLSearchParams({
-  country: 'United States',
-  attack_type: 'ransomware',
-  page: '1',
-  page_size: '20'
-});
-const incidentsResponse = await fetch(
-  `https://eduthreat-cti-production.up.railway.app/api/incidents?${params}`
-);
-const incidents = await incidentsResponse.json();
-```
-
-### cURL
+### Dashboard
 
 ```bash
-# Get dashboard data
-curl https://eduthreat-cti-production.up.railway.app/api/dashboard
-
-# Get incidents with filters
-curl "https://eduthreat-cti-production.up.railway.app/api/incidents?country=United%20States&attack_type=ransomware"
-
-# Get specific incident
-curl https://eduthreat-cti-production.up.railway.app/api/incidents/konbriefing_abc123
-
-# Download CTI report
-curl -O https://eduthreat-cti-production.up.railway.app/api/incidents/konbriefing_abc123/report
+curl https://<your-v2-api-domain>/api/v2/dashboard
 ```
 
-## Versioning
+### Incident list
 
-API versioning is not currently implemented. All endpoints are under `/api/` prefix.
+```bash
+curl "https://<your-v2-api-domain>/api/v2/incidents?limit=25&offset=0&country_code=US&sort_by=incident_date&sort_order=desc"
+```
 
-Future versions may use:
-- `/api/v1/...` for version 1
-- `/api/v2/...` for version 2
+### Legacy-compatible incident list
 
-## Support
+```bash
+curl "https://<your-v2-api-domain>/api/v2/incidents?format=legacy&limit=25&offset=0"
+```
 
-For API issues or questions:
-- Open an issue on GitHub
-- Check the [main documentation](../README.md)
-- Review [ARCHITECTURE.md](ARCHITECTURE.md) for system design
+### Incident detail
+
+```bash
+curl "https://<your-v2-api-domain>/api/v2/incidents/<canonical_incident_id>?format=legacy"
+```
+
+### Report download
+
+```bash
+curl -O "https://<your-v2-api-domain>/api/v2/incidents/<canonical_incident_id>/report"
+```
+
+### Login and run a plan
+
+```bash
+curl -X POST "https://<your-v2-api-domain>/api/admin/v2/login" \
+  -H "Content-Type: application/json" \
+  -d '{"username":"admin","password":"<password>"}'
+```
+
+```bash
+curl -X POST "https://<your-v2-api-domain>/api/admin/v2/run-plan?plan_name=historical_full" \
+  -H "X-Session-Token: <session_token>"
+```
+
+## Notes
+
+- The current dashboard repo is migrated to the `v2` API.
+- New integrations should not target the legacy SQLite-backed `/api/*` routes.
+- If you need deployment steps, see [V2_RUNTIME.md](V2_RUNTIME.md) and
+  [RAILWAY_V2_DEPLOY.md](RAILWAY_V2_DEPLOY.md).

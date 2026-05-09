@@ -1,77 +1,18 @@
+"""Legacy API CLI shim.
+
+The dashboard and production services now run entirely on the Postgres-backed
+v2 API. Keep `python -m src.edu_cti.api` working by delegating to the v2 API
+entrypoint instead of the deprecated SQLite-era public surface.
 """
-API Server CLI entry point.
 
-Run with: python -m src.edu_cti.api
+from __future__ import annotations
 
-For Railway deployment, set PORT environment variable.
-"""
-
-import argparse
-import os
-import uvicorn
+from src.edu_cti_v2.api_server import main as v2_main
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Start the EduThreat-CTI API server"
-    )
-    parser.add_argument(
-        "--host",
-        type=str,
-        default="0.0.0.0",
-        help="Host to bind to (default: 0.0.0.0)",
-    )
-    parser.add_argument(
-        "--port",
-        type=int,
-        default=None,
-        help="Port to bind to (default: 8000 or PORT env var)",
-    )
-    parser.add_argument(
-        "--reload",
-        action="store_true",
-        help="Enable auto-reload for development",
-    )
-    parser.add_argument(
-        "--workers",
-        type=int,
-        default=1,
-        help="Number of worker processes (default: 1)",
-    )
-    
-    args = parser.parse_args()
-    
-    # Use PORT env var (Railway provides this), fallback to CLI arg, then default
-    port = args.port or int(os.environ.get("PORT", 8000))
-    
-    print(f"Starting EduThreat-CTI API server on {args.host}:{port}")
-    print(f"API documentation available at: http://localhost:{port}/docs")
-    
-    # Suppress noisy access logs for frequent polling endpoints
-    import logging as _logging
-
-    class _QuietPollFilter(_logging.Filter):
-        """Filter out repetitive polling request logs."""
-        _quiet_paths = (
-            "/api/admin/pipeline/status",
-            "/api/admin/pipeline/logs",
-            "/health",
-            "/api/health",
-        )
-
-        def filter(self, record: _logging.LogRecord) -> bool:
-            msg = record.getMessage()
-            return not any(p in msg for p in self._quiet_paths)
-
-    _logging.getLogger("uvicorn.access").addFilter(_QuietPollFilter())
-
-    uvicorn.run(
-        "src.edu_cti.api.main:app",
-        host=args.host,
-        port=port,
-        reload=args.reload,
-        workers=args.workers if not args.reload else 1,
-    )
+def main() -> None:
+    print("Delegating legacy API entrypoint to the Postgres-backed v2 API server.")
+    v2_main()
 
 
 if __name__ == "__main__":
