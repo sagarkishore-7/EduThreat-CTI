@@ -182,11 +182,20 @@ class V2TaskRuntime:
         if task.task_type == "refresh_analytics":
             analytics_refresh_service = self.analytics_refresh_service or V2AnalyticsRefreshService()
             self.analytics_refresh_service = analytics_refresh_service
-            canonical_incident_id = task.payload.get("canonical_incident_id") or task.target_id
-            result = analytics_refresh_service.refresh_for_canonical_incident(
-                session,
-                canonical_incident_id,
-            )
+            payload = task.payload if isinstance(task.payload, dict) else {}
+            refresh_key = payload.get("refresh_key")
+            target_table = getattr(task, "target_table", None)
+            if target_table == "analytics_refresh_state" or refresh_key == "dashboard:global":
+                result = analytics_refresh_service.refresh_dashboard_snapshot(
+                    session,
+                    last_trigger_canonical_incident_id=payload.get("canonical_incident_id"),
+                )
+            else:
+                canonical_incident_id = payload.get("canonical_incident_id") or task.target_id
+                result = analytics_refresh_service.refresh_canonical_incident_snapshot(
+                    session,
+                    canonical_incident_id,
+                )
             self.pipeline_task_repository.mark_completed(session, task, result)
             return task
 

@@ -199,13 +199,15 @@ def test_canonicalization_service_creates_seed_canonical_and_membership():
     enrichment_repo.get_by_source_incident.return_value = enrichment
 
     task_repo = Mock()
-    task_repo.get_active_for_target.return_value = None
+    task_repo.get_active_for_target.side_effect = [None, None]
+    analytics_repo = Mock()
 
     service = V2CanonicalizationService(
         canonical_repository=canonical_repo,
         source_incident_repository=source_repo,
         source_enrichment_repository=enrichment_repo,
         pipeline_task_repository=task_repo,
+        analytics_refresh_repository=analytics_repo,
     )
     session = Mock()
     session.flush.side_effect = None
@@ -237,7 +239,13 @@ def test_canonicalization_service_creates_seed_canonical_and_membership():
     assert outcome["match_type"] == "seed"
     assert added_canonicals
     assert added_memberships
-    assert task_repo.enqueue.called
+    assert task_repo.enqueue.call_count == 2
+    analytics_repo.mark_needs_refresh.assert_called_once_with(
+        session,
+        refresh_key="dashboard:global",
+        refresh_scope="global",
+        default_state_payload={},
+    )
 
 
 def test_canonicalization_service_reuses_existing_url_matched_canonical():
@@ -279,13 +287,15 @@ def test_canonicalization_service_reuses_existing_url_matched_canonical():
     enrichment_repo.get_by_source_incident.return_value = enrichment
 
     task_repo = Mock()
-    task_repo.get_active_for_target.return_value = object()
+    task_repo.get_active_for_target.side_effect = [object(), object()]
+    analytics_repo = Mock()
 
     service = V2CanonicalizationService(
         canonical_repository=canonical_repo,
         source_incident_repository=source_repo,
         source_enrichment_repository=enrichment_repo,
         pipeline_task_repository=task_repo,
+        analytics_refresh_repository=analytics_repo,
     )
     session = Mock()
     session.execute.return_value.scalars.return_value.all.return_value = [enrichment]
@@ -306,6 +316,7 @@ def test_canonicalization_service_reuses_existing_url_matched_canonical():
     assert outcome["match_type"] == "url_exact"
     assert added_memberships
     assert added_memberships[0].canonical_incident_id == existing_canonical.id
+    analytics_repo.mark_needs_refresh.assert_called_once()
 
 
 def test_canonicalization_service_updates_existing_canonical_with_better_projection():

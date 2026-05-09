@@ -28,6 +28,7 @@ from src.edu_cti_v2.models import (
     SourceEnrichment,
 )
 from src.edu_cti_v2.repositories import (
+    AnalyticsRefreshRepository,
     CanonicalIncidentRepository,
     PipelineTaskRepository,
     SourceEnrichmentRepository,
@@ -493,11 +494,13 @@ class V2CanonicalizationService:
         source_incident_repository: Optional[SourceIncidentRepository] = None,
         source_enrichment_repository: Optional[SourceEnrichmentRepository] = None,
         pipeline_task_repository: Optional[PipelineTaskRepository] = None,
+        analytics_refresh_repository: Optional[AnalyticsRefreshRepository] = None,
     ) -> None:
         self.canonical_repository = canonical_repository or CanonicalIncidentRepository()
         self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
         self.source_enrichment_repository = source_enrichment_repository or SourceEnrichmentRepository()
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
+        self.analytics_refresh_repository = analytics_refresh_repository or AnalyticsRefreshRepository()
 
     def _find_existing_canonical(
         self,
@@ -771,6 +774,42 @@ class V2CanonicalizationService:
             )
             refresh_task_enqueued = 1
 
+        self.analytics_refresh_repository.mark_needs_refresh(
+            session,
+            refresh_key="dashboard:global",
+            refresh_scope="global",
+            default_state_payload={},
+        )
+        existing_dashboard_refresh = self.pipeline_task_repository.get_active_for_target(
+            session,
+            task_type="refresh_analytics",
+            target_table="analytics_refresh_state",
+            target_id=None,
+        )
+        dashboard_refresh_enqueued = 0
+        if existing_dashboard_refresh is None:
+            self.pipeline_task_repository.enqueue(
+                session,
+                PipelineTask(
+                    run_id=None,
+                    task_type="refresh_analytics",
+                    target_table="analytics_refresh_state",
+                    target_id=None,
+                    status="queued",
+                    priority=160,
+                    payload={
+                        "refresh_key": "dashboard:global",
+                        "refresh_scope": "global",
+                        "canonical_incident_id": str(canonical.id),
+                    },
+                    result={},
+                    available_at=now,
+                    attempt_count=0,
+                    max_attempts=5,
+                ),
+            )
+            dashboard_refresh_enqueued = 1
+
         return {
             "canonicalized": True,
             "canonical_incident_id": str(canonical.id),
@@ -779,4 +818,5 @@ class V2CanonicalizationService:
             "primary_source_incident_id": str(canonical.primary_source_incident_id) if canonical.primary_source_incident_id else None,
             "canonical_enrichment_id": str(canonical_enrichment.id) if canonical_enrichment.id else None,
             "refresh_tasks_enqueued": refresh_task_enqueued,
+            "dashboard_refresh_tasks_enqueued": dashboard_refresh_enqueued,
         }

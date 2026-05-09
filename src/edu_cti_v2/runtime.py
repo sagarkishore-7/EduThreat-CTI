@@ -21,6 +21,24 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _prewarm_ml_models() -> None:
+    """Warm the shared process-wide ML helpers once before worker threads start."""
+    try:
+        from src.edu_cti.pipeline.phase2.extraction.mitre_rag import (
+            _load_embed_model as _rag_load,
+            _load_index as _rag_index,
+        )
+        from src.edu_cti.pipeline.phase2.extraction.ner_preprocessor import _load_model as _ner_load
+
+        logger.info("Pre-warming v2 ML models before worker threads start...")
+        _ner_load()
+        _rag_load()
+        _rag_index()
+        logger.info("v2 ML model pre-warm complete.")
+    except Exception as exc:
+        logger.warning("v2 ML model pre-warm failed (non-fatal): %s", exc)
+
+
 @dataclass
 class _WorkerThreadState:
     worker_id: str
@@ -44,12 +62,14 @@ class V2RuntimeService:
         enable_scheduler: bool = True,
         scheduler_service: Optional[V2SchedulerService] = None,
         scheduler_poll_interval_seconds: float = 5.0,
+        prewarm_models: bool = True,
     ) -> None:
         self.worker_count = max(worker_count, 1)
         self.task_type = task_type
         self.poll_interval_seconds = poll_interval_seconds
         self.lease_seconds = lease_seconds
         self.enable_scheduler = enable_scheduler
+        self.prewarm_models = prewarm_models
         self.scheduler_service = scheduler_service or V2SchedulerService(
             poll_interval_seconds=scheduler_poll_interval_seconds,
         )
@@ -99,6 +119,9 @@ class V2RuntimeService:
         self._stop_event.clear()
         self._worker_states = []
 
+        if self.prewarm_models and (self.task_type is None or self.task_type in {"enrich_source", "reenrich"}):
+            _prewarm_ml_models()
+
         if self.enable_scheduler:
             self.scheduler_service.start()
 
@@ -110,6 +133,14 @@ class V2RuntimeService:
             )
             self._worker_states.append(orchestrator_state)
             self._start_worker_thread(orchestrator_state)
+
+            analytics_state = _WorkerThreadState(
+                worker_id="v2-runtime:analytics",
+                thread=None,
+                task_type="refresh_analytics",
+            )
+            self._worker_states.append(analytics_state)
+            self._start_worker_thread(analytics_state)
 
             for index in range(self.worker_count):
                 worker_id = f"v2-runtime:{index + 1}"
@@ -224,6 +255,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable recurring plan scheduling and run workers only",
     )
+    parser.add_argument(
+        "--no-prewarm-models",
+        action="store_true",
+        help="Skip eager GLiNER/MITRE model warm-up before worker threads start",
+    )
     parser.set_defaults(enable_scheduler=default_enable_scheduler)
     return parser
 
@@ -241,6 +277,7 @@ def main() -> None:
         lease_seconds=args.lease_seconds,
         enable_scheduler=args.enable_scheduler and not args.no_scheduler,
         scheduler_poll_interval_seconds=args.scheduler_poll_interval,
+        prewarm_models=not args.no_prewarm_models and _env_flag("EDU_CTI_V2_PREWARM_MODELS", "1"),
     )
 
     stop = False

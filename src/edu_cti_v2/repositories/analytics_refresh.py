@@ -25,6 +25,34 @@ class AnalyticsRefreshRepository:
         stmt = self.build_get_by_key_stmt(refresh_key)
         return session.execute(stmt).scalar_one_or_none()
 
+    def mark_needs_refresh(
+        self,
+        session: Session,
+        *,
+        refresh_key: str,
+        refresh_scope: str,
+        default_state_payload: dict | None = None,
+    ) -> AnalyticsRefreshState:
+        existing = self.get_by_key(session, refresh_key)
+        now = datetime.now(timezone.utc)
+        if existing is None:
+            existing = AnalyticsRefreshState(
+                refresh_key=refresh_key,
+                refresh_scope=refresh_scope,
+                needs_refresh=True,
+                last_refreshed_at=None,
+                state_payload=default_state_payload or {},
+                updated_at=now,
+            )
+        else:
+            existing.refresh_scope = refresh_scope
+            existing.needs_refresh = True
+            if default_state_payload and not existing.state_payload:
+                existing.state_payload = default_state_payload
+            existing.updated_at = now
+        session.add(existing)
+        return existing
+
     def upsert_snapshot(
         self,
         session: Session,
@@ -54,4 +82,3 @@ class AnalyticsRefreshRepository:
             existing.updated_at = now
         session.add(existing)
         return existing
-

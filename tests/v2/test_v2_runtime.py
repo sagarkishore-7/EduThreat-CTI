@@ -6,6 +6,7 @@ from src.edu_cti_v2.worker import V2WorkerRunSummary
 
 def test_v2_runtime_service_starts_and_stops_workers_and_scheduler(monkeypatch):
     seen = []
+    prewarmed = []
 
     class _FakeScheduler:
         def __init__(self):
@@ -35,6 +36,7 @@ def test_v2_runtime_service_starts_and_stops_workers_and_scheduler(monkeypatch):
         )
 
     monkeypatch.setattr("src.edu_cti_v2.runtime.run_worker_loop", _fake_run_worker_loop)
+    monkeypatch.setattr("src.edu_cti_v2.runtime._prewarm_ml_models", lambda: prewarmed.append(True))
 
     scheduler = _FakeScheduler()
     runtime = V2RuntimeService(worker_count=2, scheduler_service=scheduler)
@@ -47,7 +49,9 @@ def test_v2_runtime_service_starts_and_stops_workers_and_scheduler(monkeypatch):
     stopped = runtime.stop()
     assert stopped["running"] is False
     assert scheduler.stopped == 1
+    assert prewarmed == [True]
     assert ("v2-runtime:orchestrator", "orchestrate_plan", ()) in seen
+    assert ("v2-runtime:analytics", "refresh_analytics", ()) in seen
     assert ("v2-runtime:1", None, ("orchestrate_plan",)) in seen
     assert ("v2-runtime:2", None, ("orchestrate_plan",)) in seen
     assert all(worker["summary"]["stop_reason"] == "stopped" for worker in stopped["workers"])
@@ -65,6 +69,7 @@ def test_v2_runtime_service_can_disable_scheduler(monkeypatch):
         )
 
     monkeypatch.setattr("src.edu_cti_v2.runtime.run_worker_loop", _fake_run_worker_loop)
+    monkeypatch.setattr("src.edu_cti_v2.runtime._prewarm_ml_models", lambda: None)
 
     runtime = V2RuntimeService(worker_count=1, enable_scheduler=False)
     started = runtime.start()
@@ -92,6 +97,7 @@ def test_v2_runtime_service_restarts_dead_worker_threads(monkeypatch):
         )
 
     monkeypatch.setattr("src.edu_cti_v2.runtime.run_worker_loop", _fake_run_worker_loop)
+    monkeypatch.setattr("src.edu_cti_v2.runtime._prewarm_ml_models", lambda: None)
 
     runtime = V2RuntimeService(worker_count=1, task_type="fetch_article", enable_scheduler=False)
     runtime.start()
@@ -102,3 +108,26 @@ def test_v2_runtime_service_restarts_dead_worker_threads(monkeypatch):
 
     assert call_counts["v2-runtime:1"] == 2
     assert stopped["workers"][0]["summary"]["stop_reason"] == "stopped"
+
+
+def test_v2_runtime_service_skips_prewarm_for_fetch_only_workers(monkeypatch):
+    prewarmed = []
+
+    def _fake_run_worker_loop(*, worker_id, stop_event, **_kwargs):
+        stop_event.wait(0.01)
+        return V2WorkerRunSummary(
+            processed_tasks=0,
+            idle_polls=0,
+            stop_reason="stopped",
+            worker_id=worker_id,
+            task_type="fetch_article",
+        )
+
+    monkeypatch.setattr("src.edu_cti_v2.runtime.run_worker_loop", _fake_run_worker_loop)
+    monkeypatch.setattr("src.edu_cti_v2.runtime._prewarm_ml_models", lambda: prewarmed.append(True))
+
+    runtime = V2RuntimeService(worker_count=1, task_type="fetch_article", enable_scheduler=False)
+    runtime.start()
+    runtime.stop()
+
+    assert prewarmed == []

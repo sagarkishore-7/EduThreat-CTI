@@ -324,7 +324,7 @@ def test_task_runtime_processes_refresh_analytics_task_and_marks_complete():
         payload={"canonical_incident_id": str(canonical_id)},
     )
     task_repo.lease_batch.return_value = [task]
-    analytics_service.refresh_for_canonical_incident.return_value = {"refreshed": True}
+    analytics_service.refresh_canonical_incident_snapshot.return_value = {"refreshed": True}
 
     runtime = V2TaskRuntime(
         pipeline_task_repository=task_repo,
@@ -338,8 +338,47 @@ def test_task_runtime_processes_refresh_analytics_task_and_marks_complete():
     processed = runtime.process_next_task(session, worker_id="worker-1")
 
     assert processed is task
-    analytics_service.refresh_for_canonical_incident.assert_called_once_with(session, str(canonical_id))
+    analytics_service.refresh_canonical_incident_snapshot.assert_called_once_with(session, str(canonical_id))
     task_repo.mark_completed.assert_called_once_with(session, task, {"refreshed": True})
+
+
+def test_task_runtime_processes_global_refresh_analytics_task_and_marks_complete():
+    task_repo = Mock()
+    source_repo = Mock()
+    fetch_service = Mock()
+    analytics_service = Mock()
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type="refresh_analytics",
+        target_id=None,
+        target_table="analytics_refresh_state",
+        payload={"refresh_key": "dashboard:global", "canonical_incident_id": "abc"},
+    )
+    task_repo.lease_batch.return_value = [task]
+    analytics_service.refresh_dashboard_snapshot.return_value = {"refreshed": True, "snapshot_scope": "global"}
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        fetch_service=fetch_service,
+        analytics_refresh_service=analytics_service,
+    )
+    session = Mock()
+    session.get.return_value = task
+
+    processed = runtime.process_next_task(session, worker_id="worker-1")
+
+    assert processed is task
+    analytics_service.refresh_dashboard_snapshot.assert_called_once_with(
+        session,
+        last_trigger_canonical_incident_id="abc",
+    )
+    task_repo.mark_completed.assert_called_once_with(
+        session,
+        task,
+        {"refreshed": True, "snapshot_scope": "global"},
+    )
 
 
 def test_task_runtime_processes_orchestrate_plan_task_and_marks_complete():

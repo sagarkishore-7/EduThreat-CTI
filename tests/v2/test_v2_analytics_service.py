@@ -44,3 +44,23 @@ def test_analytics_refresh_service_updates_canonical_and_dashboard_snapshots():
     assert result["snapshots_updated"] == 2
     assert analytics_repo.upsert_snapshot.call_count == 2
 
+
+def test_analytics_refresh_service_can_refresh_dashboard_only():
+    canonical_repo = Mock()
+    canonical_repo.get_dashboard_rollup.return_value = {"canonical_incident_count": 5}
+    canonical_repo.get_country_breakdown.return_value = [{"country_code": "US", "incident_count": 3}]
+    canonical_repo.get_attack_breakdown.return_value = [{"attack_category": "ransomware_encryption", "incident_count": 2}]
+    analytics_repo = Mock()
+
+    service = V2AnalyticsRefreshService(
+        canonical_repository=canonical_repo,
+        analytics_refresh_repository=analytics_repo,
+        read_service=Mock(),
+    )
+
+    result = service.refresh_dashboard_snapshot(Mock(), last_trigger_canonical_incident_id="abc")
+
+    assert result["refreshed"] is True
+    assert result["snapshot_scope"] == "global"
+    assert result["snapshots_updated"] == 1
+    analytics_repo.upsert_snapshot.assert_called_once()
