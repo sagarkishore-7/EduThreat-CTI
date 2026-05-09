@@ -9,6 +9,7 @@ import random
 import time
 import logging
 import threading
+import re
 from typing import List, Dict, Set, Optional, Tuple
 from collections import defaultdict
 from datetime import datetime, timedelta
@@ -33,6 +34,8 @@ from src.edu_cti.pipeline.phase2.storage.article_storage import (
 )
 
 logger = logging.getLogger(__name__)
+
+_INVALID_SERP_NAME_RE = re.compile(r"^[^A-Za-z0-9]+$")
 
 
 def _append_url_to_incident(conn: sqlite3.Connection, incident_id: str, url: str) -> None:
@@ -116,12 +119,23 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
     Returns:
         List of discovered article URLs (may be empty if Oxylabs not configured or no results)
     """
-    INVALID_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
+    INVALID_NAMES = {
+        "unknown",
+        "unknown institution",
+        "n/a",
+        "none",
+        "unnamed",
+        "undisclosed",
+        "not disclosed",
+        "?",
+        "-",
+        "",
+    }
 
     name = (incident.get("institution_name") or incident.get("victim_raw_name") or "").strip()
     title = (incident.get("title") or "").strip()
 
-    if name and name.lower() not in INVALID_NAMES and not is_headline_format(name, title):
+    if name and name.lower() not in INVALID_NAMES and not _INVALID_SERP_NAME_RE.fullmatch(name) and not is_headline_format(name, title):
         # Skip domain-format names (e.g. unila.edu.mx, saiedu.fi) — Google News
         # won't find news articles for a bare domain name. These consistently
         # return 0 results and waste Oxylabs credits.

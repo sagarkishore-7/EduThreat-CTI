@@ -12,13 +12,40 @@ from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_article
 from src.edu_cti_v2.models import PipelineTask, SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceIncidentRepository
 
+_INVALID_DISCOVERY_NAMES = {
+    "",
+    "?",
+    "-",
+    "unknown",
+    "unknown institution",
+    "n/a",
+    "none",
+    "unnamed",
+    "undisclosed",
+    "not disclosed",
+}
+
+
+def _clean_discovery_name(value: Optional[str]) -> Optional[str]:
+    text = (value or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if lowered in _INVALID_DISCOVERY_NAMES:
+        return None
+    if not any(char.isalnum() for char in text):
+        return None
+    return text
+
 
 def source_incident_to_discovery_payload(source_incident: SourceIncident) -> Dict[str, object]:
     """Map a v2 source incident into the SERP discovery payload shape."""
+    institution_name = _clean_discovery_name(source_incident.raw_institution_name)
+    victim_raw_name = _clean_discovery_name(source_incident.raw_victim_name)
     return {
         "incident_id": str(source_incident.id),
-        "institution_name": source_incident.raw_institution_name,
-        "victim_raw_name": source_incident.raw_victim_name,
+        "institution_name": institution_name,
+        "victim_raw_name": victim_raw_name,
         "title": source_incident.raw_title,
         "attack_type_hint": source_incident.raw_attack_hint,
         "incident_date": source_incident.raw_incident_date,

@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from src.edu_cti_v2.models import SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.services import V2ResolveUrlService, determine_initial_task_type
+from src.edu_cti_v2.services.resolution import source_incident_to_discovery_payload
 
 
 def _source_incident(*, with_fetchable_url: bool = False) -> SourceIncident:
@@ -93,3 +94,14 @@ def test_resolve_url_service_reuses_existing_fetch_task_and_dedupes_urls():
     assert result["urls_added"] == 0
     assert result["fetch_tasks_enqueued"] == 0
     task_repo.enqueue.assert_not_called()
+
+
+def test_discovery_payload_drops_placeholder_institution_name_and_uses_victim_name():
+    incident = _source_incident(with_fetchable_url=False)
+    incident.raw_institution_name = "?"
+    incident.raw_victim_name = "University of Example"
+
+    payload = source_incident_to_discovery_payload(incident)
+
+    assert payload["institution_name"] is None
+    assert payload["victim_raw_name"] == "University of Example"
