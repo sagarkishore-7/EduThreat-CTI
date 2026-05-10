@@ -9,6 +9,7 @@ from src.edu_cti_v2.db import V2DatabaseSettings, create_engine_from_settings
 from src.edu_cti_v2.migrate import build_alembic_config
 
 _DROP_STATEMENTS = [
+    "DROP TABLE IF EXISTS research_metric_snapshots CASCADE",
     "DROP TABLE IF EXISTS analytics_refresh_state CASCADE",
     "DROP TABLE IF EXISTS pipeline_tasks CASCADE",
     "DROP TABLE IF EXISTS pipeline_runs CASCADE",
