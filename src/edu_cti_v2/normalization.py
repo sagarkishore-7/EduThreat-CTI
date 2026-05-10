@@ -262,10 +262,14 @@ _UNKNOWN_THREAT_ACTOR_VALUES = {
 }
 
 _GENERIC_GEOPOLITICAL_ACTOR_VALUES = {
+    "china",
     "chinese",
+    "iran",
     "iranian",
+    "north_korea",
     "north_korean",
     "pro_russian",
+    "russia",
     "russian",
     "state_backed",
 }

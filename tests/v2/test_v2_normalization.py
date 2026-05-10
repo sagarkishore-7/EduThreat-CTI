@@ -36,3 +36,4 @@ def test_generic_threat_actor_placeholders_are_suppressed():
     assert normalize_threat_actor_name("cybercriminal group") is None
     assert normalize_threat_actor_name("pro-Russian hackers") is None
     assert normalize_threat_actor_name("Chinese hackers") is None
+    assert normalize_threat_actor_name("China") is None
