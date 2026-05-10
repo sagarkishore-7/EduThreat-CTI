@@ -4,6 +4,7 @@ from uuid import uuid4
 
 from src.edu_cti_v2.models import CanonicalIncident, CanonicalMembership, SourceEnrichment, SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.services import V2CanonicalizationService, build_source_projection
+from src.edu_cti_v2.services.canonicalization import _identity_match_quality
 
 
 def _source_incident(*, event_key: str = "story-1", url: str = "https://example.com/article") -> SourceIncident:
@@ -118,6 +119,16 @@ def test_build_source_projection_normalizes_threat_actor_and_ransomware_aliases(
 
     assert projection["threat_actor_name"] == "Cl0p"
     assert projection["ransomware_family"] == "Cl0p"
+
+
+def test_identity_match_quality_handles_school_subunit_names():
+    assert (
+        _identity_match_quality(
+            "University of California San Francisco School of Medicine",
+            "University of California San Francisco",
+        )
+        >= 88
+    )
 
 
 def test_build_source_projection_promotes_education_technology_provider_as_vendor_name():

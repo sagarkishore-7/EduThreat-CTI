@@ -7,6 +7,7 @@ from typing import Optional
 _THREAT_ACTOR_DESCRIPTOR_SUFFIXES = (
     "ransomware",
     "ransom",
+    "extortion",
     "gang",
     "group",
     "operation",
@@ -15,6 +16,10 @@ _THREAT_ACTOR_DESCRIPTOR_SUFFIXES = (
     "operators",
     "collective",
     "crew",
+    "hacker",
+    "hackers",
+    "affiliate",
+    "affiliates",
 )
 
 _THREAT_ACTOR_ALIASES: dict[str, str] = {
@@ -227,6 +232,35 @@ _UNKNOWN_FAMILY_VALUES = {
     "unspecified",
 }
 
+_UNKNOWN_THREAT_ACTOR_VALUES = {
+    "",
+    "unknown",
+    "unknown_actor",
+    "unknown_actors",
+    "unknown_group",
+    "unknown_gang",
+    "unknown_hackers",
+    "cybercriminal",
+    "cybercriminals",
+    "cybercriminal_group",
+    "cybercriminal_gang",
+    "cybercriminal_collective",
+    "foreign_hacking_group",
+    "hacker",
+    "hackers",
+    "hacktivist",
+    "hacktivists",
+    "malicious_actor",
+    "malicious_actors",
+    "pro_russian",
+    "pro_russian_hackers",
+    "russian_hackers",
+    "suspected_hackers",
+    "threat_actor",
+    "threat_actors",
+    "unknown_ransomware_gang",
+}
+
 
 def _normalized_lookup_key(name: str) -> str:
     normalized = (
@@ -302,6 +336,8 @@ def normalize_threat_actor_name(name: Optional[str]) -> Optional[str]:
 
     stripped = name.strip()
     for candidate in _lookup_candidate_keys(stripped):
+        if candidate in _UNKNOWN_THREAT_ACTOR_VALUES:
+            return None
         canonical = _THREAT_ACTOR_ALIASES.get(candidate)
         if canonical:
             return canonical

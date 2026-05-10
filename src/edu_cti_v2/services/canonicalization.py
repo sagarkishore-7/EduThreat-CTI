@@ -71,6 +71,22 @@ _GENERIC_INSTITUTION_RE = re.compile(
     r"(?:\s+in\b.*)?$",
     re.IGNORECASE,
 )
+_ORGANIZATIONAL_SUBUNIT_SUFFIXES = (
+    "academy",
+    "center",
+    "centre",
+    "college_of_",
+    "department_of_",
+    "faculty_of_",
+    "hospital",
+    "institute_of_",
+    "laboratory",
+    "labs",
+    "library",
+    "medical_center",
+    "medical_school",
+    "school_of_",
+)
 
 
 def _first_present(*values: Any) -> Any:
@@ -246,7 +262,28 @@ def _identity_match_quality(left: Optional[str], right: Optional[str]) -> int:
         return 92
     if institution_names_match(left_normalized, right_normalized, threshold=85):
         return 85
+    if _is_subunit_identity_match(left_normalized, right_normalized):
+        return 88
     return 0
+
+
+def _is_subunit_identity_match(left_normalized: str, right_normalized: str) -> bool:
+    def _matches_parent(base: str, extended: str) -> bool:
+        if not extended.startswith(f"{base} "):
+            return False
+        remainder = extended[len(base) :].strip()
+        if not remainder:
+            return False
+        remainder_key = re.sub(r"\s+", "_", remainder)
+        return any(
+            remainder_key == suffix or remainder_key.startswith(suffix)
+            for suffix in _ORGANIZATIONAL_SUBUNIT_SUFFIXES
+        )
+
+    return _matches_parent(left_normalized, right_normalized) or _matches_parent(
+        right_normalized,
+        left_normalized,
+    )
 
 
 def _attack_category_family(value: Optional[str]) -> Optional[str]:
@@ -598,6 +635,9 @@ def _apply_projection_to_canonical(
 def _member_score(source_name: str, projection: Dict[str, Any], source_enrichment: SourceEnrichment) -> int:
     typed = projection.get("typed_enrichment") or {}
     timeline = projection.get("timeline") or []
+    identity = projection.get("vendor_name") or projection.get("institution_name")
+    raw_title = str(projection.get("raw_title") or "").strip().lower()
+    raw_subtitle = str(projection.get("raw_subtitle") or "").strip().lower()
     score = 0
     score += _SURVIVOR_SOURCE_RANK.get(source_name, 0)
     score += _count_present_fields(typed)
@@ -611,6 +651,14 @@ def _member_score(source_name: str, projection: Dict[str, Any], source_enrichmen
         score += 4
     if projection.get("country_code"):
         score += 2
+    if identity:
+        normalized_identity = _normalized_identity(identity)
+        if normalized_identity:
+            tokens = [token for token in normalized_identity.split() if len(token) > 2]
+            if tokens and any(token in raw_title or token in raw_subtitle for token in tokens[:4]):
+                score += 8
+            elif raw_title:
+                score -= 4
     confidence = source_enrichment.enrichment_confidence
     if confidence is not None:
         score += int(float(confidence) * 10)
