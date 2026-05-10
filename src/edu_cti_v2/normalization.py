@@ -261,6 +261,15 @@ _UNKNOWN_THREAT_ACTOR_VALUES = {
     "unknown_ransomware_gang",
 }
 
+_GENERIC_GEOPOLITICAL_ACTOR_VALUES = {
+    "chinese",
+    "iranian",
+    "north_korean",
+    "pro_russian",
+    "russian",
+    "state_backed",
+}
+
 
 def _normalized_lookup_key(name: str) -> str:
     normalized = (
@@ -300,6 +309,13 @@ def _lookup_candidate_keys(name: Optional[str], *, strip_actor_suffixes: bool = 
     return candidates
 
 
+def _strip_descriptor_suffix_text(name: str) -> str:
+    parts = [part for part in name.strip().split() if part]
+    while parts and _normalized_lookup_key(parts[-1]) in _THREAT_ACTOR_DESCRIPTOR_SUFFIXES:
+        parts.pop()
+    return " ".join(parts).strip()
+
+
 def _normalize_lockbit_family(candidate: str) -> Optional[str]:
     if not candidate.startswith("lockbit"):
         return None
@@ -326,7 +342,7 @@ def normalize_ransomware_family(name: Optional[str]) -> Optional[str]:
         if lockbit:
             return lockbit
 
-    stripped = name.strip()
+    stripped = _strip_descriptor_suffix_text(name.strip()) or name.strip()
     return stripped or None
 
 
@@ -343,4 +359,13 @@ def normalize_threat_actor_name(name: Optional[str]) -> Optional[str]:
             return canonical
         if candidate.startswith("lockbit"):
             return "LockBit"
+
+    reduced = _strip_descriptor_suffix_text(stripped)
+    if reduced:
+        reduced_key = _normalized_lookup_key(reduced)
+        if reduced_key in _UNKNOWN_THREAT_ACTOR_VALUES or reduced_key in _GENERIC_GEOPOLITICAL_ACTOR_VALUES:
+            return None
+        if reduced != stripped:
+            return reduced
+
     return stripped
