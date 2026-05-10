@@ -13,29 +13,43 @@ depends_on = None
 
 
 def upgrade() -> None:
-    op.create_table(
-        "research_metric_snapshots",
-        sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
-        sa.Column("snapshot_key", sa.Text(), nullable=False),
-        sa.Column("snapshot_scope", sa.Text(), nullable=False, server_default="global"),
-        sa.Column("run_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("pipeline_runs.id", ondelete="SET NULL")),
-        sa.Column("captured_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
-        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
-    )
-    op.create_index(
-        "idx_research_metric_snapshots_key_captured",
-        "research_metric_snapshots",
-        ["snapshot_key", "captured_at"],
-        unique=False,
-    )
-    op.create_index(
-        "idx_research_metric_snapshots_run_id",
-        "research_metric_snapshots",
-        ["run_id"],
-        unique=False,
-    )
+    bind = op.get_bind()
+    inspector = sa.inspect(bind)
+    table_names = set(inspector.get_table_names())
+
+    if "research_metric_snapshots" not in table_names:
+        op.create_table(
+            "research_metric_snapshots",
+            sa.Column("id", postgresql.UUID(as_uuid=True), primary_key=True, nullable=False),
+            sa.Column("snapshot_key", sa.Text(), nullable=False),
+            sa.Column("snapshot_scope", sa.Text(), nullable=False, server_default="global"),
+            sa.Column("run_id", postgresql.UUID(as_uuid=True), sa.ForeignKey("pipeline_runs.id", ondelete="SET NULL")),
+            sa.Column("captured_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.Column("payload", postgresql.JSONB(astext_type=sa.Text()), nullable=False, server_default=sa.text("'{}'::jsonb")),
+            sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+            sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),
+        )
+        inspector = sa.inspect(bind)
+
+    existing_indexes = {
+        index["name"]
+        for index in inspector.get_indexes("research_metric_snapshots")
+    }
+
+    if "idx_research_metric_snapshots_key_captured" not in existing_indexes:
+        op.create_index(
+            "idx_research_metric_snapshots_key_captured",
+            "research_metric_snapshots",
+            ["snapshot_key", "captured_at"],
+            unique=False,
+        )
+    if "idx_research_metric_snapshots_run_id" not in existing_indexes:
+        op.create_index(
+            "idx_research_metric_snapshots_run_id",
+            "research_metric_snapshots",
+            ["run_id"],
+            unique=False,
+        )
 
 
 def downgrade() -> None:
