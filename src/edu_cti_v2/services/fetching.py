@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import date, datetime, timezone
-from typing import Dict, Optional
+from datetime import date, datetime, timedelta, timezone
+from typing import Any, Dict, Optional
 
 from sqlalchemy.orm import Session
 
@@ -37,6 +37,23 @@ def _parse_publish_date(value: Optional[str]) -> Optional[date]:
             return None
 
     return None
+
+
+def _extract_tier_attempts(article: ArticleContent) -> list[dict[str, Any]]:
+    metadata = article.fetch_metadata if isinstance(article.fetch_metadata, dict) else {}
+    attempts = metadata.get("tier_attempts")
+    if isinstance(attempts, list) and attempts:
+        return [attempt for attempt in attempts if isinstance(attempt, dict)]
+    return [
+        {
+            "tier": metadata.get("selected_tier") or "fetch_chain",
+            "success": bool(article.fetch_successful),
+            "latency_ms": None,
+            "content_length": article.content_length,
+            "error_code": None if article.fetch_successful else "fetch_chain_failed",
+            "error_message": article.error_message,
+        }
+    ]
 
 
 class V2FetchService:
@@ -73,32 +90,75 @@ class V2FetchService:
 
         for url_row in fetchable_urls:
             article = self.article_fetcher.fetch_article(url_row.url)
-            attempt = ArticleFetchAttempt(
-                source_incident_id=source_incident.id,
-                source_incident_url_id=url_row.id,
-                fetch_tier="fetch_chain",
-                attempted_at=now,
-                worker_id=worker_id,
-                success=article.fetch_successful,
-                http_status=None,
-                latency_ms=None,
-                content_length=article.content_length,
-                error_code=None,
-                error_message=article.error_message,
-                response_metadata={
-                    "fetched_url": article.url,
-                    "selected_for_enrichment": False,
-                },
-            )
-            self.article_repository.add_fetch_attempt(session, attempt)
-
-            if not article.fetch_successful or not article.content:
+            tier_attempts = _extract_tier_attempts(article)
+            is_successful = bool(article.fetch_successful and article.content)
+            if not is_successful:
+                for attempt_index, attempt_payload in enumerate(tier_attempts, start=1):
+                    attempt = ArticleFetchAttempt(
+                        source_incident_id=source_incident.id,
+                        source_incident_url_id=url_row.id,
+                        fetch_tier=str(attempt_payload.get("tier") or "fetch_chain"),
+                        attempted_at=now + timedelta(milliseconds=attempt_index - 1),
+                        worker_id=worker_id,
+                        success=bool(attempt_payload.get("success")),
+                        http_status=None,
+                        latency_ms=attempt_payload.get("latency_ms"),
+                        content_length=attempt_payload.get("content_length"),
+                        error_code=attempt_payload.get("error_code"),
+                        error_message=attempt_payload.get("error_message"),
+                        response_metadata={
+                            "fetched_url": article.url,
+                            "selected_for_enrichment": False,
+                            "attempt_index": attempt_index,
+                            "selected_tier": (
+                                article.fetch_metadata.get("selected_tier")
+                                if isinstance(article.fetch_metadata, dict)
+                                else None
+                            ),
+                        },
+                    )
+                    self.article_repository.add_fetch_attempt(session, attempt)
                 failure_count += 1
                 continue
 
             success_count += 1
             existing_document = self.article_repository.get_document_by_source_url(session, url_row.id)
             is_selected = not selected_written
+            selected_tier = (
+                article.fetch_metadata.get("selected_tier")
+                if isinstance(article.fetch_metadata, dict)
+                else None
+            ) or str((tier_attempts[-1].get("tier") if tier_attempts else "fetch_chain") or "fetch_chain")
+
+            for attempt_index, attempt_payload in enumerate(tier_attempts, start=1):
+                attempt_tier = str(attempt_payload.get("tier") or "fetch_chain")
+                success_flag = bool(attempt_payload.get("success"))
+                is_selected_attempt = bool(
+                    is_selected
+                    and success_flag
+                    and selected_tier
+                    and attempt_tier == selected_tier
+                )
+                attempt = ArticleFetchAttempt(
+                    source_incident_id=source_incident.id,
+                    source_incident_url_id=url_row.id,
+                    fetch_tier=attempt_tier,
+                    attempted_at=now + timedelta(milliseconds=attempt_index - 1),
+                    worker_id=worker_id,
+                    success=success_flag,
+                    http_status=None,
+                    latency_ms=attempt_payload.get("latency_ms"),
+                    content_length=attempt_payload.get("content_length"),
+                    error_code=attempt_payload.get("error_code"),
+                    error_message=attempt_payload.get("error_message"),
+                    response_metadata={
+                        "fetched_url": article.url,
+                        "selected_for_enrichment": is_selected_attempt,
+                        "attempt_index": attempt_index,
+                        "selected_tier": selected_tier,
+                    },
+                )
+                self.article_repository.add_fetch_attempt(session, attempt)
 
             if existing_document is None:
                 existing_document = ArticleDocument(
@@ -113,6 +173,8 @@ class V2FetchService:
                     document_metadata={
                         "source_url": url_row.url,
                         "fetched_url": article.url,
+                        "selected_fetch_tier": selected_tier,
+                        "fetch_attempt_count": len(tier_attempts),
                     },
                     is_selected_for_enrichment=is_selected,
                     fetched_at=now,
@@ -128,6 +190,8 @@ class V2FetchService:
                     **(existing_document.document_metadata or {}),
                     "source_url": url_row.url,
                     "fetched_url": article.url,
+                    "selected_fetch_tier": selected_tier,
+                    "fetch_attempt_count": len(tier_attempts),
                 }
                 existing_document.is_selected_for_enrichment = is_selected
                 existing_document.fetched_at = now

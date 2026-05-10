@@ -330,3 +330,19 @@ CREATE TABLE IF NOT EXISTS analytics_refresh_state (
     state_payload jsonb NOT NULL DEFAULT '{}'::jsonb,
     updated_at timestamptz NOT NULL DEFAULT now()
 );
+
+CREATE TABLE IF NOT EXISTS research_metric_snapshots (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    snapshot_key text NOT NULL,
+    snapshot_scope text NOT NULL DEFAULT 'global',
+    run_id uuid REFERENCES pipeline_runs(id) ON DELETE SET NULL,
+    captured_at timestamptz NOT NULL DEFAULT now(),
+    payload jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at timestamptz NOT NULL DEFAULT now(),
+    updated_at timestamptz NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_research_metric_snapshots_key_captured
+    ON research_metric_snapshots (snapshot_key, captured_at DESC);
+CREATE INDEX IF NOT EXISTS idx_research_metric_snapshots_run_id
+    ON research_metric_snapshots (run_id);

@@ -52,6 +52,27 @@ def test_fetch_service_persists_successful_article_and_enqueues_enrichment():
         fetch_successful=True,
         error_message=None,
         content_length=12,
+        fetch_metadata={
+            "selected_tier": "oxylabs",
+            "tier_attempts": [
+                {
+                    "tier": "newspaper3k",
+                    "success": False,
+                    "latency_ms": 31,
+                    "content_length": 0,
+                    "error_code": "unknown_failure",
+                    "error_message": None,
+                },
+                {
+                    "tier": "oxylabs",
+                    "success": True,
+                    "latency_ms": 402,
+                    "content_length": 12,
+                    "error_code": None,
+                    "error_message": None,
+                },
+            ],
+        },
     )
     service = V2FetchService(
         article_fetcher=article_fetcher,
@@ -63,9 +84,12 @@ def test_fetch_service_persists_successful_article_and_enqueues_enrichment():
 
     result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
 
-    article_repository.add_fetch_attempt.assert_called_once()
+    assert article_repository.add_fetch_attempt.call_count == 2
     article_repository.add_document.assert_called_once()
     pipeline_task_repository.enqueue.assert_called_once()
+    success_attempt = article_repository.add_fetch_attempt.call_args_list[1].args[1]
+    assert success_attempt.fetch_tier == "oxylabs"
+    assert success_attempt.response_metadata["selected_for_enrichment"] is True
     assert result == {
         "urls_total": 1,
         "articles_saved": 1,
@@ -88,6 +112,27 @@ def test_fetch_service_records_failures_without_enqueuing_enrichment():
         fetch_successful=False,
         error_message="timeout",
         content_length=0,
+        fetch_metadata={
+            "selected_tier": None,
+            "tier_attempts": [
+                {
+                    "tier": "newspaper3k",
+                    "success": False,
+                    "latency_ms": 25,
+                    "content_length": 0,
+                    "error_code": "timeout",
+                    "error_message": "timeout",
+                },
+                {
+                    "tier": "httpclient",
+                    "success": False,
+                    "latency_ms": 110,
+                    "content_length": 0,
+                    "error_code": "timeout",
+                    "error_message": "timeout",
+                },
+            ],
+        },
     )
     service = V2FetchService(
         article_fetcher=article_fetcher,
@@ -99,7 +144,7 @@ def test_fetch_service_records_failures_without_enqueuing_enrichment():
 
     result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
 
-    article_repository.add_fetch_attempt.assert_called_once()
+    assert article_repository.add_fetch_attempt.call_count == 2
     article_repository.add_document.assert_not_called()
     pipeline_task_repository.enqueue.assert_not_called()
     assert result["articles_saved"] == 0

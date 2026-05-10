@@ -8,6 +8,7 @@ from typing import Optional, Sequence
 from sqlalchemy import Select, case, extract, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
+from src.edu_cti_v2.normalization import normalize_ransomware_family, normalize_threat_actor_name
 from src.edu_cti_v2.models import (
     ArticleDocument,
     CanonicalEnrichment,
@@ -1031,13 +1032,19 @@ class CanonicalIncidentRepository:
         limit: int = 10,
     ) -> list[dict[str, object]]:
         stmt = self.build_ransomware_breakdown_stmt(statuses=statuses, limit=limit)
+        merged: dict[str, int] = {}
+        for row in session.execute(stmt).all():
+            canonical = normalize_ransomware_family(row.ransomware_family)
+            if not canonical:
+                continue
+            merged[canonical] = merged.get(canonical, 0) + int(row.incident_count or 0)
         return [
             {
-                "ransomware_family": row.ransomware_family,
-                "incident_count": int(row.incident_count or 0),
+                "ransomware_family": family,
+                "incident_count": count,
             }
-            for row in session.execute(stmt).all()
-        ]
+            for family, count in sorted(merged.items(), key=lambda item: (-item[1], item[0]))
+        ][:limit]
 
     def get_threat_actor_breakdown(
         self,
@@ -1048,24 +1055,60 @@ class CanonicalIncidentRepository:
     ) -> dict[str, object]:
         stmt = self.build_threat_actor_breakdown_stmt(statuses=statuses, limit=limit)
         rows = list(session.execute(stmt).all())
-        threat_actors: list[dict[str, object]] = []
+        merged: dict[str, dict[str, object]] = {}
         all_countries: set[str] = set()
         total_incidents = 0
 
         for row in rows:
+            canonical_name = normalize_threat_actor_name(row.name)
+            if not canonical_name:
+                continue
             countries = sorted({country for country in (row.countries_targeted or []) if country})
-            ransomware_families = sorted({family for family in (row.ransomware_families or []) if family})
+            ransomware_families = sorted(
+                {
+                    family
+                    for family in (
+                        normalize_ransomware_family(item)
+                        for item in (row.ransomware_families or [])
+                    )
+                    if family
+                }
+            )
             all_countries.update(countries)
             incident_count = int(row.incident_count or 0)
             total_incidents += incident_count
+            existing = merged.get(canonical_name)
+            if existing is None:
+                merged[canonical_name] = {
+                    "name": canonical_name,
+                    "incident_count": incident_count,
+                    "countries_targeted": set(countries),
+                    "ransomware_families": set(ransomware_families),
+                    "first_seen": row.first_seen,
+                    "last_seen": row.last_seen,
+                }
+                continue
+            existing["incident_count"] = int(existing["incident_count"]) + incident_count
+            existing["countries_targeted"].update(countries)
+            existing["ransomware_families"].update(ransomware_families)
+            if row.first_seen and (existing["first_seen"] is None or row.first_seen < existing["first_seen"]):
+                existing["first_seen"] = row.first_seen
+            if row.last_seen and (existing["last_seen"] is None or row.last_seen > existing["last_seen"]):
+                existing["last_seen"] = row.last_seen
+
+        threat_actors: list[dict[str, object]] = []
+        for item in sorted(
+            merged.values(),
+            key=lambda payload: (-int(payload["incident_count"]), str(payload["name"])),
+        )[:limit]:
             threat_actors.append(
                 {
-                    "name": row.name,
-                    "incident_count": incident_count,
-                    "countries_targeted": countries,
-                    "ransomware_families": ransomware_families,
-                    "first_seen": row.first_seen.isoformat() if row.first_seen else None,
-                    "last_seen": row.last_seen.isoformat() if row.last_seen else None,
+                    "name": item["name"],
+                    "incident_count": int(item["incident_count"]),
+                    "countries_targeted": sorted(item["countries_targeted"]),
+                    "ransomware_families": sorted(item["ransomware_families"]),
+                    "first_seen": item["first_seen"].isoformat() if item["first_seen"] else None,
+                    "last_seen": item["last_seen"].isoformat() if item["last_seen"] else None,
                 }
             )
 
@@ -1116,8 +1159,20 @@ class CanonicalIncidentRepository:
         return {
             "countries": countries,
             "attack_categories": attack_categories,
-            "ransomware_families": ransomware_families,
-            "threat_actors": threat_actors,
+            "ransomware_families": sorted(
+                {
+                    family
+                    for family in (normalize_ransomware_family(value) for value in ransomware_families)
+                    if family
+                }
+            ),
+            "threat_actors": sorted(
+                {
+                    actor
+                    for actor in (normalize_threat_actor_name(value) for value in threat_actors)
+                    if actor
+                }
+            ),
             "institution_types": institution_types,
             "years": years,
         }

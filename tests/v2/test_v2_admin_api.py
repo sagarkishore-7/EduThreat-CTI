@@ -8,6 +8,7 @@ from src.edu_cti.api.v2_admin import (
     get_v2_operations_service,
     get_v2_orchestration_service,
     get_v2_preflight_service,
+    get_v2_research_metrics_service,
     get_v2_scheduler_service,
     router,
 )
@@ -56,6 +57,19 @@ def _build_client(operations_service):
         def list_manual_review_queue(self, *_args, **_kwargs):
             raise AssertionError("unexpected manual review queue call")
 
+    class _NullResearchMetricsService:
+        def get_latest_or_live(self, *_args, **_kwargs):
+            raise AssertionError("unexpected research metrics read call")
+
+        def list_recent_snapshots(self, *_args, **_kwargs):
+            raise AssertionError("unexpected research metrics history call")
+
+        def capture_snapshot(self, *_args, **_kwargs):
+            raise AssertionError("unexpected research metrics refresh call")
+
+        def render_prometheus_text(self, *_args, **_kwargs):
+            raise AssertionError("unexpected prometheus render call")
+
     app.dependency_overrides[authenticate] = lambda: True
     app.dependency_overrides[get_v2_session] = _override_session
     app.dependency_overrides[get_v2_operations_service] = lambda: operations_service
@@ -64,6 +78,7 @@ def _build_client(operations_service):
     app.dependency_overrides[get_v2_scheduler_service] = lambda: _NullSchedulerService()
     app.dependency_overrides[get_v2_preflight_service] = lambda: _NullPreflightService()
     app.dependency_overrides[get_v2_data_quality_service] = lambda: _NullDataQualityService()
+    app.dependency_overrides[get_v2_research_metrics_service] = lambda: _NullResearchMetricsService()
     return TestClient(app)
 
 
@@ -122,6 +137,68 @@ def test_v2_admin_worker_run_endpoint_returns_batch_result():
     assert payload["status"] == "completed"
     assert payload["result"]["processed_tasks"] == 5
     assert payload["result"]["task_type"] == "canonicalize"
+
+
+def test_v2_admin_research_metrics_endpoints_return_payloads():
+    class _OperationsService:
+        def get_runtime_status(self, _session):
+            return {}
+
+    class _ResearchMetricsService:
+        def __init__(self):
+            self.history_called = None
+            self.refresh_called = False
+
+        def get_latest_or_live(self, _session):
+            return {"dataset_construction": {"source_incidents_total": 10}}
+
+        def list_recent_snapshots(self, _session, *, snapshot_key, snapshot_scope, limit):
+            self.history_called = (snapshot_key, snapshot_scope, limit)
+            return [{"snapshot_id": "snap-1"}]
+
+        def capture_snapshot(self, _session, *, snapshot_key, snapshot_scope, trigger):
+            self.refresh_called = (snapshot_key, snapshot_scope, trigger)
+            return {"snapshot_key": snapshot_key, "dataset_construction": {"source_incidents_total": 10}}
+
+        def render_prometheus_text(self, payload):
+            assert payload["dataset_construction"]["source_incidents_total"] == 10
+            return "eduthreat_v2_dataset_source_incidents_total 10\n"
+
+    research = _ResearchMetricsService()
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    def _override_session():
+        yield object()
+
+    app.dependency_overrides[authenticate] = lambda: True
+    app.dependency_overrides[get_v2_session] = _override_session
+    app.dependency_overrides[get_v2_operations_service] = lambda: _OperationsService()
+    app.dependency_overrides[get_v2_collection_service] = lambda: type("_NullCollectionService", (), {"collect_into_v2": lambda *args, **kwargs: None})()
+    app.dependency_overrides[get_v2_orchestration_service] = lambda: type("_NullOrchestrationService", (), {"list_plans": lambda *args, **kwargs: [], "run_plan": lambda *args, **kwargs: None})()
+    app.dependency_overrides[get_v2_scheduler_service] = lambda: type("_NullSchedulerService", (), {"get_status": lambda *args, **kwargs: {}, "start": lambda *args, **kwargs: None, "stop": lambda *args, **kwargs: None, "trigger_job": lambda *args, **kwargs: None})()
+    app.dependency_overrides[get_v2_preflight_service] = lambda: type("_NullPreflightService", (), {"get_status": lambda *args, **kwargs: {}})()
+    app.dependency_overrides[get_v2_data_quality_service] = lambda: type("_NullDataQualityService", (), {"run_sweep": lambda *args, **kwargs: {}, "list_manual_review_queue": lambda *args, **kwargs: []})()
+    app.dependency_overrides[get_v2_research_metrics_service] = lambda: research
+    client = TestClient(app)
+
+    response = client.get("/api/admin/v2/metrics/research")
+    assert response.status_code == 200
+    assert response.json()["dataset_construction"]["source_incidents_total"] == 10
+
+    response = client.get("/api/admin/v2/metrics/research/history", params={"limit": 5})
+    assert response.status_code == 200
+    assert response.json()["meta"]["returned"] == 1
+    assert research.history_called == ("global", "global", 5)
+
+    response = client.post("/api/admin/v2/metrics/research/refresh")
+    assert response.status_code == 200
+    assert response.json()["snapshot_key"] == "global"
+    assert research.refresh_called[2]["source"] == "admin_refresh"
+
+    response = client.get("/api/admin/v2/metrics/research/prometheus")
+    assert response.status_code == 200
+    assert "eduthreat_v2_dataset_source_incidents_total 10" in response.text
 
 
 def test_v2_admin_canonicalize_sweep_endpoint_queues_recanonicalization():

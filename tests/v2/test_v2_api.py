@@ -3,7 +3,12 @@ from datetime import date
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from src.edu_cti.api.v2 import get_v2_read_service, get_v2_session, router
+from src.edu_cti.api.v2 import (
+    get_v2_read_service,
+    get_v2_research_metrics_service,
+    get_v2_session,
+    router,
+)
 
 
 def _build_client(read_service):
@@ -182,6 +187,42 @@ def test_v2_incident_report_endpoint_returns_markdown():
     assert response.status_code == 200
     assert response.headers["content-disposition"] == 'attachment; filename="cti-report-abc.md"'
     assert "# CYBER THREAT INTELLIGENCE REPORT" in response.text
+
+
+def test_v2_pipeline_research_metrics_endpoints_return_payloads():
+    class _ReadService:
+        pass
+
+    class _ResearchService:
+        def get_latest_or_live(self, _session, **kwargs):
+            assert kwargs["snapshot_key"] == "global"
+            return {
+                "dataset_construction": {"source_incidents_total": 12},
+                "fetch_performance": {"tiers": []},
+            }
+
+        def render_prometheus_text(self, payload):
+            assert payload["dataset_construction"]["source_incidents_total"] == 12
+            return "eduthreat_v2_dataset_source_incidents_total 12\n"
+
+    app = FastAPI()
+    app.include_router(router)
+
+    def _override_session():
+        yield object()
+
+    app.dependency_overrides[get_v2_session] = _override_session
+    app.dependency_overrides[get_v2_read_service] = lambda: _ReadService()
+    app.dependency_overrides[get_v2_research_metrics_service] = lambda: _ResearchService()
+    client = TestClient(app)
+
+    response = client.get("/api/v2/analytics/pipeline-research")
+    assert response.status_code == 200
+    assert response.json()["dataset_construction"]["source_incidents_total"] == 12
+
+    response = client.get("/api/v2/analytics/pipeline-research/prometheus")
+    assert response.status_code == 200
+    assert "eduthreat_v2_dataset_source_incidents_total 12" in response.text
 
 
 def test_v2_incident_facets_endpoint_returns_filtered_facets():

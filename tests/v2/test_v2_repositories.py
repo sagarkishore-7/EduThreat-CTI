@@ -8,6 +8,7 @@ from src.edu_cti_v2.repositories import (
     CanonicalIncidentRepository,
     PipelineRunRepository,
     PipelineTaskRepository,
+    ResearchMetricSnapshotRepository,
     SourceEnrichmentRepository,
     SourceIncidentRepository,
     SourceStateRepository,
@@ -113,6 +114,18 @@ def test_article_repository_fetch_attempt_stmt_orders_newest_first():
     assert "article_fetch_attempts.source_incident_id = '00000000-0000-0000-0000-000000000111'" in compiled
     assert "ORDER BY article_fetch_attempts.attempted_at DESC" in compiled
     assert "LIMIT 5" in compiled
+
+
+def test_research_metric_snapshot_repository_latest_stmt_orders_by_capture_time():
+    stmt = ResearchMetricSnapshotRepository.build_latest_stmt(
+        snapshot_key="global",
+        snapshot_scope="global",
+    )
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "research_metric_snapshots.snapshot_key = 'global'" in compiled
+    assert "research_metric_snapshots.snapshot_scope = 'global'" in compiled
+    assert "ORDER BY research_metric_snapshots.captured_at DESC" in compiled
 
 
 def test_canonical_repository_recent_stmt_joins_enrichment_and_orders_by_recency():

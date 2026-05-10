@@ -27,6 +27,7 @@ from src.edu_cti_v2.models import (
     PipelineTask,
     SourceEnrichment,
 )
+from src.edu_cti_v2.normalization import normalize_ransomware_family, normalize_threat_actor_name
 from src.edu_cti_v2.repositories import (
     AnalyticsRefreshRepository,
     CanonicalIncidentRepository,
@@ -427,15 +428,19 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
         typed.get("attack_vector"),
         raw.get("attack_vector"),
     )
-    ransomware_family = _first_present(
+    ransomware_family = normalize_ransomware_family(
+        _first_present(
         attack_dynamics.get("ransomware_family"),
         typed.get("ransomware_family"),
         raw.get("ransomware_family"),
+        )
     )
-    threat_actor_name = _first_present(
-        typed.get("threat_actor_name"),
-        raw.get("threat_actor_name"),
-        source_incident.raw_threat_actor,
+    threat_actor_name = normalize_threat_actor_name(
+        _first_present(
+            typed.get("threat_actor_name"),
+            raw.get("threat_actor_name"),
+            source_incident.raw_threat_actor,
+        )
     )
     canonical_summary = _first_present(
         typed.get("enriched_summary"),
@@ -556,8 +561,8 @@ def _apply_projection_to_canonical(
         canonical.source_published_at = projection.get("source_published_at")
         canonical.attack_category = projection.get("attack_category")
         canonical.attack_vector = projection.get("attack_vector")
-        canonical.threat_actor_name = projection.get("threat_actor_name")
-        canonical.ransomware_family = projection.get("ransomware_family")
+        canonical.threat_actor_name = normalize_threat_actor_name(projection.get("threat_actor_name"))
+        canonical.ransomware_family = normalize_ransomware_family(projection.get("ransomware_family"))
         canonical.is_education_related = projection.get("is_education_related")
         canonical.severity = projection.get("severity")
         canonical.canonical_summary = projection.get("canonical_summary")
@@ -579,9 +584,9 @@ def _apply_projection_to_canonical(
         if projection.get("attack_vector"):
             canonical.attack_vector = projection.get("attack_vector")
         if projection.get("threat_actor_name"):
-            canonical.threat_actor_name = projection.get("threat_actor_name")
+            canonical.threat_actor_name = normalize_threat_actor_name(projection.get("threat_actor_name"))
         if projection.get("ransomware_family"):
-            canonical.ransomware_family = projection.get("ransomware_family")
+            canonical.ransomware_family = normalize_ransomware_family(projection.get("ransomware_family"))
         if projection.get("is_education_related") is not None:
             canonical.is_education_related = projection.get("is_education_related")
         if projection.get("severity"):

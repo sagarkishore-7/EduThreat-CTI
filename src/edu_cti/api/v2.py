@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.edu_cti.api.reports import generate_cti_report
 from src.edu_cti_v2.db import create_session_factory
-from src.edu_cti_v2.services import V2CanonicalReadService
+from src.edu_cti_v2.services import V2CanonicalReadService, V2ResearchMetricsService
 
 router = APIRouter(prefix="/api/v2", tags=["V2"])
 
@@ -30,6 +30,10 @@ def get_v2_session() -> Iterator[Session]:
 
 def get_v2_read_service() -> V2CanonicalReadService:
     return V2CanonicalReadService()
+
+
+def get_v2_research_metrics_service() -> V2ResearchMetricsService:
+    return V2ResearchMetricsService()
 
 
 @router.get("/health")
@@ -334,6 +338,42 @@ async def get_v2_intelligence_analytics(
     return read_service.get_intelligence_summary(
         session,
         statuses=statuses,
+    )
+
+
+@router.get("/analytics/pipeline-research")
+async def get_v2_pipeline_research_metrics(
+    status: Optional[List[str]] = Query(None),
+    session: Session = Depends(get_v2_session),
+    research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
+):
+    """Return persistent research-oriented pipeline and dataset construction metrics."""
+    statuses = tuple(status) if status else ("open",)
+    return research_service.get_latest_or_live(
+        session,
+        snapshot_key="global",
+        snapshot_scope="global",
+        statuses=statuses,
+    )
+
+
+@router.get("/analytics/pipeline-research/prometheus")
+async def get_v2_pipeline_research_metrics_prometheus(
+    status: Optional[List[str]] = Query(None),
+    session: Session = Depends(get_v2_session),
+    research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
+):
+    """Return the research metrics in Prometheus text format for scrape/export workflows."""
+    statuses = tuple(status) if status else ("open",)
+    payload = research_service.get_latest_or_live(
+        session,
+        snapshot_key="global",
+        snapshot_scope="global",
+        statuses=statuses,
+    )
+    return Response(
+        content=research_service.render_prometheus_text(payload),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
     )
 
 

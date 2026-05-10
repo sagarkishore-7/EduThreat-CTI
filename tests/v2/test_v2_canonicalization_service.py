@@ -107,6 +107,19 @@ def test_build_source_projection_maps_typed_enrichment_into_canonical_fields():
     assert projection["date_precision"] == "day"
 
 
+def test_build_source_projection_normalizes_threat_actor_and_ransomware_aliases():
+    incident = _source_incident()
+    incident.raw_threat_actor = "CL0P"
+    enrichment = _source_enrichment(incident)
+    enrichment.typed_enrichment["threat_actor_name"] = "Clop ransomware gang"
+    enrichment.typed_enrichment["attack_dynamics"]["ransomware_family"] = "cl0p_clop"
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["threat_actor_name"] == "Cl0p"
+    assert projection["ransomware_family"] == "Cl0p"
+
+
 def test_build_source_projection_promotes_education_technology_provider_as_vendor_name():
     incident = _source_incident(event_key="powerschool-story")
     incident.raw_institution_name = "PowerSchool"

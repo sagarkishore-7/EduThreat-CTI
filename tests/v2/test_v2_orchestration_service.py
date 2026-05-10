@@ -29,11 +29,13 @@ class _FakeSessionContext:
 
 
 def test_orchestration_service_lists_named_plans():
+    research_metrics_service = Mock()
     service = V2OrchestrationService(
         session_factory=lambda: _FakeSessionContext(_FakeSession()),
         collection_service=Mock(),
         operations_service=Mock(),
         data_quality_service=Mock(),
+        research_metrics_service=research_metrics_service,
         pipeline_run_repository=Mock(),
     )
 
@@ -60,6 +62,8 @@ def test_orchestration_service_runs_plan_and_combines_collect_and_worker_results
         "scan_limit": 1000,
     }
     data_quality_service = Mock()
+    research_metrics_service = Mock()
+    research_metrics_service.capture_snapshot.return_value = {"snapshot_key": "global"}
 
     run_repo = Mock()
     run_repo.get_by_id.return_value = SimpleNamespace(id=uuid4())
@@ -74,6 +78,7 @@ def test_orchestration_service_runs_plan_and_combines_collect_and_worker_results
         collection_service=collection_service,
         operations_service=operations_service,
         data_quality_service=data_quality_service,
+        research_metrics_service=research_metrics_service,
         pipeline_run_repository=run_repo,
     )
 
@@ -84,6 +89,7 @@ def test_orchestration_service_runs_plan_and_combines_collect_and_worker_results
     assert result["worker_result"]["run_id"] == "worker-1"
     collection_service.collect_into_v2.assert_called_once()
     operations_service.run_worker_batch.assert_called_once()
+    research_metrics_service.capture_snapshot.assert_called_once()
     assert run_repo.add.called
     assert run_repo.mark_started.called
     assert run_repo.mark_finished.called
@@ -99,6 +105,7 @@ def test_orchestration_service_enqueue_plan_creates_pending_run_and_task():
         collection_service=Mock(),
         operations_service=Mock(),
         data_quality_service=Mock(),
+        research_metrics_service=Mock(),
         pipeline_run_repository=run_repo,
         pipeline_task_repository=task_repo,
     )
@@ -131,6 +138,8 @@ def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan()
     }
     data_quality_service = Mock()
     data_quality_service.run_sweep.return_value = {"requeued_for_reenrichment": 2}
+    research_metrics_service = Mock()
+    research_metrics_service.capture_snapshot.return_value = {"snapshot_key": "global"}
 
     run_repo = Mock()
     run_repo.get_by_id.return_value = SimpleNamespace(id=uuid4())
@@ -144,6 +153,7 @@ def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan()
         collection_service=collection_service,
         operations_service=operations_service,
         data_quality_service=data_quality_service,
+        research_metrics_service=research_metrics_service,
         pipeline_run_repository=run_repo,
     )
 
@@ -158,6 +168,7 @@ def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan()
     assert second_call.kwargs["task_type"] == "reenrich"
     third_call = operations_service.run_worker_batch.call_args_list[2]
     assert third_call.kwargs["task_type"] == "canonicalize"
+    research_metrics_service.capture_snapshot.assert_called_once()
 
 
 def test_orchestration_service_execute_enqueued_plan_waits_for_drain(monkeypatch):
@@ -177,6 +188,8 @@ def test_orchestration_service_execute_enqueued_plan_waits_for_drain(monkeypatch
     run_repo.get_by_id.return_value = SimpleNamespace(id=uuid4(), status="pending")
     task_repo = Mock()
     task_repo.count_active.side_effect = [2, 0]
+    research_metrics_service = Mock()
+    research_metrics_service.capture_snapshot.return_value = {"snapshot_key": "global"}
     monkeypatch.setattr("src.edu_cti_v2.services.orchestration.time.sleep", lambda _seconds: None)
 
     service = V2OrchestrationService(
@@ -184,6 +197,7 @@ def test_orchestration_service_execute_enqueued_plan_waits_for_drain(monkeypatch
         collection_service=collection_service,
         operations_service=operations_service,
         data_quality_service=data_quality_service,
+        research_metrics_service=research_metrics_service,
         pipeline_run_repository=run_repo,
         pipeline_task_repository=task_repo,
     )
@@ -210,5 +224,6 @@ def test_orchestration_service_execute_enqueued_plan_waits_for_drain(monkeypatch
     assert result["execution_mode"] == "queued"
     assert collection_service.collect_into_v2.call_args.kwargs["persist_run"] is False
     assert task_repo.count_active.call_count == 2
+    research_metrics_service.capture_snapshot.assert_called_once()
     assert run_repo.mark_started.called
     assert run_repo.mark_finished.called

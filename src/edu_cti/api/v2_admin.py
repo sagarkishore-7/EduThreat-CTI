@@ -16,7 +16,14 @@ from src.edu_cti_v2.auth import (
     revoke_session,
     verify_password,
 )
-from src.edu_cti_v2.services import V2DataQualityService, V2OperationsService, V2PreflightService
+from fastapi.responses import Response
+
+from src.edu_cti_v2.services import (
+    V2DataQualityService,
+    V2OperationsService,
+    V2PreflightService,
+    V2ResearchMetricsService,
+)
 from src.edu_cti_v2.services.collection import V2CollectionService
 from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 from src.edu_cti_v2.services.scheduler import V2SchedulerService
@@ -52,6 +59,11 @@ def get_v2_preflight_service() -> V2PreflightService:
 @lru_cache
 def get_v2_data_quality_service() -> V2DataQualityService:
     return V2DataQualityService(session_factory=get_v2_session_factory())
+
+
+@lru_cache
+def get_v2_research_metrics_service() -> V2ResearchMetricsService:
+    return V2ResearchMetricsService()
 
 
 @router.post("/login", response_model=V2LoginResponse)
@@ -148,6 +160,74 @@ async def list_v2_runs(
             "statuses": status or [],
         },
     }
+
+
+@router.get("/metrics/research")
+async def get_v2_research_metrics(
+    session=Depends(get_v2_session),
+    research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
+    _: bool = Depends(authenticate),
+):
+    """Return the latest persisted or live research-grade pipeline metrics."""
+    return research_service.get_latest_or_live(session)
+
+
+@router.get("/metrics/research/history")
+async def list_v2_research_metric_history(
+    limit: int = Query(20, ge=1, le=200),
+    snapshot_key: str = Query("global"),
+    session=Depends(get_v2_session),
+    research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
+    _: bool = Depends(authenticate),
+):
+    """List recent persisted research-metrics snapshots across runs."""
+    items = research_service.list_recent_snapshots(
+        session,
+        snapshot_key=snapshot_key,
+        snapshot_scope="global",
+        limit=limit,
+    )
+    return {
+        "items": items,
+        "meta": {
+            "limit": limit,
+            "snapshot_key": snapshot_key,
+            "returned": len(items),
+        },
+    }
+
+
+@router.post("/metrics/research/refresh")
+async def refresh_v2_research_metrics(
+    session=Depends(get_v2_session),
+    research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
+    _: bool = Depends(authenticate),
+):
+    """Persist a fresh research-metrics snapshot for the current v2 dataset state."""
+    payload = research_service.capture_snapshot(
+        session,
+        snapshot_key="global",
+        snapshot_scope="global",
+        trigger={"source": "admin_refresh"},
+    )
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        commit()
+    return payload
+
+
+@router.get("/metrics/research/prometheus")
+async def get_v2_research_metrics_prometheus(
+    session=Depends(get_v2_session),
+    research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
+    _: bool = Depends(authenticate),
+):
+    """Return the latest research metrics in Prometheus text format."""
+    payload = research_service.get_latest_or_live(session)
+    return Response(
+        content=research_service.render_prometheus_text(payload),
+        media_type="text/plain; version=0.0.4; charset=utf-8",
+    )
 
 
 @router.post("/worker/run")

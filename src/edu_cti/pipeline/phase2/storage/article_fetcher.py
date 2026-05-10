@@ -270,6 +270,30 @@ class ArticleContent:
     fetch_successful: bool = True
     error_message: Optional[str] = None
     content_length: int = 0
+    fetch_metadata: Optional[Dict[str, object]] = None
+
+
+def _build_fetch_attempt_payload(
+    tier: str,
+    *,
+    duration_seconds: float,
+    result: Optional[ArticleContent],
+    error_code: Optional[str] = None,
+) -> dict[str, object]:
+    success = bool(result and result.fetch_successful)
+    effective_error_code = error_code
+    if effective_error_code is None and not success:
+        classified = _classify_fetch_failure(result)
+        effective_error_code = "unknown_failure" if classified == "none" else classified
+
+    return {
+        "tier": tier,
+        "success": success,
+        "latency_ms": int(max(duration_seconds, 0.0) * 1000),
+        "content_length": int((result.content_length if result else 0) or 0),
+        "error_code": effective_error_code,
+        "error_message": (result.error_message if result else None),
+    }
 
 
 class ArticleFetcher:
@@ -511,16 +535,26 @@ class ArticleFetcher:
 
         from urllib.parse import urlparse
         domain = urlparse(url).netloc.lower()
+        tier_attempts: list[dict[str, object]] = []
 
         # Reject domains that never contain usable article content
         base_domain = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
         if domain in BLOCKED_FETCH_DOMAINS or base_domain in BLOCKED_FETCH_DOMAINS:
             logger.info(f"FETCH SKIP blocked domain={domain} url={url[:80]}")
             _metrics.increment("article_fetch_failure_total", labels={"tier": "newspaper3k", "source": _fetch_domain(url), "reason": "blocked_domain"})
+            tier_attempts.append(
+                _build_fetch_attempt_payload(
+                    "precheck",
+                    duration_seconds=0.0,
+                    result=None,
+                    error_code="blocked_domain",
+                )
+            )
             return ArticleContent(
                 url=url, title="", content="", fetch_successful=False,
                 error_message=f"Domain blocked (social media / IOC database): {domain}",
                 content_length=0,
+                fetch_metadata={"selected_tier": None, "tier_attempts": tier_attempts},
             )
 
         # Reject domains that have already failed all 4 tiers earlier in this
@@ -530,10 +564,19 @@ class ArticleFetcher:
         if _domain_failed_dynamically(domain):
             logger.info(f"FETCH SKIP dynamic block (failed all tiers earlier this session) domain={domain}")
             _metrics.increment("article_fetch_failure_total", labels={"tier": "newspaper3k", "source": _fetch_domain(url), "reason": "session_blocked"})
+            tier_attempts.append(
+                _build_fetch_attempt_payload(
+                    "precheck",
+                    duration_seconds=0.0,
+                    result=None,
+                    error_code="session_blocked",
+                )
+            )
             return ArticleContent(
                 url=url, title="", content="", fetch_successful=False,
                 error_message=f"Domain failed all tiers earlier in session: {domain}",
                 content_length=0,
+                fetch_metadata={"selected_tier": None, "tier_attempts": tier_attempts},
             )
 
         # Reject binary document URLs — they return raw binary content, not article HTML,
@@ -541,10 +584,19 @@ class ArticleFetcher:
         _url_path_lower = urlparse(url).path.lower()
         if _url_path_lower.endswith(('.pdf', '.doc', '.docx', '.ppt', '.pptx', '.xlsx', '.xls', '.zip', '.gz')):
             logger.info(f"FETCH SKIP binary document url={url[:80]}")
+            tier_attempts.append(
+                _build_fetch_attempt_payload(
+                    "precheck",
+                    duration_seconds=0.0,
+                    result=None,
+                    error_code="binary_document",
+                )
+            )
             return ArticleContent(
                 url=url, title="", content="", fetch_successful=False,
                 error_message=f"Binary document URL skipped: {_url_path_lower[-10:]}",
                 content_length=0,
+                fetch_metadata={"selected_tier": None, "tier_attempts": tier_attempts},
             )
 
         logger.info(f"FETCH CHAIN START: {domain} — {url[:100]}")
@@ -557,11 +609,22 @@ class ArticleFetcher:
             _dur = time.time() - _t0
             _lbl = {"tier": "newspaper3k", "source": _src_label}
             _metrics.increment("article_fetch_attempts_total", labels=_lbl)
+            tier_attempts.append(
+                _build_fetch_attempt_payload(
+                    "newspaper3k",
+                    duration_seconds=_dur,
+                    result=article_content,
+                )
+            )
             if article_content and article_content.fetch_successful:
                 logger.info(f"FETCH OK tier=newspaper3k domain={domain} chars={article_content.content_length}")
                 _metrics.increment("article_fetch_success_total", labels=_lbl)
                 _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
                 _metrics.observe("article_content_length_chars", float(article_content.content_length or 0), labels=_lbl)
+                article_content.fetch_metadata = {
+                    "selected_tier": "newspaper3k",
+                    "tier_attempts": list(tier_attempts),
+                }
                 return article_content
             _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(article_content)})
             logger.info(f"FETCH FAIL tier=newspaper3k domain={domain}")
@@ -572,11 +635,22 @@ class ArticleFetcher:
             _dur = time.time() - _t0
             _lbl = {"tier": "httpclient", "source": _src_label}
             _metrics.increment("article_fetch_attempts_total", labels=_lbl)
+            tier_attempts.append(
+                _build_fetch_attempt_payload(
+                    "httpclient",
+                    duration_seconds=_dur,
+                    result=http_content,
+                )
+            )
             if http_content and http_content.fetch_successful:
                 logger.info(f"FETCH OK tier=HttpClient domain={domain} chars={http_content.content_length}")
                 _metrics.increment("article_fetch_success_total", labels=_lbl)
                 _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
                 _metrics.observe("article_content_length_chars", float(http_content.content_length or 0), labels=_lbl)
+                http_content.fetch_metadata = {
+                    "selected_tier": "httpclient",
+                    "tier_attempts": list(tier_attempts),
+                }
                 return http_content
             _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(http_content)})
             logger.info(f"FETCH FAIL tier=HttpClient domain={domain}")
@@ -588,11 +662,22 @@ class ArticleFetcher:
             _dur = time.time() - _t0
             _lbl = {"tier": "oxylabs", "source": _src_label}
             _metrics.increment("article_fetch_attempts_total", labels=_lbl)
+            tier_attempts.append(
+                _build_fetch_attempt_payload(
+                    "oxylabs",
+                    duration_seconds=_dur,
+                    result=oxylabs_content,
+                )
+            )
             if oxylabs_content and oxylabs_content.fetch_successful:
                 logger.info(f"FETCH OK tier=Oxylabs domain={domain} chars={oxylabs_content.content_length}")
                 _metrics.increment("article_fetch_success_total", labels=_lbl)
                 _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
                 _metrics.observe("article_content_length_chars", float(oxylabs_content.content_length or 0), labels=_lbl)
+                oxylabs_content.fetch_metadata = {
+                    "selected_tier": "oxylabs",
+                    "tier_attempts": list(tier_attempts),
+                }
                 return oxylabs_content
             _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(oxylabs_content)})
             logger.info(f"FETCH FAIL tier=Oxylabs domain={domain}")
@@ -623,11 +708,22 @@ class ArticleFetcher:
         _dur = time.time() - _t0
         _lbl = {"tier": "archive_org", "source": _src_label}
         _metrics.increment("article_fetch_attempts_total", labels=_lbl)
+        tier_attempts.append(
+            _build_fetch_attempt_payload(
+                "archive_org",
+                duration_seconds=_dur,
+                result=archive_content,
+            )
+        )
         if archive_content and archive_content.fetch_successful:
             logger.info(f"FETCH OK tier=archive.org domain={domain} chars={archive_content.content_length}")
             _metrics.increment("article_fetch_success_total", labels=_lbl)
             _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
             _metrics.observe("article_content_length_chars", float(archive_content.content_length or 0), labels=_lbl)
+            archive_content.fetch_metadata = {
+                "selected_tier": "archive_org",
+                "tier_attempts": list(tier_attempts),
+            }
             return archive_content
         _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(archive_content)})
 
@@ -641,7 +737,8 @@ class ArticleFetcher:
             content="",
             fetch_successful=False,
             error_message="All fetch methods failed (newspaper3k, curl_cffi/Playwright, Oxylabs, archive.org)",
-            content_length=0
+            content_length=0,
+            fetch_metadata={"selected_tier": None, "tier_attempts": tier_attempts},
         )
 
     def _fetch_with_browser(self, url: str) -> ArticleContent:
