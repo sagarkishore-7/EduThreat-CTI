@@ -476,7 +476,7 @@ class CanonicalIncidentRepository:
     ) -> Select:
         year_expr = extract("year", CanonicalIncident.incident_date).label("incident_year")
         return (
-            select(func.distinct(year_expr))
+            select(year_expr).distinct()
             .where(CanonicalIncident.status.in_(list(statuses)))
             .where(CanonicalIncident.incident_date.is_not(None))
             .order_by(year_expr.desc())
@@ -1151,10 +1151,20 @@ class CanonicalIncidentRepository:
             for row in session.execute(self.build_filter_institution_types_stmt(statuses=statuses)).all()
             if row.institution_type
         ]
+
+        def _year_value(row: object) -> Optional[int]:
+            if hasattr(row, "incident_year"):
+                value = getattr(row, "incident_year")
+            elif isinstance(row, (tuple, list)) and row:
+                value = row[0]
+            else:
+                value = None
+            return int(value) if value is not None else None
+
         years = [
-            int(row.incident_year)
+            year
             for row in session.execute(self.build_filter_years_stmt(statuses=statuses)).all()
-            if row.incident_year is not None
+            if (year := _year_value(row)) is not None
         ]
         return {
             "countries": countries,

@@ -1,4 +1,6 @@
 from datetime import date
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from sqlalchemy.dialects import postgresql
 
@@ -256,6 +258,32 @@ def test_canonical_repository_incident_trend_stmt_supports_bucket_and_filters():
     assert "LIMIT 18" in compiled
 
 
+def test_canonical_repository_filter_years_stmt_preserves_incident_year_label():
+    stmt = CanonicalIncidentRepository.build_filter_years_stmt(statuses=("open",))
+    compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
+
+    assert "AS incident_year" in compiled
+
+
+def test_canonical_repository_filter_options_falls_back_to_tuple_year_rows():
+    repo = CanonicalIncidentRepository()
+    session = Mock()
+    session.execute.side_effect = [
+        Mock(all=Mock(return_value=[SimpleNamespace(country="United States")])),
+        Mock(all=Mock(return_value=[SimpleNamespace(attack_category="ransomware_encryption")])),
+        Mock(all=Mock(return_value=[SimpleNamespace(ransomware_family="Clop ransomware gang")])),
+        Mock(all=Mock(return_value=[SimpleNamespace(threat_actor_name="INC ransomware gang")])),
+        Mock(all=Mock(return_value=[SimpleNamespace(institution_type="university")])),
+        Mock(all=Mock(return_value=[(2025,), (2024,)])),
+    ]
+
+    result = repo.get_filter_options(session, statuses=("open",))
+
+    assert result["years"] == [2025, 2024]
+    assert result["ransomware_families"] == ["Cl0p"]
+    assert result["threat_actors"] == ["INC"]
+
+
 def test_canonical_repository_dashboard_rollup_stmt_counts_enriched_rows():
     stmt = CanonicalIncidentRepository.build_dashboard_rollup_stmt()
     compiled = str(stmt.compile(dialect=postgresql.dialect(), compile_kwargs={"literal_binds": True}))
@@ -298,7 +326,7 @@ def test_canonical_repository_filter_years_stmt_extracts_and_orders_desc():
 
     assert "EXTRACT(year FROM canonical_incidents.incident_date)" in compiled
     assert "canonical_incidents.incident_date IS NOT NULL" in compiled
-    assert "ORDER BY EXTRACT(year FROM canonical_incidents.incident_date) DESC" in compiled
+    assert "ORDER BY incident_year DESC" in compiled
 
 
 def test_analytics_refresh_repository_lookup_stmt_filters_by_refresh_key():
