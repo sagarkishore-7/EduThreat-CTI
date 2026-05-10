@@ -32,6 +32,7 @@ def reset_database(*, upgrade_revision: str = "head") -> None:
     engine = create_engine_from_settings(settings)
     try:
         with engine.begin() as connection:
+            connection.exec_driver_sql("SET statement_timeout = 0")
             for statement in _DROP_STATEMENTS:
                 connection.exec_driver_sql(statement)
         config = build_alembic_config()

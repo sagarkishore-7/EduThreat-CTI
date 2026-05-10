@@ -30,7 +30,8 @@ def test_reset_database_drops_known_tables_and_rebuilds(monkeypatch):
 
     reset_db.reset_database()
 
-    assert executed[0] == "DROP TABLE IF EXISTS research_metric_snapshots CASCADE"
+    assert executed[0] == "SET statement_timeout = 0"
+    assert executed[1] == "DROP TABLE IF EXISTS research_metric_snapshots CASCADE"
     assert executed[-1] == "DROP TABLE IF EXISTS alembic_version CASCADE"
     upgrade.assert_called_once_with("cfg", "head")
     engine.dispose.assert_called_once()
