@@ -5,7 +5,7 @@ The JSON schema is passed separately as the Ollama format= parameter (grammar-co
 generation), so it is NOT included in this prompt. This removes ~8K tokens per call while
 keeping all semantic guidance the model needs to make the right choices within the schema.
 
-Version: 3.0.0 (Token-optimised — schema moved to format= parameter)
+Version: 3.1.0 (Victim-anchored extraction for multi-entity articles)
 """
 
 PROMPT_TEMPLATE = """You are a Senior Cyber Threat Intelligence (CTI) Analyst specialising in education sector cyber incidents. The article may be written in any language — read it in its original language and extract all fields in English as per the normalisation rules below. Output a valid JSON object matching the schema.
@@ -63,6 +63,17 @@ CRITICAL OUTPUT REQUIREMENTS:
 3a. STRICT EVIDENCE REQUIREMENTS — NEVER HALLUCINATE:
    Every value you output must be directly traceable to a specific quote, sentence, or
    clear implication in the article. When in doubt, output null.
+
+   SOURCE-VICTIM ANCHORING:
+   - The incident metadata provided with the article title/subtitle identifies the
+     source victim this record is about. Treat that victim as the anchor for extraction.
+   - If the article mentions multiple institutions, vendors, or unrelated organizations,
+     extract ONLY the facts that apply to the anchored source victim.
+   - Do NOT switch the incident focus to a more prominent organization mentioned in the
+     article body if that organization is not the source victim for this record.
+   - For roundup articles covering many victims, summarize the attack as it affected the
+     anchored source victim. Ignore collateral examples or background incidents unless the
+     article explicitly says they are the same victim/event.
 
    INSTITUTION NAME:
    - Extract from the article body only. Do NOT derive from the article title, URL slug,

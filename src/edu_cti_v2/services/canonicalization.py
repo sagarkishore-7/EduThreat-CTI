@@ -411,6 +411,39 @@ def _score_candidate_match(
     return score, best_match_type
 
 
+def _url_candidate_identity_compatible(
+    projection: Dict[str, Any],
+    candidate: CanonicalIncident,
+) -> bool:
+    incoming_identities = [
+        projection.get("institution_name"),
+        projection.get("vendor_name"),
+    ]
+    candidate_identities = [
+        candidate.institution_name,
+        candidate.vendor_name,
+    ]
+
+    best_quality = 0
+    for incoming_value in incoming_identities:
+        for candidate_value in candidate_identities:
+            best_quality = max(best_quality, _identity_match_quality(incoming_value, candidate_value))
+
+    if best_quality < 85:
+        return False
+
+    projection_country = projection.get("country_code")
+    if (
+        projection_country
+        and candidate.country_code
+        and projection_country != candidate.country_code
+        and best_quality < 100
+    ):
+        return False
+
+    return True
+
+
 def build_source_projection(source_incident, source_enrichment: SourceEnrichment) -> Dict[str, Any]:
     """Project a source incident + source enrichment into canonical-shaped fields."""
     typed = source_enrichment.typed_enrichment or {}
@@ -732,8 +765,13 @@ class V2CanonicalizationService:
             for candidate in self.canonical_repository.find_by_url_candidates(session, normalized_urls)
             if str(candidate.id) not in excluded_ids
         ]
-        if url_candidates:
-            return url_candidates[0], "url_exact", 100.0
+        compatible_url_candidates = [
+            candidate
+            for candidate in url_candidates
+            if _url_candidate_identity_compatible(projection, candidate)
+        ]
+        if compatible_url_candidates:
+            return compatible_url_candidates[0], "url_exact", 100.0
 
         candidate_name = projection.get("institution_name") or projection.get("vendor_name")
         if not candidate_name:

@@ -464,6 +464,109 @@ def test_canonicalization_service_reuses_existing_url_matched_canonical():
     analytics_repo.mark_needs_refresh.assert_called_once()
 
 
+def test_canonicalization_service_does_not_merge_distinct_victims_on_shared_roundup_url():
+    canonical_repo = Mock()
+    existing_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="incident:reichman",
+        institution_name="Reichman University",
+        vendor_name=None,
+        institution_type="university",
+        country="Israel",
+        country_code="IL",
+        region=None,
+        city="Herzliya",
+        incident_date=datetime(2023, 4, 4, tzinfo=timezone.utc).date(),
+        date_precision="day",
+        attack_category="ddos_volumetric",
+        attack_vector="unknown",
+        threat_actor_name="Anonymous Sudan",
+        ransomware_family=None,
+        is_education_related=True,
+        severity=None,
+        canonical_summary="Reichman University website was attacked.",
+        status="open",
+        first_seen_at=datetime(2023, 4, 4, tzinfo=timezone.utc),
+        last_seen_at=datetime(2023, 4, 4, tzinfo=timezone.utc),
+        resolution_metadata={},
+    )
+    canonical_repo.get_membership_for_source_incident.return_value = None
+    canonical_repo.find_by_url_candidates.return_value = [existing_canonical]
+    canonical_repo.find_name_date_candidates.return_value = []
+    canonical_repo.find_identity_candidates.return_value = []
+    canonical_repo.list_memberships.return_value = []
+
+    source_repo = Mock()
+    incident = _source_incident(
+        event_key="roundup-article",
+        url="https://www.jpost.com/breaking-news/article-736351",
+    )
+    incident.raw_title = "DDoS attack on the website of a university in Jerusalem, Israel"
+    incident.raw_subtitle = "Hebrew University of Jerusalem - Jerusalem, Israel"
+    incident.raw_institution_name = "Hebrew University of Jerusalem"
+    incident.raw_victim_name = "Hebrew University of Jerusalem"
+    incident.raw_country = "Israel"
+    incident.raw_region = None
+    incident.raw_city = "Jerusalem"
+    incident.raw_incident_date = "2023-04-04"
+    source_repo.get_by_id.return_value = incident
+
+    enrichment_repo = Mock()
+    enrichment = _source_enrichment(incident)
+    enrichment.typed_enrichment["institution_name"] = "Hebrew University of Jerusalem"
+    enrichment.typed_enrichment["country"] = "Israel"
+    enrichment.typed_enrichment["country_code"] = "IL"
+    enrichment.typed_enrichment["city"] = "Jerusalem"
+    enrichment.typed_enrichment["incident_date"] = "2023-04-04"
+    enrichment.typed_enrichment["attack_category"] = "ddos_volumetric"
+    enrichment.typed_enrichment["enriched_summary"] = "Hebrew University of Jerusalem website was attacked."
+    enrichment.typed_enrichment["threat_actor_name"] = "Anonymous Sudan"
+    enrichment.raw_extraction["institution_name"] = "Hebrew University of Jerusalem"
+    enrichment.raw_extraction["country_code"] = "IL"
+    enrichment.raw_extraction["attack_category"] = "ddos_volumetric"
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.side_effect = [None, object(), object()]
+    analytics_repo = Mock()
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+        analytics_refresh_repository=analytics_repo,
+    )
+    session = Mock()
+    session.execute.return_value.scalars.return_value.all.return_value = [enrichment]
+    session.query.return_value.filter_by.return_value.delete.return_value = None
+
+    created_canonicals = []
+    added_memberships = []
+
+    def _capture_canonical(_session, canonical):
+        created_canonicals.append(canonical)
+        canonical.id = canonical.id or uuid4()
+        return canonical
+
+    def _capture_membership(_session, membership):
+        added_memberships.append(membership)
+        membership.id = membership.id or uuid4()
+        return membership
+
+    canonical_repo.add.side_effect = _capture_canonical
+    canonical_repo.add_membership.side_effect = _capture_membership
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is True
+    assert outcome["match_type"] == "seed"
+    assert created_canonicals
+    assert created_canonicals[0].institution_name == "Hebrew University of Jerusalem"
+    assert added_memberships
+    assert added_memberships[0].canonical_incident_id == created_canonicals[0].id
+
+
 def test_canonicalization_service_skips_new_generic_identity_seed():
     canonical_repo = Mock()
     canonical_repo.get_membership_for_source_incident.return_value = None
