@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import Mock
 from uuid import uuid4
 
@@ -34,6 +34,27 @@ def _source_incident() -> SourceIncident:
             created_at=incident.collected_at,
         )
     ]
+    return incident
+
+
+def _source_incident_with_urls(*urls: tuple[str, bool]) -> SourceIncident:
+    incident = _source_incident()
+    incident.urls = []
+    for index, (url, is_primary) in enumerate(urls, start=1):
+        incident.urls.append(
+            SourceIncidentUrl(
+                id=uuid4(),
+                source_incident_id=incident.id,
+                url=url,
+                normalized_url=url,
+                resolved_url=url,
+                url_kind="article",
+                is_wrapper=False,
+                is_primary_from_source=is_primary,
+                is_resolved_primary=is_primary,
+                created_at=incident.collected_at + timedelta(seconds=index),
+            )
+        )
     return incident
 
 
@@ -150,3 +171,101 @@ def test_fetch_service_records_failures_without_enqueuing_enrichment():
     assert result["articles_saved"] == 0
     assert result["articles_failed"] == 1
     assert result["enrich_tasks_enqueued"] == 0
+
+
+def test_fetch_service_selects_best_matching_article_instead_of_first_success():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    pipeline_task_repository = Mock()
+    pipeline_task_repository.get_active_for_target.return_value = None
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.side_effect = [
+        ArticleContent(
+            url="https://www.cnn.com/2026/05/07/us/canvas-hack-strands-college-students-finals-week",
+            title="Canvas hack strands college students during finals week",
+            content="Thousands of schools use Canvas. ShinyHunters claimed responsibility.",
+            author="Reporter",
+            publish_date="2026-05-07",
+            fetch_successful=True,
+            error_message=None,
+            content_length=70,
+            fetch_metadata={"selected_tier": "httpclient", "tier_attempts": [{"tier": "httpclient", "success": True}]},
+        ),
+        ArticleContent(
+            url="https://www.nytimes.com/2022/05/09/us/lincoln-college-illinois-closure.html",
+            title="Lincoln College to Close, Hurt by Pandemic and Ransomware Attack",
+            content="Lincoln College said a ransomware attack contributed to its closure.",
+            author="Reporter",
+            publish_date="2022-05-09",
+            fetch_successful=True,
+            error_message=None,
+            content_length=68,
+            fetch_metadata={"selected_tier": "httpclient", "tier_attempts": [{"tier": "httpclient", "success": True}]},
+        ),
+    ]
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident_with_urls(
+        ("https://www.cnn.com/2026/05/07/us/canvas-hack-strands-college-students-finals-week", True),
+        ("https://www.nytimes.com/2022/05/09/us/lincoln-college-illinois-closure.html", False),
+    )
+    incident.raw_title = "Lincoln College to Close, Hurt by Pandemic and Ransomware Attack - The New York Times"
+    incident.raw_institution_name = "Lincoln College"
+    incident.source_published_at = datetime(2022, 5, 9, 8, 0, tzinfo=timezone.utc)
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert result["articles_saved"] == 2
+    assert result["enrich_tasks_enqueued"] == 1
+    documents = [call.args[1] for call in article_repository.add_document.call_args_list]
+    selected = [document for document in documents if document.is_selected_for_enrichment]
+    assert len(selected) == 1
+    assert selected[0].title == "Lincoln College to Close, Hurt by Pandemic and Ransomware Attack"
+    attempts = [call.args[1] for call in article_repository.add_fetch_attempt.call_args_list]
+    selected_attempts = [attempt for attempt in attempts if attempt.response_metadata["selected_for_enrichment"]]
+    assert len(selected_attempts) == 1
+    assert "nytimes.com" in selected_attempts[0].response_metadata["fetched_url"]
+
+
+def test_fetch_service_skips_enrichment_when_no_article_is_relevant():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    pipeline_task_repository = Mock()
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.side_effect = [
+        ArticleContent(
+            url="https://www.cnn.com/2026/05/07/us/canvas-hack-strands-college-students-finals-week",
+            title="Canvas hack strands college students during finals week",
+            content="Thousands of schools use Canvas. ShinyHunters claimed responsibility.",
+            author="Reporter",
+            publish_date="2026-05-07",
+            fetch_successful=True,
+            error_message=None,
+            content_length=70,
+            fetch_metadata={"selected_tier": "httpclient", "tier_attempts": [{"tier": "httpclient", "success": True}]},
+        )
+    ]
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident_with_urls(
+        ("https://www.cnn.com/2026/05/07/us/canvas-hack-strands-college-students-finals-week", True),
+    )
+    incident.raw_title = "Parents warned over identity theft after school cyber attack - Kent Online"
+    incident.raw_institution_name = "Kent Online school cyber attack"
+    incident.source_published_at = datetime(2020, 11, 24, 8, 0, tzinfo=timezone.utc)
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert result["articles_saved"] == 1
+    assert result["enrich_tasks_enqueued"] == 0
+    documents = [call.args[1] for call in article_repository.add_document.call_args_list]
+    assert documents[0].is_selected_for_enrichment is False
+    pipeline_task_repository.enqueue.assert_not_called()
