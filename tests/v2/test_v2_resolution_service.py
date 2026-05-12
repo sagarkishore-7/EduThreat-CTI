@@ -61,7 +61,7 @@ def test_resolve_url_service_adds_discovered_article_and_enqueues_fetch():
     task_repo.get_active_for_target.return_value = None
     service = V2ResolveUrlService(
         pipeline_task_repository=task_repo,
-        article_discovery=lambda payload: ["https://example.com/article"],
+        article_discovery=lambda payload: ["https://www.cnn.com/2026/05/08/us/canvas-cyberattack-affects-universities"],
     )
     session = Mock()
     incident = _source_incident(with_fetchable_url=False)
@@ -93,6 +93,64 @@ def test_resolve_url_service_reuses_existing_fetch_task_and_dedupes_urls():
     assert result["urls_discovered"] == 1
     assert result["urls_added"] == 0
     assert result["fetch_tasks_enqueued"] == 0
+    task_repo.enqueue.assert_not_called()
+
+
+def test_resolve_url_service_filters_irrelevant_discovered_urls():
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    service = V2ResolveUrlService(
+        pipeline_task_repository=task_repo,
+        article_discovery=lambda payload: [
+            "https://www.cnn.com/2026/05/07/us/canvas-hack-strands-college-students-finals-week",
+            "https://www.kentonline.co.uk/dartford/news/parents-warned-over-identity-theft-after-school-cyber-attack-237886/",
+        ],
+    )
+    session = Mock()
+    incident = _source_incident(with_fetchable_url=False)
+    incident.raw_title = "Parents warned over identity theft after school cyber attack - Kent Online"
+    incident.raw_institution_name = "Kent Online school cyber attack"
+    incident.raw_incident_date = "2020-11-24"
+    incident.source_published_at = datetime(2020, 11, 24, 8, 0, tzinfo=timezone.utc)
+
+    result = service.resolve_source_incident_urls(session, incident)
+
+    assert result == {
+        "urls_discovered": 2,
+        "urls_added": 1,
+        "fetch_tasks_enqueued": 1,
+    }
+    added_article_urls = [row.url for row in incident.urls if row.url_kind == "article"]
+    assert added_article_urls == [
+        "https://www.kentonline.co.uk/dartford/news/parents-warned-over-identity-theft-after-school-cyber-attack-237886/"
+    ]
+    task_repo.enqueue.assert_called_once()
+
+
+def test_resolve_url_service_skips_fetch_when_only_irrelevant_urls_are_discovered():
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    service = V2ResolveUrlService(
+        pipeline_task_repository=task_repo,
+        article_discovery=lambda payload: [
+            "https://www.cnn.com/2026/05/07/us/canvas-hack-strands-college-students-finals-week",
+        ],
+    )
+    session = Mock()
+    incident = _source_incident(with_fetchable_url=False)
+    incident.raw_title = "Parents warned over identity theft after school cyber attack - Kent Online"
+    incident.raw_institution_name = "Kent Online school cyber attack"
+    incident.raw_incident_date = "2020-11-24"
+    incident.source_published_at = datetime(2020, 11, 24, 8, 0, tzinfo=timezone.utc)
+
+    result = service.resolve_source_incident_urls(session, incident)
+
+    assert result == {
+        "urls_discovered": 1,
+        "urls_added": 0,
+        "fetch_tasks_enqueued": 0,
+    }
+    assert len(incident.urls) == 1
     task_repo.enqueue.assert_not_called()
 
 

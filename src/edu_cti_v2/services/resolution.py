@@ -11,6 +11,7 @@ from src.edu_cti.core.deduplication import normalize_url
 from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
 from src.edu_cti_v2.models import PipelineTask, SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceIncidentRepository
+from src.edu_cti_v2.services.fetching import _score_url_candidate
 
 _INVALID_DISCOVERY_NAMES = {
     "",
@@ -24,6 +25,8 @@ _INVALID_DISCOVERY_NAMES = {
     "undisclosed",
     "not disclosed",
 }
+_MIN_DISCOVERED_URL_SCORE = 4.0
+_MAX_DISCOVERED_URLS = 5
 
 
 def _clean_discovery_name(value: Optional[str]) -> Optional[str]:
@@ -76,10 +79,23 @@ class V2ResolveUrlService:
         existing_fetchable = [row for row in existing_urls if row.url_kind == "article" and not row.is_wrapper]
 
         discovered_urls = self.article_discovery(source_incident_to_discovery_payload(source_incident))
+        ranked_urls = sorted(
+            (
+                (url, _score_url_candidate(source_incident, url))
+                for url in discovered_urls
+            ),
+            key=lambda item: item[1],
+            reverse=True,
+        )
+        filtered_urls = [
+            url
+            for url, score in ranked_urls
+            if score >= _MIN_DISCOVERED_URL_SCORE
+        ][: _MAX_DISCOVERED_URLS]
         added_count = 0
         now = datetime.now(timezone.utc)
 
-        for url in discovered_urls:
+        for url in filtered_urls:
             normalized = normalize_url(url)
             if not normalized or normalized in existing_normalized:
                 continue
