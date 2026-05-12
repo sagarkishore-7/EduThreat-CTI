@@ -567,11 +567,74 @@ class V2CanonicalReadService:
 
         projection = detail.get("canonical_projection") or {}
         attack_dynamics = projection.get("attack_dynamics") or {}
+        data_impact = _projection_section(projection, "data_impact")
+        system_impact = _projection_section(projection, "system_impact")
+        user_impact = _projection_section(projection, "user_impact")
+        financial_impact = _projection_section(projection, "financial_impact")
+        regulatory_impact = _projection_section(projection, "regulatory_impact")
+        research_impact = _projection_section(projection, "research_impact")
+        recovery_metrics = _projection_section(projection, "recovery_metrics")
+        transparency_metrics = _projection_section(projection, "transparency_metrics")
         selected_source = detail.get("selected_source") or {}
         timeline = _to_legacy_timeline(detail.get("timeline") or [])
         urls = _collect_urls(selected_source)
         attack_vector = detail.get("attack_vector") or attack_dynamics.get("attack_vector") or projection.get("attack_vector")
         ransomware_family = detail.get("ransomware_family") or attack_dynamics.get("ransomware_family") or projection.get("ransomware_family")
+        records_affected_exact = (
+            data_impact.get("records_affected_exact")
+            if data_impact.get("records_affected_exact") is not None
+            else projection.get("records_affected_exact")
+        )
+        records_affected_min = (
+            data_impact.get("records_affected_min")
+            if data_impact.get("records_affected_min") is not None
+            else projection.get("records_affected_min")
+        )
+        records_affected_max = (
+            data_impact.get("records_affected_max")
+            if data_impact.get("records_affected_max") is not None
+            else projection.get("records_affected_max")
+        )
+        data_categories = (
+            data_impact.get("data_categories")
+            or data_impact.get("data_types_affected")
+            or projection.get("data_categories")
+        )
+        data_exfiltrated = (
+            data_impact.get("data_exfiltrated")
+            if data_impact.get("data_exfiltrated") is not None
+            else projection.get("data_exfiltrated")
+        )
+        if data_exfiltrated is None:
+            data_exfiltrated = attack_dynamics.get("data_exfiltration")
+
+        data_breached = projection.get("data_breached")
+        if data_breached is None:
+            data_breached = bool(
+                records_affected_exact
+                or records_affected_min
+                or records_affected_max
+                or data_categories
+                or data_impact.get("personal_information")
+                or data_impact.get("student_data")
+                or data_impact.get("faculty_data")
+                or data_impact.get("alumni_data")
+                or data_impact.get("administrative_data")
+                or data_impact.get("financial_data")
+                or data_impact.get("medical_records")
+            )
+
+        total_individuals_affected = (
+            user_impact.get("total_individuals_affected")
+            if user_impact.get("total_individuals_affected") is not None
+            else projection.get("total_individuals_affected")
+        )
+        if total_individuals_affected is None:
+            total_individuals_affected = (
+                user_impact.get("users_affected_exact")
+                if user_impact.get("users_affected_exact") is not None
+                else records_affected_exact
+            )
 
         return {
             "incident_id": detail["canonical_incident_id"],
@@ -616,7 +679,7 @@ class V2CanonicalReadService:
                 "attack_vector": attack_vector,
                 "attack_chain": attack_dynamics.get("attack_chain"),
                 "ransomware_family": ransomware_family,
-                "data_exfiltration": projection.get("data_exfiltrated"),
+                "data_exfiltration": data_exfiltrated,
                 "encryption_impact": attack_dynamics.get("encryption_impact"),
                 "ransom_demanded": projection.get("was_ransom_demanded") or attack_dynamics.get("ransom_demanded"),
                 "ransom_amount": projection.get("ransom_amount") or attack_dynamics.get("ransom_amount"),
@@ -626,102 +689,138 @@ class V2CanonicalReadService:
                 "operational_impact": projection.get("operational_impact") or attack_dynamics.get("operational_impact"),
             },
             "data_impact": {
-                "data_breached": projection.get("data_breached"),
-                "data_exfiltrated": projection.get("data_exfiltrated"),
-                "data_categories": projection.get("data_categories"),
-                "records_affected_exact": projection.get("records_affected_exact"),
-                "records_affected_min": projection.get("records_affected_min"),
-                "records_affected_max": projection.get("records_affected_max"),
+                "data_breached": data_breached,
+                "data_exfiltrated": data_exfiltrated,
+                "data_categories": data_categories,
+                "records_affected_exact": records_affected_exact,
+                "records_affected_min": records_affected_min,
+                "records_affected_max": records_affected_max,
                 "pii_records_leaked": projection.get("pii_records_leaked"),
             },
             "system_impact": {
-                "systems_affected": projection.get("systems_affected"),
-                "critical_systems_affected": projection.get("critical_systems_affected"),
-                "network_compromised": projection.get("network_compromised"),
-                "email_system_affected": projection.get("email_system_affected"),
-                "student_portal_affected": projection.get("student_portal_affected"),
-                "research_systems_affected": projection.get("research_systems_affected"),
-                "hospital_systems_affected": projection.get("hospital_systems_affected"),
-                "cloud_services_affected": projection.get("cloud_services_affected"),
-                "third_party_vendor_impact": projection.get("third_party_vendor_impact"),
+                "systems_affected": system_impact.get("systems_affected") or projection.get("systems_affected"),
+                "critical_systems_affected": (
+                    system_impact.get("critical_systems_affected")
+                    if system_impact.get("critical_systems_affected") is not None
+                    else projection.get("critical_systems_affected")
+                ),
+                "network_compromised": (
+                    system_impact.get("network_compromised")
+                    if system_impact.get("network_compromised") is not None
+                    else projection.get("network_compromised")
+                ),
+                "email_system_affected": (
+                    system_impact.get("email_system_affected")
+                    if system_impact.get("email_system_affected") is not None
+                    else projection.get("email_system_affected")
+                ),
+                "student_portal_affected": (
+                    system_impact.get("student_portal_affected")
+                    if system_impact.get("student_portal_affected") is not None
+                    else projection.get("student_portal_affected")
+                ),
+                "research_systems_affected": (
+                    system_impact.get("research_systems_affected")
+                    if system_impact.get("research_systems_affected") is not None
+                    else projection.get("research_systems_affected")
+                ),
+                "hospital_systems_affected": (
+                    system_impact.get("hospital_systems_affected")
+                    if system_impact.get("hospital_systems_affected") is not None
+                    else projection.get("hospital_systems_affected")
+                ),
+                "cloud_services_affected": (
+                    system_impact.get("cloud_services_affected")
+                    if system_impact.get("cloud_services_affected") is not None
+                    else projection.get("cloud_services_affected")
+                ),
+                "third_party_vendor_impact": (
+                    system_impact.get("third_party_vendor_impact")
+                    if system_impact.get("third_party_vendor_impact") is not None
+                    else projection.get("third_party_vendor_impact")
+                ),
                 "vendor_name": detail.get("vendor_name"),
             },
             "user_impact": {
-                "students_affected": projection.get("students_affected"),
-                "staff_affected": projection.get("staff_affected"),
-                "faculty_affected": projection.get("faculty_affected"),
-                "alumni_affected": projection.get("alumni_affected"),
-                "parents_affected": projection.get("parents_affected"),
-                "applicants_affected": projection.get("applicants_affected"),
-                "patients_affected": projection.get("patients_affected"),
-                "users_affected_min": projection.get("users_affected_min"),
-                "users_affected_max": projection.get("users_affected_max"),
-                "users_affected_exact": projection.get("users_affected_exact"),
-                "total_individuals_affected": projection.get("total_individuals_affected"),
+                "students_affected": user_impact.get("students_affected") or projection.get("students_affected"),
+                "staff_affected": user_impact.get("staff_affected") or projection.get("staff_affected"),
+                "faculty_affected": user_impact.get("faculty_affected") or projection.get("faculty_affected"),
+                "alumni_affected": user_impact.get("alumni_affected") or projection.get("alumni_affected"),
+                "parents_affected": user_impact.get("parents_affected") or projection.get("parents_affected"),
+                "applicants_affected": user_impact.get("applicants_affected") or projection.get("applicants_affected"),
+                "patients_affected": user_impact.get("patients_affected") or projection.get("patients_affected"),
+                "users_affected_min": user_impact.get("users_affected_min") or projection.get("users_affected_min"),
+                "users_affected_max": user_impact.get("users_affected_max") or projection.get("users_affected_max"),
+                "users_affected_exact": user_impact.get("users_affected_exact") or projection.get("users_affected_exact"),
+                "total_individuals_affected": total_individuals_affected,
             },
             "financial_impact": {
-                "estimated_total_cost_usd": projection.get("estimated_total_cost_usd"),
-                "ransom_cost_usd": projection.get("ransom_cost_usd"),
-                "recovery_cost_usd": projection.get("recovery_cost_usd"),
-                "legal_cost_usd": projection.get("legal_cost_usd"),
-                "notification_cost_usd": projection.get("notification_cost_usd"),
-                "insurance_claim": projection.get("insurance_claim"),
-                "insurance_payout_usd": projection.get("insurance_payout_usd"),
-                "business_impact": projection.get("business_impact"),
+                "estimated_total_cost_usd": financial_impact.get("estimated_total_cost_usd") or projection.get("estimated_total_cost_usd"),
+                "ransom_cost_usd": financial_impact.get("ransom_cost_usd") or projection.get("ransom_cost_usd"),
+                "recovery_cost_usd": financial_impact.get("recovery_cost_usd") or projection.get("recovery_cost_usd"),
+                "legal_cost_usd": financial_impact.get("legal_cost_usd") or projection.get("legal_cost_usd"),
+                "notification_cost_usd": financial_impact.get("notification_cost_usd") or projection.get("notification_cost_usd"),
+                "insurance_claim": (
+                    financial_impact.get("insurance_claim")
+                    if financial_impact.get("insurance_claim") is not None
+                    else projection.get("insurance_claim")
+                ),
+                "insurance_payout_usd": financial_impact.get("insurance_payout_usd") or projection.get("insurance_payout_usd"),
+                "business_impact": financial_impact.get("business_impact") or projection.get("business_impact"),
             },
             "regulatory_impact": {
-                "applicable_regulations": projection.get("applicable_regulations"),
-                "gdpr_breach": projection.get("gdpr_breach"),
-                "hipaa_breach": projection.get("hipaa_breach"),
-                "ferpa_breach": projection.get("ferpa_breach"),
-                "breach_notification_required": projection.get("breach_notification_required"),
-                "notification_sent": projection.get("notification_sent"),
-                "notification_sent_date": projection.get("notification_sent_date"),
-                "notification_delay_days": projection.get("notification_delay_days"),
-                "dpa_notified": projection.get("dpa_notified"),
-                "investigation_opened": projection.get("investigation_opened"),
-                "fine_imposed": projection.get("fine_imposed"),
-                "fine_amount_usd": projection.get("fine_amount_usd"),
-                "lawsuits_filed": projection.get("lawsuits_filed"),
-                "class_action_filed": projection.get("class_action_filed"),
+                "applicable_regulations": regulatory_impact.get("applicable_regulations") or projection.get("applicable_regulations"),
+                "gdpr_breach": regulatory_impact.get("gdpr_breach") if regulatory_impact.get("gdpr_breach") is not None else projection.get("gdpr_breach"),
+                "hipaa_breach": regulatory_impact.get("hipaa_breach") if regulatory_impact.get("hipaa_breach") is not None else projection.get("hipaa_breach"),
+                "ferpa_breach": regulatory_impact.get("ferpa_breach") if regulatory_impact.get("ferpa_breach") is not None else projection.get("ferpa_breach"),
+                "breach_notification_required": regulatory_impact.get("breach_notification_required") if regulatory_impact.get("breach_notification_required") is not None else projection.get("breach_notification_required"),
+                "notification_sent": regulatory_impact.get("notification_sent") if regulatory_impact.get("notification_sent") is not None else projection.get("notification_sent"),
+                "notification_sent_date": regulatory_impact.get("notification_sent_date") or projection.get("notification_sent_date"),
+                "notification_delay_days": regulatory_impact.get("notification_delay_days") or projection.get("notification_delay_days"),
+                "dpa_notified": regulatory_impact.get("dpa_notified") if regulatory_impact.get("dpa_notified") is not None else projection.get("dpa_notified"),
+                "investigation_opened": regulatory_impact.get("investigation_opened") if regulatory_impact.get("investigation_opened") is not None else projection.get("investigation_opened"),
+                "fine_imposed": regulatory_impact.get("fine_imposed") if regulatory_impact.get("fine_imposed") is not None else projection.get("fine_imposed"),
+                "fine_amount_usd": regulatory_impact.get("fine_amount_usd") or projection.get("fine_amount_usd"),
+                "lawsuits_filed": regulatory_impact.get("lawsuits_filed") if regulatory_impact.get("lawsuits_filed") is not None else projection.get("lawsuits_filed"),
+                "class_action_filed": regulatory_impact.get("class_action_filed") if regulatory_impact.get("class_action_filed") is not None else projection.get("class_action_filed"),
             },
             "research_impact": {
-                "research_projects_affected": projection.get("research_projects_affected"),
-                "research_data_compromised": projection.get("research_data_compromised"),
-                "publications_delayed": projection.get("publications_delayed"),
-                "grants_affected": projection.get("grants_affected"),
-                "research_area": projection.get("research_area"),
+                "research_projects_affected": research_impact.get("research_projects_affected") or projection.get("research_projects_affected"),
+                "research_data_compromised": research_impact.get("research_data_compromised") if research_impact.get("research_data_compromised") is not None else projection.get("research_data_compromised"),
+                "publications_delayed": research_impact.get("publications_delayed") if research_impact.get("publications_delayed") is not None else projection.get("publications_delayed"),
+                "grants_affected": research_impact.get("grants_affected") or projection.get("grants_affected"),
+                "research_area": research_impact.get("research_area") or projection.get("research_area"),
             },
             "recovery_metrics": {
-                "recovery_method": projection.get("recovery_method"),
-                "recovery_duration_days": projection.get("recovery_duration_days"),
-                "from_backup": projection.get("from_backup"),
-                "backup_status": projection.get("backup_status"),
-                "backup_age_days": projection.get("backup_age_days"),
-                "mfa_implemented": projection.get("mfa_implemented"),
-                "law_enforcement_involved": projection.get("law_enforcement_involved"),
-                "law_enforcement_agency": projection.get("law_enforcement_agency"),
-                "ir_firm_engaged": projection.get("ir_firm_engaged"),
-                "forensics_firm": projection.get("forensics_firm"),
-                "security_improvements": projection.get("security_improvements"),
+                "recovery_method": recovery_metrics.get("recovery_method") or projection.get("recovery_method"),
+                "recovery_duration_days": recovery_metrics.get("recovery_duration_days") or projection.get("recovery_duration_days"),
+                "from_backup": recovery_metrics.get("from_backup") if recovery_metrics.get("from_backup") is not None else projection.get("from_backup"),
+                "backup_status": recovery_metrics.get("backup_status") or projection.get("backup_status"),
+                "backup_age_days": recovery_metrics.get("backup_age_days") or projection.get("backup_age_days"),
+                "mfa_implemented": recovery_metrics.get("mfa_implemented") if recovery_metrics.get("mfa_implemented") is not None else projection.get("mfa_implemented"),
+                "law_enforcement_involved": recovery_metrics.get("law_enforcement_involved") if recovery_metrics.get("law_enforcement_involved") is not None else projection.get("law_enforcement_involved"),
+                "law_enforcement_agency": recovery_metrics.get("law_enforcement_agency") or projection.get("law_enforcement_agency"),
+                "ir_firm_engaged": recovery_metrics.get("ir_firm_engaged") or projection.get("ir_firm_engaged"),
+                "forensics_firm": recovery_metrics.get("forensics_firm") or projection.get("forensics_firm"),
+                "security_improvements": recovery_metrics.get("security_improvements") or projection.get("security_improvements"),
             },
             "transparency_metrics": {
-                "public_disclosure": projection.get("public_disclosure"),
-                "public_disclosure_date": projection.get("public_disclosure_date"),
-                "disclosure_delay_days": projection.get("disclosure_delay_days"),
-                "transparency_level": projection.get("transparency_level"),
+                "public_disclosure": transparency_metrics.get("public_disclosure") if transparency_metrics.get("public_disclosure") is not None else projection.get("public_disclosure"),
+                "public_disclosure_date": transparency_metrics.get("public_disclosure_date") or projection.get("public_disclosure_date"),
+                "disclosure_delay_days": transparency_metrics.get("disclosure_delay_days") or projection.get("disclosure_delay_days"),
+                "transparency_level": transparency_metrics.get("transparency_level") or projection.get("transparency_level"),
             },
             "llm_enriched": bool(detail.get("selected_source_enrichment_id")),
             "llm_enriched_at": detail.get("updated_at"),
             "sources": _to_legacy_sources(detail.get("memberships") or []),
             "notes": projection.get("notes"),
-            "data_breached": projection.get("data_breached"),
-            "data_exfiltrated": projection.get("data_exfiltrated"),
-            "records_affected_exact": projection.get("records_affected_exact"),
-            "records_affected_min": projection.get("records_affected_min"),
-            "records_affected_max": projection.get("records_affected_max"),
+            "data_breached": data_breached,
+            "data_exfiltrated": data_exfiltrated,
+            "records_affected_exact": records_affected_exact,
+            "records_affected_min": records_affected_min,
+            "records_affected_max": records_affected_max,
             "pii_records_leaked": projection.get("pii_records_leaked"),
-            "systems_affected": projection.get("systems_affected"),
+            "systems_affected": system_impact.get("systems_affected") or projection.get("systems_affected"),
             "teaching_impacted": projection.get("teaching_impacted"),
             "research_impacted": projection.get("research_impacted"),
             "classes_cancelled": projection.get("classes_cancelled"),

@@ -403,6 +403,115 @@ def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
     assert detail["records_affected_exact"] == 5000
 
 
+def test_read_service_legacy_detail_uses_nested_projection_sections():
+    canonical_id = str(uuid4())
+    canonical = SimpleNamespace(
+        id=uuid4(),
+        institution_name="Paris 1 Pantheon-Sorbonne University",
+        vendor_name=None,
+        institution_type="university",
+        country="France",
+        country_code="FR",
+        region="Ile-de-France",
+        city="Paris",
+        incident_date=date(2024, 10, 10),
+        date_precision="day",
+        attack_category="data_breach_external",
+        attack_vector="unknown",
+        threat_actor_name=None,
+        ransomware_family=None,
+        is_education_related=True,
+        severity=None,
+        canonical_summary="Student and staff data was exposed.",
+        status="open",
+        first_seen_at=datetime(2026, 5, 12, 18, 5, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 12, 18, 13, tzinfo=timezone.utc),
+        updated_at=datetime(2026, 5, 12, 18, 13, tzinfo=timezone.utc),
+        resolution_metadata={},
+    )
+    enrichment = SimpleNamespace(
+        selected_source_enrichment_id=uuid4(),
+        analytics_projection={},
+        field_provenance={},
+        canonical_projection={
+            "attack_dynamics": {"attack_vector": "unknown", "attack_chain": ["initial_access", "exfiltration"]},
+            "data_impact": {
+                "student_data": True,
+                "faculty_data": True,
+                "data_exfiltrated": True,
+                "data_types_affected": ["student_pii", "employee_pii"],
+                "records_affected_exact": 73000,
+            },
+            "system_impact": {
+                "systems_affected": ["other"],
+                "critical_systems_affected": True,
+            },
+        },
+    )
+    membership = SimpleNamespace(
+        source_incident_id=uuid4(),
+        match_type="seed",
+        match_score=100.0,
+        survivor_score=117.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 12, 18, 13, tzinfo=timezone.utc),
+    )
+    canonical_repo = Mock()
+    canonical_repo.get_by_id.return_value = canonical
+    canonical_repo.get_enrichment.return_value = enrichment
+    canonical_repo.list_membership_details.return_value = [
+        {
+            "membership": membership,
+            "source_incident_id": str(membership.source_incident_id),
+            "source_name": "konbriefing",
+            "source_group": "curated",
+            "collected_at": "2026-05-12T18:05:56+00:00",
+            "source_published_at": None,
+            "raw_title": "Unauthorized access at a university in France",
+            "raw_subtitle": None,
+            "raw_victim_name": "Universite Paris 1 Pantheon",
+            "raw_institution_name": "Universite Paris 1 Pantheon",
+            "raw_institution_type": "university",
+            "raw_country": "France",
+            "raw_region": None,
+            "raw_city": None,
+        }
+    ]
+    canonical_repo.list_timeline_events.return_value = []
+    canonical_repo.get_selected_source_details.return_value = {
+        "source_incident_id": "c6b9f20f-c698-435c-b57d-a9495bc98c68",
+        "source_name": "konbriefing",
+        "raw_subtitle": None,
+        "article_title": "Cyberattack exposes personal data",
+        "article_publish_date": "2024-10-15",
+        "article_url": "https://example.com/article",
+        "article_resolved_url": "https://example.com/article",
+    }
+    analytics_repo = Mock()
+    analytics_repo.get_by_key.return_value = None
+    article_repo = Mock()
+    article_repo.list_fetch_attempts.return_value = []
+
+    service = V2CanonicalReadService(
+        canonical_repository=canonical_repo,
+        analytics_refresh_repository=analytics_repo,
+        article_repository=article_repo,
+    )
+
+    detail = service.get_legacy_incident_detail(Mock(), canonical_id)
+
+    assert detail is not None
+    assert detail["data_impact"]["data_breached"] is True
+    assert detail["data_impact"]["data_exfiltrated"] is True
+    assert detail["data_impact"]["data_categories"] == ["student_pii", "employee_pii"]
+    assert detail["data_impact"]["records_affected_exact"] == 73000
+    assert detail["user_impact"]["total_individuals_affected"] == 73000
+    assert detail["system_impact"]["critical_systems_affected"] is True
+    assert detail["systems_affected"] == ["other"]
+
+
 def test_read_service_dashboard_summary_prefers_cached_snapshot():
     dashboard_snapshot = {
         "totals": {"canonical_incident_count": 5},
