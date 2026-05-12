@@ -567,6 +567,25 @@ def test_canonicalization_service_does_not_merge_distinct_victims_on_shared_roun
     assert added_memberships[0].canonical_incident_id == created_canonicals[0].id
 
 
+def test_build_source_projection_recovers_identity_from_subtitle_when_llm_name_missing():
+    incident = _source_incident(event_key="subtitle-fallback")
+    incident.raw_title = "DDoS attack on the website of a university in Jerusalem, Israel"
+    incident.raw_subtitle = (
+        "Hebrew University of Jerusalem (HUJI) / "
+        "הַאוּנִיבֶרְסִיטָה הַעִבְרִית בִּירוּשָׁלַיִם - Jerusalem / ירושלים, Israel"
+    )
+    incident.raw_institution_name = None
+    incident.raw_victim_name = "Hebrew University of Jerusalem (HUJI) / הַאוּנִיבֶרְסִיטָה הַעִבְרִית בִּירוּשָׁלַיִם"
+
+    enrichment = _source_enrichment(incident)
+    enrichment.typed_enrichment["institution_name"] = None
+    enrichment.raw_extraction["institution_name"] = None
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] == "Hebrew University of Jerusalem (HUJI)"
+
+
 def test_canonicalization_service_skips_new_generic_identity_seed():
     canonical_repo = Mock()
     canonical_repo.get_membership_for_source_incident.return_value = None

@@ -79,6 +79,21 @@ def test_source_incident_to_base_incident_preserves_key_context():
     assert base.all_urls == ["https://example.com/article"]
 
 
+def test_source_incident_to_base_incident_recovers_identity_from_subtitle():
+    incident = _source_incident()
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    incident.raw_title = "DDoS attack on the website of a university in Jerusalem, Israel"
+    incident.raw_subtitle = (
+        "Hebrew University of Jerusalem (HUJI) / "
+        "הַאוּנִיבֶרְסִיטָה הַעִבְרִית בִּירוּשָׁלַיִם - Jerusalem / ירושלים, Israel"
+    )
+
+    base = source_incident_to_base_incident(incident, "https://example.com/article")
+
+    assert base.institution_name == "Hebrew University of Jerusalem (HUJI)"
+
+
 def test_enrichment_service_persists_typed_source_enrichment():
     article_repo = Mock()
     source_enrichment_repo = Mock()

@@ -44,10 +44,35 @@ _NON_EDU_ALLOWED_KEYS = {
 }
 
 _STORAGE_DEBUG_KEY = "_storage_debug"
-_PROMPT_VERSION = "phase2_prompt_v2"
+_PROMPT_VERSION = "phase2_prompt_v3"
 _SCHEMA_VERSION = "phase2_schema_v1"
 _MAPPER_VERSION = "phase2_mapper_v1"
 _POST_PROCESSING_VERSION = "phase2_post_processing_v1"
+
+
+def _build_target_institution_line(incident: BaseIncident, title: str) -> str:
+    """Inject an explicit victim anchor for roundup or generic-title articles."""
+    notes_text = (incident.notes or "").strip()
+    is_roundup_stub = notes_text.startswith("Extracted from roundup:")
+    known_name = (
+        (incident.institution_name or "").strip()
+        or (getattr(incident, "victim_raw_name", None) or "").strip()
+    )
+    _UNKNOWN_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
+    title_text = (title or "").strip().lower()
+    subtitle_text = (incident.subtitle or "").strip()
+    force_target_anchor = bool(
+        known_name
+        and subtitle_text
+        and known_name.lower() not in title_text
+    )
+    if not ((is_roundup_stub or force_target_anchor) and known_name and known_name.lower() not in _UNKNOWN_NAMES):
+        return ""
+    return (
+        f"\n- TARGET INSTITUTION: {known_name}"
+        f"\n  (This article may cover multiple institutions. Extract THIS institution's"
+        f" incident as the primary. List all others in other_edu_incidents.)"
+    )
 
 
 def _coerce_bool_like(value: Any) -> Optional[bool]:
@@ -531,23 +556,7 @@ class IncidentEnricher:
             "Output ONLY valid JSON. Null for unknown fields. No prose, no markdown."
         )
 
-        # Only inject a TARGET INSTITUTION hint when the incident is a secondary stub
-        # extracted from a roundup article — i.e. its notes start with
-        # "Extracted from roundup:". For normal single-article incidents the LLM
-        # infers the primary institution from the article itself, and anchoring it
-        # to a potentially-wrong DB name would reduce accuracy.
-        notes_text = (incident.notes or "").strip()
-        is_roundup_stub = notes_text.startswith("Extracted from roundup:")
-        known_name = (incident.institution_name or "").strip()
-        _UNKNOWN_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
-        if is_roundup_stub and known_name and known_name.lower() not in _UNKNOWN_NAMES:
-            target_institution_line = (
-                f"\n- TARGET INSTITUTION: {known_name}"
-                f"\n  (This article may cover multiple institutions. Extract THIS institution's"
-                f" incident as the primary. List all others in other_edu_incidents.)"
-            )
-        else:
-            target_institution_line = ""
+        target_institution_line = _build_target_institution_line(incident, title)
 
         article_metadata_lines = []
         if incident.source_published_date:
@@ -1025,18 +1034,7 @@ class IncidentEnricher:
         )
 
         # ── Part 1: core extraction ───────────────────────────────────────────
-        notes_text = (incident.notes or "").strip()
-        is_roundup_stub = notes_text.startswith("Extracted from roundup:")
-        known_name = (incident.institution_name or "").strip()
-        _UNKNOWN_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
-        if is_roundup_stub and known_name and known_name.lower() not in _UNKNOWN_NAMES:
-            target_institution_line = (
-                f"\n- TARGET INSTITUTION: {known_name}"
-                f"\n  (This article may cover multiple institutions. Extract THIS institution's"
-                f" incident as the primary. List all others in other_edu_incidents.)"
-            )
-        else:
-            target_institution_line = ""
+        target_institution_line = _build_target_institution_line(incident, title)
 
         article_metadata_lines = []
         if incident.source_published_date:

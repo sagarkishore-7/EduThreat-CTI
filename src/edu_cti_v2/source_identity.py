@@ -1,0 +1,91 @@
+"""Helpers for recovering victim identity from source metadata."""
+
+from __future__ import annotations
+
+import re
+from typing import Optional
+
+from src.edu_cti.pipeline.phase2.utils.deduplication import clean_institution_name
+
+_GENERIC_IDENTITY_RE = re.compile(
+    r"^(?:(?:the\s+website\s+of\s+)?(?:a|an|the)\s+)?"
+    r"(?:public\s+|private\s+|state\s+|local\s+|regional\s+)?"
+    r"(?:university|college|school|academy|institute|polytechnic|district|"
+    r"school district|community college|technical college|research university|research institute)"
+    r"(?:\s+in\b.*)?$",
+    re.IGNORECASE,
+)
+_EDU_KEYWORD_RE = re.compile(
+    r"\b(university|college|school|academy|institute|polytechnic|district|campus)\b",
+    re.IGNORECASE,
+)
+_NON_ASCII_RE = re.compile(r"[^\x00-\x7F]")
+_UNKNOWN_VALUES = {"", "unknown", "unnamed", "undisclosed", "n/a", "none", "null"}
+
+
+def _looks_generic_identity(value: Optional[str]) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return bool(_GENERIC_IDENTITY_RE.match(text))
+
+
+def _strip_location_suffix(value: str) -> str:
+    if " - " not in value:
+        return value.strip()
+    head, tail = value.split(" - ", 1)
+    tail = tail.strip()
+    if "," in tail or "/" in tail:
+        return head.strip()
+    return value.strip()
+
+
+def _prefer_english_alias(value: str) -> str:
+    if " / " not in value:
+        return value
+    left, right = value.split(" / ", 1)
+    if _EDU_KEYWORD_RE.search(left) and _NON_ASCII_RE.search(right):
+        return left.strip()
+    return value
+
+
+def _normalize_source_identity_candidate(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip().strip("\"'“”")
+    if not text:
+        return None
+    text = _strip_location_suffix(text)
+    text = _prefer_english_alias(text)
+    cleaned = clean_institution_name(text).strip()
+    if not cleaned or cleaned.lower() in _UNKNOWN_VALUES:
+        return None
+    if len(cleaned) < 4:
+        return None
+    return cleaned
+
+
+def recover_source_identity(
+    *,
+    raw_institution_name: Optional[str] = None,
+    raw_victim_name: Optional[str] = None,
+    raw_subtitle: Optional[str] = None,
+) -> Optional[str]:
+    """Recover the best victim label from source metadata."""
+
+    candidates = []
+    for raw in (raw_institution_name, raw_victim_name, raw_subtitle):
+        normalized = _normalize_source_identity_candidate(raw)
+        if not normalized:
+            continue
+        score = 0
+        if _EDU_KEYWORD_RE.search(normalized):
+            score += 40
+        if not _looks_generic_identity(normalized):
+            score += 30
+        if normalized.isascii():
+            score += 10
+        score += min(len(normalized.split()), 8)
+        candidates.append((score, len(normalized), normalized))
+
+    if not candidates:
+        return None
+    return max(candidates)[2]

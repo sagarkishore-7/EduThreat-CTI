@@ -15,6 +15,7 @@ from src.edu_cti_v2.repositories import (
     PipelineTaskRepository,
     SourceEnrichmentRepository,
 )
+from src.edu_cti_v2.source_identity import recover_source_identity
 
 
 def source_incident_to_base_incident(
@@ -25,6 +26,11 @@ def source_incident_to_base_incident(
     re_enrich_reason: str | None = None,
 ) -> BaseIncident:
     """Adapt a v2 source incident into the current Phase 2 BaseIncident shape."""
+    source_identity = recover_source_identity(
+        raw_institution_name=source_incident.raw_institution_name,
+        raw_victim_name=source_incident.raw_victim_name,
+        raw_subtitle=source_incident.raw_subtitle,
+    )
     all_urls = [
         row.url
         for row in (source_incident.urls or [])
@@ -37,7 +43,7 @@ def source_incident_to_base_incident(
         incident_id=str(source_incident.id),
         source=source_incident.source_name,
         source_event_id=source_incident.source_event_key,
-        institution_name=source_incident.raw_institution_name or "",
+        institution_name=source_identity or "",
         victim_raw_name=source_incident.raw_victim_name,
         institution_type=source_incident.raw_institution_type,
         country=source_incident.raw_country,

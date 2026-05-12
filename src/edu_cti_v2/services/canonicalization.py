@@ -35,6 +35,7 @@ from src.edu_cti_v2.repositories import (
     SourceEnrichmentRepository,
     SourceIncidentRepository,
 )
+from src.edu_cti_v2.source_identity import recover_source_identity
 
 _VENDOR_LIKE_TYPES = {
     "edtech_platform",
@@ -64,7 +65,7 @@ _VENDOR_FOLLOWUP_CUES = (
     "sued",
 )
 _GENERIC_INSTITUTION_RE = re.compile(
-    r"^(?:(?:a|an)\s+)?"
+    r"^(?:(?:the\s+website\s+of\s+)?(?:a|an|the)\s+)?"
     r"(?:public\s+|private\s+|state\s+|local\s+|regional\s+|major\s+|leading\s+)?"
     r"(?:university|college|school|academy|institute|polytechnic|library|district|"
     r"school district|community college|technical college|research university|research institute)"
@@ -167,8 +168,16 @@ def _resolve_institution_name(source_incident, typed: Dict[str, Any], raw: Dict[
         *extracted_candidates,
         source_incident.raw_institution_name,
         source_incident.raw_victim_name,
+        source_incident.raw_subtitle,
         source_incident.raw_title,
     )
+    recovered_source_identity = recover_source_identity(
+        raw_institution_name=source_incident.raw_institution_name,
+        raw_victim_name=source_incident.raw_victim_name,
+        raw_subtitle=source_incident.raw_subtitle,
+    )
+    if not resolved or _looks_generic_institution_label(resolved):
+        resolved = recovered_source_identity or resolved
     if _looks_generic_institution_label(resolved):
         return None
     return resolved
