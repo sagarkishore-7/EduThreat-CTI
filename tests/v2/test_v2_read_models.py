@@ -442,9 +442,22 @@ def test_read_service_legacy_detail_uses_nested_projection_sections():
                 "data_types_affected": ["student_pii", "employee_pii"],
                 "records_affected_exact": 73000,
             },
+            "financial_impact": {
+                "ransom_amount_exact": 2080000,
+                "insurance_claim": True,
+                "insurance_claim_amount": 900000,
+                "legal_costs": 120000,
+                "notification_costs": 45000,
+                "total_cost_estimate": 2500000,
+            },
             "system_impact": {
                 "systems_affected": ["other"],
                 "critical_systems_affected": True,
+            },
+            "recovery_metrics": {
+                "incident_response_firm": "IR Partners",
+                "mfa_implemented": False,
+                "security_improvements": ["notification_regulator"],
             },
         },
     )
@@ -510,6 +523,14 @@ def test_read_service_legacy_detail_uses_nested_projection_sections():
     assert detail["user_impact"]["total_individuals_affected"] == 73000
     assert detail["system_impact"]["critical_systems_affected"] is True
     assert detail["systems_affected"] == ["other"]
+    assert detail["financial_impact"]["estimated_total_cost_usd"] == 2500000
+    assert detail["financial_impact"]["ransom_cost_usd"] == 2080000
+    assert detail["financial_impact"]["insurance_claim"] is True
+    assert detail["financial_impact"]["insurance_payout_usd"] == 900000
+    assert detail["financial_impact"]["legal_cost_usd"] == 120000
+    assert detail["financial_impact"]["notification_cost_usd"] == 45000
+    assert detail["recovery_metrics"]["ir_firm_engaged"] == "IR Partners"
+    assert detail["recovery_metrics"]["mfa_implemented"] is False
 
 
 def test_read_service_dashboard_summary_prefers_cached_snapshot():

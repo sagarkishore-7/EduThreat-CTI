@@ -755,17 +755,41 @@ class V2CanonicalReadService:
                 "total_individuals_affected": total_individuals_affected,
             },
             "financial_impact": {
-                "estimated_total_cost_usd": financial_impact.get("estimated_total_cost_usd") or projection.get("estimated_total_cost_usd"),
-                "ransom_cost_usd": financial_impact.get("ransom_cost_usd") or projection.get("ransom_cost_usd"),
-                "recovery_cost_usd": financial_impact.get("recovery_cost_usd") or projection.get("recovery_cost_usd"),
-                "legal_cost_usd": financial_impact.get("legal_cost_usd") or projection.get("legal_cost_usd"),
-                "notification_cost_usd": financial_impact.get("notification_cost_usd") or projection.get("notification_cost_usd"),
+                "estimated_total_cost_usd": (
+                    financial_impact.get("estimated_total_cost_usd")
+                    or financial_impact.get("total_cost_estimate")
+                    or projection.get("estimated_total_cost_usd")
+                ),
+                "ransom_cost_usd": (
+                    financial_impact.get("ransom_cost_usd")
+                    or financial_impact.get("ransom_amount_exact")
+                    or projection.get("ransom_cost_usd")
+                ),
+                "recovery_cost_usd": (
+                    financial_impact.get("recovery_cost_usd")
+                    or financial_impact.get("recovery_costs_exact")
+                    or projection.get("recovery_cost_usd")
+                ),
+                "legal_cost_usd": (
+                    financial_impact.get("legal_cost_usd")
+                    or financial_impact.get("legal_costs")
+                    or projection.get("legal_cost_usd")
+                ),
+                "notification_cost_usd": (
+                    financial_impact.get("notification_cost_usd")
+                    or financial_impact.get("notification_costs")
+                    or projection.get("notification_cost_usd")
+                ),
                 "insurance_claim": (
                     financial_impact.get("insurance_claim")
                     if financial_impact.get("insurance_claim") is not None
                     else projection.get("insurance_claim")
                 ),
-                "insurance_payout_usd": financial_impact.get("insurance_payout_usd") or projection.get("insurance_payout_usd"),
+                "insurance_payout_usd": (
+                    financial_impact.get("insurance_payout_usd")
+                    or financial_impact.get("insurance_claim_amount")
+                    or projection.get("insurance_payout_usd")
+                ),
                 "business_impact": financial_impact.get("business_impact") or projection.get("business_impact"),
             },
             "regulatory_impact": {
@@ -793,14 +817,22 @@ class V2CanonicalReadService:
             },
             "recovery_metrics": {
                 "recovery_method": recovery_metrics.get("recovery_method") or projection.get("recovery_method"),
-                "recovery_duration_days": recovery_metrics.get("recovery_duration_days") or projection.get("recovery_duration_days"),
+                "recovery_duration_days": (
+                    recovery_metrics.get("recovery_duration_days")
+                    or recovery_metrics.get("recovery_timeframe_days")
+                    or projection.get("recovery_duration_days")
+                ),
                 "from_backup": recovery_metrics.get("from_backup") if recovery_metrics.get("from_backup") is not None else projection.get("from_backup"),
                 "backup_status": recovery_metrics.get("backup_status") or projection.get("backup_status"),
                 "backup_age_days": recovery_metrics.get("backup_age_days") or projection.get("backup_age_days"),
                 "mfa_implemented": recovery_metrics.get("mfa_implemented") if recovery_metrics.get("mfa_implemented") is not None else projection.get("mfa_implemented"),
                 "law_enforcement_involved": recovery_metrics.get("law_enforcement_involved") if recovery_metrics.get("law_enforcement_involved") is not None else projection.get("law_enforcement_involved"),
                 "law_enforcement_agency": recovery_metrics.get("law_enforcement_agency") or projection.get("law_enforcement_agency"),
-                "ir_firm_engaged": recovery_metrics.get("ir_firm_engaged") or projection.get("ir_firm_engaged"),
+                "ir_firm_engaged": (
+                    recovery_metrics.get("ir_firm_engaged")
+                    or recovery_metrics.get("incident_response_firm")
+                    or projection.get("ir_firm_engaged")
+                ),
                 "forensics_firm": recovery_metrics.get("forensics_firm") or projection.get("forensics_firm"),
                 "security_improvements": recovery_metrics.get("security_improvements") or projection.get("security_improvements"),
             },
