@@ -105,36 +105,37 @@ def test_worker_loop_stops_when_stop_event_is_set():
     runtime.lease_next_task.assert_not_called()
 
 
-def test_worker_loop_starts_and_stops_lease_heartbeat(monkeypatch):
+def test_worker_loop_reuses_one_lease_heartbeat_for_multiple_tasks(monkeypatch):
     session = _FakeSession()
 
     def _session_factory():
         return _FakeSessionContext(session)
 
     runtime = Mock()
-    runtime.lease_next_task.side_effect = ["task-1", None]
-    runtime.process_leased_task.side_effect = [object()]
+    runtime.lease_next_task.side_effect = ["task-1", "task-2", None]
+    runtime.process_leased_task.side_effect = [object(), object()]
 
-    seen = {}
+    seen = {"instances": 0}
 
-    class _FakeThread:
-        def __init__(self):
-            self.join_calls = []
+    class _FakeHeartbeat:
+        def __init__(self, *, session_factory, worker_id, lease_seconds):
+            seen["instances"] += 1
+            seen["worker_id"] = worker_id
+            seen["lease_seconds"] = lease_seconds
+            seen["activated"] = []
+            seen["cleared"] = []
+            seen["stopped"] = 0
 
-        def join(self, timeout=None):
-            self.join_calls.append(timeout)
+        def activate(self, task_id):
+            seen["activated"].append(task_id)
 
-    def _fake_start_lease_heartbeat(*, session_factory, task_id, worker_id, lease_seconds):
-        seen["task_id"] = task_id
-        seen["worker_id"] = worker_id
-        seen["lease_seconds"] = lease_seconds
-        stop_event = Event()
-        thread = _FakeThread()
-        seen["stop_event"] = stop_event
-        seen["thread"] = thread
-        return stop_event, thread
+        def clear(self, task_id=None):
+            seen["cleared"].append(task_id)
 
-    monkeypatch.setattr("src.edu_cti_v2.worker._start_lease_heartbeat", _fake_start_lease_heartbeat)
+        def stop(self):
+            seen["stopped"] += 1
+
+    monkeypatch.setattr("src.edu_cti_v2.worker._ReusableLeaseHeartbeat", _FakeHeartbeat)
 
     summary = run_worker_loop(
         session_factory=_session_factory,
@@ -146,8 +147,9 @@ def test_worker_loop_starts_and_stops_lease_heartbeat(monkeypatch):
     )
 
     assert summary.stop_reason == "idle"
-    assert seen["task_id"] == "task-1"
+    assert seen["instances"] == 1
     assert seen["worker_id"] == "worker-1"
     assert seen["lease_seconds"] == 60
-    assert seen["stop_event"].is_set() is True
-    assert seen["thread"].join_calls
+    assert seen["activated"] == ["task-1", "task-2"]
+    assert seen["cleared"] == ["task-1", "task-2"]
+    assert seen["stopped"] == 1

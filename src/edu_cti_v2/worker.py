@@ -73,28 +73,105 @@ def _lease_heartbeat_loop(
             return
 
 
-def _start_lease_heartbeat(
-    *,
-    session_factory: Callable[[], AbstractContextManager[Session]],
-    task_id,
-    worker_id: str,
-    lease_seconds: int,
-):
-    stop_event = Event()
-    thread = threading.Thread(
-        target=_lease_heartbeat_loop,
-        kwargs={
-            "session_factory": session_factory,
-            "task_id": task_id,
-            "worker_id": worker_id,
-            "lease_seconds": lease_seconds,
-            "stop_event": stop_event,
-        },
-        name=f"lease-heartbeat-{worker_id.replace(':', '-')}",
-        daemon=True,
-    )
-    thread.start()
-    return stop_event, thread
+class _ReusableLeaseHeartbeat:
+    """Renew one leased task at a time without spawning a new thread per task."""
+
+    def __init__(
+        self,
+        *,
+        session_factory: Callable[[], AbstractContextManager[Session]],
+        worker_id: str,
+        lease_seconds: int,
+    ) -> None:
+        self._session_factory = session_factory
+        self._worker_id = worker_id
+        self._lease_seconds = lease_seconds
+        self._interval = _lease_heartbeat_interval(lease_seconds)
+        self._condition = threading.Condition()
+        self._stop_requested = False
+        self._task_id = None
+        self._thread: Optional[threading.Thread] = None
+        self._start_error: Optional[Exception] = None
+        self._start_thread()
+
+    def _start_thread(self) -> None:
+        thread = threading.Thread(
+            target=self._run,
+            name=f"lease-heartbeat-{self._worker_id.replace(':', '-')}",
+            daemon=True,
+        )
+        try:
+            thread.start()
+        except Exception as exc:
+            self._start_error = exc
+            logger.warning(
+                "v2 worker lease heartbeat disabled: worker_id=%s error=%s",
+                self._worker_id,
+                exc,
+            )
+            return
+        self._thread = thread
+
+    def activate(self, task_id) -> None:
+        if self._thread is None:
+            return
+        with self._condition:
+            self._task_id = task_id
+            self._condition.notify_all()
+
+    def clear(self, task_id=None) -> None:
+        if self._thread is None:
+            return
+        with self._condition:
+            if task_id is None or self._task_id == task_id:
+                self._task_id = None
+            self._condition.notify_all()
+
+    def stop(self) -> None:
+        if self._thread is None:
+            return
+        with self._condition:
+            self._stop_requested = True
+            self._task_id = None
+            self._condition.notify_all()
+        self._thread.join(timeout=max(min(self._interval, 1.0), 0.1))
+
+    def _run(self) -> None:
+        task_repository = PipelineTaskRepository()
+        while True:
+            with self._condition:
+                while not self._stop_requested and self._task_id is None:
+                    self._condition.wait()
+                if self._stop_requested:
+                    return
+                task_id = self._task_id
+                self._condition.wait(timeout=self._interval)
+                if self._stop_requested:
+                    return
+                if task_id is None or self._task_id != task_id:
+                    continue
+
+            with self._session_factory() as session:
+                try:
+                    renewed = task_repository.renew_lease(
+                        session,
+                        task_id=task_id,
+                        worker_id=self._worker_id,
+                        lease_seconds=self._lease_seconds,
+                    )
+                    session.commit()
+                except Exception as exc:
+                    session.rollback()
+                    logger.warning(
+                        "v2 worker lease heartbeat failed: worker_id=%s task_id=%s error=%s",
+                        self._worker_id,
+                        task_id,
+                        exc,
+                    )
+                    continue
+
+            if not renewed:
+                self.clear(task_id)
 
 
 def run_worker_loop(
@@ -119,82 +196,82 @@ def run_worker_loop(
 
     processed_tasks = 0
     idle_polls = 0
+    heartbeat = _ReusableLeaseHeartbeat(
+        session_factory=session_factory,
+        worker_id=worker_id,
+        lease_seconds=lease_seconds,
+    )
 
-    while True:
-        if stop_event and stop_event.is_set():
-            return V2WorkerRunSummary(
-                processed_tasks=processed_tasks,
-                idle_polls=idle_polls,
-                stop_reason="stopped",
-                worker_id=worker_id,
-                task_type=task_type,
-            )
-
-        with session_factory() as session:
-            try:
-                leased_task_id = runtime.lease_next_task(
-                    session,
-                    worker_id=worker_id,
-                    task_type=task_type,
-                    lease_seconds=lease_seconds,
-                    exclude_task_types=exclude_task_types,
-                )
-                session.commit()
-            except Exception:
-                session.rollback()
-                raise
-
-        if leased_task_id is None:
-            idle_polls += 1
-            if stop_when_idle:
+    try:
+        while True:
+            if stop_event and stop_event.is_set():
                 return V2WorkerRunSummary(
                     processed_tasks=processed_tasks,
                     idle_polls=idle_polls,
-                    stop_reason="idle",
+                    stop_reason="stopped",
                     worker_id=worker_id,
                     task_type=task_type,
                 )
-            if stop_event:
-                stop_event.wait(max(poll_interval, 0.0))
-            else:
-                time.sleep(max(poll_interval, 0.0))
-            continue
 
-        heartbeat_stop, heartbeat_thread = _start_lease_heartbeat(
-            session_factory=session_factory,
-            task_id=leased_task_id,
-            worker_id=worker_id,
-            lease_seconds=lease_seconds,
-        )
-        with session_factory() as session:
-            try:
-                processed = runtime.process_leased_task(
-                    session,
-                    task_id=leased_task_id,
+            with session_factory() as session:
+                try:
+                    leased_task_id = runtime.lease_next_task(
+                        session,
+                        worker_id=worker_id,
+                        task_type=task_type,
+                        lease_seconds=lease_seconds,
+                        exclude_task_types=exclude_task_types,
+                    )
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    raise
+
+            if leased_task_id is None:
+                idle_polls += 1
+                if stop_when_idle:
+                    return V2WorkerRunSummary(
+                        processed_tasks=processed_tasks,
+                        idle_polls=idle_polls,
+                        stop_reason="idle",
+                        worker_id=worker_id,
+                        task_type=task_type,
+                    )
+                if stop_event:
+                    stop_event.wait(max(poll_interval, 0.0))
+                else:
+                    time.sleep(max(poll_interval, 0.0))
+                continue
+
+            heartbeat.activate(leased_task_id)
+            with session_factory() as session:
+                try:
+                    processed = runtime.process_leased_task(
+                        session,
+                        task_id=leased_task_id,
+                        worker_id=worker_id,
+                    )
+                    session.commit()
+                except Exception:
+                    session.rollback()
+                    raise
+                finally:
+                    heartbeat.clear(leased_task_id)
+
+            if processed is None:
+                continue
+
+            processed_tasks += 1
+            if max_tasks is not None and processed_tasks >= max_tasks:
+                return V2WorkerRunSummary(
+                    processed_tasks=processed_tasks,
+                    idle_polls=idle_polls,
+                    stop_reason="max_tasks",
                     worker_id=worker_id,
+                    task_type=task_type,
                 )
-                session.commit()
-            except Exception:
-                session.rollback()
-                heartbeat_stop.set()
-                heartbeat_thread.join(timeout=max(min(_lease_heartbeat_interval(lease_seconds), 1.0), 0.1))
-                raise
-            finally:
-                heartbeat_stop.set()
-                heartbeat_thread.join(timeout=max(min(_lease_heartbeat_interval(lease_seconds), 1.0), 0.1))
-
-        if processed is None:
-            continue
-
-        processed_tasks += 1
-        if max_tasks is not None and processed_tasks >= max_tasks:
-            return V2WorkerRunSummary(
-                processed_tasks=processed_tasks,
-                idle_polls=idle_polls,
-                stop_reason="max_tasks",
-                worker_id=worker_id,
-                task_type=task_type,
-            )
+    finally:
+        heartbeat.stop()
 
 
 def build_parser() -> argparse.ArgumentParser:
