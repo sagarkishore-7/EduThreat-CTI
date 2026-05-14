@@ -4,10 +4,12 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Callable, Dict, List, Optional
+from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
-from src.edu_cti.core.deduplication import normalize_url
+from src.edu_cti.core.deduplication import is_google_news_wrapper_url, normalize_url
+from src.edu_cti.sources.rss.googlenews_rss import _resolve_google_news_article_url
 from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
 from src.edu_cti_v2.models import PipelineTask, SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceIncidentRepository
@@ -27,6 +29,19 @@ _INVALID_DISCOVERY_NAMES = {
 }
 _MIN_DISCOVERED_URL_SCORE = 4.0
 _MAX_DISCOVERED_URLS = 5
+_BLOCKED_DISCOVERY_HOSTS = (
+    "wikipedia.org",
+    "threads.com",
+    "instagram.com",
+    "facebook.com",
+    "linkedin.com",
+    "twitter.com",
+    "x.com",
+    "tiktok.com",
+    "youtube.com",
+    "reddit.com",
+    "intellibot.app",
+)
 
 
 def _clean_discovery_name(value: Optional[str]) -> Optional[str]:
@@ -41,9 +56,77 @@ def _clean_discovery_name(value: Optional[str]) -> Optional[str]:
     return text
 
 
+def _normalize_identity_for_comparison(value: Optional[str]) -> Optional[str]:
+    text = (value or "").strip().lower()
+    if not text:
+        return None
+    return " ".join(text.split())
+
+
+def _filter_source_institution_name(source_incident: SourceIncident) -> Optional[str]:
+    institution_name = _clean_discovery_name(source_incident.raw_institution_name)
+    if not institution_name:
+        return None
+    if _normalize_identity_for_comparison(institution_name) == _normalize_identity_for_comparison(source_incident.raw_title):
+        return None
+    return institution_name
+
+
+def _is_disallowed_discovered_url(url: str) -> bool:
+    host = (urlparse(url).netloc or "").lower()
+    return any(host == blocked or host.endswith(f".{blocked}") for blocked in _BLOCKED_DISCOVERY_HOSTS)
+
+
+def _build_discovered_article_row(
+    *,
+    source_incident: SourceIncident,
+    url: str,
+    created_at: datetime,
+    is_primary_from_source: bool,
+) -> Optional[SourceIncidentUrl]:
+    normalized = normalize_url(url)
+    if not normalized:
+        return None
+    return SourceIncidentUrl(
+        source_incident_id=source_incident.id,
+        url=url,
+        normalized_url=normalized,
+        resolved_url=url,
+        url_kind="article",
+        is_wrapper=False,
+        is_primary_from_source=is_primary_from_source,
+        is_resolved_primary=is_primary_from_source,
+        created_at=created_at,
+    )
+
+
+def _resolve_google_wrapper_urls(source_incident: SourceIncident) -> list[tuple[Optional[SourceIncidentUrl], str]]:
+    candidates: list[tuple[Optional[SourceIncidentUrl], str]] = []
+    seen_wrappers: set[str] = set()
+
+    for row in source_incident.urls or []:
+        wrapper_url = (row.url or "").strip()
+        if not wrapper_url or not is_google_news_wrapper_url(wrapper_url) or wrapper_url in seen_wrappers:
+            continue
+        seen_wrappers.add(wrapper_url)
+        candidates.append((row, wrapper_url))
+
+    source_event_key = (source_incident.source_event_key or "").strip()
+    if source_event_key and is_google_news_wrapper_url(source_event_key) and source_event_key not in seen_wrappers:
+        candidates.append((None, source_event_key))
+
+    resolved_pairs: list[tuple[Optional[SourceIncidentUrl], str]] = []
+    for wrapper_row, wrapper_url in candidates:
+        resolved_url = _resolve_google_news_article_url(wrapper_url)
+        if not resolved_url or is_google_news_wrapper_url(resolved_url):
+            continue
+        resolved_pairs.append((wrapper_row, resolved_url))
+    return resolved_pairs
+
+
 def source_incident_to_discovery_payload(source_incident: SourceIncident) -> Dict[str, object]:
     """Map a v2 source incident into the SERP discovery payload shape."""
-    institution_name = _clean_discovery_name(source_incident.raw_institution_name)
+    institution_name = _filter_source_institution_name(source_incident)
     victim_raw_name = _clean_discovery_name(source_incident.raw_victim_name)
     return {
         "incident_id": str(source_incident.id),
@@ -78,11 +161,48 @@ class V2ResolveUrlService:
         existing_normalized = {row.normalized_url for row in existing_urls}
         existing_fetchable = [row for row in existing_urls if row.url_kind == "article" and not row.is_wrapper]
 
-        discovered_urls = self.article_discovery(source_incident_to_discovery_payload(source_incident))
+        wrapper_resolutions = _resolve_google_wrapper_urls(source_incident)
+        direct_urls_discovered = 0
+        added_count = 0
+        now = datetime.now(timezone.utc)
+
+        for wrapper_row, resolved_url in wrapper_resolutions:
+            normalized = normalize_url(resolved_url)
+            if not normalized or normalized in existing_normalized:
+                if wrapper_row is not None and not wrapper_row.resolved_url:
+                    wrapper_row.resolved_url = resolved_url
+                    if wrapper_row.is_primary_from_source:
+                        wrapper_row.is_resolved_primary = True
+                continue
+
+            is_primary = bool(wrapper_row.is_primary_from_source) if wrapper_row is not None else not existing_fetchable and added_count == 0
+            article_row = _build_discovered_article_row(
+                source_incident=source_incident,
+                url=resolved_url,
+                created_at=now,
+                is_primary_from_source=is_primary and not existing_fetchable and added_count == 0,
+            )
+            if article_row is None:
+                continue
+            source_incident.urls.append(article_row)
+            session.add(article_row)
+            existing_normalized.add(article_row.normalized_url)
+            if wrapper_row is not None:
+                wrapper_row.resolved_url = resolved_url
+                if article_row.is_primary_from_source:
+                    wrapper_row.is_resolved_primary = True
+            existing_fetchable.append(article_row)
+            direct_urls_discovered += 1
+            added_count += 1
+
+        discovered_urls: list[str] = []
+        if not existing_fetchable:
+            discovered_urls = self.article_discovery(source_incident_to_discovery_payload(source_incident))
         ranked_urls = sorted(
             (
                 (url, _score_url_candidate(source_incident, url))
                 for url in discovered_urls
+                if not _is_disallowed_discovered_url(url)
             ),
             key=lambda item: item[1],
             reverse=True,
@@ -92,28 +212,23 @@ class V2ResolveUrlService:
             for url, score in ranked_urls
             if score >= _MIN_DISCOVERED_URL_SCORE
         ][: _MAX_DISCOVERED_URLS]
-        added_count = 0
-        now = datetime.now(timezone.utc)
-
         for url in filtered_urls:
             normalized = normalize_url(url)
             if not normalized or normalized in existing_normalized:
                 continue
-            row = SourceIncidentUrl(
-                source_incident_id=source_incident.id,
+            row = _build_discovered_article_row(
+                source_incident=source_incident,
                 url=url,
-                normalized_url=normalized,
-                resolved_url=url,
-                url_kind="article",
-                is_wrapper=False,
-                is_primary_from_source=not existing_fetchable and added_count == 0,
-                is_resolved_primary=not existing_fetchable and added_count == 0,
                 created_at=now,
+                is_primary_from_source=not existing_fetchable and added_count == 0,
             )
+            if row is None:
+                continue
             source_incident.urls.append(row)
             session.add(row)
             existing_normalized.add(normalized)
             added_count += 1
+            existing_fetchable.append(row)
 
         fetch_task_enqueued = 0
         if existing_fetchable or added_count > 0:
@@ -145,7 +260,7 @@ class V2ResolveUrlService:
                 fetch_task_enqueued = 1
 
         return {
-            "urls_discovered": len(discovered_urls),
+            "urls_discovered": direct_urls_discovered + len(discovered_urls),
             "urls_added": added_count,
             "fetch_tasks_enqueued": fetch_task_enqueued,
         }

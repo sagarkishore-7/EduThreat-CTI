@@ -78,6 +78,38 @@ def test_resolve_url_service_adds_discovered_article_and_enqueues_fetch():
     task_repo.enqueue.assert_called_once()
 
 
+def test_resolve_url_service_prefers_direct_google_wrapper_resolution(monkeypatch):
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    discovery_calls = []
+
+    service = V2ResolveUrlService(
+        pipeline_task_repository=task_repo,
+        article_discovery=lambda payload: discovery_calls.append(payload) or ["https://www.wikipedia.org/wiki/Canvas"],
+    )
+    session = Mock()
+    incident = _source_incident(with_fetchable_url=False)
+    incident.source_event_key = incident.urls[0].url
+
+    monkeypatch.setattr(
+        "src.edu_cti_v2.services.resolution._resolve_google_news_article_url",
+        lambda _link: "https://www.reuters.com/world/us/canvas-breach-2026-05-08/",
+    )
+
+    result = service.resolve_source_incident_urls(session, incident)
+
+    assert result == {
+        "urls_discovered": 1,
+        "urls_added": 1,
+        "fetch_tasks_enqueued": 1,
+    }
+    article_rows = [row for row in incident.urls if row.url_kind == "article"]
+    assert len(article_rows) == 1
+    assert article_rows[0].url == "https://www.reuters.com/world/us/canvas-breach-2026-05-08/"
+    assert discovery_calls == []
+    task_repo.enqueue.assert_called_once()
+
+
 def test_resolve_url_service_reuses_existing_fetch_task_and_dedupes_urls():
     task_repo = Mock()
     task_repo.get_active_for_target.return_value = object()
@@ -90,7 +122,7 @@ def test_resolve_url_service_reuses_existing_fetch_task_and_dedupes_urls():
 
     result = service.resolve_source_incident_urls(session, incident)
 
-    assert result["urls_discovered"] == 1
+    assert result["urls_discovered"] == 0
     assert result["urls_added"] == 0
     assert result["fetch_tasks_enqueued"] == 0
     task_repo.enqueue.assert_not_called()
@@ -154,6 +186,36 @@ def test_resolve_url_service_skips_fetch_when_only_irrelevant_urls_are_discovere
     task_repo.enqueue.assert_not_called()
 
 
+def test_resolve_url_service_skips_blocked_discovery_hosts():
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    service = V2ResolveUrlService(
+        pipeline_task_repository=task_repo,
+        article_discovery=lambda payload: [
+            "https://en.wikipedia.org/wiki/2026_Canvas_security_incident",
+            "https://www.threads.com/@news/post/abc123",
+            "https://www.reuters.com/world/us/canvas-breach-2026-05-08/",
+        ],
+    )
+    session = Mock()
+    incident = _source_incident(with_fetchable_url=False)
+    incident.raw_title = "Schools reach out to Canvas hackers as breach hits US classrooms, source says - Reuters"
+    incident.raw_institution_name = incident.raw_title
+
+    result = service.resolve_source_incident_urls(session, incident)
+
+    assert result == {
+        "urls_discovered": 3,
+        "urls_added": 1,
+        "fetch_tasks_enqueued": 1,
+    }
+    added_article_urls = [row.url for row in incident.urls if row.url_kind == "article"]
+    assert added_article_urls == [
+        "https://www.reuters.com/world/us/canvas-breach-2026-05-08/"
+    ]
+    task_repo.enqueue.assert_called_once()
+
+
 def test_discovery_payload_drops_placeholder_institution_name_and_uses_victim_name():
     incident = _source_incident(with_fetchable_url=False)
     incident.raw_institution_name = "?"
@@ -163,3 +225,12 @@ def test_discovery_payload_drops_placeholder_institution_name_and_uses_victim_na
 
     assert payload["institution_name"] is None
     assert payload["victim_raw_name"] == "University of Example"
+
+
+def test_discovery_payload_drops_google_headline_as_institution_name():
+    incident = _source_incident(with_fetchable_url=False)
+    incident.raw_institution_name = incident.raw_title
+
+    payload = source_incident_to_discovery_payload(incident)
+
+    assert payload["institution_name"] is None

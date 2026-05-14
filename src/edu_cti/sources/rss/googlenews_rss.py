@@ -272,7 +272,7 @@ def build_googlenews_rss_incidents(
                     incident_id=incident_id,
                     source="googlenews_rss",
                     source_event_id=source_event_id,
-                    institution_name=title[:200],
+                    institution_name=None,
                     victim_raw_name=None,
                     institution_type=None,
                     country=None,  # Will be resolved during enrichment

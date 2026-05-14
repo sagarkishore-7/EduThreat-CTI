@@ -1,6 +1,6 @@
 import time
 
-from src.edu_cti_v2.runtime import V2RuntimeService
+from src.edu_cti_v2.runtime import V2RuntimeService, _default_prewarm_models_enabled
 from src.edu_cti_v2.worker import V2WorkerRunSummary
 
 
@@ -238,3 +238,17 @@ def test_v2_runtime_service_skips_prewarm_for_fetch_only_workers(monkeypatch):
     runtime.stop()
 
     assert prewarmed == []
+
+
+def test_default_prewarm_models_disabled_on_railway_without_override(monkeypatch):
+    monkeypatch.delenv("EDU_CTI_V2_PREWARM_MODELS", raising=False)
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
+
+    assert _default_prewarm_models_enabled() is False
+
+
+def test_default_prewarm_models_honors_explicit_override(monkeypatch):
+    monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
+    monkeypatch.setenv("EDU_CTI_V2_PREWARM_MODELS", "1")
+
+    assert _default_prewarm_models_enabled() is True

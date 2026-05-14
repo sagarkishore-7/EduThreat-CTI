@@ -62,6 +62,7 @@ def test_build_googlenews_rss_incidents_serializes_pub_date(monkeypatch):
     assert "search_country=US" in incidents[0].notes
     assert "search_lang=en" in incidents[0].notes
     assert incidents[0].all_urls == ["https://example.com/resolved-article"]
+    assert incidents[0].institution_name is None
     assert isinstance(incidents[0].incident_date, str)
     assert isinstance(saved[0].incident_date, str)
 

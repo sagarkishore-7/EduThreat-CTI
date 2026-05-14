@@ -32,6 +32,17 @@ def _env_int(name: str) -> Optional[int]:
         return None
 
 
+def _default_prewarm_models_enabled() -> bool:
+    configured = os.environ.get("EDU_CTI_V2_PREWARM_MODELS")
+    if configured is not None and configured.strip():
+        return configured.strip().lower() in {"1", "true", "yes", "on"}
+    # Railway workers are memory-constrained and can lazy-load the extraction
+    # stack on first enrich task instead of eagerly materializing it at boot.
+    if os.environ.get("RAILWAY_ENVIRONMENT"):
+        return False
+    return True
+
+
 def _prewarm_ml_models() -> None:
     """Warm the shared process-wide ML helpers once before worker threads start."""
     try:
@@ -397,7 +408,7 @@ def main() -> None:
         lease_seconds=args.lease_seconds,
         enable_scheduler=args.enable_scheduler and not args.no_scheduler,
         scheduler_poll_interval_seconds=args.scheduler_poll_interval,
-        prewarm_models=not args.no_prewarm_models and _env_flag("EDU_CTI_V2_PREWARM_MODELS", "1"),
+        prewarm_models=not args.no_prewarm_models and _default_prewarm_models_enabled(),
     )
 
     stop = False
