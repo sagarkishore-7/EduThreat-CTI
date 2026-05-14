@@ -803,6 +803,36 @@ def test_read_service_build_dashboard_payload_shapes_full_dashboard_response():
     assert payload["intelligence_summary"]["tradecraft"]["attack_clusters"][0]["cluster"] == "Ransomware & Extortion"
 
 
+def test_read_service_intelligence_summary_uses_dashboard_snapshot_for_open_statuses():
+    canonical_repo = Mock()
+    analytics_repo = Mock()
+    analytics_repo.get_by_key.return_value = SimpleNamespace(
+        state_payload={
+            "totals": {"canonical_incident_count": 5},
+            "stats": {"education_incidents": 5},
+            "intelligence_summary": {
+                "overview": {"total_incidents": 5},
+                "victimology": {"institution_segments": []},
+            },
+            "incidents_by_country": [],
+            "incidents_by_attack_type": [],
+            "incidents_by_ransomware": [],
+            "incidents_over_time": [],
+            "recent_incidents": [],
+        }
+    )
+
+    service = V2CanonicalReadService(
+        canonical_repository=canonical_repo,
+        analytics_refresh_repository=analytics_repo,
+    )
+
+    summary = service.get_intelligence_summary(Mock(), statuses=("open",))
+
+    assert summary["overview"]["total_incidents"] == 5
+    canonical_repo.list_recent_with_enrichment.assert_not_called()
+
+
 def test_read_service_compat_analytics_shapes_delegate_to_repository():
     canonical_repo = Mock()
     canonical_repo.get_country_breakdown.return_value = [

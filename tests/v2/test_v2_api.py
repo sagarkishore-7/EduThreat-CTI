@@ -3,6 +3,7 @@ from datetime import date
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from src.edu_cti.api.cache import cache_invalidate
 from src.edu_cti.api.v2 import (
     get_v2_read_service,
     get_v2_research_metrics_service,
@@ -12,6 +13,7 @@ from src.edu_cti.api.v2 import (
 
 
 def _build_client(read_service):
+    cache_invalidate("v2:")
     app = FastAPI()
     app.include_router(router)
 

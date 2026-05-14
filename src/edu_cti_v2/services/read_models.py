@@ -886,6 +886,15 @@ class V2CanonicalReadService:
         *,
         statuses: Sequence[str] = ("open",),
     ) -> dict[str, Any]:
+        if tuple(statuses) == ("open",):
+            snapshot = self.analytics_refresh_repository.get_by_key(session, "dashboard:global")
+            if (
+                snapshot is not None
+                and isinstance(snapshot.state_payload, dict)
+                and _is_full_dashboard_snapshot(snapshot.state_payload)
+                and isinstance(snapshot.state_payload.get("intelligence_summary"), dict)
+            ):
+                return snapshot.state_payload["intelligence_summary"]
         return self._build_intelligence_summary(
             session,
             statuses=statuses,

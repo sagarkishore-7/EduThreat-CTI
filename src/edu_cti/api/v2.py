@@ -10,11 +10,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.orm import Session, sessionmaker
 
+from src.edu_cti.api.cache import cache_get, cache_set
 from src.edu_cti.api.reports import generate_cti_report
 from src.edu_cti_v2.db import create_session_factory
 from src.edu_cti_v2.services import V2CanonicalReadService, V2ResearchMetricsService
 
 router = APIRouter(prefix="/api/v2", tags=["V2"])
+_PUBLIC_READ_TTL_SECONDS = 30
 
 
 @lru_cache
@@ -36,6 +38,20 @@ def get_v2_research_metrics_service() -> V2ResearchMetricsService:
     return V2ResearchMetricsService()
 
 
+def _status_cache_fragment(statuses: tuple[str, ...]) -> str:
+    return ",".join(statuses) if statuses else "open"
+
+
+def _public_cache_key(prefix: str, *parts: object) -> str:
+    encoded = [prefix]
+    for part in parts:
+        if isinstance(part, (list, tuple)):
+            encoded.append(",".join("" if item is None else str(item) for item in part))
+        else:
+            encoded.append("" if part is None else str(part))
+    return "v2:" + ":".join(encoded)
+
+
 @router.get("/health")
 async def v2_health() -> dict[str, str]:
     """Lightweight health check for the v2 Postgres read path."""
@@ -48,7 +64,13 @@ async def get_v2_dashboard(
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
 ):
     """Return the cached or live v2 dashboard summary."""
-    return read_service.get_dashboard_summary(session)
+    cache_key = _public_cache_key("dashboard", "open")
+    cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
+    if cached is not None:
+        return cached
+    payload = read_service.get_dashboard_summary(session)
+    cache_set(cache_key, payload)
+    return payload
 
 
 @router.get("/stats")
@@ -57,6 +79,15 @@ async def get_v2_stats(
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
 ):
     """Return the dashboard stats subset for compatibility with the old stats route."""
+    cache_key = _public_cache_key("dashboard", "open")
+    cached_dashboard = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
+    if isinstance(cached_dashboard, dict) and isinstance(cached_dashboard.get("stats"), dict):
+        return cached_dashboard["stats"]
+    if hasattr(read_service, "get_dashboard_summary"):
+        payload = read_service.get_dashboard_summary(session)
+        if isinstance(payload, dict) and isinstance(payload.get("stats"), dict):
+            cache_set(cache_key, payload)
+            return payload["stats"]
     return read_service.get_dashboard_stats(session)
 
 
@@ -192,7 +223,30 @@ async def get_v2_analytics_breakdowns(
 ):
     """Return filtered canonical breakdowns for frontend analytics charts."""
     statuses = tuple(status) if status else ("open",)
-    return read_service.get_analytics_breakdowns(
+    use_cache = not any(
+        value is not None
+        for value in (
+            search,
+            country_code,
+            attack_category,
+            institution_type,
+            severity,
+            is_education_related,
+            has_vendor,
+            date_from,
+            date_to,
+        )
+    )
+    cache_key = _public_cache_key(
+        "breakdowns",
+        _status_cache_fragment(statuses),
+        breakdown_limit,
+    )
+    if use_cache:
+        cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
+        if cached is not None:
+            return cached
+    payload = read_service.get_analytics_breakdowns(
         session,
         statuses=statuses,
         search=search,
@@ -206,6 +260,9 @@ async def get_v2_analytics_breakdowns(
         date_to=date_to,
         breakdown_limit=breakdown_limit,
     )
+    if use_cache:
+        cache_set(cache_key, payload)
+    return payload
 
 
 @router.get("/analytics/countries")
@@ -335,10 +392,16 @@ async def get_v2_intelligence_analytics(
 ):
     """Return an analyst-focused intelligence summary from canonical incidents."""
     statuses = tuple(status) if status else ("open",)
-    return read_service.get_intelligence_summary(
+    cache_key = _public_cache_key("intelligence", _status_cache_fragment(statuses))
+    cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
+    if cached is not None:
+        return cached
+    payload = read_service.get_intelligence_summary(
         session,
         statuses=statuses,
     )
+    cache_set(cache_key, payload)
+    return payload
 
 
 @router.get("/analytics/pipeline-research")
@@ -385,10 +448,16 @@ async def get_v2_filter_options(
 ):
     """Compatibility endpoint for incident list filter options."""
     statuses = tuple(status) if status else ("open",)
-    return read_service.get_filter_options(
+    cache_key = _public_cache_key("filters", _status_cache_fragment(statuses))
+    cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
+    if cached is not None:
+        return cached
+    payload = read_service.get_filter_options(
         session,
         statuses=statuses,
     )
+    cache_set(cache_key, payload)
+    return payload
 
 
 @router.get("/incidents/{canonical_incident_id}")
