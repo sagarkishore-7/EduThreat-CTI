@@ -30,6 +30,7 @@ def source_incident_to_base_incident(
         raw_institution_name=source_incident.raw_institution_name,
         raw_victim_name=source_incident.raw_victim_name,
         raw_subtitle=source_incident.raw_subtitle,
+        raw_title=source_incident.raw_title,
     )
     all_urls = [
         row.url

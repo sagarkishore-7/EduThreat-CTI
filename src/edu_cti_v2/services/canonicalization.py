@@ -191,6 +191,7 @@ def _resolve_institution_name(source_incident, typed: Dict[str, Any], raw: Dict[
         raw_institution_name=source_incident.raw_institution_name,
         raw_victim_name=source_incident.raw_victim_name,
         raw_subtitle=source_incident.raw_subtitle,
+        raw_title=source_incident.raw_title,
     )
     if not resolved or _looks_generic_institution_label(resolved):
         resolved = recovered_source_identity or resolved

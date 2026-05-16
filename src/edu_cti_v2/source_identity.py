@@ -85,14 +85,29 @@ def recover_source_identity(
     raw_institution_name: Optional[str] = None,
     raw_victim_name: Optional[str] = None,
     raw_subtitle: Optional[str] = None,
+    raw_title: Optional[str] = None,
 ) -> Optional[str]:
     """Recover the best victim label from source metadata."""
 
     candidates = []
-    for raw in (raw_institution_name, raw_victim_name, raw_subtitle):
+    for raw, origin in (
+        (raw_institution_name, "institution"),
+        (raw_victim_name, "victim"),
+        (raw_subtitle, "subtitle"),
+        (raw_title, "title"),
+    ):
         normalized = _normalize_source_identity_candidate(raw)
         if not normalized:
             continue
+        # Titles are useful when they collapse cleanly to a short educational
+        # victim name, but broad incident headlines should not become labels.
+        if origin == "title":
+            if not _EDU_KEYWORD_RE.search(normalized):
+                continue
+            if _looks_generic_identity(normalized):
+                continue
+            if len(normalized.split()) > 5:
+                continue
         score = 0
         if _EDU_KEYWORD_RE.search(normalized):
             score += 40

@@ -660,6 +660,10 @@ def test_build_source_projection_recovers_identity_from_subtitle_when_llm_name_m
 def test_canonicalization_service_skips_new_generic_identity_seed():
     canonical_repo = Mock()
     canonical_repo.get_membership_for_source_incident.return_value = None
+    canonical_repo.find_by_url_candidates.return_value = []
+    canonical_repo.find_name_date_candidates.return_value = []
+    canonical_repo.find_identity_candidates.return_value = []
+    canonical_repo.list_memberships.return_value = []
 
     source_repo = Mock()
     incident = _source_incident(event_key="generic-seed")
@@ -823,6 +827,9 @@ def test_canonicalization_service_refreshes_existing_canonical_after_generic_mem
     )
     canonical_repo.get_membership_for_source_incident.return_value = invalid_membership
     canonical_repo.get_by_id.return_value = canonical
+    canonical_repo.find_by_url_candidates.return_value = []
+    canonical_repo.find_name_date_candidates.return_value = []
+    canonical_repo.find_identity_candidates.return_value = []
     canonical_repo.list_memberships.return_value = [invalid_membership, valid_membership]
 
     source_repo = Mock()
