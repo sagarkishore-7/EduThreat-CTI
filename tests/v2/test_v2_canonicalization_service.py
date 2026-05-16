@@ -255,6 +255,77 @@ def test_build_source_projection_prefers_explicit_extracted_name_over_generic_ra
     assert projection["country_code"] == "AU"
 
 
+def test_build_source_projection_drops_sentence_like_article_text_as_identity():
+    incident = _source_incident()
+    incident.raw_title = "Ransomware: Refusing to Negotiate with Attackers"
+    incident.raw_subtitle = (
+        "Last week, the information security community was saddened to learn of Joseph Edwards, "
+        "a 17-year-old secondary school student who committed suicide after..."
+    )
+    incident.raw_institution_name = incident.raw_subtitle
+    incident.raw_victim_name = incident.raw_subtitle
+    incident.raw_country = None
+    incident.raw_region = None
+    incident.raw_city = None
+    incident.raw_incident_date = None
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "attack_category": "ransomware_encryption",
+            "enriched_summary": "An unknown institution was attacked by ransomware.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": incident.raw_subtitle,
+            "attack_category": "ransomware_encryption",
+        },
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] is None
+
+
+def test_build_source_projection_drops_vague_plural_identity():
+    incident = _source_incident()
+    incident.raw_title = "Kolkata: Hackers attack several colleges websites"
+    incident.raw_subtitle = "Unknown cyber-hackers hacked the official websites of few colleges in Kolkata."
+    incident.raw_institution_name = "several colleges websites"
+    incident.raw_victim_name = "several colleges websites"
+    incident.raw_country = "India"
+    incident.raw_region = None
+    incident.raw_city = "Kolkata"
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "attack_category": "web_defacement",
+            "country": "India",
+            "enriched_summary": "Unknown institution experienced a web defacement attack.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "several colleges websites",
+            "attack_category": "web_defacement",
+        },
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] is None
+
+
 def test_build_source_projection_normalizes_country_from_institution_country():
     incident = _source_incident()
     incident.raw_institution_name = "BYU-Pathway Worldwide"

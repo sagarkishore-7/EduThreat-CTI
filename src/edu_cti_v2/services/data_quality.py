@@ -65,7 +65,25 @@ def _iter_timeline_dates(payload: dict[str, Any] | None) -> list[str]:
 
 def _looks_generic_institution(text: Any) -> bool:
     value = str(text or "").strip()
-    return bool(value and _GENERIC_INSTITUTION_RE.match(value))
+    if not value:
+        return False
+    if _GENERIC_INSTITUTION_RE.match(value):
+        return True
+    lowered = value.lower()
+    words = value.split()
+    if lowered.startswith(("several ", "multiple ", "various ", "few ", "many ", "some ")):
+        return True
+    if "website of" in lowered or "websites of" in lowered:
+        return True
+    if re.search(r"\b(?:few|several|multiple|various|many|some)\s+(?:colleges?|schools?|universities?|districts?)\b", value, re.IGNORECASE):
+        return True
+    if len(words) >= 10:
+        return True
+    if value.endswith("?"):
+        return True
+    if len(words) >= 6 and any(punct in value for punct in (":", ";", ",")):
+        return True
+    return False
 
 
 def _candidate_institution_name(enrichment: SourceEnrichment, source_incident) -> Optional[str]:

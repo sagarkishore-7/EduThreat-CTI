@@ -15,6 +15,8 @@ _GENERIC_IDENTITY_RE = re.compile(
     r"(?:\s+in\b.*)?$",
     re.IGNORECASE,
 )
+_VAGUE_PLURAL_RE = re.compile(r"^(?:several|multiple|various|few|many|some)\b", re.IGNORECASE)
+_WEBSITE_OF_RE = re.compile(r"\bwebsites?\s+of\b", re.IGNORECASE)
 _EDU_KEYWORD_RE = re.compile(
     r"\b(university|college|school|academy|institute|polytechnic|district|campus)\b",
     re.IGNORECASE,
@@ -27,7 +29,22 @@ def _looks_generic_identity(value: Optional[str]) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    return bool(_GENERIC_IDENTITY_RE.match(text))
+    if _GENERIC_IDENTITY_RE.match(text):
+        return True
+    if _VAGUE_PLURAL_RE.match(text):
+        return True
+    if _WEBSITE_OF_RE.search(text):
+        return True
+    if re.search(r"\b(?:few|several|multiple|various|many|some)\s+(?:colleges?|schools?|universities?|districts?)\b", text, re.IGNORECASE):
+        return True
+    words = text.split()
+    if len(words) >= 10:
+        return True
+    if text.endswith("?"):
+        return True
+    if len(words) >= 6 and any(punct in text for punct in (":", ";", ",")):
+        return True
+    return False
 
 
 def _strip_location_suffix(value: str) -> str:

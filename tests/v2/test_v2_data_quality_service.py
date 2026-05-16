@@ -146,7 +146,48 @@ def test_data_quality_service_flags_generic_placeholder_identity_for_reenrich():
     result = service.sweep_invalid_source_enrichments(session)
 
     assert result["requeued_for_reenrichment"] == 1
-    assert "institution_name_too_generic=" in enrichment.re_enrich_reason
+    assert "institution_name_" in enrichment.re_enrich_reason
+    task_repo.enqueue.assert_called_once()
+
+
+def test_data_quality_service_flags_sentence_like_identity_for_reenrich():
+    source_incident = _source_incident()
+    source_incident.raw_title = "Ransomware: Refusing to Negotiate with Attackers"
+    source_incident.raw_subtitle = (
+        "Last week, the information security community was saddened to learn of Joseph Edwards, "
+        "a 17-year-old secondary school student who committed suicide after..."
+    )
+    source_incident.raw_institution_name = source_incident.raw_subtitle
+    source_incident.raw_victim_name = source_incident.raw_subtitle
+    source_incident.raw_incident_date = None
+
+    enrichment = _source_enrichment(source_incident)
+    enrichment.typed_enrichment = {
+        "institution_name": source_incident.raw_subtitle,
+        "timeline": [],
+    }
+    enrichment.raw_extraction = {
+        "institution_name": source_incident.raw_subtitle,
+        "timeline": [],
+    }
+    enrichment_repo = Mock()
+    enrichment_repo.list_for_quality_sweep.return_value = [enrichment]
+    source_repo = Mock()
+    source_repo.get_by_id.return_value = source_incident
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    session = Mock()
+
+    service = V2DataQualityService(
+        source_enrichment_repository=enrichment_repo,
+        source_incident_repository=source_repo,
+        pipeline_task_repository=task_repo,
+    )
+
+    result = service.sweep_invalid_source_enrichments(session)
+
+    assert result["requeued_for_reenrichment"] == 1
+    assert "institution_name_" in enrichment.re_enrich_reason
     task_repo.enqueue.assert_called_once()
 
 

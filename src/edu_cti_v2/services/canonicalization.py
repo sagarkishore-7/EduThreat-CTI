@@ -149,7 +149,23 @@ def _looks_generic_institution_label(value: Optional[str]) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
-    return bool(_GENERIC_INSTITUTION_RE.match(text))
+    if _GENERIC_INSTITUTION_RE.match(text):
+        return True
+    lowered = text.lower()
+    words = text.split()
+    if lowered.startswith(("several ", "multiple ", "various ", "few ", "many ", "some ")):
+        return True
+    if "website of" in lowered or "websites of" in lowered:
+        return True
+    if re.search(r"\b(?:few|several|multiple|various|many|some)\s+(?:colleges?|schools?|universities?|districts?)\b", text, re.IGNORECASE):
+        return True
+    if len(words) >= 10:
+        return True
+    if text.endswith("?"):
+        return True
+    if len(words) >= 6 and any(punct in text for punct in (":", ";", ",")):
+        return True
+    return False
 
 
 def _resolve_institution_name(source_incident, typed: Dict[str, Any], raw: Dict[str, Any]) -> Optional[str]:
