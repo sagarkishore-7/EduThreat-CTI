@@ -297,7 +297,7 @@ def test_run_historical_reduces_workers_after_memory_pause():
     with patch("src.edu_cti.pipeline.manager.threading.Thread", _ImmediateThread), patch.object(
         manager, "_run_ingest", return_value={"new_incidents": 0}
     ), patch.object(
-        manager, "_run_enrich", side_effect=_fake_run_enrich
+        manager, "_run_one_enrich_batch", side_effect=_fake_run_enrich
     ), patch(
         "src.edu_cti.pipeline.manager._load_enrichment_stats",
         side_effect=stats_sequence,
