@@ -14,6 +14,7 @@ Cost: ~$1.00/1k Google SERP results. A full 22-query sweep returns ~220 results
 """
 
 import logging
+import re
 import time
 from datetime import datetime, timedelta
 from typing import Callable, List, Optional
@@ -33,6 +34,49 @@ OXYLABS_QUERIES = NEWS_SEARCH_QUERIES_ALL
 
 # Delay between Oxylabs API calls (we're well under rate limit but polite)
 REQUEST_DELAY = 0.5
+
+_EDUCATION_SIGNAL_RE = re.compile(
+    r"\b("
+    r"university|college|school|district|campus|student|faculty|education|academic|"
+    r"universidad|colegio|escuela|estudiante|campus|educaci[oó]n|"
+    r"universit[eé]|[ée]cole|[eé]tudiant|enseignement|"
+    r"universit[aà]|scuola|studente|campus|"
+    r"universidade|faculdade|escola|estudante|"
+    r"universit[aä]t|hochschule|schule|student|"
+    r"大學|大学|學校|学校|學生|学生|教育|"
+    r"대학교|학교|학생|교육|"
+    r"جامعة|مدرسة|طالب|تعليم|"
+    r"университет|школа|студент|образован"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_INCIDENT_SIGNAL_RE = re.compile(
+    r"\b("
+    r"ransomware|phishing|malware|breach|leak|leaked|hack|hacked|hacker|"
+    r"cyberattack|cyber attack|data breach|data leak|stolen|compromis(?:e|ed)|"
+    r"unauthorized access|deface(?:d|ment)?|extortion|outage|denial of service|ddos|"
+    r"ciberataque|ciberataques|ataque cibern[eé]tico|ataque|hackean|hackeado|filtraci[oó]n|"
+    r"cyberattaque|pirat(?:age|é)|fuite de donn[ée]es|attaque|"
+    r"hacker-angriff|cyberangriff|datenleck|angriff|"
+    r"勒索|攻擊|攻击|洩露|泄露|外洩|外泄|"
+    r"랜섬웨어|해킹|유출|공격|"
+    r"هجوم إلكتروني|اختراق|برامج فدية|تسريب|"
+    r"кибератак|взлом|утечк|шифровальщик"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_relevant_education_incident(*, title: str, description: str) -> bool:
+    text = " ".join(part.strip() for part in (title, description) if part).strip()
+    if not text:
+        return False
+    if not _EDUCATION_SIGNAL_RE.search(text):
+        return False
+    if not _INCIDENT_SIGNAL_RE.search(text):
+        return False
+    return True
 
 
 def _generate_yearly_windows(start_year: int) -> List[tuple]:
@@ -119,6 +163,14 @@ def build_oxylabs_news_incidents(
                 title = item.get("title", "")
                 description = item.get("description", "")
                 source_name = item.get("source", "")
+
+                if not _looks_relevant_education_incident(title=title, description=description):
+                    logger.info(
+                        "Oxylabs News: skipping low-relevance result title=%r query=%r",
+                        title[:120],
+                        query[:80],
+                    )
+                    continue
 
                 seen_urls.add(url)
                 total_matched += 1
