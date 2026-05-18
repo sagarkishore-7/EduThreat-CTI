@@ -404,6 +404,26 @@ async def get_v2_intelligence_analytics(
     return payload
 
 
+@router.get("/analytics/diamond")
+async def get_v2_diamond_analytics(
+    status: Optional[List[str]] = Query(None),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Return Diamond Model coverage and vertex summaries for the canonical dataset."""
+    statuses = tuple(status) if status else ("open",)
+    cache_key = _public_cache_key("diamond", _status_cache_fragment(statuses))
+    cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
+    if cached is not None:
+        return cached
+    payload = read_service.get_diamond_analytics(
+        session,
+        statuses=statuses,
+    )
+    cache_set(cache_key, payload)
+    return payload
+
+
 @router.get("/analytics/pipeline-research")
 async def get_v2_pipeline_research_metrics(
     status: Optional[List[str]] = Query(None),

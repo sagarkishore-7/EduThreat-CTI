@@ -214,10 +214,14 @@ def _should_trust_raw_identity_fallback(
     vendor_name: Optional[str],
 ) -> bool:
     resolved_identity = clean_institution_name(institution_name or vendor_name)
-    raw_identity = choose_best_institution_name(
+    raw_identity = recover_source_identity(
+        raw_institution_name=source_incident.raw_institution_name,
+        raw_victim_name=source_incident.raw_victim_name,
+        raw_subtitle=source_incident.raw_subtitle,
+        raw_title=source_incident.raw_title,
+    ) or choose_best_institution_name(
         source_incident.raw_institution_name,
         source_incident.raw_victim_name,
-        source_incident.raw_title,
     )
     if not resolved_identity or not raw_identity:
         return True
@@ -284,6 +288,10 @@ def _identity_match_quality(left: Optional[str], right: Optional[str]) -> int:
         return 0
     if left_normalized == right_normalized:
         return 100
+    left_stripped = re.sub(r"\s+\([A-Za-z0-9&.\- ]{2,}\)$", "", left_normalized).strip()
+    right_stripped = re.sub(r"\s+\([A-Za-z0-9&.\- ]{2,}\)$", "", right_normalized).strip()
+    if left_stripped and right_stripped and left_stripped == right_stripped:
+        return 95
     if institution_names_match(left_normalized, right_normalized, threshold=92):
         return 92
     if institution_names_match(left_normalized, right_normalized, threshold=85):

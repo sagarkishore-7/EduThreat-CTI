@@ -227,6 +227,30 @@ def test_v2_pipeline_research_metrics_endpoints_return_payloads():
     assert "eduthreat_v2_dataset_source_incidents_total 12" in response.text
 
 
+def test_v2_diamond_analytics_endpoint_returns_payload():
+    class _ReadService:
+        def __init__(self):
+            self.called = None
+
+        def get_diamond_analytics(self, _session, **kwargs):
+            self.called = kwargs
+            return {
+                "model_version": "diamond_v1",
+                "coverage": {"victim_vertex_count": 3},
+                "overview": {"total_incidents": 3},
+            }
+
+    service = _ReadService()
+    client = _build_client(service)
+
+    response = client.get("/api/v2/analytics/diamond", params={"status": ["open", "excluded"]})
+
+    assert response.status_code == 200
+    assert response.json()["model_version"] == "diamond_v1"
+    assert response.json()["coverage"]["victim_vertex_count"] == 3
+    assert service.called == {"statuses": ("open", "excluded")}
+
+
 def test_v2_incident_facets_endpoint_returns_filtered_facets():
     class _ReadService:
         def __init__(self):

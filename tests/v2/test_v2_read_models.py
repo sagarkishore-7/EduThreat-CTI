@@ -290,6 +290,10 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     assert detail["selected_source"]["article_url"] == "https://example.com/article"
     assert detail["fetch_attempts"][0]["fetch_tier"] == "oxylabs"
     assert detail["fetch_attempts"][0]["http_status"] == 200
+    assert detail["diamond_model"]["victim"]["name"] == "Penn State University"
+    assert detail["diamond_model"]["adversary"]["name"] == "SomeGroup"
+    assert detail["diamond_model"]["capability"]["attack_vector"] == "phishing_email"
+    assert detail["diamond_model"]["event_meta"]["source_article_url"] == "https://example.com/article"
 
 
 def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
@@ -801,6 +805,8 @@ def test_read_service_build_dashboard_payload_shapes_full_dashboard_response():
     assert payload["top_ransomware_families"][0]["ransomware_family"] == "LockBit"
     assert payload["intelligence_summary"]["overview"]["total_incidents"] == 8
     assert payload["intelligence_summary"]["tradecraft"]["attack_clusters"][0]["cluster"] == "Ransomware & Extortion"
+    assert payload["diamond_summary"]["coverage"]["victim_vertex_count"] == 1
+    assert payload["diamond_summary"]["vertices"]["top_adversaries"][0]["name"] == "SomeGroup"
 
 
 def test_read_service_intelligence_summary_uses_dashboard_snapshot_for_open_statuses():
@@ -990,4 +996,97 @@ def test_read_service_intelligence_summary_aggregates_analyst_metrics():
     assert summary["victimology"]["institution_segments"][0]["segment"] in {
         "Higher Education",
         "Education Vendor / Provider",
+    }
+
+
+def test_read_service_diamond_summary_aggregates_vertex_coverage():
+    canonical_repo = Mock()
+    canonical_repo.count_recent.return_value = 2
+    canonical_repo.list_recent_with_enrichment.return_value = [
+        (
+            SimpleNamespace(
+                id=uuid4(),
+                institution_name="Example University",
+                vendor_name=None,
+                institution_type="university",
+                country="United States",
+                country_code="US",
+                region=None,
+                city=None,
+                incident_date=date(2026, 5, 8),
+                date_precision="day",
+                attack_category="ransomware_double_extortion",
+                attack_vector=None,
+                threat_actor_name="Example Crew",
+                ransomware_family="LockBit",
+                is_education_related=True,
+                severity=None,
+                canonical_summary=None,
+                status="open",
+                first_seen_at=datetime(2026, 5, 8, 8, 0, tzinfo=timezone.utc),
+                last_seen_at=datetime(2026, 5, 8, 9, 0, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 5, 8, 9, 0, tzinfo=timezone.utc),
+            ),
+            SimpleNamespace(
+                canonical_projection={
+                    "attack_dynamics": {"attack_vector": "phishing_email", "attack_chain": ["initial_access", "impact"]},
+                    "threat_actor_category": "ransomware_gang",
+                    "threat_actor_claim_url": "https://exampleonion.site/post",
+                    "leak_site_url": "https://exampleonion.site/",
+                    "dark_web_posting_confirmed": True,
+                    "vulnerabilities_exploited": [{"cve": "CVE-2026-0001"}],
+                },
+            ),
+            1,
+        ),
+        (
+            SimpleNamespace(
+                id=uuid4(),
+                institution_name=None,
+                vendor_name="PowerSchool",
+                institution_type="education_technology_provider",
+                country="Canada",
+                country_code="CA",
+                region=None,
+                city=None,
+                incident_date=date(2026, 4, 2),
+                date_precision="day",
+                attack_category="third_party_compromise",
+                attack_vector=None,
+                threat_actor_name=None,
+                ransomware_family=None,
+                is_education_related=True,
+                severity=None,
+                canonical_summary=None,
+                status="open",
+                first_seen_at=datetime(2026, 4, 2, 8, 0, tzinfo=timezone.utc),
+                last_seen_at=datetime(2026, 4, 2, 9, 0, tzinfo=timezone.utc),
+                updated_at=datetime(2026, 4, 2, 9, 0, tzinfo=timezone.utc),
+            ),
+            SimpleNamespace(
+                canonical_projection={
+                    "attack_dynamics": {"attack_vector": "third_party_vendor"},
+                    "third_party_vendor_impact": True,
+                },
+            ),
+            1,
+        ),
+    ]
+
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+
+    summary = service.get_diamond_analytics(Mock(), statuses=("open",))
+
+    assert summary["overview"]["total_incidents"] == 2
+    assert summary["coverage"]["victim_vertex_count"] == 2
+    assert summary["coverage"]["adversary_vertex_count"] == 1
+    assert summary["coverage"]["capability_vertex_count"] == 2
+    assert summary["coverage"]["infrastructure_vertex_count"] == 2
+    assert summary["vertices"]["top_adversaries"][0]["name"] == "Example Crew"
+    assert summary["vertices"]["infrastructure_components"][0]["component"] in {
+        "actor_claim_site",
+        "leak_site",
+        "third_party_platform",
+        "exploited_public_vulnerability",
+        "dark_web_posting",
     }

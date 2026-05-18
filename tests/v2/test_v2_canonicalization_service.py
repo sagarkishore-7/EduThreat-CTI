@@ -363,6 +363,46 @@ def test_build_source_projection_normalizes_country_from_institution_country():
     assert projection["country_code"] == "US"
 
 
+def test_build_source_projection_keeps_raw_country_when_generic_title_differs_but_identity_matches():
+    incident = _source_incident(event_key="morehead")
+    incident.raw_title = "Cyber attack on a university in Kentucky, USA"
+    incident.raw_subtitle = "Morehead State University (MSU) - Morehead, Kentucky, USA (Rowan County)"
+    incident.raw_institution_name = "Morehead State University (MSU)"
+    incident.raw_victim_name = "Morehead State University (MSU)"
+    incident.raw_country = "USA"
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "Morehead State University",
+            "institution_type": "university",
+            "incident_date": "2023-07-01",
+            "incident_date_precision": "day",
+            "attack_category": "unauthorized_access",
+            "enriched_summary": "Morehead State University experienced a contained cyber incident.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "Morehead State University",
+            "institution_type": "university",
+            "incident_date": "2023-07-01",
+            "incident_date_precision": "day",
+            "attack_category": "unauthorized_access",
+        },
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] == "Morehead State University"
+    assert projection["country"] == "United States"
+    assert projection["country_code"] == "US"
+
+
 def test_build_source_projection_drops_generic_identity_labels():
     incident = _source_incident(event_key="generic-placeholder")
     incident.raw_title = "Officials disclose cyber incident affecting unnamed district"

@@ -269,6 +269,254 @@ def _to_ranked_items(counter: Counter[str], *, total: int, label_key: str) -> li
     return results
 
 
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [item for item in value if item not in (None, "", [])]
+    return [value]
+
+
+def _dedupe_preserve_order(values: list[Any]) -> list[Any]:
+    seen: set[Any] = set()
+    result: list[Any] = []
+    for value in values:
+        marker = value if isinstance(value, (str, int, float, bool, type(None))) else repr(value)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        result.append(value)
+    return result
+
+
+def _diamond_confidence(score: int) -> str:
+    if score >= 3:
+        return "high"
+    if score == 2:
+        return "medium"
+    if score == 1:
+        return "low"
+    return "none"
+
+
+def _build_diamond_projection(
+    canonical: CanonicalIncident,
+    enrichment: Optional[CanonicalEnrichment],
+    *,
+    selected_source: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    projection = (getattr(enrichment, "canonical_projection", None) if enrichment else None) or {}
+    attack_dynamics = _projection_section(projection, "attack_dynamics")
+    system_impact = _projection_section(projection, "system_impact")
+
+    display_name = canonical.institution_name or canonical.vendor_name
+    attack_vector = canonical.attack_vector or attack_dynamics.get("attack_vector")
+    attack_chain = _as_list(attack_dynamics.get("attack_chain"))
+    mitre_techniques = _as_list(projection.get("mitre_attack_techniques"))
+    vulnerabilities = _as_list(projection.get("vulnerabilities_exploited"))
+    malware_families = _as_list(projection.get("malware_families"))
+    attacker_tools = _as_list(projection.get("attacker_tools"))
+
+    adversary_name = projection.get("threat_actor") or canonical.threat_actor_name
+    adversary_score = sum(
+        1
+        for value in (
+            adversary_name,
+            projection.get("threat_actor_category"),
+            projection.get("threat_actor_claim_url") or projection.get("leak_site_url"),
+        )
+        if value
+    )
+    capability_score = sum(
+        1
+        for value in (
+            canonical.attack_category,
+            attack_vector,
+            canonical.ransomware_family,
+            attack_chain or None,
+            mitre_techniques or None,
+            vulnerabilities or None,
+            malware_families or None,
+            attacker_tools or None,
+            projection.get("initial_access_description"),
+        )
+        if value
+    )
+
+    infrastructure_components: list[str] = []
+    claim_url = projection.get("threat_actor_claim_url")
+    leak_site_url = projection.get("leak_site_url")
+    if claim_url:
+        infrastructure_components.append("actor_claim_site")
+    if leak_site_url:
+        infrastructure_components.append("leak_site")
+    if projection.get("dark_web_posting_confirmed"):
+        infrastructure_components.append("dark_web_posting")
+    if (
+        system_impact.get("third_party_vendor_impact")
+        or projection.get("third_party_vendor_impact")
+        or (attack_vector or "") == "third_party_vendor"
+        or (canonical.attack_category or "") in {"third_party_compromise", "supply_chain_software"}
+    ):
+        infrastructure_components.append("third_party_platform")
+    if vulnerabilities:
+        infrastructure_components.append("exploited_public_vulnerability")
+    infrastructure_components = _dedupe_preserve_order(infrastructure_components)
+    infrastructure_score = sum(
+        1
+        for value in (
+            claim_url or leak_site_url,
+            system_impact.get("vendor_name") or canonical.vendor_name,
+            infrastructure_components or None,
+        )
+        if value
+    )
+
+    victim_score = sum(
+        1
+        for value in (
+            display_name,
+            canonical.country or canonical.country_code,
+            canonical.incident_date,
+        )
+        if value
+    )
+    victim_scope = "direct_victim"
+    if canonical.vendor_name and not canonical.institution_name:
+        victim_scope = "vendor_victim"
+    elif (
+        system_impact.get("third_party_vendor_impact")
+        or projection.get("third_party_vendor_impact")
+        or (attack_vector or "") == "third_party_vendor"
+        or canonical.vendor_name
+    ):
+        victim_scope = "institution_via_vendor"
+
+    source_article_url = None
+    if selected_source:
+        source_article_url = (
+            selected_source.get("article_resolved_url")
+            or selected_source.get("article_url")
+        )
+
+    present_vertices = {
+        "victim": bool(display_name),
+        "adversary": bool(adversary_name),
+        "capability": bool(canonical.attack_category or attack_vector or canonical.ransomware_family),
+        "infrastructure": bool(infrastructure_components or claim_url or leak_site_url),
+    }
+
+    return {
+        "model_version": "diamond_v1",
+        "event_meta": {
+            "event_id": str(canonical.id),
+            "event_date": canonical.incident_date.isoformat() if canonical.incident_date else None,
+            "date_precision": canonical.date_precision,
+            "source_article_url": source_article_url,
+            "all_core_vertices_present": all(present_vertices.values()),
+            "present_vertex_count": sum(1 for value in present_vertices.values() if value),
+        },
+        "victim": {
+            "name": display_name,
+            "institution_name": canonical.institution_name,
+            "vendor_name": canonical.vendor_name,
+            "institution_type": canonical.institution_type,
+            "country": canonical.country,
+            "country_code": canonical.country_code,
+            "region": canonical.region,
+            "city": canonical.city,
+            "is_education_related": canonical.is_education_related,
+            "scope": victim_scope,
+            "present": present_vertices["victim"],
+            "confidence": _diamond_confidence(victim_score),
+            "evidence_fields": [
+                field
+                for field, value in (
+                    ("institution_name", canonical.institution_name),
+                    ("vendor_name", canonical.vendor_name),
+                    ("country", canonical.country or canonical.country_code),
+                    ("incident_date", canonical.incident_date),
+                )
+                if value
+            ],
+        },
+        "adversary": {
+            "name": adversary_name,
+            "category": projection.get("threat_actor_category"),
+            "motivation": projection.get("threat_actor_motivation"),
+            "origin_country": projection.get("threat_actor_origin_country"),
+            "claim_url": claim_url,
+            "present": present_vertices["adversary"],
+            "confidence": _diamond_confidence(adversary_score),
+            "evidence_fields": [
+                field
+                for field, value in (
+                    ("threat_actor_name", adversary_name),
+                    ("threat_actor_category", projection.get("threat_actor_category")),
+                    ("threat_actor_motivation", projection.get("threat_actor_motivation")),
+                    ("threat_actor_origin_country", projection.get("threat_actor_origin_country")),
+                    ("threat_actor_claim_url", claim_url),
+                )
+                if value
+            ],
+        },
+        "capability": {
+            "attack_category": canonical.attack_category,
+            "attack_vector": attack_vector,
+            "ransomware_family": canonical.ransomware_family,
+            "attack_chain": attack_chain,
+            "mitre_attack_techniques": mitre_techniques,
+            "initial_access_description": projection.get("initial_access_description"),
+            "vulnerabilities_exploited": vulnerabilities,
+            "malware_families": malware_families,
+            "attacker_tools": attacker_tools,
+            "present": present_vertices["capability"],
+            "confidence": _diamond_confidence(capability_score),
+            "evidence_fields": [
+                field
+                for field, value in (
+                    ("attack_category", canonical.attack_category),
+                    ("attack_vector", attack_vector),
+                    ("ransomware_family", canonical.ransomware_family),
+                    ("attack_chain", attack_chain or None),
+                    ("mitre_attack_techniques", mitre_techniques or None),
+                    ("vulnerabilities_exploited", vulnerabilities or None),
+                    ("malware_families", malware_families or None),
+                    ("attacker_tools", attacker_tools or None),
+                    ("initial_access_description", projection.get("initial_access_description")),
+                )
+                if value
+            ],
+        },
+        "infrastructure": {
+            "components": infrastructure_components,
+            "leak_site_url": leak_site_url,
+            "claim_url": claim_url,
+            "service_provider": system_impact.get("vendor_name") or canonical.vendor_name,
+            "third_party_vendor_impact": (
+                system_impact.get("third_party_vendor_impact")
+                if system_impact.get("third_party_vendor_impact") is not None
+                else projection.get("third_party_vendor_impact")
+            ),
+            "dark_web_posting_confirmed": projection.get("dark_web_posting_confirmed"),
+            "present": present_vertices["infrastructure"],
+            "confidence": _diamond_confidence(infrastructure_score),
+            "evidence_fields": [
+                field
+                for field, value in (
+                    ("leak_site_url", leak_site_url),
+                    ("threat_actor_claim_url", claim_url),
+                    ("vendor_name", system_impact.get("vendor_name") or canonical.vendor_name),
+                    ("third_party_vendor_impact", system_impact.get("third_party_vendor_impact")),
+                    ("dark_web_posting_confirmed", projection.get("dark_web_posting_confirmed")),
+                    ("vulnerabilities_exploited", vulnerabilities or None),
+                )
+                if value
+            ],
+        },
+    }
+
+
 def _dashboard_stats_from_rollup(rollup: dict[str, Any], *, refreshed_at: str) -> dict[str, Any]:
     total_incidents = int(rollup.get("canonical_incident_count") or 0)
     enriched_incidents = int(rollup.get("enriched_canonical_count") or 0)
@@ -302,6 +550,10 @@ def _is_full_dashboard_snapshot(payload: dict[str, Any]) -> bool:
         "recent_incidents",
     }
     return required.issubset(payload.keys())
+
+
+def _is_diamond_dashboard_snapshot(payload: dict[str, Any]) -> bool:
+    return _is_full_dashboard_snapshot(payload) and isinstance(payload.get("diamond_summary"), dict)
 
 
 def _to_legacy_incident_summary(item: dict[str, Any]) -> dict[str, Any]:
@@ -537,6 +789,11 @@ class V2CanonicalReadService:
             session,
             f"canonical:{canonical_incident_id}",
         )
+        diamond_model = _build_diamond_projection(
+            canonical,
+            enrichment,
+            selected_source=selected_source,
+        )
         return {
             **_summary_from_canonical(
                 canonical,
@@ -546,6 +803,7 @@ class V2CanonicalReadService:
             "resolution_metadata": canonical.resolution_metadata or {},
             "field_provenance": (getattr(enrichment, "field_provenance", None) if enrichment else None) or {},
             "canonical_projection": (getattr(enrichment, "canonical_projection", None) if enrichment else None) or {},
+            "diamond_model": diamond_model,
             "selected_source": selected_source,
             "fetch_attempts": fetch_attempts,
             "memberships": [
@@ -900,6 +1158,25 @@ class V2CanonicalReadService:
             statuses=statuses,
         )
 
+    def get_diamond_analytics(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+    ) -> dict[str, Any]:
+        if tuple(statuses) == ("open",):
+            snapshot = self.analytics_refresh_repository.get_by_key(session, "dashboard:global")
+            if (
+                snapshot is not None
+                and isinstance(snapshot.state_payload, dict)
+                and _is_diamond_dashboard_snapshot(snapshot.state_payload)
+            ):
+                return snapshot.state_payload["diamond_summary"]
+        return self._build_diamond_summary(
+            session,
+            statuses=statuses,
+        )
+
     def _build_intelligence_summary(
         self,
         session: Session,
@@ -1197,6 +1474,101 @@ class V2CanonicalReadService:
             "priority_findings": priority_findings,
         }
 
+    def _build_diamond_summary(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str],
+    ) -> dict[str, Any]:
+        total_incidents = int(self.canonical_repository.count_recent(session, statuses=statuses) or 0)
+        rows = self.canonical_repository.list_recent_with_enrichment(
+            session,
+            statuses=statuses,
+            limit=max(total_incidents, 1),
+            offset=0,
+            sort_by="incident_date",
+            sort_order="desc",
+        )
+
+        vertex_counts = Counter[str]()
+        high_confidence_counts = Counter[str]()
+        adversaries = Counter[str]()
+        capabilities = Counter[str]()
+        infrastructure_components = Counter[str]()
+        victim_segments = Counter[str]()
+        all_core_vertices_count = 0
+        vendor_mediated_count = 0
+
+        for canonical, enrichment, _membership_count in rows:
+            diamond = _build_diamond_projection(canonical, enrichment)
+            for vertex in ("victim", "adversary", "capability", "infrastructure"):
+                payload = diamond[vertex]
+                if payload.get("present"):
+                    vertex_counts[vertex] += 1
+                if payload.get("confidence") == "high":
+                    high_confidence_counts[vertex] += 1
+
+            if diamond["event_meta"]["all_core_vertices_present"]:
+                all_core_vertices_count += 1
+
+            victim_segments[_normalize_institution_segment(canonical.institution_type, canonical.vendor_name)] += 1
+            if diamond["victim"].get("scope") == "institution_via_vendor":
+                vendor_mediated_count += 1
+
+            adversary_name = diamond["adversary"].get("name")
+            if adversary_name:
+                adversaries[str(adversary_name)] += 1
+
+            capability_label = diamond["capability"].get("attack_category") or diamond["capability"].get("attack_vector")
+            if capability_label:
+                capabilities[_humanize_slug(str(capability_label))] += 1
+
+            for component in diamond["infrastructure"].get("components") or []:
+                infrastructure_components[str(component)] += 1
+
+        denominator = max(total_incidents, 1)
+        return {
+            "model_version": "diamond_v1",
+            "overview": {
+                "total_incidents": total_incidents,
+                "all_core_vertices_count": all_core_vertices_count,
+                "all_core_vertices_share": all_core_vertices_count / denominator * 100.0,
+                "vendor_mediated_count": vendor_mediated_count,
+                "vendor_mediated_share": vendor_mediated_count / denominator * 100.0,
+            },
+            "coverage": {
+                "victim_vertex_count": vertex_counts["victim"],
+                "victim_vertex_share": vertex_counts["victim"] / denominator * 100.0,
+                "adversary_vertex_count": vertex_counts["adversary"],
+                "adversary_vertex_share": vertex_counts["adversary"] / denominator * 100.0,
+                "capability_vertex_count": vertex_counts["capability"],
+                "capability_vertex_share": vertex_counts["capability"] / denominator * 100.0,
+                "infrastructure_vertex_count": vertex_counts["infrastructure"],
+                "infrastructure_vertex_share": vertex_counts["infrastructure"] / denominator * 100.0,
+            },
+            "confidence": {
+                "victim_high_confidence_count": high_confidence_counts["victim"],
+                "adversary_high_confidence_count": high_confidence_counts["adversary"],
+                "capability_high_confidence_count": high_confidence_counts["capability"],
+                "infrastructure_high_confidence_count": high_confidence_counts["infrastructure"],
+            },
+            "vertices": {
+                "victim_segments": _to_ranked_items(victim_segments, total=total_incidents, label_key="segment"),
+                "top_adversaries": _to_ranked_items(adversaries, total=max(vertex_counts["adversary"], 1), label_key="name")[:10],
+                "top_capabilities": _to_ranked_items(capabilities, total=max(vertex_counts["capability"], 1), label_key="label")[:10],
+                "infrastructure_components": _to_ranked_items(
+                    infrastructure_components,
+                    total=max(sum(infrastructure_components.values()), 1),
+                    label_key="component",
+                )[:10],
+            },
+            "research_notes": {
+                "infrastructure_sparse": vertex_counts["infrastructure"] < total_incidents,
+                "adversary_sparse": vertex_counts["adversary"] < total_incidents,
+                "null_vertices_expected_in_public_reporting": True,
+            },
+        }
+
     def build_dashboard_payload(
         self,
         session: Session,
@@ -1230,11 +1602,16 @@ class V2CanonicalReadService:
             countries=countries,
             ransomware=ransomware,
         )
+        diamond_summary = self._build_diamond_summary(
+            session,
+            statuses=statuses,
+        )
 
         return {
             "totals": rollup,
             "stats": _dashboard_stats_from_rollup(rollup, refreshed_at=effective_refreshed_at),
             "intelligence_summary": intelligence_summary,
+            "diamond_summary": diamond_summary,
             "incidents_by_country": _to_count_by_category(
                 countries,
                 label_key="country",
