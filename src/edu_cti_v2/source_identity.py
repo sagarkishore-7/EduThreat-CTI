@@ -7,11 +7,14 @@ from typing import Optional
 
 from src.edu_cti.pipeline.phase2.utils.deduplication import clean_institution_name
 
+_GENERIC_EDU_ENTITY_RE = (
+    r"(?:university|college|school|academy|institute|polytechnic|district|"
+    r"school district|community college|technical college|research university|research institute)"
+)
 _GENERIC_IDENTITY_RE = re.compile(
     r"^(?:(?:the\s+website\s+of\s+)?(?:a|an|the)\s+)?"
     r"(?:public\s+|private\s+|state\s+|local\s+|regional\s+)?"
-    r"(?:university|college|school|academy|institute|polytechnic|district|"
-    r"school district|community college|technical college|research university|research institute)"
+    rf"(?:{_GENERIC_EDU_ENTITY_RE})(?:\s+{_GENERIC_EDU_ENTITY_RE})*"
     r"(?:\s+in\b.*)?$",
     re.IGNORECASE,
 )
@@ -42,7 +45,7 @@ def _looks_generic_identity(value: Optional[str]) -> bool:
         return True
     if text.endswith("?"):
         return True
-    if len(words) >= 6 and any(punct in text for punct in (":", ";", ",")):
+    if len(words) >= 6 and any(punct in text for punct in (":", ";")):
         return True
     return False
 

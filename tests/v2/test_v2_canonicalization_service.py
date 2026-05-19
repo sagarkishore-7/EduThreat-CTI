@@ -758,6 +758,47 @@ def test_build_source_projection_recovers_identity_from_subtitle_when_llm_name_m
     assert projection["institution_name"] == "Hebrew University of Jerusalem (HUJI)"
 
 
+def test_build_source_projection_recovers_specific_identity_from_compound_generic_llm_label():
+    incident = _source_incident(event_key="bremen-story")
+    incident.raw_title = "Cyber attack on a university institute in Germany"
+    incident.raw_subtitle = "Universität Bremen, Institut für Didaktik der Naturwissenschaften - Bremen, Germany"
+    incident.raw_institution_name = "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    incident.raw_victim_name = "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    incident.raw_country = "Germany"
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "a university institute in Germany",
+            "institution_type": "university_department",
+            "incident_date": "2023-10-23",
+            "incident_date_precision": "exact",
+            "attack_category": "unauthorized_access",
+            "enriched_summary": "The Institute for Didactics of Natural Sciences - Chemistry Didactics experienced unauthorized access.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "a university institute in Germany",
+            "institution_type": "university_department",
+            "country": "Germany",
+            "country_code": "DE",
+            "incident_date": "2023-10-23",
+            "attack_category": "unauthorized_access",
+        },
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] == "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    assert projection["country"] == "Germany"
+    assert projection["country_code"] == "DE"
+
+
 def test_canonicalization_service_skips_new_generic_identity_seed():
     canonical_repo = Mock()
     canonical_repo.get_membership_for_source_incident.return_value = None

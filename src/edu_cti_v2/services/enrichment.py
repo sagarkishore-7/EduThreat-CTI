@@ -24,11 +24,14 @@ _COLLECTIVE_IDENTITY_RE = re.compile(
     r"^(?:\d+\s+)?(?:universities|colleges|schools|school districts?|districts|campuses|providers|students)\b",
     re.IGNORECASE,
 )
+_GENERIC_EDU_ENTITY_RE = (
+    r"(?:university|college|school|academy|institute|polytechnic|district|"
+    r"school district|community college|technical college|research university|research institute)"
+)
 _GENERIC_SINGLE_IDENTITY_RE = re.compile(
     r"^(?:(?:the\s+website\s+of\s+)?(?:a|an|the)\s+)?"
     r"(?:public\s+|private\s+|state\s+|local\s+|regional\s+)?"
-    r"(?:university|college|school|academy|institute|polytechnic|district|"
-    r"school district|community college|technical college|research university|research institute)"
+    rf"(?:{_GENERIC_EDU_ENTITY_RE})(?:\s+{_GENERIC_EDU_ENTITY_RE})*"
     r"(?:\s+in\b.*)?$",
     re.IGNORECASE,
 )
@@ -132,6 +135,8 @@ def _looks_invalid_primary_identity(
         return True
     words = text.split()
     if len(words) >= 10:
+        return True
+    if len(words) >= 6 and any(punct in text for punct in (":", ";")):
         return True
     return False
 

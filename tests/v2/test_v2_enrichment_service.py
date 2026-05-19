@@ -258,6 +258,52 @@ def test_enrichment_service_repairs_headline_identity_with_source_anchor():
     assert saved.raw_extraction["institution_name_basis"] == "source_anchor_fallback"
 
 
+def test_enrichment_service_repairs_compound_generic_identity_with_source_anchor():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "a university institute in Germany",
+        "attack_category": "unauthorized_access",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "a university institute in Germany",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.raw_title = "Cyber attack on a university institute in Germany"
+    incident.raw_subtitle = "Universität Bremen, Institut für Didaktik der Naturwissenschaften - Bremen, Germany"
+    incident.raw_institution_name = "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    incident.raw_victim_name = "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    document = _article_document(incident)
+    document.title = "Hackerangriff auf unseren Server und Zugang zu Unterrichtsmaterial"
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["enriched"] is True
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.typed_enrichment["institution_name"] == "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    assert saved.raw_extraction["institution_name"] == "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    assert saved.raw_extraction["institution_name_basis"] == "source_anchor_fallback"
+
+
 def test_enrichment_service_rejects_collective_commentary_without_specific_victim():
     article_repo = Mock()
     source_enrichment_repo = Mock()
