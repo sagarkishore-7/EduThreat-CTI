@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import os
 import time
 from typing import Callable, Dict, Iterable, List, Optional, Sequence
 from uuid import uuid4
@@ -39,6 +40,26 @@ _COLLECTORS = {
     "rss": collect_rss_incidents,
     "api": collect_api_incidents,
 }
+
+
+def _env_optional_int(name: str, default: Optional[int]) -> Optional[int]:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _env_float(name: str, default: float) -> float:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return float(value)
+    except ValueError:
+        return default
 
 
 def _normalize_groups(groups: Optional[Sequence[str]]) -> list[str]:
@@ -86,39 +107,44 @@ class V2CollectionService:
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
         self.sleep_fn = sleep_fn or time.sleep
 
-    def _maybe_wait_for_fetch_backlog(
+    def _maybe_wait_for_task_backlog(
         self,
         *,
-        fetch_backlog_limit: Optional[int],
-        fetch_backlog_resume_ratio: float,
+        task_types: Sequence[str],
+        backlog_limit: Optional[int],
+        backlog_resume_ratio: float,
         backlog_poll_seconds: float,
         counters: dict[str, int],
+        counter_prefix: str,
     ) -> None:
-        if not fetch_backlog_limit or fetch_backlog_limit <= 0:
+        if not backlog_limit or backlog_limit <= 0:
             return
 
-        resume_ratio = min(max(fetch_backlog_resume_ratio, 0.0), 1.0)
-        resume_threshold = max(1, int(fetch_backlog_limit * resume_ratio))
+        resume_ratio = min(max(backlog_resume_ratio, 0.0), 1.0)
+        resume_threshold = max(1, int(backlog_limit * resume_ratio))
+        max_counter_key = f"max_{counter_prefix}_backlog_observed"
+        wait_cycles_key = f"{counter_prefix}_backpressure_wait_cycles"
+        wait_seconds_key = f"{counter_prefix}_backpressure_wait_seconds"
 
         with self.session_factory() as session:
             backlog = self.pipeline_task_repository.count_active(
                 session,
-                task_types=("fetch_article",),
+                task_types=task_types,
             )
-        counters["max_fetch_backlog_observed"] = max(counters["max_fetch_backlog_observed"], backlog)
-        if backlog <= fetch_backlog_limit:
+        counters[max_counter_key] = max(counters[max_counter_key], backlog)
+        if backlog <= backlog_limit:
             return
 
         while backlog > resume_threshold:
-            counters["fetch_backpressure_wait_cycles"] += 1
-            counters["fetch_backpressure_wait_seconds"] += int(max(backlog_poll_seconds, 0.0))
+            counters[wait_cycles_key] += 1
+            counters[wait_seconds_key] += int(max(backlog_poll_seconds, 0.0))
             self.sleep_fn(max(backlog_poll_seconds, 0.0))
             with self.session_factory() as session:
                 backlog = self.pipeline_task_repository.count_active(
                     session,
-                    task_types=("fetch_article",),
+                    task_types=task_types,
                 )
-            counters["max_fetch_backlog_observed"] = max(counters["max_fetch_backlog_observed"], backlog)
+            counters[max_counter_key] = max(counters[max_counter_key], backlog)
 
     def _write_batch(
         self,
@@ -126,7 +152,9 @@ class V2CollectionService:
         *,
         counters: dict[str, int],
         fetch_backlog_limit: Optional[int],
+        resolve_backlog_limit: Optional[int],
         fetch_backlog_resume_ratio: float,
+        resolve_backlog_resume_ratio: float,
         backlog_poll_seconds: float,
     ) -> None:
         for incident in incidents:
@@ -134,11 +162,21 @@ class V2CollectionService:
             source_incident_id = self.dual_writer.write_observation(incident, event_key, force=True)
             if source_incident_id is not None:
                 counters["observations_processed"] += 1
-        self._maybe_wait_for_fetch_backlog(
-            fetch_backlog_limit=fetch_backlog_limit,
-            fetch_backlog_resume_ratio=fetch_backlog_resume_ratio,
+        self._maybe_wait_for_task_backlog(
+            task_types=("resolve_url",),
+            backlog_limit=resolve_backlog_limit,
+            backlog_resume_ratio=resolve_backlog_resume_ratio,
             backlog_poll_seconds=backlog_poll_seconds,
             counters=counters,
+            counter_prefix="resolve",
+        )
+        self._maybe_wait_for_task_backlog(
+            task_types=("fetch_article",),
+            backlog_limit=fetch_backlog_limit,
+            backlog_resume_ratio=fetch_backlog_resume_ratio,
+            backlog_poll_seconds=backlog_poll_seconds,
+            counters=counters,
+            counter_prefix="fetch",
         )
 
     def collect_into_v2(
@@ -151,10 +189,31 @@ class V2CollectionService:
         incremental: bool = True,
         include_paid_rss: bool = False,
         persist_run: bool = True,
-        fetch_backlog_limit: Optional[int] = 1200,
-        fetch_backlog_resume_ratio: float = 0.75,
-        backlog_poll_seconds: float = 5.0,
+        fetch_backlog_limit: Optional[int] = None,
+        resolve_backlog_limit: Optional[int] = None,
+        fetch_backlog_resume_ratio: float = 0.0,
+        resolve_backlog_resume_ratio: float = 0.0,
+        backlog_poll_seconds: float = 0.0,
     ) -> dict:
+        fetch_backlog_limit = _env_optional_int("EDU_CTI_V2_FETCH_BACKLOG_LIMIT", fetch_backlog_limit)
+        resolve_backlog_limit = _env_optional_int("EDU_CTI_V2_RESOLVE_BACKLOG_LIMIT", resolve_backlog_limit)
+        fetch_backlog_resume_ratio = _env_float(
+            "EDU_CTI_V2_FETCH_BACKLOG_RESUME_RATIO",
+            fetch_backlog_resume_ratio if fetch_backlog_resume_ratio > 0 else 0.6,
+        )
+        resolve_backlog_resume_ratio = _env_float(
+            "EDU_CTI_V2_RESOLVE_BACKLOG_RESUME_RATIO",
+            resolve_backlog_resume_ratio if resolve_backlog_resume_ratio > 0 else 0.6,
+        )
+        backlog_poll_seconds = _env_float(
+            "EDU_CTI_V2_BACKLOG_POLL_SECONDS",
+            backlog_poll_seconds if backlog_poll_seconds > 0 else 5.0,
+        )
+        if fetch_backlog_limit is None:
+            fetch_backlog_limit = 500
+        if resolve_backlog_limit is None:
+            resolve_backlog_limit = 200
+
         groups_to_run = _normalize_groups(groups)
         source_filter = list(dict.fromkeys(sources or []))
         run_params = {
@@ -165,7 +224,9 @@ class V2CollectionService:
             "incremental": incremental,
             "include_paid_rss": include_paid_rss,
             "fetch_backlog_limit": fetch_backlog_limit,
+            "resolve_backlog_limit": resolve_backlog_limit,
             "fetch_backlog_resume_ratio": fetch_backlog_resume_ratio,
+            "resolve_backlog_resume_ratio": resolve_backlog_resume_ratio,
             "backlog_poll_seconds": backlog_poll_seconds,
         }
 
@@ -206,7 +267,9 @@ class V2CollectionService:
                         batch,
                         counters=counters,
                         fetch_backlog_limit=fetch_backlog_limit,
+                        resolve_backlog_limit=resolve_backlog_limit,
                         fetch_backlog_resume_ratio=fetch_backlog_resume_ratio,
+                        resolve_backlog_resume_ratio=resolve_backlog_resume_ratio,
                         backlog_poll_seconds=backlog_poll_seconds,
                     )
 
@@ -262,6 +325,9 @@ class V2CollectionService:
                     "fetch_backpressure_wait_cycles": counters["fetch_backpressure_wait_cycles"],
                     "fetch_backpressure_wait_seconds": counters["fetch_backpressure_wait_seconds"],
                     "max_fetch_backlog_observed": counters["max_fetch_backlog_observed"],
+                    "resolve_backpressure_wait_cycles": counters["resolve_backpressure_wait_cycles"],
+                    "resolve_backpressure_wait_seconds": counters["resolve_backpressure_wait_seconds"],
+                    "max_resolve_backlog_observed": counters["max_resolve_backlog_observed"],
                 },
                 "per_source_counts": per_source_counts,
             }
