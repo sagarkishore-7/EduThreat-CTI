@@ -59,6 +59,7 @@ _STOP_TOKENS = {
     "hacked",
 }
 _MIN_SELECTED_ARTICLE_SCORE = 12.0
+_BINARY_CONTENT_PREFIXES = ("%PDF-", "PK\x03\x04")
 
 
 def _parse_publish_date(value: Optional[str]) -> Optional[date]:
@@ -224,6 +225,68 @@ def _score_article_candidate(
     return score
 
 
+def _sanitize_db_text(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    sanitized = value.replace("\x00", "")
+    return sanitized or None
+
+
+def _validate_article_content(
+    article: ArticleContent,
+    tier_attempts: list[dict[str, Any]],
+) -> tuple[ArticleContent, list[dict[str, Any]]]:
+    sanitized_title = _sanitize_db_text(article.title) or ""
+    sanitized_author = _sanitize_db_text(article.author)
+    sanitized_content = _sanitize_db_text(article.content) or ""
+    stripped = sanitized_content.lstrip()
+
+    if any(stripped.startswith(prefix) for prefix in _BINARY_CONTENT_PREFIXES):
+        selected_tier = (
+            article.fetch_metadata.get("selected_tier")
+            if isinstance(article.fetch_metadata, dict)
+            else None
+        ) or str((tier_attempts[-1].get("tier") if tier_attempts else "fetch_chain") or "fetch_chain")
+        normalized_attempts: list[dict[str, Any]] = []
+        for attempt in tier_attempts:
+            attempt_copy = dict(attempt)
+            if str(attempt_copy.get("tier") or "") == selected_tier:
+                attempt_copy["success"] = False
+                attempt_copy["content_length"] = 0
+                attempt_copy["error_code"] = "binary_content"
+                attempt_copy["error_message"] = "binary_content_detected"
+            normalized_attempts.append(attempt_copy)
+        return (
+            ArticleContent(
+                url=article.url,
+                title=sanitized_title,
+                content="",
+                author=sanitized_author,
+                publish_date=article.publish_date,
+                fetch_successful=False,
+                error_message="binary_content_detected",
+                content_length=0,
+                fetch_metadata=article.fetch_metadata,
+            ),
+            normalized_attempts,
+        )
+
+    return (
+        ArticleContent(
+            url=article.url,
+            title=sanitized_title,
+            content=sanitized_content,
+            author=sanitized_author,
+            publish_date=article.publish_date,
+            fetch_successful=article.fetch_successful,
+            error_message=article.error_message,
+            content_length=len(sanitized_content),
+            fetch_metadata=article.fetch_metadata,
+        ),
+        tier_attempts,
+    )
+
+
 class V2FetchService:
     """Handles `fetch_article` tasks for source incidents."""
 
@@ -260,6 +323,7 @@ class V2FetchService:
         for url_row in fetchable_urls:
             article = self.article_fetcher.fetch_article(url_row.url)
             tier_attempts = _extract_tier_attempts(article)
+            article, tier_attempts = _validate_article_content(article, tier_attempts)
             is_successful = bool(article.fetch_successful and article.content)
             if not is_successful:
                 for attempt_index, attempt_payload in enumerate(tier_attempts, start=1):

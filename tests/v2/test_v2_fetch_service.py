@@ -269,3 +269,71 @@ def test_fetch_service_skips_enrichment_when_no_article_is_relevant():
     documents = [call.args[1] for call in article_repository.add_document.call_args_list]
     assert documents[0].is_selected_for_enrichment is False
     pipeline_task_repository.enqueue.assert_not_called()
+
+
+def test_fetch_service_strips_nul_bytes_before_persisting():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    pipeline_task_repository = Mock()
+    pipeline_task_repository.get_active_for_target.return_value = None
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.return_value = ArticleContent(
+        url="https://example.com/story",
+        title="University\x00 hit by ransomware",
+        content="Body\x00 text",
+        author="Re\x00porter",
+        publish_date="2026-05-08",
+        fetch_successful=True,
+        error_message=None,
+        content_length=10,
+        fetch_metadata={"selected_tier": "httpclient", "tier_attempts": [{"tier": "httpclient", "success": True}]},
+    )
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident()
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    document = article_repository.add_document.call_args.args[1]
+    assert document.title == "University hit by ransomware"
+    assert document.author == "Reporter"
+    assert document.content_text == "Body text"
+    assert result["articles_saved"] == 1
+
+
+def test_fetch_service_rejects_binary_pdf_payloads():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    pipeline_task_repository = Mock()
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.return_value = ArticleContent(
+        url="https://example.com/document.html",
+        title="",
+        content="%PDF-1.7\x00binary payload",
+        author=None,
+        publish_date=None,
+        fetch_successful=True,
+        error_message=None,
+        content_length=24,
+        fetch_metadata={"selected_tier": "oxylabs", "tier_attempts": [{"tier": "oxylabs", "success": True}]},
+    )
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident()
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert article_repository.add_document.call_count == 0
+    attempt = article_repository.add_fetch_attempt.call_args.args[1]
+    assert attempt.success is False
+    assert attempt.error_code == "binary_content"
+    assert result["articles_failed"] == 1
+    assert result["enrich_tasks_enqueued"] == 0
