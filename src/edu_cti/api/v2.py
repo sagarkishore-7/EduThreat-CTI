@@ -313,6 +313,35 @@ async def get_v2_ransomware_analytics(
     )
 
 
+@router.get("/analytics/mitre")
+async def get_v2_mitre_analytics(
+    status: Optional[List[str]] = Query(None),
+    technique_limit: int = Query(20, ge=1, le=100),
+    per_tactic_limit: int = Query(5, ge=1, le=20),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Return MITRE ATT&CK tactic and technique coverage from canonical enrichments."""
+    statuses = tuple(status) if status else ("open",)
+    cache_key = _public_cache_key(
+        "mitre",
+        _status_cache_fragment(statuses),
+        technique_limit,
+        per_tactic_limit,
+    )
+    cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
+    if cached is not None:
+        return cached
+    payload = read_service.get_mitre_analytics(
+        session,
+        statuses=statuses,
+        technique_limit=technique_limit,
+        per_tactic_limit=per_tactic_limit,
+    )
+    cache_set(cache_key, payload)
+    return payload
+
+
 @router.get("/analytics/trend")
 async def get_v2_analytics_trend(
     status: Optional[List[str]] = Query(None),

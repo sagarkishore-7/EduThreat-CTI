@@ -1201,3 +1201,44 @@ def test_read_service_diamond_summary_aggregates_vertex_coverage():
         "exploited_public_vulnerability",
         "dark_web_posting",
     }
+
+
+def test_read_service_mitre_analytics_aggregates_tactics_and_techniques():
+    canonical_repo = Mock()
+    canonical_repo.count_recent.return_value = 3
+    session = Mock()
+    session.execute.return_value.all.return_value = [
+        (
+            {
+                "mitre_attack_techniques": [
+                    {"tactic": "initial_access", "technique_id": "T1566", "technique_name": "Phishing"},
+                    {"tactic": "impact", "technique_id": "T1486", "technique_name": "Data Encrypted for Impact"},
+                ]
+            },
+        ),
+        (
+            {
+                "mitre_attack_techniques": [
+                    {"tactic": "initial_access", "technique_id": "T1566", "technique_name": "Phishing"},
+                    {"tactic": "execution", "technique_id": "T1059", "technique_name": "Command and Scripting Interpreter"},
+                ]
+            },
+        ),
+        ({},),
+    ]
+
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+
+    payload = service.get_mitre_analytics(session, statuses=("open",), technique_limit=10, per_tactic_limit=2)
+
+    assert payload["overview"]["total_incidents"] == 3
+    assert payload["overview"]["incidents_with_mitre"] == 2
+    assert payload["overview"]["technique_count_total"] == 4
+    assert payload["overview"]["unique_tactic_count"] == 3
+    assert payload["overview"]["unique_technique_count"] == 3
+    assert payload["tactics"][0]["tactic"] == "Initial Access"
+    assert payload["tactics"][0]["incident_count"] == 2
+    assert payload["techniques"][0]["technique_id"] == "T1566"
+    assert payload["techniques"][0]["count"] == 2
+    assert payload["top_techniques_by_tactic"][0]["tactic"] == "Initial Access"
+    assert payload["top_techniques_by_tactic"][0]["techniques"][0]["technique_name"] == "Phishing"

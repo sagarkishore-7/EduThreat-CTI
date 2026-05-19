@@ -7,6 +7,7 @@ from datetime import date, datetime, timedelta, timezone
 import json
 from typing import Any, Optional, Sequence
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.edu_cti_v2.models import (
@@ -2114,6 +2115,110 @@ class V2CanonicalReadService:
             label_key="ransomware_family",
         )
         return {"data": data, "total": sum(item["count"] for item in data)}
+
+    def get_mitre_analytics(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        technique_limit: int = 20,
+        per_tactic_limit: int = 5,
+    ) -> dict[str, Any]:
+        rows = session.execute(
+            select(CanonicalEnrichment.canonical_projection)
+            .join(
+                CanonicalIncident,
+                CanonicalIncident.id == CanonicalEnrichment.canonical_incident_id,
+            )
+            .where(CanonicalIncident.status.in_(tuple(statuses)))
+        ).all()
+
+        total_incidents = int(self.canonical_repository.count_recent(session, statuses=statuses) or 0)
+        incidents_with_mitre = 0
+        technique_count_total = 0
+        tactic_incident_counts: Counter[str] = Counter()
+        tactic_technique_counts: Counter[str] = Counter()
+        technique_counts: Counter[tuple[str, str, str]] = Counter()
+
+        for row in rows:
+            projection = row[0] if isinstance(row, tuple) else getattr(row, "canonical_projection", None)
+            if not isinstance(projection, dict):
+                continue
+            techniques = _as_list(projection.get("mitre_attack_techniques"))
+            if not techniques:
+                continue
+
+            incidents_with_mitre += 1
+            technique_count_total += len(techniques)
+            seen_tactics: set[str] = set()
+
+            for entry in techniques:
+                if not isinstance(entry, dict):
+                    continue
+                tactic = _humanize_slug(str(entry.get("tactic") or "unknown"))
+                technique_id = str(entry.get("technique_id") or "Unknown")
+                technique_name = str(entry.get("technique_name") or technique_id)
+                key = (tactic, technique_id, technique_name)
+                technique_counts[key] += 1
+                tactic_technique_counts[tactic] += 1
+                seen_tactics.add(tactic)
+
+            for tactic in seen_tactics:
+                tactic_incident_counts[tactic] += 1
+
+        denominator = max(total_incidents, 1)
+        tactics = [
+            {
+                "tactic": tactic,
+                "incident_count": count,
+                "incident_percentage": count / denominator * 100.0,
+                "technique_count": tactic_technique_counts[tactic],
+            }
+            for tactic, count in tactic_incident_counts.most_common()
+        ]
+        techniques = [
+            {
+                "tactic": tactic,
+                "technique_id": technique_id,
+                "technique_name": technique_name,
+                "count": count,
+                "percentage": count / max(technique_count_total, 1) * 100.0,
+            }
+            for (tactic, technique_id, technique_name), count in technique_counts.most_common(technique_limit)
+        ]
+
+        top_techniques_by_tactic: list[dict[str, Any]] = []
+        for tactic, _count in tactic_incident_counts.most_common():
+            tactic_items = [
+                {
+                    "technique_id": technique_id,
+                    "technique_name": technique_name,
+                    "count": count,
+                    "percentage": count / max(tactic_technique_counts[tactic], 1) * 100.0,
+                }
+                for (item_tactic, technique_id, technique_name), count in technique_counts.most_common()
+                if item_tactic == tactic
+            ][:per_tactic_limit]
+            top_techniques_by_tactic.append(
+                {
+                    "tactic": tactic,
+                    "techniques": tactic_items,
+                }
+            )
+
+        return {
+            "overview": {
+                "total_incidents": total_incidents,
+                "incidents_with_mitre": incidents_with_mitre,
+                "incidents_with_mitre_share": incidents_with_mitre / denominator * 100.0,
+                "technique_count_total": technique_count_total,
+                "unique_tactic_count": len(tactic_incident_counts),
+                "unique_technique_count": len(technique_counts),
+            },
+            "tactics": tactics,
+            "techniques": techniques,
+            "top_techniques_by_tactic": top_techniques_by_tactic,
+        }
 
     def get_incident_trend(
         self,

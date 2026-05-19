@@ -468,3 +468,72 @@ def test_v2_analytics_trend_endpoint_returns_bucketed_items():
     assert service.called["attack_category"] == "ransomware_encryption"
     assert service.called["bucket"] == "week"
     assert service.called["limit"] == 18
+
+
+def test_v2_mitre_analytics_endpoint_returns_payload():
+    class _ReadService:
+        def __init__(self):
+            self.called = None
+
+        def get_mitre_analytics(self, _session, **kwargs):
+            self.called = kwargs
+            return {
+                "overview": {
+                    "total_incidents": 5,
+                    "incidents_with_mitre": 2,
+                    "incidents_with_mitre_share": 40.0,
+                    "technique_count_total": 4,
+                    "unique_tactic_count": 2,
+                    "unique_technique_count": 3,
+                },
+                "tactics": [
+                    {
+                        "tactic": "Initial Access",
+                        "incident_count": 2,
+                        "incident_percentage": 40.0,
+                        "technique_count": 3,
+                    }
+                ],
+                "techniques": [
+                    {
+                        "tactic": "Initial Access",
+                        "technique_id": "T1566",
+                        "technique_name": "Phishing",
+                        "count": 2,
+                        "percentage": 50.0,
+                    }
+                ],
+                "top_techniques_by_tactic": [
+                    {
+                        "tactic": "Initial Access",
+                        "techniques": [
+                            {
+                                "technique_id": "T1566",
+                                "technique_name": "Phishing",
+                                "count": 2,
+                                "percentage": 66.7,
+                            }
+                        ],
+                    }
+                ],
+            }
+
+    service = _ReadService()
+    client = _build_client(service)
+
+    response = client.get(
+        "/api/v2/analytics/mitre",
+        params={"status": ["open", "excluded"], "technique_limit": 10, "per_tactic_limit": 3},
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["overview"]["incidents_with_mitre"] == 2
+    assert payload["tactics"][0]["tactic"] == "Initial Access"
+    assert payload["techniques"][0]["technique_id"] == "T1566"
+    assert payload["top_techniques_by_tactic"][0]["techniques"][0]["technique_name"] == "Phishing"
+    assert service.called == {
+        "statuses": ("open", "excluded"),
+        "technique_limit": 10,
+        "per_tactic_limit": 3,
+    }
