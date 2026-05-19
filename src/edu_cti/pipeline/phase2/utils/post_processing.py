@@ -1206,25 +1206,41 @@ def apply_extraction_date_fallbacks(
     - Preserve incident_date=null unless we can justify it from relative wording.
     - Never silently copy publication_date into incident_date.
     """
-    publication_date = (
-        _coerce_iso_date(payload.get("publication_date"))
-        or _coerce_iso_date(article_publish_date)
-        or _coerce_iso_date(source_published_date)
-    )
-    if publication_date and not _coerce_iso_date(payload.get("publication_date")):
-        payload["publication_date"] = publication_date
+    existing_publication_date = _coerce_iso_date(payload.get("publication_date"))
+    article_publication_date = _coerce_iso_date(article_publish_date)
+    source_publication_date = _coerce_iso_date(source_published_date)
 
-    source_date = _coerce_iso_date(payload.get("source_published_date")) or _coerce_iso_date(source_published_date)
+    publication_date = existing_publication_date or article_publication_date or source_publication_date
+    if publication_date and not existing_publication_date:
+        payload["publication_date"] = publication_date
+        if not payload.get("publication_date_basis"):
+            if article_publication_date and publication_date == article_publication_date:
+                payload["publication_date_basis"] = "article_metadata_fallback"
+            elif source_publication_date and publication_date == source_publication_date:
+                payload["publication_date_basis"] = "source_metadata_fallback"
+    elif existing_publication_date and not payload.get("publication_date_basis"):
+        payload["publication_date_basis"] = "llm_extracted"
+
+    source_date = _coerce_iso_date(payload.get("source_published_date")) or source_publication_date
     if not source_date:
         source_date = publication_date
     if source_date and not _coerce_iso_date(payload.get("source_published_date")):
         payload["source_published_date"] = source_date
 
-    if not _coerce_iso_date(payload.get("incident_date")):
+    existing_incident_date = _coerce_iso_date(payload.get("incident_date"))
+    if existing_incident_date and not payload.get("incident_date_basis"):
+        precision = str(payload.get("incident_date_precision") or "").strip().lower()
+        if precision in {"approximate", "month_only", "year_only"}:
+            payload["incident_date_basis"] = "llm_relative_or_partial"
+        else:
+            payload["incident_date_basis"] = "llm_extracted"
+
+    if not existing_incident_date:
         derived = _derive_relative_incident_date(article_text, publication_date or source_date)
         if derived is not None:
             incident_date, precision = derived
             payload["incident_date"] = incident_date
+            payload["incident_date_basis"] = "deterministic_relative_to_publication_date"
             current_precision = str(payload.get("incident_date_precision") or "").strip().lower()
             if current_precision in {"", "unknown", "null", "none"}:
                 payload["incident_date_precision"] = precision

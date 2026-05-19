@@ -904,6 +904,7 @@ class TestExtractionDateFallbacks:
         )
 
         assert payload["publication_date"] == "2024-03-20"
+        assert payload["publication_date_basis"] == "article_metadata_fallback"
         assert payload["source_published_date"] == "2024-03-20"
         assert payload["incident_date"] is None
 
@@ -933,7 +934,9 @@ class TestExtractionDateFallbacks:
         )
 
         assert payload["publication_date"] == "2024-03-20"
+        assert payload["publication_date_basis"] == "article_metadata_fallback"
         assert payload["incident_date"] == "2024-03-17"
+        assert payload["incident_date_basis"] == "deterministic_relative_to_publication_date"
         assert payload["incident_date_precision"] == "approximate"
         assert payload["timeline"][0]["date"] == "2024-03-17"
         assert payload["timeline"][0]["date_precision"] == "approximate"
@@ -958,6 +961,26 @@ class TestExtractionDateFallbacks:
 
         assert payload["publication_date"] == "2024-03-15"
         assert payload["incident_date"] is None
+
+    def test_marks_existing_llm_dates_with_basis_without_overwriting(self):
+        payload = {
+            "publication_date": "2024-03-15",
+            "incident_date": "2024-03-14",
+            "incident_date_precision": "day",
+            "timeline": [],
+        }
+
+        apply_extraction_date_fallbacks(
+            payload,
+            article_text="The school disclosed the incident on March 15, 2024 after it happened the day before.",
+            article_publish_date="2024-03-15",
+            source_published_date=None,
+        )
+
+        assert payload["publication_date"] == "2024-03-15"
+        assert payload["publication_date_basis"] == "llm_extracted"
+        assert payload["incident_date"] == "2024-03-14"
+        assert payload["incident_date_basis"] == "llm_extracted"
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

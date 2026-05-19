@@ -199,6 +199,9 @@ CRITICAL OUTPUT REQUIREMENTS:
    - incident_date = date the attack/breach OCCURRED (not when it was reported)
    - publication_date = date this article was published (use the URL or article metadata)
    - RELATIVE DATES: Resolve all relative time expressions using publication_date as the anchor.
+     This applies even when the wording is not English; interpret equivalent phrases
+     such as "last Sunday", "yesterday", "two weeks ago", or their non-English
+     counterparts relative to the provided publication_date.
      Examples (assuming article published 2024-03-15):
      * "last week" → 2024-03-08 (subtract 7 days), set date_precision to "approximate"
      * "last month" → 2024-02-15, set date_precision to "month_only"
