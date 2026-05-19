@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Callable, Dict, List, Optional
 from urllib.parse import urlparse
 
 from sqlalchemy.orm import Session
 
 from src.edu_cti.core.deduplication import is_google_news_wrapper_url, normalize_url
+from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
 from src.edu_cti.sources.rss.googlenews_rss import _resolve_google_news_article_url
 from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
 from src.edu_cti_v2.models import PipelineTask, SourceIncident, SourceIncidentUrl
@@ -42,6 +44,14 @@ _BLOCKED_DISCOVERY_HOSTS = (
     "reddit.com",
     "intellibot.app",
 )
+_COLLECTIVE_DISCOVERY_RE = re.compile(
+    r"^(?:\d+\s+)?(?:universities|colleges|schools|school districts?|districts|campuses|providers|students)\b",
+    re.IGNORECASE,
+)
+_COMMENTARY_DISCOVERY_RE = re.compile(
+    r"^(?:the\s+cyber\s+threat\s+to|who\s+are|what\s+are|old-school|cyber\s+threat\s+to)\b",
+    re.IGNORECASE,
+)
 
 
 def _clean_discovery_name(value: Optional[str]) -> Optional[str]:
@@ -68,6 +78,12 @@ def _filter_source_institution_name(source_incident: SourceIncident) -> Optional
     if not institution_name:
         return None
     if _normalize_identity_for_comparison(institution_name) == _normalize_identity_for_comparison(source_incident.raw_title):
+        return None
+    if is_headline_format(institution_name, source_incident.raw_title):
+        return None
+    if _COLLECTIVE_DISCOVERY_RE.match(institution_name):
+        return None
+    if _COMMENTARY_DISCOVERY_RE.match(institution_name):
         return None
     return institution_name
 

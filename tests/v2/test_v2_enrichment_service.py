@@ -215,3 +215,137 @@ def test_enrichment_service_passes_reenrich_hint_and_forces_canonicalize():
     assert outcome["canonicalize_tasks_enqueued"] == 1
     queued = pipeline_task_repo.enqueue.call_args.args[1]
     assert queued.payload["trigger"] == "reenrich"
+
+
+def test_enrichment_service_repairs_headline_identity_with_source_anchor():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "University hit by ransomware",
+        "attack_category": "ransomware_encryption",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "University hit by ransomware",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    document = _article_document(incident)
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["enriched"] is True
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.typed_enrichment["institution_name"] == "Penn State University"
+    assert saved.raw_extraction["institution_name"] == "Penn State University"
+    assert saved.raw_extraction["institution_name_basis"] == "source_anchor_fallback"
+
+
+def test_enrichment_service_rejects_collective_commentary_without_specific_victim():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "27 Universities to Acquire Military Technology Campus Safety Magazine",
+        "attack_category": "espionage",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "27 Universities to Acquire Military Technology Campus Safety Magazine",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.raw_title = "Chinese Hackers Target 27 Universities to Acquire Military Technology"
+    incident.raw_institution_name = incident.raw_title
+    incident.raw_victim_name = None
+    document = _article_document(incident)
+    document.title = incident.raw_title
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["enriched"] is False
+    assert outcome["is_education_related"] is False
+    assert outcome["canonicalize_tasks_enqueued"] == 0
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.typed_enrichment is None
+    assert saved.raw_extraction["_not_education_related"] is True
+    assert "specific victim" in saved.raw_extraction["_reason"].lower()
+
+
+def test_enrichment_service_rejects_victim_drift_from_source_anchor():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Check Point",
+        "attack_category": "ddos_application",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Check Point",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.raw_title = "DDoS attack on the website of a university in Jerusalem, Israel"
+    incident.raw_subtitle = "Hebrew University of Jerusalem (HUJI) / האוניברסיטה העברית בירושלים"
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    document = _article_document(incident)
+    document.title = "Israeli cyber security website briefly taken down in cyberattack"
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["enriched"] is False
+    assert outcome["is_education_related"] is False
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.typed_enrichment is None
+    assert "drifted from source anchor" in saved.raw_extraction["_reason"]

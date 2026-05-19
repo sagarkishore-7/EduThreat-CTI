@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import re
 from typing import Any, Dict, Optional, Tuple
 
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.enrichment import IncidentEnricher
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
 from src.edu_cti.pipeline.phase2.storage import ArticleContent
+from src.edu_cti.pipeline.phase2.utils.deduplication import clean_institution_name, institution_names_match
+from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
 from src.edu_cti_v2.models import PipelineTask, SourceEnrichment
 from src.edu_cti_v2.repositories import (
     ArticleRepository,
@@ -16,6 +19,24 @@ from src.edu_cti_v2.repositories import (
     SourceEnrichmentRepository,
 )
 from src.edu_cti_v2.source_identity import recover_source_identity
+
+_COLLECTIVE_IDENTITY_RE = re.compile(
+    r"^(?:\d+\s+)?(?:universities|colleges|schools|school districts?|districts|campuses|providers|students)\b",
+    re.IGNORECASE,
+)
+_GENERIC_SINGLE_IDENTITY_RE = re.compile(
+    r"^(?:(?:the\s+website\s+of\s+)?(?:a|an|the)\s+)?"
+    r"(?:public\s+|private\s+|state\s+|local\s+|regional\s+)?"
+    r"(?:university|college|school|academy|institute|polytechnic|district|"
+    r"school district|community college|technical college|research university|research institute)"
+    r"(?:\s+in\b.*)?$",
+    re.IGNORECASE,
+)
+_COMMENTARY_IDENTITY_RE = re.compile(
+    r"^(?:the\s+cyber\s+threat\s+to|who\s+are|what\s+are|old-school|cyber\s+threat\s+to)\b",
+    re.IGNORECASE,
+)
+_GENERIC_INDUSTRY_RE = re.compile(r"\bindustry\b", re.IGNORECASE)
 
 
 def source_incident_to_base_incident(
@@ -77,6 +98,106 @@ def source_incident_to_base_incident(
 
 def _strip_storage_debug(raw_json_data: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in raw_json_data.items() if key != "_storage_debug"}
+
+
+def _clean_identity(value: Optional[str]) -> Optional[str]:
+    cleaned = clean_institution_name(value).strip()
+    return cleaned or None
+
+
+def _looks_invalid_primary_identity(
+    value: Optional[str],
+    *,
+    title: Optional[str],
+    cleaned_value: Optional[str] = None,
+) -> bool:
+    raw_text = str(value or "").strip()
+    text = str(cleaned_value or value or "").strip()
+    if not text:
+        return True
+    if raw_text and is_headline_format(raw_text, title):
+        return True
+    if is_headline_format(text, title):
+        return True
+    if _COLLECTIVE_IDENTITY_RE.match(text):
+        return True
+    if _GENERIC_SINGLE_IDENTITY_RE.match(text):
+        return True
+    if _COMMENTARY_IDENTITY_RE.match(text):
+        return True
+    lowered = text.lower()
+    if any(marker in lowered for marker in ("websites of", "website of", "multiple universities", "many universities")):
+        return True
+    if _GENERIC_INDUSTRY_RE.search(text) and "university" not in lowered and "college" not in lowered and "school" not in lowered:
+        return True
+    words = text.split()
+    if len(words) >= 10:
+        return True
+    return False
+
+
+def _mark_non_specific_victim(
+    raw_json_data: Dict[str, Any],
+    *,
+    reason: str,
+) -> Dict[str, Any]:
+    updated = dict(raw_json_data)
+    updated["is_edu_cyber_incident"] = False
+    updated["_not_education_related"] = True
+    updated["_reason"] = reason
+    existing_reasoning = str(updated.get("education_relevance_reasoning") or "").strip()
+    if reason not in existing_reasoning:
+        updated["education_relevance_reasoning"] = (
+            f"{existing_reasoning} {reason}".strip() if existing_reasoning else reason
+        )
+    return updated
+
+
+def _repair_or_reject_primary_identity(
+    source_incident,
+    *,
+    raw_json_data: Dict[str, Any],
+    typed_enrichment: Optional[Dict[str, Any]],
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], bool]:
+    source_identity = recover_source_identity(
+        raw_institution_name=source_incident.raw_institution_name,
+        raw_victim_name=source_incident.raw_victim_name,
+        raw_subtitle=source_incident.raw_subtitle,
+        raw_title=source_incident.raw_title,
+    )
+    if _looks_invalid_primary_identity(source_identity, title=source_incident.raw_title):
+        source_identity = None
+    extracted_identity = (
+        raw_json_data.get("institution_name")
+        or raw_json_data.get("institution_name_en")
+        or raw_json_data.get("vendor_name")
+        or raw_json_data.get("vendor_name_en")
+        or (typed_enrichment or {}).get("institution_name")
+        or (typed_enrichment or {}).get("vendor_name")
+    )
+    cleaned_extracted = _clean_identity(extracted_identity)
+    title = source_incident.raw_title
+
+    if _looks_invalid_primary_identity(extracted_identity, title=title, cleaned_value=cleaned_extracted):
+        if source_identity:
+            raw_json_data = dict(raw_json_data)
+            raw_json_data["institution_name"] = source_identity
+            raw_json_data["institution_name_basis"] = "source_anchor_fallback"
+            if typed_enrichment is not None:
+                typed_enrichment = dict(typed_enrichment)
+                typed_enrichment["institution_name"] = source_identity
+            return raw_json_data, typed_enrichment, False
+        reason = "Article does not identify a specific victim institution or vendor."
+        return _mark_non_specific_victim(raw_json_data, reason=reason), None, True
+
+    if source_identity and cleaned_extracted and not institution_names_match(cleaned_extracted, source_identity, threshold=80):
+        reason = (
+            f"Extracted victim '{cleaned_extracted}' drifted from source anchor "
+            f"'{source_identity}'."
+        )
+        return _mark_non_specific_victim(raw_json_data, reason=reason), None, True
+
+    return raw_json_data, typed_enrichment, False
 
 
 class V2EnrichmentService:
@@ -192,6 +313,16 @@ class V2EnrichmentService:
         if isinstance(raw_json_data, dict):
             is_education_related = raw_json_data.get("is_edu_cyber_incident")
             if is_education_related is None and raw_json_data.get("_not_education_related"):
+                is_education_related = False
+
+        if result is not None and isinstance(raw_json_data, dict) and is_education_related is not False:
+            raw_json_data, typed_enrichment, rejected = _repair_or_reject_primary_identity(
+                source_incident,
+                raw_json_data=raw_json_data,
+                typed_enrichment=typed_enrichment,
+            )
+            if rejected:
+                result = None
                 is_education_related = False
 
         enrichment = existing_enrichment

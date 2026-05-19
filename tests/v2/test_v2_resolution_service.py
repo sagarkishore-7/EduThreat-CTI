@@ -234,3 +234,13 @@ def test_discovery_payload_drops_google_headline_as_institution_name():
     payload = source_incident_to_discovery_payload(incident)
 
     assert payload["institution_name"] is None
+
+
+def test_discovery_payload_drops_collective_commentary_institution_name():
+    incident = _source_incident(with_fetchable_url=False)
+    incident.raw_title = "Chinese Hackers Target 27 Universities to Acquire Military Technology"
+    incident.raw_institution_name = "27 Universities to Acquire Military Technology Campus Safety Magazine"
+
+    payload = source_incident_to_discovery_payload(incident)
+
+    assert payload["institution_name"] is None
