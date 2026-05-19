@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
+import json
 from typing import Any, Optional, Sequence
 
 from sqlalchemy.orm import Session
@@ -79,6 +80,90 @@ def _serialize_fetch_attempt(attempt: ArticleFetchAttempt) -> dict[str, Any]:
         "error_message": attempt.error_message,
         "response_metadata": attempt.response_metadata or {},
     }
+
+
+def _value_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict, tuple, set)):
+        return bool(value)
+    return True
+
+
+def _extract_field_provenance_map(raw_provenance: dict[str, Any] | None) -> dict[str, Any]:
+    payload = raw_provenance or {}
+    nested = payload.get("field_sources")
+    if isinstance(nested, dict):
+        return nested
+    return payload if isinstance(payload, dict) else {}
+
+
+def _extract_source_disclosure_document(raw_provenance: dict[str, Any] | None) -> dict[str, Any]:
+    payload = raw_provenance or {}
+    disclosure = payload.get("source_disclosure")
+    return disclosure if isinstance(disclosure, dict) else {}
+
+
+def _display_disclosure_value(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return "Yes" if value else "No"
+    if isinstance(value, (int, float)):
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        return f"{value}"
+    if isinstance(value, list):
+        parts = [_display_disclosure_value(item) for item in value]
+        return ", ".join(part for part in parts if part)
+    if isinstance(value, dict):
+        return json.dumps(value, sort_keys=True)
+    text = str(value).strip()
+    return text or None
+
+
+def _disclosure_fingerprint(value: Any) -> str:
+    return json.dumps(value, sort_keys=True, ensure_ascii=True, default=str)
+
+
+_SCORE_BREAKDOWN_LABELS = {
+    "source_rank": "Source Trust",
+    "structured_field_coverage": "Field Coverage",
+    "summary_richness": "Summary Depth",
+    "timeline_depth": "Timeline Depth",
+    "named_victim_bonus": "Named Victim",
+    "incident_date_bonus": "Incident Date",
+    "actor_or_family_bonus": "Actor/Family",
+    "country_bonus": "Country",
+    "identity_title_alignment_bonus": "Title Match",
+    "identity_title_alignment_penalty": "Title Mismatch",
+    "enrichment_confidence_bonus": "LLM Confidence",
+}
+
+
+def _build_selected_source_reasons(selected_source_summary: dict[str, Any], source_count: int) -> list[str]:
+    reasons: list[str] = []
+    survivor_score = selected_source_summary.get("survivor_score")
+    if survivor_score is not None:
+        reasons.append(f"Highest survivor score across {source_count} supporting source(s)")
+
+    breakdown = selected_source_summary.get("score_breakdown") or {}
+    ordered_positive = [
+        (key, int(value))
+        for key, value in breakdown.items()
+        if isinstance(value, (int, float)) and value > 0
+    ]
+    ordered_positive.sort(key=lambda item: item[1], reverse=True)
+    for key, _value in ordered_positive[:3]:
+        label = _SCORE_BREAKDOWN_LABELS.get(key)
+        if label:
+            reasons.append(label)
+
+    if not reasons:
+        reasons.append("Selected as the strongest supporting source after canonical scoring")
+    return reasons
 
 
 def _summary_from_canonical(
@@ -653,6 +738,155 @@ def _collect_urls(
     return urls
 
 
+def _build_source_disclosure_payload(
+    field_provenance: dict[str, Any] | None,
+    memberships: list[dict[str, Any]],
+) -> dict[str, Any]:
+    disclosure_doc = _extract_source_disclosure_document(field_provenance)
+    sources = disclosure_doc.get("sources") if isinstance(disclosure_doc, dict) else None
+    if not isinstance(sources, list) or not sources:
+        return {}
+
+    tracked_field_labels = disclosure_doc.get("tracked_field_labels")
+    if not isinstance(tracked_field_labels, dict):
+        tracked_field_labels = {}
+
+    membership_by_incident_id = {
+        str(item.get("source_incident_id")): item
+        for item in memberships
+        if item.get("source_incident_id")
+    }
+    selected_source_enrichment_id = disclosure_doc.get("selected_source_enrichment_id")
+    source_summaries: list[dict[str, Any]] = []
+    selected_source_summary: dict[str, Any] | None = None
+
+    for source in sources:
+        if not isinstance(source, dict):
+            continue
+        source_incident_id = str(source.get("source_incident_id") or "")
+        membership = membership_by_incident_id.get(source_incident_id, {})
+        disclosed_fields = source.get("disclosed_fields")
+        if not isinstance(disclosed_fields, list):
+            disclosed_fields = [
+                key
+                for key, value in (source.get("field_values") or {}).items()
+                if _value_present(value)
+            ]
+        summary = {
+            "source_enrichment_id": source.get("source_enrichment_id"),
+            "source_incident_id": source.get("source_incident_id"),
+            "source_name": source.get("source_name") or membership.get("source_name"),
+            "source_group": source.get("source_group") or membership.get("source_group"),
+            "raw_title": source.get("raw_title") or membership.get("raw_title"),
+            "raw_subtitle": source.get("raw_subtitle") or membership.get("raw_subtitle"),
+            "source_published_at": source.get("source_published_at") or membership.get("source_published_at"),
+            "is_primary_member": bool(source.get("is_primary_member")),
+            "survivor_score": source.get("survivor_score"),
+            "score_breakdown": source.get("score_breakdown") or {},
+            "field_count": int(source.get("field_count") or len(disclosed_fields)),
+            "disclosed_fields": disclosed_fields,
+            "source_urls": membership.get("source_urls") or [],
+        }
+        source_summaries.append(summary)
+        if str(source.get("source_enrichment_id")) == str(selected_source_enrichment_id):
+            selected_source_summary = summary
+
+    source_summaries.sort(
+        key=lambda item: (
+            not item.get("is_primary_member"),
+            -float(item.get("survivor_score") or 0.0),
+            item.get("source_name") or "",
+        )
+    )
+    if selected_source_summary is None and source_summaries:
+        selected_source_summary = source_summaries[0]
+
+    field_names: list[str] = []
+    seen_fields: set[str] = set()
+    for source in sources:
+        field_values = source.get("field_values")
+        if not isinstance(field_values, dict):
+            continue
+        for field_name, value in field_values.items():
+            if not _value_present(value) or field_name in seen_fields:
+                continue
+            seen_fields.add(field_name)
+            field_names.append(field_name)
+
+    field_differences: list[dict[str, Any]] = []
+    for field_name in field_names:
+        reporting_sources: list[dict[str, Any]] = []
+        present_fingerprints: set[str] = set()
+        selected_value = None
+        selected_display_value = None
+        selected_source_name = None
+        sources_with_value = 0
+        for source in sources:
+            if not isinstance(source, dict):
+                continue
+            field_values = source.get("field_values") or {}
+            raw_value = field_values.get(field_name)
+            display_value = _display_disclosure_value(raw_value)
+            has_value = _value_present(raw_value)
+            if has_value:
+                sources_with_value += 1
+                present_fingerprints.add(_disclosure_fingerprint(raw_value))
+            entry = {
+                "source_enrichment_id": source.get("source_enrichment_id"),
+                "source_incident_id": source.get("source_incident_id"),
+                "source_name": source.get("source_name"),
+                "is_primary_member": bool(source.get("is_primary_member")),
+                "has_value": has_value,
+                "value": raw_value,
+                "display_value": display_value,
+            }
+            reporting_sources.append(entry)
+            if str(source.get("source_enrichment_id")) == str(selected_source_enrichment_id):
+                selected_value = raw_value
+                selected_display_value = display_value
+                selected_source_name = source.get("source_name")
+
+        sources_missing_value = max(len(sources) - sources_with_value, 0)
+        has_disparity = len(present_fingerprints) > 1 or sources_missing_value > 0
+        field_differences.append(
+            {
+                "field": field_name,
+                "label": tracked_field_labels.get(field_name) or field_name.replace("_", " ").title(),
+                "selected_value": selected_value,
+                "selected_display_value": selected_display_value,
+                "selected_source_name": selected_source_name,
+                "sources_with_value": sources_with_value,
+                "sources_missing_value": sources_missing_value,
+                "distinct_value_count": len(present_fingerprints),
+                "has_disparity": has_disparity,
+                "reporting_sources": reporting_sources,
+            }
+        )
+
+    field_differences.sort(
+        key=lambda item: (
+            not item.get("has_disparity", False),
+            -int(item.get("sources_missing_value") or 0),
+            -int(item.get("distinct_value_count") or 0),
+            item.get("label") or "",
+        )
+    )
+
+    selected_source_reason = None
+    if selected_source_summary is not None:
+        selected_source_reason = {
+            **selected_source_summary,
+            "selection_basis": disclosure_doc.get("selection_basis") or "highest_survivor_score",
+            "why_selected": _build_selected_source_reasons(selected_source_summary, len(source_summaries)),
+        }
+
+    return {
+        "selected_source_reason": selected_source_reason,
+        "source_summaries": source_summaries,
+        "field_differences": field_differences,
+    }
+
+
 class V2CanonicalReadService:
     """Build API-friendly read models from canonical incident tables."""
 
@@ -818,6 +1052,12 @@ class V2CanonicalReadService:
             session,
             f"canonical:{canonical_incident_id}",
         )
+        serialized_memberships = [
+            _serialize_membership(detail["membership"], source_details=detail)
+            for detail in membership_details
+        ]
+        raw_field_provenance = (getattr(enrichment, "field_provenance", None) if enrichment else None) or {}
+        source_disclosure = _build_source_disclosure_payload(raw_field_provenance, serialized_memberships)
         diamond_model = _build_diamond_projection(
             canonical,
             enrichment,
@@ -830,15 +1070,13 @@ class V2CanonicalReadService:
                 membership_count=len(membership_details),
             ),
             "resolution_metadata": canonical.resolution_metadata or {},
-            "field_provenance": (getattr(enrichment, "field_provenance", None) if enrichment else None) or {},
+            "field_provenance": _extract_field_provenance_map(raw_field_provenance),
+            "source_disclosure": source_disclosure,
             "canonical_projection": (getattr(enrichment, "canonical_projection", None) if enrichment else None) or {},
             "diamond_model": diamond_model,
             "selected_source": selected_source,
             "fetch_attempts": fetch_attempts,
-            "memberships": [
-                _serialize_membership(detail["membership"], source_details=detail)
-                for detail in membership_details
-            ],
+            "memberships": serialized_memberships,
             "timeline": [_serialize_timeline_event(event) for event in timeline],
             "snapshot": (snapshot.state_payload if snapshot else None) or {},
         }
@@ -1132,6 +1370,7 @@ class V2CanonicalReadService:
             "llm_enriched": bool(detail.get("selected_source_enrichment_id")),
             "llm_enriched_at": detail.get("updated_at"),
             "sources": _to_legacy_sources(detail.get("memberships") or []),
+            "source_disclosure": detail.get("source_disclosure") or {},
             "notes": projection.get("notes"),
             "data_breached": data_breached,
             "data_exfiltrated": data_exfiltrated,

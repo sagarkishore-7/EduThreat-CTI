@@ -171,6 +171,8 @@ def test_read_service_list_legacy_incidents_returns_old_pagination_shape():
 
 def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     canonical_id = str(uuid4())
+    selected_source_enrichment_id = uuid4()
+    source_incident_id = uuid4()
     canonical = SimpleNamespace(
         id=uuid4(),
         institution_name="Penn State University",
@@ -195,14 +197,8 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
         updated_at=datetime(2026, 5, 9, 9, 0, tzinfo=timezone.utc),
         resolution_metadata={"last_match_type": "url_exact"},
     )
-    enrichment = SimpleNamespace(
-        selected_source_enrichment_id=uuid4(),
-        analytics_projection={"attack_category": "ransomware_encryption"},
-        field_provenance={"institution_name": "abc"},
-        canonical_projection={"institution_name": "Penn State University"},
-    )
     membership = SimpleNamespace(
-        source_incident_id=uuid4(),
+        source_incident_id=source_incident_id,
         match_type="url_exact",
         match_score=100.0,
         survivor_score=55.0,
@@ -210,6 +206,43 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
         field_contribution={"institution_name": "abc"},
         matcher_version="v2",
         matched_at=datetime(2026, 5, 9, 9, 30, tzinfo=timezone.utc),
+    )
+    enrichment = SimpleNamespace(
+        selected_source_enrichment_id=selected_source_enrichment_id,
+        analytics_projection={"attack_category": "ransomware_encryption"},
+        field_provenance={
+            "field_sources": {"institution_name": "abc"},
+            "source_disclosure": {
+                "selection_basis": "highest_survivor_score",
+                "selected_source_enrichment_id": str(selected_source_enrichment_id),
+                "tracked_field_labels": {
+                    "institution_name": "Institution",
+                    "country": "Country",
+                    "incident_date": "Incident Date",
+                },
+                "sources": [
+                    {
+                        "source_enrichment_id": str(selected_source_enrichment_id),
+                        "source_incident_id": str(source_incident_id),
+                        "source_name": "googlenews_rss",
+                        "source_group": "rss",
+                        "raw_title": "Penn State ransomware update",
+                        "source_published_at": "2026-05-09T08:30:00+00:00",
+                        "is_primary_member": True,
+                        "survivor_score": 55.0,
+                        "score_breakdown": {"source_rank": 20, "structured_field_coverage": 8, "identity_title_alignment_bonus": 8},
+                        "field_count": 3,
+                        "disclosed_fields": ["institution_name", "country", "incident_date"],
+                        "field_values": {
+                            "institution_name": "Penn State University",
+                            "country": "United States",
+                            "incident_date": "2026-05-08",
+                        },
+                    }
+                ],
+            },
+        },
+        canonical_projection={"institution_name": "Penn State University"},
     )
     timeline_event = SimpleNamespace(
         seq_order=1,
@@ -291,10 +324,13 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
 
     assert detail is not None
     assert detail["display_name"] == "Penn State University"
+    assert detail["field_provenance"]["institution_name"] == "abc"
     assert detail["memberships"][0]["match_type"] == "url_exact"
     assert detail["memberships"][0]["source_name"] == "googlenews_rss"
     assert detail["memberships"][0]["raw_institution_name"] == "Penn State University"
     assert detail["memberships"][0]["source_urls"][0]["resolved_url"] == "https://example.com/article"
+    assert detail["source_disclosure"]["selected_source_reason"]["source_name"] == "googlenews_rss"
+    assert detail["source_disclosure"]["field_differences"][0]["field"] in {"institution_name", "country", "incident_date"}
     assert detail["timeline"][0]["event_description"] == "Systems were encrypted."
     assert detail["snapshot"]["timeline_count"] == 1
     assert detail["selected_source"]["source_name"] == "googlenews_rss"
@@ -309,6 +345,8 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
 
 def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
     canonical_id = str(uuid4())
+    selected_source_enrichment_id = uuid4()
+    source_incident_id = uuid4()
     canonical = SimpleNamespace(
         id=uuid4(),
         institution_name="Penn State University",
@@ -333,19 +371,8 @@ def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
         updated_at=datetime(2026, 5, 9, 9, 0, tzinfo=timezone.utc),
         resolution_metadata={},
     )
-    enrichment = SimpleNamespace(
-        selected_source_enrichment_id=uuid4(),
-        analytics_projection={},
-        field_provenance={},
-        canonical_projection={
-            "attack_dynamics": {"attack_vector": "phishing_email"},
-            "data_breached": True,
-            "records_affected_exact": 5000,
-            "mitre_attack_techniques": [{"technique_id": "T1486"}],
-        },
-    )
     membership = SimpleNamespace(
-        source_incident_id=uuid4(),
+        source_incident_id=source_incident_id,
         match_type="url_exact",
         match_score=100.0,
         survivor_score=55.0,
@@ -353,6 +380,46 @@ def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
         field_contribution={},
         matcher_version="v2",
         matched_at=datetime(2026, 5, 9, 9, 30, tzinfo=timezone.utc),
+    )
+    enrichment = SimpleNamespace(
+        selected_source_enrichment_id=selected_source_enrichment_id,
+        analytics_projection={},
+        field_provenance={
+            "field_sources": {"records_affected_exact": "def"},
+            "source_disclosure": {
+                "selection_basis": "highest_survivor_score",
+                "selected_source_enrichment_id": str(selected_source_enrichment_id),
+                "tracked_field_labels": {
+                    "records_affected_exact": "Records Affected",
+                    "attack_category": "Attack Category",
+                },
+                "sources": [
+                    {
+                        "source_enrichment_id": str(selected_source_enrichment_id),
+                        "source_incident_id": str(source_incident_id),
+                        "source_name": "googlenews_rss",
+                        "source_group": "rss",
+                        "raw_title": "Penn State ransomware update",
+                        "source_published_at": "2026-05-09T08:30:00+00:00",
+                        "is_primary_member": True,
+                        "survivor_score": 55.0,
+                        "score_breakdown": {"source_rank": 20, "structured_field_coverage": 8},
+                        "field_count": 2,
+                        "disclosed_fields": ["records_affected_exact", "attack_category"],
+                        "field_values": {
+                            "records_affected_exact": 5000,
+                            "attack_category": "ransomware_encryption",
+                        },
+                    }
+                ],
+            },
+        },
+        canonical_projection={
+            "attack_dynamics": {"attack_vector": "phishing_email"},
+            "data_breached": True,
+            "records_affected_exact": 5000,
+            "mitre_attack_techniques": [{"technique_id": "T1486"}],
+        },
     )
     canonical_repo = Mock()
     canonical_repo.get_by_id.return_value = canonical
@@ -438,6 +505,7 @@ def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
     assert detail["timeline"][0]["date"] == "2026-05-08"
     assert detail["sources"][0]["source"] == "googlenews_rss"
     assert detail["sources"][0]["source_urls"][1]["url"] == "https://example.com/supporting-report"
+    assert detail["source_disclosure"]["selected_source_reason"]["selection_basis"] == "highest_survivor_score"
     assert detail["data_breached"] is True
     assert detail["records_affected_exact"] == 5000
 

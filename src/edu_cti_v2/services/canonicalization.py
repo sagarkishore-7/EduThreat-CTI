@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from datetime import date, datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from sqlalchemy import select
@@ -25,6 +27,7 @@ from src.edu_cti_v2.models import (
     CanonicalMembership,
     CanonicalTimelineEvent,
     PipelineTask,
+    SourceIncident,
     SourceEnrichment,
 )
 from src.edu_cti_v2.normalization import normalize_ransomware_family, normalize_threat_actor_name
@@ -89,6 +92,38 @@ _ORGANIZATIONAL_SUBUNIT_SUFFIXES = (
     "school_of_",
 )
 
+_DISCLOSURE_FIELD_LABELS = {
+    "institution_name": "Institution",
+    "institution_type": "Institution Type",
+    "vendor_name": "Vendor",
+    "country": "Country",
+    "region": "Region",
+    "city": "City",
+    "incident_date": "Incident Date",
+    "date_precision": "Date Precision",
+    "attack_category": "Attack Category",
+    "attack_vector": "Attack Vector",
+    "threat_actor_name": "Threat Actor",
+    "ransomware_family": "Ransomware Family",
+    "severity": "Severity",
+    "canonical_summary": "Incident Summary",
+    "records_affected_exact": "Records Affected",
+    "records_affected_min": "Records Affected Min",
+    "records_affected_max": "Records Affected Max",
+    "data_categories": "Data Categories",
+    "data_exfiltrated": "Data Exfiltrated",
+    "data_breached": "Data Breached",
+    "systems_affected": "Systems Affected",
+    "critical_systems_affected": "Critical Systems Affected",
+    "third_party_vendor_impact": "Third-Party Vendor Impact",
+    "vendor_name_detail": "Named Vendor",
+    "total_individuals_affected": "Individuals Affected",
+    "ransom_amount_exact": "Ransom Amount",
+    "public_disclosure": "Public Disclosure",
+    "public_disclosure_date": "Public Disclosure Date",
+    "recovery_duration_days": "Recovery Duration",
+}
+
 
 def _first_present(*values: Any) -> Any:
     for value in values:
@@ -143,6 +178,41 @@ def _count_present_fields(payload: Any) -> int:
     if isinstance(payload, str):
         return 1 if payload.strip() else 0
     return 1
+
+
+def _value_present(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, (list, dict, tuple, set)):
+        return bool(value)
+    return True
+
+
+def _normalize_disclosure_value(value: Any) -> Any:
+    if isinstance(value, datetime):
+        return value.isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, list):
+        items = [_normalize_disclosure_value(item) for item in value]
+        return [item for item in items if _value_present(item)]
+    if isinstance(value, dict):
+        normalized = {}
+        for key, item in value.items():
+            normalized_item = _normalize_disclosure_value(item)
+            if _value_present(normalized_item):
+                normalized[str(key)] = normalized_item
+        return normalized or None
+    if isinstance(value, str):
+        text = value.strip()
+        return text or None
+    return value
+
+
+def _json_fingerprint(value: Any) -> str:
+    return json.dumps(_normalize_disclosure_value(value), sort_keys=True, ensure_ascii=True)
 
 
 def _looks_generic_institution_label(value: Optional[str]) -> bool:
@@ -699,37 +769,47 @@ def _apply_projection_to_canonical(
             canonical.canonical_summary = projection.get("canonical_summary")
 
 
-def _member_score(source_name: str, projection: Dict[str, Any], source_enrichment: SourceEnrichment) -> int:
+def _build_member_score_breakdown(
+    source_name: str,
+    projection: Dict[str, Any],
+    source_enrichment: SourceEnrichment,
+) -> Dict[str, int]:
     typed = projection.get("typed_enrichment") or {}
     timeline = projection.get("timeline") or []
     identity = projection.get("vendor_name") or projection.get("institution_name")
     raw_title = str(projection.get("raw_title") or "").strip().lower()
     raw_subtitle = str(projection.get("raw_subtitle") or "").strip().lower()
-    score = 0
-    score += _SURVIVOR_SOURCE_RANK.get(source_name, 0)
-    score += _count_present_fields(typed)
-    score += min(len(str(projection.get("canonical_summary") or "")) // 120, 10)
-    score += min(len(timeline), 10) * 3
+
+    breakdown: Dict[str, int] = {
+        "source_rank": int(_SURVIVOR_SOURCE_RANK.get(source_name, 0)),
+        "structured_field_coverage": int(_count_present_fields(typed)),
+        "summary_richness": int(min(len(str(projection.get("canonical_summary") or "")) // 120, 10)),
+        "timeline_depth": int(min(len(timeline), 10) * 3),
+    }
     if projection.get("institution_name"):
-        score += 10
+        breakdown["named_victim_bonus"] = 10
     if projection.get("incident_date"):
-        score += 6
+        breakdown["incident_date_bonus"] = 6
     if projection.get("ransomware_family") or projection.get("threat_actor_name"):
-        score += 4
+        breakdown["actor_or_family_bonus"] = 4
     if projection.get("country_code"):
-        score += 2
+        breakdown["country_bonus"] = 2
     if identity:
         normalized_identity = _normalized_identity(identity)
         if normalized_identity:
             tokens = [token for token in normalized_identity.split() if len(token) > 2]
             if tokens and any(token in raw_title or token in raw_subtitle for token in tokens[:4]):
-                score += 8
+                breakdown["identity_title_alignment_bonus"] = 8
             elif raw_title:
-                score -= 4
+                breakdown["identity_title_alignment_penalty"] = -4
     confidence = source_enrichment.enrichment_confidence
     if confidence is not None:
-        score += int(float(confidence) * 10)
-    return score
+        breakdown["enrichment_confidence_bonus"] = int(float(confidence) * 10)
+    return breakdown
+
+
+def _member_score(source_name: str, projection: Dict[str, Any], source_enrichment: SourceEnrichment) -> int:
+    return sum(_build_member_score_breakdown(source_name, projection, source_enrichment).values())
 
 
 def _build_field_provenance(
@@ -758,6 +838,161 @@ def _build_field_provenance(
         if projection.get(key) is not None:
             provenance[key] = enrichment_id
     return provenance
+
+
+def _extract_disclosure_field_values(
+    projection: Dict[str, Any],
+) -> Dict[str, Any]:
+    typed = projection.get("typed_enrichment") or {}
+    data_impact = typed.get("data_impact") or {}
+    system_impact = typed.get("system_impact") or {}
+    user_impact = typed.get("user_impact") or {}
+    financial_impact = typed.get("financial_impact") or {}
+    recovery_metrics = typed.get("recovery_metrics") or {}
+    transparency_metrics = typed.get("transparency_metrics") or {}
+
+    values = {
+        "institution_name": projection.get("institution_name"),
+        "institution_type": projection.get("institution_type"),
+        "vendor_name": projection.get("vendor_name"),
+        "country": projection.get("country"),
+        "region": projection.get("region"),
+        "city": projection.get("city"),
+        "incident_date": projection.get("incident_date"),
+        "date_precision": projection.get("date_precision"),
+        "attack_category": projection.get("attack_category"),
+        "attack_vector": projection.get("attack_vector"),
+        "threat_actor_name": projection.get("threat_actor_name"),
+        "ransomware_family": projection.get("ransomware_family"),
+        "severity": projection.get("severity"),
+        "canonical_summary": projection.get("canonical_summary"),
+        "records_affected_exact": data_impact.get("records_affected_exact"),
+        "records_affected_min": data_impact.get("records_affected_min"),
+        "records_affected_max": data_impact.get("records_affected_max"),
+        "data_categories": data_impact.get("data_categories") or data_impact.get("data_types_affected"),
+        "data_exfiltrated": data_impact.get("data_exfiltrated"),
+        "data_breached": typed.get("data_breached"),
+        "systems_affected": system_impact.get("systems_affected"),
+        "critical_systems_affected": system_impact.get("critical_systems_affected"),
+        "third_party_vendor_impact": system_impact.get("third_party_vendor_impact"),
+        "vendor_name_detail": system_impact.get("vendor_name"),
+        "total_individuals_affected": user_impact.get("total_individuals_affected"),
+        "ransom_amount_exact": financial_impact.get("ransom_amount_exact"),
+        "public_disclosure": transparency_metrics.get("public_disclosure"),
+        "public_disclosure_date": transparency_metrics.get("public_disclosure_date"),
+        "recovery_duration_days": recovery_metrics.get("recovery_duration_days"),
+    }
+    normalized: Dict[str, Any] = {}
+    for key, value in values.items():
+        normalized_value = _normalize_disclosure_value(value)
+        if _value_present(normalized_value):
+            normalized[key] = normalized_value
+    return normalized
+
+
+def _build_source_disclosure_document(
+    canonical: CanonicalIncident,
+    member_documents: List[Dict[str, Any]],
+    *,
+    selected_source_enrichment_id: Optional[str],
+) -> Dict[str, Any]:
+    selected_enrichment_id = str(selected_source_enrichment_id) if selected_source_enrichment_id else None
+    source_entries: List[Dict[str, Any]] = []
+    field_contributors: Dict[str, List[str]] = {}
+
+    for document in member_documents:
+        enrichment = document["source_enrichment"]
+        source_incident = document["source_incident"]
+        membership = document["membership"]
+        projection = document["projection"]
+        field_values = _extract_disclosure_field_values(projection)
+        source_enrichment_id = str(enrichment.id)
+        source_incident_id = str(source_incident.id)
+        for field_name in field_values:
+            field_contributors.setdefault(field_name, []).append(source_enrichment_id)
+
+        source_entries.append(
+            {
+                "source_enrichment_id": source_enrichment_id,
+                "source_incident_id": source_incident_id,
+                "source_name": source_incident.source_name,
+                "source_group": source_incident.source_group,
+                "raw_title": source_incident.raw_title,
+                "raw_subtitle": source_incident.raw_subtitle,
+                "source_published_at": (
+                    source_incident.source_published_at.isoformat() if source_incident.source_published_at else None
+                ),
+                "is_primary_member": bool(membership.is_primary_member),
+                "survivor_score": float(membership.survivor_score or 0.0),
+                "score_breakdown": document["score_breakdown"],
+                "field_count": len(field_values),
+                "disclosed_fields": sorted(field_values.keys()),
+                "field_values": field_values,
+            }
+        )
+
+    source_entries.sort(
+        key=lambda item: (
+            not item["is_primary_member"],
+            -float(item.get("survivor_score") or 0.0),
+            item.get("source_name") or "",
+        )
+    )
+
+    canonical_fields = {
+        "institution_name": _normalize_disclosure_value(canonical.institution_name),
+        "institution_type": _normalize_disclosure_value(canonical.institution_type),
+        "vendor_name": _normalize_disclosure_value(canonical.vendor_name),
+        "country": _normalize_disclosure_value(canonical.country),
+        "region": _normalize_disclosure_value(canonical.region),
+        "city": _normalize_disclosure_value(canonical.city),
+        "incident_date": _normalize_disclosure_value(canonical.incident_date),
+        "date_precision": _normalize_disclosure_value(canonical.date_precision),
+        "attack_category": _normalize_disclosure_value(canonical.attack_category),
+        "attack_vector": _normalize_disclosure_value(canonical.attack_vector),
+        "threat_actor_name": _normalize_disclosure_value(canonical.threat_actor_name),
+        "ransomware_family": _normalize_disclosure_value(canonical.ransomware_family),
+        "severity": _normalize_disclosure_value(canonical.severity),
+        "canonical_summary": _normalize_disclosure_value(canonical.canonical_summary),
+    }
+
+    field_sources: Dict[str, str] = {}
+    preferred_entries = sorted(
+        source_entries,
+        key=lambda item: (
+            str(item.get("source_enrichment_id")) != selected_enrichment_id,
+            not item.get("is_primary_member"),
+            -float(item.get("survivor_score") or 0.0),
+        ),
+    )
+    for field_name, canonical_value in canonical_fields.items():
+        if not _value_present(canonical_value):
+            continue
+        canonical_fingerprint = _json_fingerprint(canonical_value)
+        for entry in preferred_entries:
+            entry_value = entry.get("field_values", {}).get(field_name)
+            if not _value_present(entry_value):
+                continue
+            if _json_fingerprint(entry_value) == canonical_fingerprint:
+                field_sources[field_name] = str(entry["source_enrichment_id"])
+                break
+
+    selected_source = next(
+        (entry for entry in source_entries if str(entry.get("source_enrichment_id")) == selected_enrichment_id),
+        None,
+    )
+    return {
+        "field_sources": field_sources,
+        "field_contributors": field_contributors,
+        "source_disclosure": {
+            "version": 1,
+            "selection_basis": "highest_survivor_score",
+            "selected_source_enrichment_id": selected_enrichment_id,
+            "selected_source_incident_id": selected_source.get("source_incident_id") if selected_source else None,
+            "tracked_field_labels": _DISCLOSURE_FIELD_LABELS,
+            "sources": source_entries,
+        },
+    }
 
 
 class V2CanonicalizationService:
@@ -984,6 +1219,7 @@ class V2CanonicalizationService:
         self,
         session: Session,
         canonical: CanonicalIncident,
+        source_incident: SourceIncident,
         source_enrichment: SourceEnrichment,
         projection: Dict[str, Any],
     ) -> CanonicalEnrichment:
@@ -993,15 +1229,59 @@ class V2CanonicalizationService:
         if existing is None:
             existing = CanonicalEnrichment(canonical_incident_id=canonical.id)
 
-        member_enrichments = session.execute(
-            select(SourceEnrichment)
-            .join(CanonicalMembership, CanonicalMembership.source_incident_id == SourceEnrichment.source_incident_id)
+        member_rows = session.execute(
+            select(CanonicalMembership, SourceEnrichment, SourceIncident)
+            .join(SourceEnrichment, SourceEnrichment.source_incident_id == CanonicalMembership.source_incident_id)
+            .join(SourceIncident, SourceIncident.id == CanonicalMembership.source_incident_id)
             .where(CanonicalMembership.canonical_incident_id == canonical.id)
-        ).scalars().all()
-        merged_ids = [enrichment.id for enrichment in member_enrichments if enrichment.id is not None]
+        ).all()
+        if not isinstance(member_rows, list):
+            member_rows = []
+        member_documents: List[Dict[str, Any]] = []
+        merged_ids = []
+        for membership, member_enrichment, source_incident in member_rows:
+            if member_enrichment.id is not None:
+                merged_ids.append(member_enrichment.id)
+            member_projection = build_source_projection(source_incident, member_enrichment)
+            member_documents.append(
+                {
+                    "membership": membership,
+                    "source_enrichment": member_enrichment,
+                    "source_incident": source_incident,
+                    "projection": member_projection,
+                    "score_breakdown": _build_member_score_breakdown(
+                        source_incident.source_name,
+                        member_projection,
+                        member_enrichment,
+                    ),
+                }
+            )
+        if not member_documents:
+            if source_enrichment.id is not None:
+                merged_ids.append(source_enrichment.id)
+            member_documents.append(
+                {
+                    "membership": SimpleNamespace(
+                        is_primary_member=str(canonical.primary_source_incident_id or source_incident.id) == str(source_incident.id),
+                        survivor_score=float(_member_score(source_incident.source_name, projection, source_enrichment)),
+                    ),
+                    "source_enrichment": source_enrichment,
+                    "source_incident": source_incident,
+                    "projection": projection,
+                    "score_breakdown": _build_member_score_breakdown(
+                        source_incident.source_name,
+                        projection,
+                        source_enrichment,
+                    ),
+                }
+            )
 
         typed = projection.get("typed_enrichment") or {}
-        field_provenance = _build_field_provenance(projection, source_enrichment.id)
+        field_provenance = _build_source_disclosure_document(
+            canonical,
+            member_documents,
+            selected_source_enrichment_id=str(source_enrichment.id) if source_enrichment.id else None,
+        )
         existing.selected_source_enrichment_id = source_enrichment.id
         existing.merged_from_source_enrichment_ids = merged_ids
         existing.canonical_projection = typed
@@ -1291,6 +1571,7 @@ class V2CanonicalizationService:
         canonical_enrichment = self._upsert_canonical_enrichment(
             session,
             canonical,
+            source_incident,
             source_enrichment,
             projection,
         )
