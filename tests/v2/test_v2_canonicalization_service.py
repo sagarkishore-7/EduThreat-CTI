@@ -1516,3 +1516,68 @@ def test_canonicalization_service_reassigns_existing_membership_to_better_vendor
     assert str(existing_membership.canonical_incident_id) == str(better_canonical.id)
     assert old_canonical.status == "excluded"
     assert old_canonical.primary_source_incident_id is None
+
+
+def test_canonicalization_service_reopens_excluded_canonical_when_identity_is_repaired():
+    canonical_repo = Mock()
+    incident = _source_incident(event_key="reopen-excluded")
+    enrichment = _source_enrichment(incident)
+
+    existing_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="reopen-excluded",
+        status="excluded",
+        institution_name="a university institute in Germany",
+        is_education_related=False,
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={"last_missing_identity_source_incident_id": str(incident.id)},
+    )
+    existing_membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=existing_canonical.id,
+        source_incident_id=incident.id,
+        match_type="seed",
+        match_score=100.0,
+        survivor_score=-1.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+
+    canonical_repo.get_membership_for_source_incident.return_value = existing_membership
+    canonical_repo.get_by_id.return_value = existing_canonical
+    canonical_repo.list_memberships.return_value = [existing_membership]
+    canonical_repo.find_by_url_candidates.return_value = []
+    canonical_repo.find_name_date_candidates.return_value = []
+    canonical_repo.find_identity_candidates.return_value = []
+
+    source_repo = Mock()
+    source_repo.get_by_id.return_value = incident
+
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    service._upsert_canonical_enrichment = Mock(return_value=Mock(id=uuid4()))  # type: ignore[attr-defined]
+    session = Mock()
+    session.flush.return_value = None
+    session.execute.return_value.scalars.return_value.all.return_value = [enrichment]
+    session.query.return_value.filter_by.return_value.delete.return_value = None
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is True
+    assert existing_canonical.status == "open"
+    assert existing_canonical.is_education_related is True
+    assert existing_canonical.primary_source_incident_id == incident.id

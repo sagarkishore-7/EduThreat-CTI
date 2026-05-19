@@ -1737,6 +1737,8 @@ class V2CanonicalizationService:
         _apply_projection_to_canonical(canonical, projection)
         canonical.first_seen_at = min(canonical.first_seen_at, source_incident.collected_at)
         canonical.last_seen_at = max(canonical.last_seen_at, source_incident.collected_at)
+        canonical.status = "open"
+        canonical.is_education_related = True
         canonical.resolution_metadata = {
             **(canonical.resolution_metadata or {}),
             "last_match_type": match_type,
