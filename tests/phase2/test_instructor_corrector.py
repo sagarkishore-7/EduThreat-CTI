@@ -102,6 +102,7 @@ class TestCriticalFieldsCorrectionValidators:
         assert m.attack_category is None
         assert m.institution_type is None
         assert m.attack_vector is None
+        assert m.country is None
         assert m.ransomware_family is None
         assert m.records_affected_exact is None
 
@@ -133,6 +134,10 @@ class TestCriticalFieldsCorrectionValidators:
     def test_records_affected_exact_integer(self):
         m = CriticalFieldsCorrection(records_affected_exact=52000)
         assert m.records_affected_exact == 52000
+
+    def test_country_alias_normalized(self):
+        m = CriticalFieldsCorrection(country="USA")
+        assert m.country == "United States"
 
 
 # ── count_null_critical_fields tests ─────────────────────────────────────────
@@ -371,6 +376,35 @@ class TestApplyInstructorCorrections:
         assert result["institution_type"] == "k12_school"
         # Existing ransomware_family should not be overwritten
         assert result["attack_dynamics"]["ransomware_family"] == "LockBit"
+
+    def test_correction_fills_null_country(self):
+        """country correction now fills the same critical field that triggers the retry."""
+        data = {
+            "attack_category": "ransomware_encryption",
+            "institution_type": None,
+            "country": None,
+            "attack_dynamics": {"attack_vector": "phishing_email"},
+        }
+        ollama_client = self._mock_ollama_client()
+
+        mock_correction = CriticalFieldsCorrection(
+            institution_type="university",
+            country="USA",
+        )
+        mock_ic = MagicMock()
+        mock_ic.chat.completions.create.return_value = mock_correction
+
+        with _available_patch(), _instructor_patch(mock_ic):
+            result, corrected = apply_instructor_corrections(
+                json_data=data,
+                article_text="University ransomware incident in the United States.",
+                institution_name="State University",
+                ollama_client=ollama_client,
+            )
+
+        assert corrected is True
+        assert result["institution_type"] == "university"
+        assert result["country"] == "United States"
 
     def test_correction_fills_ransomware_family_in_nested_dynamics(self):
         """ransomware_family correction writes into attack_dynamics."""

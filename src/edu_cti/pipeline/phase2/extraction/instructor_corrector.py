@@ -23,6 +23,8 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, field_validator
 
+from src.edu_cti.core.countries import normalize_country
+
 logger = logging.getLogger(__name__)
 
 try:
@@ -130,6 +132,7 @@ class CriticalFieldsCorrection(BaseModel):
     attack_category: Optional[str] = None
     institution_type: Optional[str] = None
     attack_vector: Optional[str] = None
+    country: Optional[str] = None
     ransomware_family: Optional[str] = None
     records_affected_exact: Optional[int] = None
 
@@ -174,6 +177,16 @@ class CriticalFieldsCorrection(BaseModel):
                 f"Choose from: {valid}"
             )
         return normalized
+
+    @field_validator("country")
+    @classmethod
+    def validate_country(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        text = str(v).strip()
+        if not text or text.lower() in _NULL_SENTINELS:
+            return None
+        return normalize_country(text)
 
 
 # ── Field detection helpers ───────────────────────────────────────────────────
@@ -267,6 +280,7 @@ def apply_instructor_corrections(
             "attack_category": json_data.get("attack_category"),
             "institution_type": json_data.get("institution_type"),
             "attack_vector": _extract_attack_vector(json_data),
+            "country": json_data.get("country"),
             "ransomware_family": (
                 (json_data.get("attack_dynamics") or {}).get("ransomware_family")
                 or json_data.get("ransomware_family")
@@ -324,6 +338,12 @@ def apply_instructor_corrections(
             elif not _extract_attack_vector(json_data):
                 json_data["attack_vector"] = corrected.attack_vector
                 applied.append(f"attack_vector={corrected.attack_vector}")
+
+        if corrected.country:
+            existing = json_data.get("country")
+            if not existing or str(existing).lower() in _NULL_SENTINELS:
+                json_data["country"] = corrected.country
+                applied.append(f"country={corrected.country}")
 
         if corrected.ransomware_family:
             ad = json_data.get("attack_dynamics")
