@@ -17,6 +17,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from src.edu_cti.pipeline.phase2.utils.post_processing import (
+    apply_extraction_date_fallbacks,
     _guard_timeline_dates,
     apply_post_processing,
     extract_ransomware_family,
@@ -884,6 +885,79 @@ class TestApplyPostProcessing:
         }
         apply_post_processing(flat, None)
         assert flat.get("gdpr_breach") is True
+
+
+class TestExtractionDateFallbacks:
+    def test_backfills_publication_date_from_article_metadata(self):
+        payload = {
+            "publication_date": None,
+            "incident_date": None,
+            "incident_date_precision": "unknown",
+            "timeline": [],
+        }
+
+        apply_extraction_date_fallbacks(
+            payload,
+            article_text="The university said systems were impacted recently.",
+            article_publish_date="2024-03-20",
+            source_published_date=None,
+        )
+
+        assert payload["publication_date"] == "2024-03-20"
+        assert payload["source_published_date"] == "2024-03-20"
+        assert payload["incident_date"] is None
+
+    def test_derives_incident_date_from_last_weekday(self):
+        payload = {
+            "publication_date": None,
+            "incident_date": None,
+            "incident_date_precision": "unknown",
+            "timeline": [
+                {
+                    "event_type": "initial_access",
+                    "event_description": "Attackers gained access last Sunday.",
+                    "date": None,
+                    "date_precision": None,
+                }
+            ],
+        }
+
+        apply_extraction_date_fallbacks(
+            payload,
+            article_text=(
+                "Jonathan Greig March 20th, 2024. "
+                "The district said the ransomware attack began last Sunday."
+            ),
+            article_publish_date="2024-03-20",
+            source_published_date=None,
+        )
+
+        assert payload["publication_date"] == "2024-03-20"
+        assert payload["incident_date"] == "2024-03-17"
+        assert payload["incident_date_precision"] == "approximate"
+        assert payload["timeline"][0]["date"] == "2024-03-17"
+        assert payload["timeline"][0]["date_precision"] == "approximate"
+
+    def test_does_not_promote_publication_date_to_incident_date_without_support(self):
+        payload = {
+            "publication_date": None,
+            "incident_date": None,
+            "incident_date_precision": "unknown",
+            "timeline": [],
+        }
+
+        apply_extraction_date_fallbacks(
+            payload,
+            article_text=(
+                "Jonathan Greig March 15th, 2024. "
+                "The university confirmed it is investigating the incident."
+            ),
+            article_publish_date="2024-03-15",
+            source_published_date=None,
+        )
+
+        assert payload["publication_date"] == "2024-03-15"
+        assert payload["incident_date"] is None
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
+from datetime import date as _date, datetime, timedelta
 from typing import Any, Dict, Optional
 
 # ── Ransomware family keyword scan ───────────────────────────────────────────────
@@ -76,6 +76,63 @@ _RANSOMWARE_KEYWORDS: list[tuple[str, str]] = [
     ("snatch ransomware", "snatch"),
     ("prometheus ransomware", "prometheus"),
 ]
+
+_WEEKDAY_TO_INDEX = {
+    "monday": 0,
+    "tuesday": 1,
+    "wednesday": 2,
+    "thursday": 3,
+    "friday": 4,
+    "saturday": 5,
+    "sunday": 6,
+}
+
+_RELATIVE_NUMBER_WORDS = {
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+}
+
+_RELATIVE_WEEKDAY_RE = re.compile(
+    r"\b(?:last|past)\s+"
+    r"(monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+    re.IGNORECASE,
+)
+_RELATIVE_COUNT_RE = re.compile(
+    r"\b(?:(\d+)|("
+    + "|".join(_RELATIVE_NUMBER_WORDS.keys())
+    + r"))\s+(day|week|month|year)s?\s+ago\b",
+    re.IGNORECASE,
+)
+_YESTERDAY_RE = re.compile(r"\byesterday\b", re.IGNORECASE)
+_LAST_WEEK_RE = re.compile(r"\blast\s+week\b", re.IGNORECASE)
+_LAST_MONTH_RE = re.compile(r"\blast\s+month\b", re.IGNORECASE)
+_LAST_YEAR_RE = re.compile(r"\blast\s+year\b", re.IGNORECASE)
+_EARLIER_THIS_MONTH_RE = re.compile(r"\bearlier\s+this\s+month\b", re.IGNORECASE)
+_EARLIER_THIS_YEAR_RE = re.compile(r"\bearlier\s+this\s+year\b", re.IGNORECASE)
+
+_OCCURRENCE_EVENT_TYPES = {
+    "initial_access", "reconnaissance", "exploitation",
+    "lateral_movement", "privilege_escalation",
+    "data_exfiltration", "encryption_started",
+    "ransom_demand", "impact", "operational_impact",
+}
+
+_RESPONSE_EVENT_TYPES = {
+    "discovery", "containment", "eradication", "recovery",
+    "notification", "disclosure", "public_statement",
+    "investigation", "remediation", "law_enforcement_contact",
+    "systems_restored", "response_action", "security_improvement",
+}
 
 # ── Canadian city → province (unambiguous only) ─────────────────────────────────
 _CA_CITY_TO_PROVINCE: dict[str, str] = {
@@ -990,6 +1047,189 @@ def _sanitize_defunct_ransomware(flat_data: Dict[str, Any]) -> None:
             flat_data["ransomware_family"] = None
     except Exception:
         pass
+
+
+def _coerce_iso_date(value: Any) -> Optional[str]:
+    """Normalize a date-like value to YYYY-MM-DD when possible."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+
+    if len(text) >= 10 and re.fullmatch(r"\d{4}-\d{2}-\d{2}", text[:10]):
+        return text[:10]
+
+    cleaned = re.sub(r"(\d{1,2})(st|nd|rd|th)\b", r"\1", text, flags=re.IGNORECASE)
+    if cleaned.endswith("Z"):
+        cleaned = cleaned[:-1] + "+00:00"
+
+    try:
+        from dateutil import parser as date_parser
+
+        return date_parser.parse(cleaned, fuzzy=True).date().isoformat()
+    except Exception:
+        pass
+
+    try:
+        return datetime.fromisoformat(cleaned).date().isoformat()
+    except Exception:
+        return None
+
+
+def _subtract_months(anchor: _date, months: int) -> _date:
+    total_months = (anchor.year * 12 + anchor.month - 1) - months
+    year = total_months // 12
+    month = total_months % 12 + 1
+    day = min(
+        anchor.day,
+        (
+            _date(year + (month // 12), (month % 12) + 1, 1) - timedelta(days=1)
+            if month < 12
+            else _date(year + 1, 1, 1) - timedelta(days=1)
+        ).day,
+    )
+    return _date(year, month, day)
+
+
+def _derive_relative_incident_date(
+    article_text: Optional[str],
+    publication_date: Optional[str],
+) -> Optional[tuple[str, str]]:
+    """Resolve conservative relative-date phrases against article publication date."""
+    publication_iso = _coerce_iso_date(publication_date)
+    if not publication_iso or not article_text:
+        return None
+
+    try:
+        anchor = _date.fromisoformat(publication_iso)
+    except ValueError:
+        return None
+
+    text = re.sub(r"\s+", " ", article_text).strip().lower()
+    if not text:
+        return None
+
+    weekday_match = _RELATIVE_WEEKDAY_RE.search(text)
+    if weekday_match:
+        target_idx = _WEEKDAY_TO_INDEX[weekday_match.group(1).lower()]
+        delta_days = (anchor.weekday() - target_idx) % 7
+        if delta_days == 0:
+            delta_days = 7
+        return ((anchor - timedelta(days=delta_days)).isoformat(), "approximate")
+
+    if _YESTERDAY_RE.search(text):
+        return ((anchor - timedelta(days=1)).isoformat(), "day")
+
+    count_match = _RELATIVE_COUNT_RE.search(text)
+    if count_match:
+        raw_count = count_match.group(1) or count_match.group(2)
+        unit = count_match.group(3).lower()
+        count = int(raw_count) if raw_count.isdigit() else _RELATIVE_NUMBER_WORDS.get(raw_count.lower(), 0)
+        if count > 0:
+            if unit == "day":
+                precision = "day" if count == 1 else "approximate"
+                return ((anchor - timedelta(days=count)).isoformat(), precision)
+            if unit == "week":
+                return ((anchor - timedelta(days=count * 7)).isoformat(), "approximate")
+            if unit == "month":
+                return (_subtract_months(anchor, count).isoformat(), "month_only")
+            if unit == "year":
+                return (f"{anchor.year - count}-01-01", "year_only")
+
+    if _LAST_WEEK_RE.search(text):
+        return ((anchor - timedelta(days=7)).isoformat(), "approximate")
+
+    if _LAST_MONTH_RE.search(text):
+        return (_subtract_months(anchor, 1).isoformat(), "month_only")
+
+    if _LAST_YEAR_RE.search(text):
+        return (f"{anchor.year - 1}-01-01", "year_only")
+
+    if _EARLIER_THIS_MONTH_RE.search(text):
+        return (_date(anchor.year, anchor.month, 1).isoformat(), "month_only")
+
+    if _EARLIER_THIS_YEAR_RE.search(text):
+        return (_date(anchor.year, 1, 1).isoformat(), "year_only")
+
+    return None
+
+
+def _fill_timeline_list_dates(payload: Dict[str, Any]) -> None:
+    timeline = payload.get("timeline")
+    if not isinstance(timeline, list):
+        return
+
+    incident_date = _coerce_iso_date(payload.get("incident_date"))
+    published_date = _coerce_iso_date(payload.get("source_published_date")) or _coerce_iso_date(
+        payload.get("publication_date")
+    )
+    if not incident_date and not published_date:
+        return
+
+    changed = False
+    for event in timeline:
+        if not isinstance(event, dict) or event.get("date"):
+            continue
+        event_type = str(event.get("event_type") or "").strip().lower() or None
+        if event_type in _OCCURRENCE_EVENT_TYPES and incident_date:
+            event["date"] = incident_date
+            event["date_precision"] = event.get("date_precision") or "approximate"
+            changed = True
+        elif event_type in _RESPONSE_EVENT_TYPES:
+            anchor = published_date or incident_date
+            if anchor:
+                event["date"] = anchor
+                event["date_precision"] = event.get("date_precision") or "approximate"
+                changed = True
+        elif event_type in (None, "", "other") and incident_date:
+            event["date"] = incident_date
+            event["date_precision"] = event.get("date_precision") or "approximate"
+            changed = True
+
+    if changed:
+        payload["timeline"] = timeline
+
+
+def apply_extraction_date_fallbacks(
+    payload: Dict[str, Any],
+    *,
+    article_text: Optional[str],
+    article_publish_date: Optional[str],
+    source_published_date: Optional[str],
+) -> None:
+    """
+    Deterministically repair date fields after LLM extraction.
+
+    Rules:
+    - Backfill publication_date from article/source metadata when missing.
+    - Preserve incident_date=null unless we can justify it from relative wording.
+    - Never silently copy publication_date into incident_date.
+    """
+    publication_date = (
+        _coerce_iso_date(payload.get("publication_date"))
+        or _coerce_iso_date(article_publish_date)
+        or _coerce_iso_date(source_published_date)
+    )
+    if publication_date and not _coerce_iso_date(payload.get("publication_date")):
+        payload["publication_date"] = publication_date
+
+    source_date = _coerce_iso_date(payload.get("source_published_date")) or _coerce_iso_date(source_published_date)
+    if not source_date:
+        source_date = publication_date
+    if source_date and not _coerce_iso_date(payload.get("source_published_date")):
+        payload["source_published_date"] = source_date
+
+    if not _coerce_iso_date(payload.get("incident_date")):
+        derived = _derive_relative_incident_date(article_text, publication_date or source_date)
+        if derived is not None:
+            incident_date, precision = derived
+            payload["incident_date"] = incident_date
+            current_precision = str(payload.get("incident_date_precision") or "").strip().lower()
+            if current_precision in {"", "unknown", "null", "none"}:
+                payload["incident_date_precision"] = precision
+
+    _fill_timeline_list_dates(payload)
 
 
 def _guard_timeline_dates(flat_data: Dict[str, Any], incident_row: Optional[Any]) -> None:

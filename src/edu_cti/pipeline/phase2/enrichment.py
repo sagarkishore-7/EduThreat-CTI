@@ -30,6 +30,7 @@ from src.edu_cti.pipeline.phase2.extraction.extraction_schema import (
 )
 from src.edu_cti.pipeline.phase2.extraction.extraction_prompt import PROMPT_TEMPLATE
 from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import json_to_cti_enrichment
+from src.edu_cti.pipeline.phase2.utils.post_processing import apply_extraction_date_fallbacks
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ _STORAGE_DEBUG_KEY = "_storage_debug"
 _PROMPT_VERSION = "phase2_prompt_v3"
 _SCHEMA_VERSION = "phase2_schema_v1"
 _MAPPER_VERSION = "phase2_mapper_v1"
-_POST_PROCESSING_VERSION = "phase2_post_processing_v1"
+_POST_PROCESSING_VERSION = "phase2_post_processing_v2"
 
 
 def _build_target_institution_line(incident: BaseIncident, title: str) -> str:
@@ -748,6 +749,13 @@ class IncidentEnricher:
                 if _corrected:
                     _metrics.increment("instructor_correction_applied_total")
 
+            apply_extraction_date_fallbacks(
+                json_data,
+                article_text=combined_text,
+                article_publish_date=primary_article.publish_date,
+                source_published_date=getattr(incident, "source_published_date", None),
+            )
+
             json_data = _attach_storage_debug(
                 json_data=json_data,
                 llm_client=self.llm_client,
@@ -1223,6 +1231,13 @@ class IncidentEnricher:
             )
             if _corrected:
                 _metrics.increment("instructor_correction_applied_total")
+
+        apply_extraction_date_fallbacks(
+            merged,
+            article_text=combined_text,
+            article_publish_date=primary_article.publish_date,
+            source_published_date=getattr(incident, "source_published_date", None),
+        )
 
         merged = _attach_storage_debug(
             json_data=merged,

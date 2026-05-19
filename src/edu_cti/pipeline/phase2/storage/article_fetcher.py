@@ -101,6 +101,13 @@ _STRUCTURED_PUBLISH_DATE_KEYS = {
     "date_created",
 }
 
+_VISIBLE_HEADER_DATE_RE = re.compile(
+    r"\b(?:jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|jun(?:e)?|"
+    r"jul(?:y)?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|"
+    r"dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4}\b",
+    re.IGNORECASE,
+)
+
 
 def _resolve_google_news_url(url: str) -> str:
     """Resolve Google News redirect URLs to actual article URLs.
@@ -1466,7 +1473,13 @@ class ArticleFetcher:
                 
                 if raw_date:
                     break
-        
+
+        if not raw_date:
+            top_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:800]
+            match = _VISIBLE_HEADER_DATE_RE.search(top_text)
+            if match:
+                raw_date = match.group(0)
+
         if not raw_date:
             return None
         

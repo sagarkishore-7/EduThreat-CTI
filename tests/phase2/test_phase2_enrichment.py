@@ -194,6 +194,23 @@ class TestArticleFetcher:
         assert fetcher._extract_publish_date(soup) == "2024-11-15"
         assert fetcher._extract_author(soup) == "Jane Doe"
 
+    def test_extracts_visible_header_publish_date_when_metadata_missing(self):
+        fetcher = ArticleFetcher(http_client=Mock())
+        soup = BeautifulSoup(
+            """
+            <html><body>
+            <main>
+              <h1>Pennsylvania’s Scranton School District dealing with ransomware attack</h1>
+              <div>Jonathan Greig March 15th, 2024</div>
+              <p>Schools in Scranton are dealing with a ransomware attack.</p>
+            </main>
+            </body></html>
+            """,
+            "html.parser",
+        )
+
+        assert fetcher._extract_publish_date(soup) == "2024-03-15"
+
     def test_fetch_article_success(self):
         """Fetcher should return the first successful article from the fallback chain."""
         fetcher = ArticleFetcher(http_client=Mock())
