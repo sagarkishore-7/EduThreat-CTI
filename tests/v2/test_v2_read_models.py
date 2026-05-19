@@ -211,7 +211,7 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
         selected_source_enrichment_id=selected_source_enrichment_id,
         analytics_projection={"attack_category": "ransomware_encryption"},
         field_provenance={
-            "field_sources": {"institution_name": "abc"},
+            "field_sources": {"institution_name": str(selected_source_enrichment_id)},
             "source_disclosure": {
                 "selection_basis": "highest_survivor_score",
                 "selected_source_enrichment_id": str(selected_source_enrichment_id),
@@ -324,13 +324,17 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
 
     assert detail is not None
     assert detail["display_name"] == "Penn State University"
-    assert detail["field_provenance"]["institution_name"] == "abc"
+    assert detail["field_provenance"]["institution_name"] == str(selected_source_enrichment_id)
     assert detail["memberships"][0]["match_type"] == "url_exact"
     assert detail["memberships"][0]["source_name"] == "googlenews_rss"
     assert detail["memberships"][0]["raw_institution_name"] == "Penn State University"
     assert detail["memberships"][0]["source_urls"][0]["resolved_url"] == "https://example.com/article"
     assert detail["source_disclosure"]["selected_source_reason"]["source_name"] == "googlenews_rss"
     assert detail["source_disclosure"]["field_differences"][0]["field"] in {"institution_name", "country", "incident_date"}
+    assert any(
+        item.get("resolved_source_name") == "googlenews_rss"
+        for item in detail["source_disclosure"]["field_differences"]
+    )
     assert detail["timeline"][0]["event_description"] == "Systems were encrypted."
     assert detail["snapshot"]["timeline_count"] == 1
     assert detail["selected_source"]["source_name"] == "googlenews_rss"
@@ -385,7 +389,7 @@ def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
         selected_source_enrichment_id=selected_source_enrichment_id,
         analytics_projection={},
         field_provenance={
-            "field_sources": {"records_affected_exact": "def"},
+            "field_sources": {"records_affected_exact": str(selected_source_enrichment_id)},
             "source_disclosure": {
                 "selection_basis": "highest_survivor_score",
                 "selected_source_enrichment_id": str(selected_source_enrichment_id),
@@ -506,6 +510,10 @@ def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
     assert detail["sources"][0]["source"] == "googlenews_rss"
     assert detail["sources"][0]["source_urls"][1]["url"] == "https://example.com/supporting-report"
     assert detail["source_disclosure"]["selected_source_reason"]["selection_basis"] == "highest_survivor_score"
+    assert any(
+        item.get("resolved_source_name") == "googlenews_rss"
+        for item in detail["source_disclosure"]["field_differences"]
+    )
     assert detail["data_breached"] is True
     assert detail["records_affected_exact"] == 5000
 

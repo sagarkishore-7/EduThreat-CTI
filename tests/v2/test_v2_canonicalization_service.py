@@ -1,10 +1,11 @@
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
 from src.edu_cti_v2.models import CanonicalIncident, CanonicalMembership, SourceEnrichment, SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.services import V2CanonicalizationService, build_source_projection
-from src.edu_cti_v2.services.canonicalization import _identity_match_quality
+from src.edu_cti_v2.services.canonicalization import _build_merged_projection, _identity_match_quality
 
 
 def _source_incident(*, event_key: str = "story-1", url: str = "https://example.com/article") -> SourceIncident:
@@ -437,6 +438,66 @@ def test_build_source_projection_drops_generic_identity_labels():
     projection = build_source_projection(incident, enrichment)
 
     assert projection["institution_name"] is None
+
+
+def test_build_merged_projection_backfills_missing_deep_fields_from_supporting_sources():
+    selected_incident = _source_incident(event_key="selected-story")
+    selected_enrichment = _source_enrichment(selected_incident)
+    selected_enrichment.typed_enrichment["system_impact"] = {
+        "systems_affected": ["email"],
+    }
+    selected_enrichment.typed_enrichment["data_impact"] = {}
+    selected_enrichment.typed_enrichment["user_impact"] = {}
+    selected_enrichment.typed_enrichment["attack_dynamics"].pop("attack_vector", None)
+    selected_projection = build_source_projection(selected_incident, selected_enrichment)
+
+    supporting_incident = _source_incident(event_key="supporting-story", url="https://example.com/supporting-article")
+    supporting_enrichment = _source_enrichment(supporting_incident)
+    supporting_enrichment.typed_enrichment["attack_dynamics"]["attack_vector"] = "stolen_credentials"
+    supporting_enrichment.typed_enrichment["system_impact"] = {
+        "systems_affected": ["email", "student_portal"],
+        "critical_systems_affected": True,
+    }
+    supporting_enrichment.typed_enrichment["data_impact"] = {
+        "records_affected_exact": 5000,
+        "data_categories": ["student_pii", "employee_pii"],
+    }
+    supporting_enrichment.typed_enrichment["user_impact"] = {
+        "total_individuals_affected": 5000,
+    }
+    supporting_projection = build_source_projection(supporting_incident, supporting_enrichment)
+
+    member_documents = [
+        {
+            "membership": SimpleNamespace(is_primary_member=True, survivor_score=120.0),
+            "source_enrichment": selected_enrichment,
+            "source_incident": selected_incident,
+            "projection": selected_projection,
+        },
+        {
+            "membership": SimpleNamespace(is_primary_member=False, survivor_score=100.0),
+            "source_enrichment": supporting_enrichment,
+            "source_incident": supporting_incident,
+            "projection": supporting_projection,
+        },
+    ]
+
+    merged_projection, projection_field_sources = _build_merged_projection(
+        selected_projection,
+        member_documents,
+        selected_source_enrichment_id=str(selected_enrichment.id),
+    )
+
+    assert merged_projection["attack_vector"] == "stolen_credentials"
+    assert merged_projection["typed_enrichment"]["data_impact"]["records_affected_exact"] == 5000
+    assert merged_projection["typed_enrichment"]["user_impact"]["total_individuals_affected"] == 5000
+    assert merged_projection["typed_enrichment"]["system_impact"]["critical_systems_affected"] is True
+    assert merged_projection["typed_enrichment"]["system_impact"]["systems_affected"] == ["email", "student_portal"]
+    assert projection_field_sources["data_impact.records_affected_exact"] == [str(supporting_enrichment.id)]
+    assert projection_field_sources["system_impact.systems_affected"] == [
+        str(selected_enrichment.id),
+        str(supporting_enrichment.id),
+    ]
 
 
 def test_canonicalization_service_creates_seed_canonical_and_membership():

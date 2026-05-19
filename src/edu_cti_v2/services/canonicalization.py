@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from copy import deepcopy
 from datetime import date, datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -895,6 +896,8 @@ def _build_source_disclosure_document(
     member_documents: List[Dict[str, Any]],
     *,
     selected_source_enrichment_id: Optional[str],
+    projection_field_sources: Optional[Dict[str, List[str]]] = None,
+    resolved_field_values: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
     selected_enrichment_id = str(selected_source_enrichment_id) if selected_source_enrichment_id else None
     source_entries: List[Dict[str, Any]] = []
@@ -939,7 +942,7 @@ def _build_source_disclosure_document(
         )
     )
 
-    canonical_fields = {
+    canonical_fields = resolved_field_values or {
         "institution_name": _normalize_disclosure_value(canonical.institution_name),
         "institution_type": _normalize_disclosure_value(canonical.institution_type),
         "vendor_name": _normalize_disclosure_value(canonical.vendor_name),
@@ -984,6 +987,7 @@ def _build_source_disclosure_document(
     return {
         "field_sources": field_sources,
         "field_contributors": field_contributors,
+        "projection_field_sources": projection_field_sources or {},
         "source_disclosure": {
             "version": 1,
             "selection_basis": "highest_survivor_score",
@@ -993,6 +997,172 @@ def _build_source_disclosure_document(
             "sources": source_entries,
         },
     }
+
+
+def _add_projection_source(provenance: Dict[str, List[str]], path: str, source_enrichment_id: str) -> None:
+    if not path:
+        return
+    contributors = provenance.setdefault(path, [])
+    if source_enrichment_id not in contributors:
+        contributors.append(source_enrichment_id)
+
+
+def _seed_projection_provenance(
+    value: Any,
+    source_enrichment_id: str,
+    provenance: Dict[str, List[str]],
+    *,
+    path: str = "",
+) -> None:
+    normalized_value = _normalize_disclosure_value(value)
+    if not _value_present(normalized_value):
+        return
+    if isinstance(normalized_value, dict):
+        for key, nested_value in normalized_value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            _seed_projection_provenance(nested_value, source_enrichment_id, provenance, path=child_path)
+        return
+    _add_projection_source(provenance, path, source_enrichment_id)
+
+
+def _merge_typed_value(
+    target: Any,
+    source: Any,
+    *,
+    path: str,
+    source_enrichment_id: str,
+    provenance: Dict[str, List[str]],
+) -> Any:
+    source_normalized = _normalize_disclosure_value(source)
+    if not _value_present(source_normalized):
+        return target
+
+    target_normalized = _normalize_disclosure_value(target)
+    if isinstance(target_normalized, dict) and isinstance(source_normalized, dict):
+        merged = dict(target_normalized)
+        for key, source_value in source_normalized.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if key not in merged:
+                merged[key] = deepcopy(source_value)
+                _seed_projection_provenance(source_value, source_enrichment_id, provenance, path=child_path)
+            else:
+                merged[key] = _merge_typed_value(
+                    merged[key],
+                    source_value,
+                    path=child_path,
+                    source_enrichment_id=source_enrichment_id,
+                    provenance=provenance,
+                )
+        return merged
+
+    if isinstance(target_normalized, list) and isinstance(source_normalized, list):
+        if not target_normalized:
+            _add_projection_source(provenance, path, source_enrichment_id)
+            return deepcopy(source_normalized)
+
+        merged_list = list(target_normalized)
+        seen = {_json_fingerprint(item) for item in target_normalized}
+        added = False
+        for item in source_normalized:
+            fingerprint = _json_fingerprint(item)
+            if fingerprint in seen:
+                continue
+            merged_list.append(deepcopy(item))
+            seen.add(fingerprint)
+            added = True
+        if added:
+            _add_projection_source(provenance, path, source_enrichment_id)
+        return merged_list
+
+    if not _value_present(target_normalized):
+        _add_projection_source(provenance, path, source_enrichment_id)
+        return deepcopy(source_normalized)
+    return target_normalized
+
+
+def _merge_projection_top_level(base: Dict[str, Any], incoming: Dict[str, Any]) -> Dict[str, Any]:
+    merged = dict(base)
+    for key in (
+        "institution_name",
+        "institution_type",
+        "vendor_name",
+        "country",
+        "country_code",
+        "region",
+        "city",
+        "attack_category",
+        "attack_vector",
+        "threat_actor_name",
+        "ransomware_family",
+        "severity",
+        "canonical_summary",
+        "is_education_related",
+    ):
+        if not _value_present(_normalize_disclosure_value(merged.get(key))) and _value_present(
+            _normalize_disclosure_value(incoming.get(key))
+        ):
+            merged[key] = incoming.get(key)
+
+    incoming_date = incoming.get("incident_date")
+    incoming_precision = incoming.get("date_precision")
+    current_date = merged.get("incident_date")
+    current_precision = merged.get("date_precision")
+    if incoming_date and (
+        current_date is None
+        or not _safe_canonical_date(current_date)
+        or _date_precision_rank(incoming_precision) > _date_precision_rank(current_precision)
+    ):
+        merged["incident_date"] = incoming_date
+        if incoming_precision:
+            merged["date_precision"] = incoming_precision
+    elif not current_precision and incoming_precision:
+        merged["date_precision"] = incoming_precision
+
+    if merged.get("source_published_at") is None and incoming.get("source_published_at") is not None:
+        merged["source_published_at"] = incoming.get("source_published_at")
+    return merged
+
+
+def _build_merged_projection(
+    selected_projection: Dict[str, Any],
+    member_documents: List[Dict[str, Any]],
+    *,
+    selected_source_enrichment_id: Optional[str],
+) -> Tuple[Dict[str, Any], Dict[str, List[str]]]:
+    merged_projection = deepcopy(selected_projection)
+    merged_typed = deepcopy(selected_projection.get("typed_enrichment") or {})
+    selected_id = str(selected_source_enrichment_id) if selected_source_enrichment_id else None
+    projection_field_sources: Dict[str, List[str]] = {}
+    if selected_id:
+        _seed_projection_provenance(merged_typed, selected_id, projection_field_sources)
+
+    supporting_documents = sorted(
+        member_documents,
+        key=lambda document: (
+            str(document["source_enrichment"].id) == selected_id,
+            -float(document["membership"].survivor_score or 0.0),
+            document["source_incident"].source_name,
+        ),
+    )
+
+    for document in supporting_documents:
+        source_enrichment = document["source_enrichment"]
+        if selected_id and str(source_enrichment.id) == selected_id:
+            continue
+        incoming_projection = document["projection"]
+        incoming_typed = incoming_projection.get("typed_enrichment") or {}
+        merged_typed = _merge_typed_value(
+            merged_typed,
+            incoming_typed,
+            path="",
+            source_enrichment_id=str(source_enrichment.id),
+            provenance=projection_field_sources,
+        )
+        merged_projection = _merge_projection_top_level(merged_projection, incoming_projection)
+
+    merged_projection["typed_enrichment"] = merged_typed
+    merged_projection["timeline"] = merged_typed.get("timeline") or merged_projection.get("timeline") or []
+    return merged_projection, projection_field_sources
 
 
 class V2CanonicalizationService:
@@ -1276,28 +1446,39 @@ class V2CanonicalizationService:
                 }
             )
 
-        typed = projection.get("typed_enrichment") or {}
+        merged_projection, projection_field_sources = _build_merged_projection(
+            projection,
+            member_documents,
+            selected_source_enrichment_id=str(source_enrichment.id) if source_enrichment.id else None,
+        )
+        _apply_projection_to_canonical(canonical, merged_projection, authoritative=True)
+        session.add(canonical)
+
+        typed = merged_projection.get("typed_enrichment") or {}
+        resolved_field_values = _extract_disclosure_field_values(merged_projection)
         field_provenance = _build_source_disclosure_document(
             canonical,
             member_documents,
             selected_source_enrichment_id=str(source_enrichment.id) if source_enrichment.id else None,
+            projection_field_sources=projection_field_sources,
+            resolved_field_values=resolved_field_values,
         )
         existing.selected_source_enrichment_id = source_enrichment.id
         existing.merged_from_source_enrichment_ids = merged_ids
         existing.canonical_projection = typed
         existing.analytics_projection = {
-            "institution_name": projection.get("institution_name"),
-            "institution_type": projection.get("institution_type"),
-            "vendor_name": projection.get("vendor_name"),
-            "country": projection.get("country"),
-            "country_code": projection.get("country_code"),
-            "incident_date": projection.get("incident_date").isoformat() if projection.get("incident_date") else None,
-            "attack_category": projection.get("attack_category"),
-            "attack_vector": projection.get("attack_vector"),
-            "threat_actor_name": projection.get("threat_actor_name"),
-            "ransomware_family": projection.get("ransomware_family"),
-            "is_education_related": projection.get("is_education_related"),
-            "severity": projection.get("severity"),
+            "institution_name": merged_projection.get("institution_name"),
+            "institution_type": merged_projection.get("institution_type"),
+            "vendor_name": merged_projection.get("vendor_name"),
+            "country": merged_projection.get("country"),
+            "country_code": merged_projection.get("country_code"),
+            "incident_date": merged_projection.get("incident_date").isoformat() if merged_projection.get("incident_date") else None,
+            "attack_category": merged_projection.get("attack_category"),
+            "attack_vector": merged_projection.get("attack_vector"),
+            "threat_actor_name": merged_projection.get("threat_actor_name"),
+            "ransomware_family": merged_projection.get("ransomware_family"),
+            "is_education_related": merged_projection.get("is_education_related"),
+            "severity": merged_projection.get("severity"),
         }
         existing.field_provenance = field_provenance
         existing.completeness_score = _count_present_fields(typed)
@@ -1307,7 +1488,7 @@ class V2CanonicalizationService:
             select(CanonicalTimelineEvent).where(CanonicalTimelineEvent.canonical_incident_id == canonical.id)
         ).scalars().all()
         session.query(CanonicalTimelineEvent).filter_by(canonical_incident_id=canonical.id).delete()
-        for index, event in enumerate(projection.get("timeline") or [], start=1):
+        for index, event in enumerate(merged_projection.get("timeline") or [], start=1):
             session.add(
                 CanonicalTimelineEvent(
                     canonical_incident_id=canonical.id,

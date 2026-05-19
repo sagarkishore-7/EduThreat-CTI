@@ -166,6 +166,51 @@ def _build_selected_source_reasons(selected_source_summary: dict[str, Any], sour
     return reasons
 
 
+def _extract_resolved_disclosure_values(
+    canonical: CanonicalIncident,
+    projection: dict[str, Any],
+) -> dict[str, Any]:
+    attack_dynamics = _projection_section(projection, "attack_dynamics")
+    data_impact = _projection_section(projection, "data_impact")
+    system_impact = _projection_section(projection, "system_impact")
+    user_impact = _projection_section(projection, "user_impact")
+    financial_impact = _projection_section(projection, "financial_impact")
+    recovery_metrics = _projection_section(projection, "recovery_metrics")
+    transparency_metrics = _projection_section(projection, "transparency_metrics")
+    values = {
+        "institution_name": canonical.institution_name,
+        "institution_type": canonical.institution_type,
+        "vendor_name": canonical.vendor_name,
+        "country": canonical.country,
+        "region": canonical.region,
+        "city": canonical.city,
+        "incident_date": canonical.incident_date.isoformat() if canonical.incident_date else None,
+        "date_precision": canonical.date_precision,
+        "attack_category": canonical.attack_category,
+        "attack_vector": canonical.attack_vector or attack_dynamics.get("attack_vector"),
+        "threat_actor_name": canonical.threat_actor_name,
+        "ransomware_family": canonical.ransomware_family or attack_dynamics.get("ransomware_family"),
+        "severity": canonical.severity,
+        "canonical_summary": canonical.canonical_summary,
+        "records_affected_exact": data_impact.get("records_affected_exact"),
+        "records_affected_min": data_impact.get("records_affected_min"),
+        "records_affected_max": data_impact.get("records_affected_max"),
+        "data_categories": data_impact.get("data_categories") or data_impact.get("data_types_affected"),
+        "data_exfiltrated": data_impact.get("data_exfiltrated"),
+        "data_breached": projection.get("data_breached"),
+        "systems_affected": system_impact.get("systems_affected"),
+        "critical_systems_affected": system_impact.get("critical_systems_affected"),
+        "third_party_vendor_impact": system_impact.get("third_party_vendor_impact"),
+        "vendor_name_detail": system_impact.get("vendor_name") or canonical.vendor_name,
+        "total_individuals_affected": user_impact.get("total_individuals_affected"),
+        "ransom_amount_exact": financial_impact.get("ransom_amount_exact"),
+        "public_disclosure": transparency_metrics.get("public_disclosure"),
+        "public_disclosure_date": transparency_metrics.get("public_disclosure_date"),
+        "recovery_duration_days": recovery_metrics.get("recovery_duration_days"),
+    }
+    return {key: value for key, value in values.items() if _value_present(value)}
+
+
 def _summary_from_canonical(
     canonical: CanonicalIncident,
     enrichment: Optional[CanonicalEnrichment],
@@ -741,6 +786,8 @@ def _collect_urls(
 def _build_source_disclosure_payload(
     field_provenance: dict[str, Any] | None,
     memberships: list[dict[str, Any]],
+    *,
+    resolved_field_values: Optional[dict[str, Any]] = None,
 ) -> dict[str, Any]:
     disclosure_doc = _extract_source_disclosure_document(field_provenance)
     sources = disclosure_doc.get("sources") if isinstance(disclosure_doc, dict) else None
@@ -750,6 +797,7 @@ def _build_source_disclosure_payload(
     tracked_field_labels = disclosure_doc.get("tracked_field_labels")
     if not isinstance(tracked_field_labels, dict):
         tracked_field_labels = {}
+    resolved_field_sources = _extract_field_provenance_map(field_provenance)
 
     membership_by_incident_id = {
         str(item.get("source_incident_id")): item
@@ -820,6 +868,10 @@ def _build_source_disclosure_payload(
         selected_value = None
         selected_display_value = None
         selected_source_name = None
+        resolved_value = (resolved_field_values or {}).get(field_name)
+        resolved_display_value = _display_disclosure_value(resolved_value)
+        resolved_source_enrichment_id = resolved_field_sources.get(field_name)
+        resolved_source_name = None
         sources_with_value = 0
         for source in sources:
             if not isinstance(source, dict):
@@ -845,6 +897,8 @@ def _build_source_disclosure_payload(
                 selected_value = raw_value
                 selected_display_value = display_value
                 selected_source_name = source.get("source_name")
+            if str(source.get("source_enrichment_id")) == str(resolved_source_enrichment_id):
+                resolved_source_name = source.get("source_name")
 
         sources_missing_value = max(len(sources) - sources_with_value, 0)
         has_disparity = len(present_fingerprints) > 1 or sources_missing_value > 0
@@ -855,6 +909,15 @@ def _build_source_disclosure_payload(
                 "selected_value": selected_value,
                 "selected_display_value": selected_display_value,
                 "selected_source_name": selected_source_name,
+                "resolved_value": resolved_value,
+                "resolved_display_value": resolved_display_value,
+                "resolved_source_enrichment_id": resolved_source_enrichment_id,
+                "resolved_source_name": resolved_source_name,
+                "resolved_source_is_selected": (
+                    str(resolved_source_enrichment_id) == str(selected_source_enrichment_id)
+                    if resolved_source_enrichment_id is not None
+                    else None
+                ),
                 "sources_with_value": sources_with_value,
                 "sources_missing_value": sources_missing_value,
                 "distinct_value_count": len(present_fingerprints),
@@ -1057,7 +1120,12 @@ class V2CanonicalReadService:
             for detail in membership_details
         ]
         raw_field_provenance = (getattr(enrichment, "field_provenance", None) if enrichment else None) or {}
-        source_disclosure = _build_source_disclosure_payload(raw_field_provenance, serialized_memberships)
+        canonical_projection = (getattr(enrichment, "canonical_projection", None) if enrichment else None) or {}
+        source_disclosure = _build_source_disclosure_payload(
+            raw_field_provenance,
+            serialized_memberships,
+            resolved_field_values=_extract_resolved_disclosure_values(canonical, canonical_projection),
+        )
         diamond_model = _build_diamond_projection(
             canonical,
             enrichment,
@@ -1072,7 +1140,7 @@ class V2CanonicalReadService:
             "resolution_metadata": canonical.resolution_metadata or {},
             "field_provenance": _extract_field_provenance_map(raw_field_provenance),
             "source_disclosure": source_disclosure,
-            "canonical_projection": (getattr(enrichment, "canonical_projection", None) if enrichment else None) or {},
+            "canonical_projection": canonical_projection,
             "diamond_model": diamond_model,
             "selected_source": selected_source,
             "fetch_attempts": fetch_attempts,
