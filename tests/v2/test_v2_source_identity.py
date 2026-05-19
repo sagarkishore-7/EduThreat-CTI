@@ -21,3 +21,14 @@ def test_recover_source_identity_ignores_non_education_title():
     )
 
     assert identity is None
+
+
+def test_recover_source_identity_ignores_geography_only_subtitle():
+    identity = recover_source_identity(
+        raw_institution_name=None,
+        raw_victim_name=None,
+        raw_subtitle="Ukraine",
+        raw_title="Massive attacks on Wordpress sites of Ukrainian universities",
+    )
+
+    assert identity is None

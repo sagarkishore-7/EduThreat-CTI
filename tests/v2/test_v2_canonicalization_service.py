@@ -799,6 +799,47 @@ def test_build_source_projection_recovers_specific_identity_from_compound_generi
     assert projection["country_code"] == "DE"
 
 
+def test_build_source_projection_drops_geography_only_identity_labels():
+    incident = _source_incident(event_key="ukraine-placeholder")
+    incident.raw_title = "Massive attacks on Wordpress sites of Ukrainian universities"
+    incident.raw_subtitle = "Ukraine"
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    incident.raw_country = "Ukraine"
+    incident.raw_region = None
+    incident.raw_city = None
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "Ukraine",
+            "institution_type": "university",
+            "incident_date": "2022-02-25",
+            "incident_date_precision": "day",
+            "attack_category": "website_compromise",
+            "enriched_summary": "Multiple university sites in Ukraine were compromised.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "Ukraine",
+            "country": "Ukraine",
+            "country_code": "UA",
+            "attack_category": "website_compromise",
+        },
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] is None
+    assert projection["country"] == "Ukraine"
+    assert projection["country_code"] == "UA"
+
+
 def test_canonicalization_service_skips_new_generic_identity_seed():
     canonical_repo = Mock()
     canonical_repo.get_membership_for_source_incident.return_value = None

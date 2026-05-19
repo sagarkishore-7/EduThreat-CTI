@@ -18,7 +18,7 @@ from src.edu_cti_v2.repositories import (
     PipelineTaskRepository,
     SourceEnrichmentRepository,
 )
-from src.edu_cti_v2.source_identity import recover_source_identity
+from src.edu_cti_v2.source_identity import looks_geographic_only_identity, recover_source_identity
 
 _COLLECTIVE_IDENTITY_RE = re.compile(
     r"^(?:\d+\s+)?(?:universities|colleges|schools|school districts?|districts|campuses|providers|students)\b",
@@ -125,6 +125,8 @@ def _looks_invalid_primary_identity(
     if _COLLECTIVE_IDENTITY_RE.match(text):
         return True
     if _GENERIC_SINGLE_IDENTITY_RE.match(text):
+        return True
+    if looks_geographic_only_identity(text):
         return True
     if _COMMENTARY_IDENTITY_RE.match(text):
         return True

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Optional
 
+from src.edu_cti.core.countries import get_country_code, normalize_country
 from src.edu_cti.pipeline.phase2.utils.deduplication import clean_institution_name
 
 _GENERIC_EDU_ENTITY_RE = (
@@ -28,10 +29,24 @@ _NON_ASCII_RE = re.compile(r"[^\x00-\x7F]")
 _UNKNOWN_VALUES = {"", "unknown", "unnamed", "undisclosed", "n/a", "none", "null"}
 
 
+def looks_geographic_only_identity(value: Optional[str]) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if _EDU_KEYWORD_RE.search(text):
+        return False
+    normalized_country = normalize_country(text)
+    if not normalized_country:
+        return False
+    return bool(get_country_code(normalized_country))
+
+
 def _looks_generic_identity(value: Optional[str]) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
+    if looks_geographic_only_identity(text):
+        return True
     if _GENERIC_IDENTITY_RE.match(text):
         return True
     if _VAGUE_PLURAL_RE.match(text):
@@ -77,6 +92,8 @@ def _normalize_source_identity_candidate(value: Optional[str]) -> Optional[str]:
     text = _prefer_english_alias(text)
     cleaned = clean_institution_name(text).strip()
     if not cleaned or cleaned.lower() in _UNKNOWN_VALUES:
+        return None
+    if looks_geographic_only_identity(cleaned):
         return None
     if len(cleaned) < 4:
         return None

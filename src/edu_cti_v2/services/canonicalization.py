@@ -22,6 +22,7 @@ from src.edu_cti.pipeline.phase2.utils.deduplication import (
     institution_names_match,
     parse_incident_date,
 )
+from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
 from src.edu_cti_v2.models import (
     CanonicalEnrichment,
     CanonicalIncident,
@@ -39,7 +40,7 @@ from src.edu_cti_v2.repositories import (
     SourceEnrichmentRepository,
     SourceIncidentRepository,
 )
-from src.edu_cti_v2.source_identity import recover_source_identity
+from src.edu_cti_v2.source_identity import looks_geographic_only_identity, recover_source_identity
 
 _VENDOR_LIKE_TYPES = {
     "edtech_platform",
@@ -223,6 +224,8 @@ def _looks_generic_institution_label(value: Optional[str]) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
+    if looks_geographic_only_identity(text):
+        return True
     if _GENERIC_INSTITUTION_RE.match(text):
         return True
     lowered = text.lower()
@@ -251,7 +254,11 @@ def _resolve_institution_name(source_incident, typed: Dict[str, Any], raw: Dict[
     ]
     for candidate in extracted_candidates:
         cleaned = clean_institution_name(candidate)
-        if cleaned and not _looks_generic_institution_label(cleaned):
+        if (
+            cleaned
+            and not _looks_generic_institution_label(cleaned)
+            and not is_headline_format(cleaned, source_incident.raw_title)
+        ):
             return cleaned
 
     resolved = choose_best_institution_name(
@@ -267,8 +274,12 @@ def _resolve_institution_name(source_incident, typed: Dict[str, Any], raw: Dict[
         raw_subtitle=source_incident.raw_subtitle,
         raw_title=source_incident.raw_title,
     )
+    if resolved and is_headline_format(resolved, source_incident.raw_title):
+        resolved = recovered_source_identity or None
     if not resolved or _looks_generic_institution_label(resolved):
         resolved = recovered_source_identity or resolved
+    if resolved and is_headline_format(resolved, source_incident.raw_title):
+        return None
     if _looks_generic_institution_label(resolved):
         return None
     return resolved
