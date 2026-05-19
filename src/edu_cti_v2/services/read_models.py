@@ -48,6 +48,7 @@ def _serialize_membership(
                 "raw_country": source_details.get("raw_country"),
                 "raw_region": source_details.get("raw_region"),
                 "raw_city": source_details.get("raw_city"),
+                "source_urls": source_details.get("source_urls") or [],
             }
         )
     return payload
@@ -602,25 +603,53 @@ def _to_legacy_sources(memberships: list[dict[str, Any]]) -> list[dict[str, Any]
     return [
         {
             "source": item.get("source_name"),
+            "source_group": item.get("source_group"),
             "source_event_id": item.get("source_incident_id"),
             "first_seen_at": item.get("collected_at"),
+            "source_published_at": item.get("source_published_at"),
             "confidence": None,
+            "is_primary_member": bool(item.get("is_primary_member")),
+            "raw_title": item.get("raw_title"),
+            "raw_subtitle": item.get("raw_subtitle"),
+            "raw_institution_name": item.get("raw_institution_name"),
+            "source_urls": item.get("source_urls") or [],
         }
         for item in memberships
         if item.get("source_name")
     ]
 
 
-def _collect_urls(selected_source: dict[str, Any] | None) -> list[str]:
+def _is_public_source_url(url_payload: dict[str, Any]) -> bool:
+    kind = str(url_payload.get("url_kind") or "other").strip().lower()
+    return kind not in {"leak_site", "screenshot"}
+
+
+def _append_unique_url(urls: list[str], seen: set[str], candidate: Any) -> None:
+    value = str(candidate or "").strip()
+    if not value or value in seen:
+        return
+    seen.add(value)
+    urls.append(value)
+
+
+def _collect_urls(
+    selected_source: dict[str, Any] | None,
+    memberships: Optional[list[dict[str, Any]]] = None,
+) -> list[str]:
     urls: list[str] = []
+    seen: set[str] = set()
     if not selected_source:
-        return urls
-    for candidate in (
-        selected_source.get("article_resolved_url"),
-        selected_source.get("article_url"),
-    ):
-        if candidate and candidate not in urls:
-            urls.append(candidate)
+        selected_source = {}
+
+    for candidate in (selected_source.get("article_resolved_url"), selected_source.get("article_url")):
+        _append_unique_url(urls, seen, candidate)
+
+    for membership in memberships or []:
+        for source_url in membership.get("source_urls") or []:
+            if not isinstance(source_url, dict) or not _is_public_source_url(source_url):
+                continue
+            _append_unique_url(urls, seen, source_url.get("resolved_url"))
+            _append_unique_url(urls, seen, source_url.get("url"))
     return urls
 
 
@@ -835,7 +864,7 @@ class V2CanonicalReadService:
         transparency_metrics = _projection_section(projection, "transparency_metrics")
         selected_source = detail.get("selected_source") or {}
         timeline = _to_legacy_timeline(detail.get("timeline") or [])
-        urls = _collect_urls(selected_source)
+        urls = _collect_urls(selected_source, detail.get("memberships") or [])
         attack_vector = detail.get("attack_vector") or attack_dynamics.get("attack_vector") or projection.get("attack_vector")
         ransomware_family = detail.get("ransomware_family") or attack_dynamics.get("ransomware_family") or projection.get("ransomware_family")
         records_affected_exact = (

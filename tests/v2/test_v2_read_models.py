@@ -241,6 +241,16 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
             "raw_country": "United States",
             "raw_region": "Pennsylvania",
             "raw_city": "State College",
+            "source_urls": [
+                {
+                    "url": "https://news.google.com/rss/articles/abc",
+                    "resolved_url": "https://example.com/article",
+                    "url_kind": "rss_wrapper",
+                    "is_wrapper": True,
+                    "is_primary_from_source": True,
+                    "is_resolved_primary": True,
+                }
+            ],
         }
     ]
     canonical_repo.list_timeline_events.return_value = [timeline_event]
@@ -284,6 +294,7 @@ def test_read_service_returns_detail_with_memberships_timeline_and_snapshot():
     assert detail["memberships"][0]["match_type"] == "url_exact"
     assert detail["memberships"][0]["source_name"] == "googlenews_rss"
     assert detail["memberships"][0]["raw_institution_name"] == "Penn State University"
+    assert detail["memberships"][0]["source_urls"][0]["resolved_url"] == "https://example.com/article"
     assert detail["timeline"][0]["event_description"] == "Systems were encrypted."
     assert detail["snapshot"]["timeline_count"] == 1
     assert detail["selected_source"]["source_name"] == "googlenews_rss"
@@ -362,6 +373,24 @@ def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
             "raw_country": "United States",
             "raw_region": "Pennsylvania",
             "raw_city": "State College",
+            "source_urls": [
+                {
+                    "url": "https://news.google.com/rss/articles/abc",
+                    "resolved_url": "https://example.com/article",
+                    "url_kind": "rss_wrapper",
+                    "is_wrapper": True,
+                    "is_primary_from_source": True,
+                    "is_resolved_primary": True,
+                },
+                {
+                    "url": "https://example.com/supporting-report",
+                    "resolved_url": None,
+                    "url_kind": "article",
+                    "is_wrapper": False,
+                    "is_primary_from_source": False,
+                    "is_resolved_primary": False,
+                },
+            ],
         }
     ]
     canonical_repo.list_timeline_events.return_value = [
@@ -401,8 +430,14 @@ def test_read_service_can_build_legacy_incident_detail_for_report_and_compat():
     assert detail["incident_id"] == str(canonical.id)
     assert detail["title"] == "Penn State ransomware update"
     assert detail["primary_url"] == "https://example.com/article"
+    assert detail["all_urls"] == [
+        "https://example.com/article",
+        "https://news.google.com/rss/articles/abc",
+        "https://example.com/supporting-report",
+    ]
     assert detail["timeline"][0]["date"] == "2026-05-08"
     assert detail["sources"][0]["source"] == "googlenews_rss"
+    assert detail["sources"][0]["source_urls"][1]["url"] == "https://example.com/supporting-report"
     assert detail["data_breached"] is True
     assert detail["records_affected_exact"] == 5000
 

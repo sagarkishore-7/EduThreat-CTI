@@ -166,6 +166,19 @@ class CanonicalIncidentRepository:
         )
 
     @staticmethod
+    def build_list_source_urls_stmt(source_incident_ids: Sequence[str]) -> Select:
+        return (
+            select(SourceIncidentUrl)
+            .where(SourceIncidentUrl.source_incident_id.in_(list(source_incident_ids)))
+            .order_by(
+                SourceIncidentUrl.source_incident_id.asc(),
+                SourceIncidentUrl.is_resolved_primary.desc(),
+                SourceIncidentUrl.is_primary_from_source.desc(),
+                SourceIncidentUrl.created_at.asc(),
+            )
+        )
+
+    @staticmethod
     def build_get_enrichment_stmt(canonical_incident_id: str) -> Select:
         return (
             select(CanonicalEnrichment)
@@ -761,14 +774,21 @@ class CanonicalIncidentRepository:
     ) -> list[dict[str, object]]:
         stmt = self.build_list_membership_details_stmt(canonical_incident_id)
         rows = session.execute(stmt).all()
+        source_incident_ids = [
+            data["source_incident_id"]
+            for data in (row._mapping for row in rows)
+            if data["source_incident_id"] is not None
+        ]
+        source_url_map = self.list_source_urls_for_incidents(session, source_incident_ids)
         details: list[dict[str, object]] = []
         for row in rows:
             data = row._mapping
             membership = data[CanonicalMembership]
+            source_incident_id = str(data["source_incident_id"]) if data["source_incident_id"] else None
             details.append(
                 {
                     "membership": membership,
-                    "source_incident_id": str(data["source_incident_id"]) if data["source_incident_id"] else None,
+                    "source_incident_id": source_incident_id,
                     "source_name": data["source_name"],
                     "source_group": data["source_group"],
                     "collected_at": data["collected_at"].isoformat() if data["collected_at"] else None,
@@ -783,9 +803,35 @@ class CanonicalIncidentRepository:
                     "raw_country": data["raw_country"],
                     "raw_region": data["raw_region"],
                     "raw_city": data["raw_city"],
+                    "source_urls": source_url_map.get(source_incident_id, []),
                 }
             )
         return details
+
+    def list_source_urls_for_incidents(
+        self,
+        session: Session,
+        source_incident_ids: Sequence[str],
+    ) -> dict[str, list[dict[str, object]]]:
+        if not source_incident_ids:
+            return {}
+
+        stmt = self.build_list_source_urls_stmt(source_incident_ids)
+        url_rows = session.execute(stmt).scalars().all()
+        grouped: dict[str, list[dict[str, object]]] = {}
+        for row in url_rows:
+            source_incident_id = str(row.source_incident_id)
+            grouped.setdefault(source_incident_id, []).append(
+                {
+                    "url": row.url,
+                    "resolved_url": row.resolved_url,
+                    "url_kind": row.url_kind,
+                    "is_wrapper": bool(row.is_wrapper),
+                    "is_primary_from_source": bool(row.is_primary_from_source),
+                    "is_resolved_primary": bool(row.is_resolved_primary),
+                }
+            )
+        return grouped
 
     def find_by_url_candidates(
         self,
