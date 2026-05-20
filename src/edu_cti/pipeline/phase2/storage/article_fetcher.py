@@ -3,8 +3,9 @@ Article fetching module for Phase 2 enrichment.
 
 Fetches and extracts article content from URLs for LLM processing.
 Defaults to a low-cost Scrapling-first chain for article enrichment, with
-Oxylabs and archive.org as fallbacks. Legacy newspaper3k/curl_cffi/Playwright
-tiers remain available behind EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1 for rollback.
+newspaper3k rescue, Oxylabs, and archive.org as fallbacks. Heavier legacy
+curl_cffi/Playwright tiers remain available behind
+EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1 for rollback.
 """
 
 import json
@@ -79,7 +80,10 @@ def _legacy_fetch_tiers_enabled() -> bool:
 
 def _fetch_newspaper_enabled() -> bool:
     profile = _fetch_tier_profile()
-    default = "1" if _legacy_fetch_tiers_enabled() or profile in {"legacy", "default"} else "0"
+    # Newspaper3k is cheap enough to keep as a rescue parser after Scrapling
+    # misses. We still keep the heavier HttpClient/Playwright legacy tier off
+    # unless explicitly enabled.
+    default = "1" if _legacy_fetch_tiers_enabled() or profile not in {"scrapling_only"} else "0"
     return _env_flag("EDU_CTI_FETCH_ENABLE_NEWSPAPER", default) and not _env_flag(
         "EDU_CTI_FETCH_DISABLE_NEWSPAPER", "0"
     )
@@ -811,7 +815,8 @@ class ArticleFetcher:
         2. Oxylabs API   — optional paid cloud scraper for anti-bot/JS pages
         3. archive.org   — Wayback Machine fallback for historical articles
 
-        newspaper3k and HttpClient/curl_cffi/Playwright are only attempted when
+        newspaper3k is kept as a free rescue parser after Scrapling misses.
+        HttpClient/curl_cffi/Playwright are only attempted when
         EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1 or explicit per-tier envs enable them.
 
         Args:

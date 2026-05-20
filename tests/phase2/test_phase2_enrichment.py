@@ -332,6 +332,46 @@ class TestArticleFetcher:
         assert result.fetch_metadata["selected_tier"] == "scrapling"
         mock_scrapling.assert_called_once()
 
+    def test_newspaper_rescue_runs_after_scrapling_failure(self, monkeypatch):
+        """Newspaper3k stays available as a free rescue tier after Scrapling misses."""
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
+        fetcher = ArticleFetcher(http_client=Mock())
+        failed = ArticleContent(
+            url="https://example.com/article",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="Scrapling extracted content too short",
+        )
+        newspaper_success = ArticleContent(
+            url="https://example.com/article",
+            title="Recovered Article",
+            content="Newspaper3k recovered the full education cyber incident article body.",
+            fetch_successful=True,
+            content_length=72,
+        )
+
+        monkeypatch.setenv("EDU_CTI_FETCH_TIER_PROFILE", "scrapling_first")
+        monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "0")
+        monkeypatch.delenv("EDU_CTI_FETCH_DISABLE_NEWSPAPER", raising=False)
+        monkeypatch.setattr(article_fetcher_module, "NEWSPAPER_AVAILABLE", True)
+
+        with patch.object(fetcher, "_fetch_with_scrapling", return_value=failed), patch.object(
+            fetcher, "_fetch_with_newspaper", return_value=newspaper_success
+        ) as mock_newspaper, patch.object(
+            fetcher, "_fetch_from_archive", side_effect=AssertionError("archive should not run after newspaper rescue")
+        ):
+            result = fetcher.fetch_article("https://example.com/article")
+
+        assert result.fetch_successful is True
+        assert result.fetch_metadata["selected_tier"] == "newspaper3k"
+        assert [attempt["tier"] for attempt in result.fetch_metadata["tier_attempts"]] == [
+            "scrapling",
+            "newspaper3k",
+        ]
+        mock_newspaper.assert_called_once()
+
     def test_fetch_article_failure(self, monkeypatch):
         """Fetcher should return an error result if every tier fails."""
         fetcher = ArticleFetcher(http_client=Mock())
@@ -344,6 +384,7 @@ class TestArticleFetcher:
         )
 
         monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "1")
+        monkeypatch.setenv("EDU_CTI_FETCH_DISABLE_NEWSPAPER", "1")
         monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", raising=False)
         with patch.object(fetcher, "_fetch_with_scrapling", return_value=failed), patch.object(
             fetcher, "_fetch_with_oxylabs", return_value=failed

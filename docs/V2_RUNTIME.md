@@ -87,8 +87,9 @@ eduthreat-v2-runtime --workers 2 --no-scheduler
 
 ### Fetch And Discovery Budget Controls
 
-- `EDU_CTI_FETCH_TIER_PROFILE=scrapling_first` is the default low-cost article chain: Scrapling -> Oxylabs -> archive.org.
-- `EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1` is the rollback switch that allows newspaper3k and HttpClient/curl_cffi/Playwright article tiers again.
+- `EDU_CTI_FETCH_TIER_PROFILE=scrapling_first` is the default low-cost article chain: Scrapling -> newspaper3k rescue -> Oxylabs -> archive.org.
+- `EDU_CTI_FETCH_ENABLE_NEWSPAPER=0` or `EDU_CTI_FETCH_DISABLE_NEWSPAPER=1` disables newspaper3k rescue if it causes source-specific issues.
+- `EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1` is the rollback switch that allows the heavier HttpClient/curl_cffi/Playwright article tier again.
 - `EDU_CTI_OXYLABS_ENABLED=0` disables all Oxylabs article fetch and paid SERP calls, even if credentials are present.
 - `EDU_CTI_ENABLE_OXYLABS_SERP=0` keeps paid SERP disabled. URL discovery still runs through free Google News RSS via Scrapling.
 - `EDU_CTI_ENABLE_YAHOO_NEWS_DISCOVERY=1` enables the optional Yahoo News HTML fallback; keep disabled unless consent pages are no longer observed.

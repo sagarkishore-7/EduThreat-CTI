@@ -2,9 +2,11 @@
 
 ## Current Production Use
 
-The v2 worker uses Scrapling as the default single-article fetch tier:
+The v2 worker uses Scrapling as the default single-article fetch tier, with
+newspaper3k retained as a cheap rescue parser for sites where Scrapling returns
+a gate page, empty body, or transient source error:
 
-`Scrapling -> Oxylabs -> archive.org`
+`Scrapling -> newspaper3k -> Oxylabs -> archive.org`
 
 Google News RSS discovery also uses Scrapling before any paid SERP fallback.
 
