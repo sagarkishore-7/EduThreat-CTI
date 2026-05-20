@@ -60,6 +60,16 @@ class SourceEnrichmentRepository:
             .limit(limit)
         )
 
+    @staticmethod
+    def build_rejected_enrichments_stmt(*, limit: int = 100) -> Select:
+        return (
+            select(SourceEnrichment)
+            .where(SourceEnrichment.is_education_related.is_(False))
+            .where(SourceEnrichment.manual_review_required.is_(False))
+            .order_by(SourceEnrichment.updated_at.desc(), SourceEnrichment.created_at.desc())
+            .limit(limit)
+        )
+
     def list_for_quality_sweep(
         self,
         session: Session,
@@ -76,6 +86,15 @@ class SourceEnrichmentRepository:
         limit: int = 100,
     ) -> list[SourceEnrichment]:
         stmt = self.build_manual_review_queue_stmt(limit=limit)
+        return list(session.execute(stmt).scalars().all())
+
+    def list_rejected_enrichments(
+        self,
+        session: Session,
+        *,
+        limit: int = 100,
+    ) -> list[SourceEnrichment]:
+        stmt = self.build_rejected_enrichments_stmt(limit=limit)
         return list(session.execute(stmt).scalars().all())
 
     def list_source_incident_ids_for_recanonicalize(

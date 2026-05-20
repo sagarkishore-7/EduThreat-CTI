@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import re
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, Literal, Optional, Tuple
 
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.enrichment import IncidentEnricher
@@ -160,12 +160,28 @@ def _mark_non_specific_victim(
     return updated
 
 
+def _mark_victim_review_required(
+    raw_json_data: Dict[str, Any],
+    *,
+    reason: str,
+) -> Dict[str, Any]:
+    updated = dict(raw_json_data)
+    updated["_manual_review_required"] = True
+    updated["_reason"] = reason
+    existing_reasoning = str(updated.get("education_relevance_reasoning") or "").strip()
+    if reason not in existing_reasoning:
+        updated["education_relevance_reasoning"] = (
+            f"{existing_reasoning} {reason}".strip() if existing_reasoning else reason
+        )
+    return updated
+
+
 def _repair_or_reject_primary_identity(
     source_incident,
     *,
     raw_json_data: Dict[str, Any],
     typed_enrichment: Optional[Dict[str, Any]],
-) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], bool]:
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Literal["ok", "reject", "review"]]:
     source_identity = recover_source_identity(
         raw_institution_name=source_incident.raw_institution_name,
         raw_victim_name=source_incident.raw_victim_name,
@@ -193,18 +209,18 @@ def _repair_or_reject_primary_identity(
             if typed_enrichment is not None:
                 typed_enrichment = dict(typed_enrichment)
                 typed_enrichment["institution_name"] = source_identity
-            return raw_json_data, typed_enrichment, False
+            return raw_json_data, typed_enrichment, "ok"
         reason = "Article does not identify a specific victim institution or vendor."
-        return _mark_non_specific_victim(raw_json_data, reason=reason), None, True
+        return _mark_non_specific_victim(raw_json_data, reason=reason), None, "reject"
 
     if source_identity and cleaned_extracted and not institution_names_match(cleaned_extracted, source_identity, threshold=80):
         reason = (
             f"Extracted victim '{cleaned_extracted}' drifted from source anchor "
             f"'{source_identity}'."
         )
-        return _mark_non_specific_victim(raw_json_data, reason=reason), None, True
+        return _mark_victim_review_required(raw_json_data, reason=reason), None, "review"
 
-    return raw_json_data, typed_enrichment, False
+    return raw_json_data, typed_enrichment, "ok"
 
 
 class V2EnrichmentService:
@@ -323,14 +339,17 @@ class V2EnrichmentService:
                 is_education_related = False
 
         if result is not None and isinstance(raw_json_data, dict) and is_education_related is not False:
-            raw_json_data, typed_enrichment, rejected = _repair_or_reject_primary_identity(
+            raw_json_data, typed_enrichment, disposition = _repair_or_reject_primary_identity(
                 source_incident,
                 raw_json_data=raw_json_data,
                 typed_enrichment=typed_enrichment,
             )
-            if rejected:
+            if disposition == "reject":
                 result = None
                 is_education_related = False
+            elif disposition == "review":
+                result = None
+                is_education_related = None
 
         enrichment = existing_enrichment
         if enrichment is None:
@@ -357,8 +376,14 @@ class V2EnrichmentService:
         enrichment.is_education_related = is_education_related
         enrichment.re_enrich_attempts = int(effective_attempts or 0)
         enrichment.re_enrich_reason = effective_reason
-        enrichment.manual_review_required = False
-        enrichment.manual_review_reason = None
+        enrichment.manual_review_required = bool(
+            isinstance(raw_json_data, dict) and raw_json_data.get("_manual_review_required")
+        )
+        enrichment.manual_review_reason = (
+            raw_json_data.get("_reason")
+            if enrichment.manual_review_required and isinstance(raw_json_data, dict)
+            else None
+        )
         enrichment.failed_reason = None
         if result is None:
             if isinstance(raw_json_data, dict):

@@ -436,6 +436,24 @@ async def list_v2_manual_review_queue(
     }
 
 
+@router.get("/rejected-enrichments")
+async def list_v2_rejected_enrichments(
+    limit: int = Query(100, ge=1, le=1000),
+    session=Depends(get_v2_session),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """List v2 enrichments that were hard-rejected as non-canonicalizable."""
+    items = data_quality.list_rejected_enrichments(session, limit=limit)
+    return {
+        "items": items,
+        "meta": {
+            "limit": limit,
+            "returned": len(items),
+        },
+    }
+
+
 @router.get("/scheduler/status")
 async def get_v2_scheduler_status(
     scheduler: V2SchedulerService = Depends(get_v2_scheduler_service),

@@ -440,7 +440,9 @@ def test_enrichment_service_rejects_victim_drift_from_source_anchor():
     outcome = service.enrich_source_incident(session, incident)
 
     assert outcome["enriched"] is False
-    assert outcome["is_education_related"] is False
+    assert outcome["is_education_related"] is None
     saved = source_enrichment_repo.add.call_args.args[1]
     assert saved.typed_enrichment is None
+    assert saved.manual_review_required is True
+    assert "drifted from source anchor" in saved.manual_review_reason
     assert "drifted from source anchor" in saved.raw_extraction["_reason"]

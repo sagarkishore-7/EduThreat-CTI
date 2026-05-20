@@ -277,3 +277,24 @@ class V2DataQualityService:
                 }
             )
         return items
+
+    def list_rejected_enrichments(
+        self,
+        session: Session,
+        *,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        for enrichment in self.source_enrichment_repository.list_rejected_enrichments(session, limit=limit):
+            source_incident = self.source_incident_repository.get_by_id(session, enrichment.source_incident_id)
+            items.append(
+                {
+                    "source_incident_id": str(enrichment.source_incident_id),
+                    "source_name": source_incident.source_name if source_incident else None,
+                    "title": source_incident.raw_title if source_incident else None,
+                    "institution_name": _candidate_institution_name(enrichment, source_incident) if source_incident else None,
+                    "failed_reason": enrichment.failed_reason,
+                    "updated_at": enrichment.updated_at.isoformat() if enrichment.updated_at else None,
+                }
+            )
+        return items

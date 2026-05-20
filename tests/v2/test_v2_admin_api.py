@@ -585,6 +585,9 @@ def test_v2_admin_data_quality_endpoints_proxy_service():
         def list_manual_review_queue(self, _session, *, limit):
             return [{"source_incident_id": "abc", "limit": limit}]
 
+        def list_rejected_enrichments(self, _session, *, limit):
+            return [{"source_incident_id": "rejected-1", "limit": limit}]
+
     quality = _DataQualityService()
     app = FastAPI()
     app.include_router(router, prefix="/api")
@@ -604,9 +607,12 @@ def test_v2_admin_data_quality_endpoints_proxy_service():
 
     sweep = client.post("/api/admin/v2/data-quality/sweep-now", params={"limit": 55})
     queue = client.get("/api/admin/v2/manual-review-queue", params={"limit": 7})
+    rejected = client.get("/api/admin/v2/rejected-enrichments", params={"limit": 9})
 
     assert sweep.status_code == 200
     assert sweep.json()["requeued_for_reenrichment"] == 2
     assert sweep.json()["limit"] == 55
     assert queue.status_code == 200
     assert queue.json()["items"][0]["source_incident_id"] == "abc"
+    assert rejected.status_code == 200
+    assert rejected.json()["items"][0]["source_incident_id"] == "rejected-1"
