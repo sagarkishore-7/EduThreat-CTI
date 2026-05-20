@@ -327,6 +327,73 @@ class TestArticleFetcher:
             "archive_org",
         ]
 
+    def test_scrapling_unavailable_does_not_dynamic_block_domain(self, monkeypatch):
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
+        fetcher = ArticleFetcher(http_client=Mock())
+        unavailable = ArticleContent(
+            url="https://example-unavailable.com/article",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="Scrapling unavailable: No module named 'browserforge'",
+        )
+        archive_failed = ArticleContent(
+            url="https://example-unavailable.com/article",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="archive failed",
+        )
+
+        monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "0")
+        monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", raising=False)
+        article_fetcher_module._DYNAMIC_FAILED_DOMAINS.clear()
+        article_fetcher_module._DYNAMIC_DOMAIN_FAILURE_COUNTS.clear()
+
+        with patch.object(fetcher, "_fetch_with_scrapling", return_value=unavailable), patch.object(
+            fetcher, "_fetch_from_archive", return_value=archive_failed
+        ):
+            result = fetcher.fetch_article("https://example-unavailable.com/article")
+
+        assert result.fetch_successful is False
+        assert result.fetch_metadata["tier_attempts"][0]["error_code"] == "tier_unavailable"
+        assert not article_fetcher_module._domain_failed_dynamically("example-unavailable.com")
+
+    def test_dynamic_block_requires_repeated_blockworthy_failures(self, monkeypatch):
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
+        fetcher = ArticleFetcher(http_client=Mock())
+        source_failed = ArticleContent(
+            url="https://blocked-example.com/article",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="Scrapling HTTP 403",
+        )
+        archive_failed = ArticleContent(
+            url="https://blocked-example.com/article",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="archive failed",
+        )
+
+        monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "0")
+        monkeypatch.setenv("EDU_CTI_DYNAMIC_BLOCK_FAILURE_THRESHOLD", "2")
+        monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", raising=False)
+        article_fetcher_module._DYNAMIC_FAILED_DOMAINS.clear()
+        article_fetcher_module._DYNAMIC_DOMAIN_FAILURE_COUNTS.clear()
+
+        with patch.object(fetcher, "_fetch_with_scrapling", return_value=source_failed), patch.object(
+            fetcher, "_fetch_from_archive", return_value=archive_failed
+        ):
+            fetcher.fetch_article("https://blocked-example.com/one")
+            assert not article_fetcher_module._domain_failed_dynamically("blocked-example.com")
+            fetcher.fetch_article("https://blocked-example.com/two")
+
+        assert article_fetcher_module._domain_failed_dynamically("blocked-example.com")
+
     def test_legacy_rollback_allows_httpclient_tier(self, monkeypatch):
         from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
 
@@ -343,6 +410,7 @@ class TestArticleFetcher:
         monkeypatch.setenv("EDU_CTI_FETCH_DISABLE_NEWSPAPER", "1")
         monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "0")
         article_fetcher_module._DYNAMIC_FAILED_DOMAINS.clear()
+        article_fetcher_module._DYNAMIC_DOMAIN_FAILURE_COUNTS.clear()
 
         with patch.object(fetcher, "_fetch_with_scrapling", return_value=None), patch.object(
             fetcher, "_fetch_with_browser", return_value=http_success

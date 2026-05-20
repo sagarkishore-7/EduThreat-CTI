@@ -113,6 +113,14 @@ def _classify_fetch_failure(result) -> str:
     if result is None:
         return "none"
     msg = (result.error_message or "").lower()
+    if (
+        "unavailable" in msg
+        or "not installed" in msg
+        or "import failed" in msg
+        or "no module named" in msg
+        or "missing dependency" in msg
+    ):
+        return "tier_unavailable"
     if "403" in msg or "forbidden" in msg:
         return "403"
     if "timeout" in msg or "timed out" in msg:
@@ -274,28 +282,44 @@ BLOCKED_FETCH_DOMAINS = {
     "ithome.com.tw",
 }
 
-# Session-scoped dynamic block list. When all enabled fetch tiers fail for a domain,
-# we add it here so subsequent fetches to that domain short-circuit. This
-# prevents the same broken site from costing 2-3 minutes per attempt across
-# multiple incidents that happen to share its URLs.
+# Session-scoped dynamic block list. When repeated block-worthy fetch-chain
+# failures happen for a domain, we add it here so subsequent fetches to that
+# domain short-circuit. This prevents the same broken site from costing 2-3
+# minutes per attempt across multiple incidents that happen to share its URLs,
+# while avoiding false blocks from local tier/config failures.
 # Cleared on container restart — Railway resets are frequent enough that
 # truly-broken sites won't survive long-term, but truly-flaky ones get a
 # fresh chance after each restart.
 import threading as _threading_for_dyn_block
 _DYNAMIC_FAILED_DOMAINS: set = set()
+_DYNAMIC_DOMAIN_FAILURE_COUNTS: dict[str, int] = {}
 _DYNAMIC_FAILED_LOCK = _threading_for_dyn_block.Lock()
 
 
 def _record_dynamic_domain_failure(domain: str) -> None:
-    """Record that all 4 fetch tiers failed for this domain. Both the full
-    netloc and its base domain are stored so www/non-www variants both block."""
+    """Record a repeated, block-worthy fetch-chain failure for a domain."""
     if not domain:
         return
     base = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
+    try:
+        threshold = max(1, int(os.environ.get("EDU_CTI_DYNAMIC_BLOCK_FAILURE_THRESHOLD", "2")))
+    except ValueError:
+        threshold = 2
     with _DYNAMIC_FAILED_LOCK:
-        _DYNAMIC_FAILED_DOMAINS.add(domain)
-        if base != domain:
-            _DYNAMIC_FAILED_DOMAINS.add(base)
+        count = _DYNAMIC_DOMAIN_FAILURE_COUNTS.get(base, 0) + 1
+        _DYNAMIC_DOMAIN_FAILURE_COUNTS[base] = count
+        if count >= threshold:
+            _DYNAMIC_FAILED_DOMAINS.add(domain)
+            if base != domain:
+                _DYNAMIC_FAILED_DOMAINS.add(base)
+
+
+def _dynamic_domain_failure_count(domain: str) -> int:
+    if not domain:
+        return 0
+    base = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
+    with _DYNAMIC_FAILED_LOCK:
+        return _DYNAMIC_DOMAIN_FAILURE_COUNTS.get(base, 0)
 
 
 def _domain_failed_dynamically(domain: str) -> bool:
@@ -304,6 +328,43 @@ def _domain_failed_dynamically(domain: str) -> bool:
     base = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
     with _DYNAMIC_FAILED_LOCK:
         return domain in _DYNAMIC_FAILED_DOMAINS or base in _DYNAMIC_FAILED_DOMAINS
+
+
+def _attempt_is_tier_or_config_failure(attempt: dict[str, object]) -> bool:
+    """Return True for failures that should not poison a source domain."""
+    code = str(attempt.get("error_code") or "").lower()
+    message = str(attempt.get("error_message") or "").lower()
+    if code in {"tier_unavailable", "unknown_failure", "none"} and not message:
+        return True
+    return (
+        code == "tier_unavailable"
+        or "unavailable" in message
+        or "not installed" in message
+        or "import failed" in message
+        or "no module named" in message
+        or "missing dependency" in message
+        or "credentials not configured" in message
+        or "rate limited" in message
+    )
+
+
+def _should_record_dynamic_domain_failure(tier_attempts: list[dict[str, object]]) -> bool:
+    """Only session-block domains after real fetch attempts failed.
+
+    Archive.org failures are about archive.org, not the original source domain.
+    Tier/config failures such as a missing Scrapling dependency should not make
+    future URLs on the source domain unreachable for the rest of the session.
+    """
+    for attempt in tier_attempts:
+        if attempt.get("success"):
+            continue
+        tier = str(attempt.get("tier") or "")
+        if tier in {"precheck", "archive_org"}:
+            continue
+        if _attempt_is_tier_or_config_failure(attempt):
+            continue
+        return True
+    return False
 
 
 # Extend the blocked list at runtime without a code deploy:
@@ -989,10 +1050,28 @@ class ArticleFetcher:
             return archive_content
         _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(archive_content)})
 
-        # All methods failed — record this domain so subsequent fetches to it
-        # short-circuit. Saves 1-3 minutes per future URL on the same domain.
-        _record_dynamic_domain_failure(domain)
-        logger.warning(f"FETCH FAILED ALL TIERS: domain={domain} url={url[:100]} (added to dynamic block list)")
+        # All methods failed. Only session-block the domain when at least one
+        # real source-domain tier failed for a block-worthy reason; otherwise a
+        # local misconfiguration (for example a missing Scrapling dependency)
+        # can poison unrelated future URLs on that domain.
+        if _should_record_dynamic_domain_failure(tier_attempts):
+            _record_dynamic_domain_failure(domain)
+            failure_count = _dynamic_domain_failure_count(domain)
+            if _domain_failed_dynamically(domain):
+                logger.warning(
+                    f"FETCH FAILED ALL TIERS: domain={domain} url={url[:100]} "
+                    f"(added to dynamic block list after {failure_count} failures)"
+                )
+            else:
+                logger.warning(
+                    f"FETCH FAILED ALL TIERS: domain={domain} url={url[:100]} "
+                    f"(dynamic block pending; failure_count={failure_count})"
+                )
+        else:
+            logger.warning(
+                f"FETCH FAILED ALL TIERS: domain={domain} url={url[:100]} "
+                "(not dynamic-blocked; failures were tier/config/archive-only)"
+            )
         return ArticleContent(
             url=url,
             title="",
