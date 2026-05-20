@@ -5,6 +5,7 @@ import json
 import queue
 import threading
 import time
+import warnings
 from dataclasses import replace
 from types import SimpleNamespace
 from typing import Optional
@@ -227,6 +228,15 @@ class TestArticleFetcher:
         )
 
         assert fetcher._extract_publish_date(soup) == "2025-01-08"
+
+    def test_extracts_cest_publish_date_without_timezone_warning(self):
+        from dateutil.parser import UnknownTimezoneWarning
+
+        fetcher = ArticleFetcher(http_client=Mock())
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UnknownTimezoneWarning)
+            assert fetcher._normalize_date_to_iso("20 May 2026 18:09 CEST") == "2026-05-20"
 
     def test_newspaper_fetch_backfills_publish_date_and_author_from_html(self):
         class DummyArticle:

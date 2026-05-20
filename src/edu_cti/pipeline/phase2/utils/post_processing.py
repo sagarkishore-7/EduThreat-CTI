@@ -13,6 +13,8 @@ import re
 from datetime import date as _date, datetime, timedelta
 from typing import Any, Dict, Optional
 
+from src.edu_cti.core.date_parsing import parse_datetime_with_known_timezones
+
 # ── Ransomware family keyword scan ───────────────────────────────────────────────
 # Ordered longest-first so more-specific terms win over substrings.
 _RANSOMWARE_KEYWORDS: list[tuple[str, str]] = [
@@ -1065,9 +1067,7 @@ def _coerce_iso_date(value: Any) -> Optional[str]:
         cleaned = cleaned[:-1] + "+00:00"
 
     try:
-        from dateutil import parser as date_parser
-
-        return date_parser.parse(cleaned, fuzzy=True).date().isoformat()
+        return parse_datetime_with_known_timezones(cleaned, fuzzy=True).date().isoformat()
     except Exception:
         pass
 

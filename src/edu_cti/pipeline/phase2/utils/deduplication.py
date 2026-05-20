@@ -17,12 +17,8 @@ from difflib import SequenceMatcher
 from typing import Any, Dict, List, Optional
 
 from src.edu_cti.core import metrics as _metrics
+from src.edu_cti.core.date_parsing import parse_datetime_with_known_timezones
 from src.edu_cti.core.deduplication import is_google_news_wrapper_url
-
-try:
-    from dateutil import parser as date_parser
-except ImportError:
-    date_parser = None
 
 try:
     from thefuzz import fuzz
@@ -335,12 +331,11 @@ def parse_incident_date(date_str: Optional[str]) -> Optional[datetime]:
         return None
 
     try:
-        if date_parser:
-            parsed = date_parser.parse(date_str)
-            if parsed.tzinfo is not None:
-                return parsed.astimezone(timezone.utc).replace(tzinfo=None)
-            return parsed.replace(tzinfo=None)
-    except (ValueError, TypeError):
+        parsed = parse_datetime_with_known_timezones(date_str)
+        if parsed.tzinfo is not None:
+            return parsed.astimezone(timezone.utc).replace(tzinfo=None)
+        return parsed.replace(tzinfo=None)
+    except (ImportError, ValueError, TypeError):
         pass
 
     for fmt, length in (("%Y-%m-%d", 10), ("%Y-%m", 7), ("%Y", 4)):

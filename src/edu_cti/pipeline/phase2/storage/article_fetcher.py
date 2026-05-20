@@ -20,6 +20,7 @@ from urllib.parse import urlparse, quote
 
 from src.edu_cti.core.http import HttpClient, build_http_client
 from src.edu_cti.core.oxylabs import OxylabsClient
+from src.edu_cti.core.date_parsing import parse_datetime_with_known_timezones
 from bs4 import BeautifulSoup
 
 # Optional newspaper3k support for article extraction
@@ -1779,8 +1780,7 @@ class ArticleFetcher:
         
         # Try parsing with dateutil if available (handles many formats)
         try:
-            from dateutil import parser as date_parser
-            dt = date_parser.parse(date_str)
+            dt = parse_datetime_with_known_timezones(date_str)
             return dt.date().isoformat()  # Return YYYY-MM-DD format
         except (ImportError, ValueError, TypeError):
             pass

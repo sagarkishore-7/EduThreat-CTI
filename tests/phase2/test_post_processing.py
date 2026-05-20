@@ -11,6 +11,7 @@ that depend on it:
 
 import json
 import sqlite3
+import warnings
 from typing import Any, Dict
 from unittest.mock import MagicMock, patch
 
@@ -18,6 +19,7 @@ import pytest
 
 from src.edu_cti.pipeline.phase2.utils.post_processing import (
     apply_extraction_date_fallbacks,
+    _coerce_iso_date,
     _guard_timeline_dates,
     apply_post_processing,
     extract_ransomware_family,
@@ -888,6 +890,13 @@ class TestApplyPostProcessing:
 
 
 class TestExtractionDateFallbacks:
+    def test_coerces_cest_publication_date_without_timezone_warning(self):
+        from dateutil.parser import UnknownTimezoneWarning
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UnknownTimezoneWarning)
+            assert _coerce_iso_date("20 May 2026 18:09 CEST") == "2026-05-20"
+
     def test_backfills_publication_date_from_article_metadata(self):
         payload = {
             "publication_date": None,

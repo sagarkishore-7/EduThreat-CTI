@@ -16,6 +16,7 @@ import requests
 
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.countries import normalize_country
+from src.edu_cti.core.date_parsing import parse_datetime_with_known_timezones
 from src.edu_cti.sources.rss.common import parse_rss_date
 
 logger = logging.getLogger(__name__)
@@ -290,8 +291,7 @@ def build_international_rss_incidents(
                 if pub_date:
                     date_precision = "day"
                     try:
-                        from dateutil.parser import parse as dateutil_parse
-                        dt = dateutil_parse(pub_date)
+                        dt = parse_datetime_with_known_timezones(pub_date)
                         if dt.replace(tzinfo=None) < cutoff:
                             continue
                     except (ValueError, ImportError, TypeError):

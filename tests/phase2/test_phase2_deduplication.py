@@ -1,6 +1,7 @@
 """Tests for Phase 2 post-enrichment deduplication."""
 
 import json
+import warnings
 from datetime import datetime
 
 import pytest
@@ -119,6 +120,18 @@ class TestDateParsing:
         assert result.hour == 12
         assert result.minute == 34
         assert result.second == 56
+        assert result.tzinfo is None
+
+    def test_parse_cest_date_normalizes_without_timezone_warning(self):
+        from dateutil.parser import UnknownTimezoneWarning
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", UnknownTimezoneWarning)
+            result = parse_incident_date("2025-05-15 12:34:56 CEST")
+
+        assert result is not None
+        assert result.hour == 10
+        assert result.minute == 34
         assert result.tzinfo is None
 
     def test_parse_invalid_date(self):
