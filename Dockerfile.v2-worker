@@ -2,6 +2,8 @@
 # Dedicated Postgres-backed worker/scheduler service for Railway
 FROM python:3.13-slim
 
+LABEL org.opencontainers.image.title="EduThreat-CTI v2 worker"
+
 WORKDIR /app
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
