@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timezone
 import re
 from typing import Any, Dict, Literal, Optional, Tuple
+from uuid import uuid4
 
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.enrichment import IncidentEnricher
@@ -12,10 +14,11 @@ from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
 from src.edu_cti.pipeline.phase2.storage import ArticleContent
 from src.edu_cti.pipeline.phase2.utils.deduplication import clean_institution_name, institution_names_match
 from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
-from src.edu_cti_v2.models import PipelineTask, SourceEnrichment
+from src.edu_cti_v2.models import PipelineTask, SourceEnrichment, SourceIncident
 from src.edu_cti_v2.repositories import (
     ArticleRepository,
     PipelineTaskRepository,
+    SourceIncidentRepository,
     SourceEnrichmentRepository,
 )
 from src.edu_cti_v2.source_identity import (
@@ -23,6 +26,7 @@ from src.edu_cti_v2.source_identity import (
     looks_geographic_only_identity,
     recover_source_identity,
 )
+from src.edu_cti_v2.services.intake import V2IntakeService
 
 _COLLECTIVE_IDENTITY_RE = re.compile(
     r"^(?:\d+\s+)?(?:universities|colleges|schools|school districts?|districts|campuses|providers|students)\b",
@@ -44,12 +48,71 @@ _COMMENTARY_IDENTITY_RE = re.compile(
     re.IGNORECASE,
 )
 _GENERIC_INDUSTRY_RE = re.compile(r"\bindustry\b", re.IGNORECASE)
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+_INVALID_SECONDARY_VICTIM_NAMES = {
+    "",
+    "unknown",
+    "unknown school",
+    "unknown institution",
+    "unknown university",
+    "unnamed",
+    "unnamed school",
+    "undisclosed",
+    "undisclosed institution",
+    "n/a",
+    "none",
+    "redacted",
+    "unidentified",
+}
 
 
 def _coerce_string_list(value: Any) -> list[str]:
     if not isinstance(value, list):
         return []
     return [str(item).strip() for item in value if str(item).strip()]
+
+
+def _coerce_optional_text(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        value = " ".join(str(item).strip() for item in value if str(item).strip())
+    text = str(value).strip()
+    return text or None
+
+
+def _coerce_attack_hint(value: Any) -> Optional[str]:
+    if isinstance(value, list):
+        value = next((item for item in value if str(item).strip()), None)
+    return _coerce_optional_text(value)
+
+
+def _infer_date_precision(value: Optional[str]) -> str:
+    return "day" if value and _ISO_DATE_RE.match(value) else "unknown"
+
+
+def _build_roundup_secondary_event_key(
+    source_incident,
+    victim_name: str,
+    incident_date: Optional[str],
+) -> str:
+    parent_key = (source_incident.source_event_key or "").strip() or str(source_incident.id)
+    parent_fingerprint = hashlib.sha256(parent_key.encode("utf-8")).hexdigest()[:16]
+    normalized_victim = clean_institution_name(victim_name).strip().lower()
+    return f"roundup_extract|{parent_fingerprint}|{normalized_victim}|{incident_date or ''}"
+
+
+def _build_roundup_secondary_notes(
+    *,
+    source_url: Optional[str],
+    brief_description: Optional[str],
+) -> Optional[str]:
+    parts: list[str] = []
+    if source_url:
+        parts.append(f"Extracted from roundup: {source_url}")
+    if brief_description:
+        parts.append(brief_description)
+    return "\n".join(parts) or None
 
 
 def source_incident_to_base_incident(
@@ -257,18 +320,135 @@ class V2EnrichmentService:
         *,
         article_repository: Optional[ArticleRepository] = None,
         source_enrichment_repository: Optional[SourceEnrichmentRepository] = None,
+        source_incident_repository: Optional[SourceIncidentRepository] = None,
         pipeline_task_repository: Optional[PipelineTaskRepository] = None,
+        intake_service: Optional[V2IntakeService] = None,
         enricher: Optional[IncidentEnricher] = None,
         llm_client: Optional[OllamaLLMClient] = None,
     ) -> None:
         self.article_repository = article_repository or ArticleRepository()
         self.source_enrichment_repository = source_enrichment_repository or SourceEnrichmentRepository()
+        self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
+        self.intake_service = intake_service or V2IntakeService(
+            pipeline_task_repository=self.pipeline_task_repository,
+        )
         if enricher is not None:
             self.enricher = enricher
         else:
             llm_client = llm_client or OllamaLLMClient()
             self.enricher = IncidentEnricher(llm_client=llm_client)
+
+    def _create_secondary_source_incidents(
+        self,
+        session,
+        *,
+        source_incident,
+        article_url: Optional[str],
+        raw_json_data: Dict[str, Any],
+    ) -> int:
+        secondary_entries = raw_json_data.get("other_edu_incidents")
+        if not isinstance(secondary_entries, list) or not secondary_entries:
+            return 0
+
+        primary_identity = recover_source_identity(
+            raw_institution_name=source_incident.raw_institution_name,
+            raw_victim_name=source_incident.raw_victim_name,
+            raw_subtitle=source_incident.raw_subtitle,
+            raw_title=source_incident.raw_title,
+        )
+        created = 0
+        for entry in secondary_entries:
+            if not isinstance(entry, dict):
+                continue
+
+            victim_name = _coerce_optional_text(entry.get("victim_name"))
+            cleaned_victim = clean_institution_name(victim_name).strip() if victim_name else ""
+            if not cleaned_victim or cleaned_victim.lower() in _INVALID_SECONDARY_VICTIM_NAMES:
+                continue
+            if _looks_invalid_primary_identity(cleaned_victim, title=source_incident.raw_title):
+                continue
+            if primary_identity and identity_matches_source_anchor(
+                cleaned_victim,
+                primary_identity,
+                source_aliases=[
+                    candidate
+                    for candidate in (
+                        source_incident.raw_institution_name,
+                        source_incident.raw_victim_name,
+                        source_incident.raw_subtitle,
+                    )
+                    if candidate
+                ],
+                threshold=80,
+            ):
+                continue
+
+            incident_date = _coerce_optional_text(entry.get("incident_date"))
+            country = _coerce_optional_text(entry.get("country"))
+            attack_hint = _coerce_attack_hint(entry.get("attack_type"))
+            brief_description = _coerce_optional_text(entry.get("brief_description"))
+            event_key = _build_roundup_secondary_event_key(
+                source_incident,
+                cleaned_victim,
+                incident_date,
+            )
+
+            existing = self.source_incident_repository.get_by_source_event_key(
+                session,
+                source_incident.source_name,
+                event_key,
+            )
+            if existing is not None:
+                self.intake_service.ensure_initial_processing_task(session, existing)
+                continue
+
+            notes = _build_roundup_secondary_notes(
+                source_url=article_url,
+                brief_description=brief_description,
+            )
+            raw_payload = {
+                "kind": "roundup_secondary_stub",
+                "roundup_parent_source_incident_id": str(source_incident.id),
+                "roundup_parent_source_name": source_incident.source_name,
+                "roundup_parent_source_event_key": source_incident.source_event_key,
+                "roundup_parent_article_url": article_url,
+                "secondary_entry": entry,
+            }
+
+            stub = SourceIncident(
+                id=uuid4(),
+                source_name=source_incident.source_name,
+                source_group=source_incident.source_group,
+                source_event_key=event_key,
+                collector_version=source_incident.collector_version,
+                collected_at=source_incident.collected_at,
+                source_published_at=source_incident.source_published_at,
+                raw_title=cleaned_victim,
+                raw_subtitle=brief_description,
+                raw_victim_name=cleaned_victim,
+                raw_institution_name=cleaned_victim,
+                raw_institution_type=None,
+                raw_country=country,
+                raw_region=None,
+                raw_city=None,
+                raw_incident_date=incident_date,
+                raw_date_precision=_infer_date_precision(incident_date),
+                raw_status="suspected",
+                raw_attack_hint=attack_hint,
+                raw_threat_actor=None,
+                raw_notes=notes,
+                source_confidence=source_incident.source_confidence,
+                ingest_hash=event_key,
+                raw_payload=raw_payload,
+                is_deleted=False,
+            )
+            stub.urls = []
+            self.source_incident_repository.add(session, stub)
+            self.intake_service.ensure_initial_processing_task(session, stub)
+            created += 1
+
+        return created
 
     def _select_article(self, session, source_incident) -> Tuple[Optional[ArticleContent], Optional[object], Optional[str]]:
         document = self.article_repository.get_selected_document(session, source_incident.id)
@@ -329,6 +509,7 @@ class V2EnrichmentService:
                 "enriched": False,
                 "reason": "missing_article",
                 "canonicalize_tasks_enqueued": 0,
+                "secondary_source_incidents_created": 0,
             }
 
         existing_enrichment = self.source_enrichment_repository.get_by_source_incident(session, source_incident.id)
@@ -418,6 +599,14 @@ class V2EnrichmentService:
                 enrichment.failed_reason = "Enrichment returned no typed result"
 
         self.source_enrichment_repository.add(session, enrichment)
+        secondary_source_incidents_created = 0
+        if isinstance(raw_json_data, dict):
+            secondary_source_incidents_created = self._create_secondary_source_incidents(
+                session,
+                source_incident=source_incident,
+                article_url=article_url,
+                raw_json_data=raw_json_data,
+            )
 
         canonicalize_tasks_enqueued = 0
         if force_canonicalize or (result is not None and is_education_related is not False):
@@ -456,4 +645,5 @@ class V2EnrichmentService:
             "has_typed_enrichment": typed_enrichment is not None,
             "article_document_id": str(document.id),
             "canonicalize_tasks_enqueued": canonicalize_tasks_enqueued,
+            "secondary_source_incidents_created": secondary_source_incidents_created,
         }

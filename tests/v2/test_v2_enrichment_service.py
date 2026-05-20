@@ -167,7 +167,12 @@ def test_enrichment_service_records_missing_article_failure():
 
     outcome = service.enrich_source_incident(session, incident)
 
-    assert outcome == {"enriched": False, "reason": "missing_article", "canonicalize_tasks_enqueued": 0}
+    assert outcome == {
+        "enriched": False,
+        "reason": "missing_article",
+        "canonicalize_tasks_enqueued": 0,
+        "secondary_source_incidents_created": 0,
+    }
     saved = source_enrichment_repo.add.call_args.args[1]
     assert saved.failed_reason == "No selected article available for enrichment"
 
@@ -540,3 +545,156 @@ def test_enrichment_service_accepts_acronym_variant_with_canonical_name():
     saved = source_enrichment_repo.add.call_args.args[1]
     assert saved.manual_review_required is False
     assert saved.typed_enrichment["institution_name"] == "Kansas State University"
+
+
+def test_enrichment_service_creates_roundup_secondary_stubs():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    source_incident_repo = Mock()
+    source_incident_repo.get_by_source_event_key.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    intake_service = Mock()
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Penn State University",
+        "attack_category": "ransomware_encryption",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Penn State University",
+            "other_edu_incidents": [
+                {
+                    "victim_name": "Secondary College",
+                    "incident_date": "2026-05-07",
+                    "attack_type": ["ransomware_encryption"],
+                    "country": "Canada",
+                    "brief_description": "A second victim was briefly noted.",
+                }
+            ],
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    document = _article_document(incident)
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        source_incident_repository=source_incident_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        intake_service=intake_service,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["secondary_source_incidents_created"] == 1
+    added_stub = source_incident_repo.add.call_args.args[1]
+    assert added_stub.raw_institution_name == "Secondary College"
+    assert added_stub.raw_attack_hint == "ransomware_encryption"
+    assert added_stub.raw_notes.startswith("Extracted from roundup:")
+    assert added_stub.urls == []
+    intake_service.ensure_initial_processing_task.assert_called_once_with(session, added_stub)
+
+
+def test_enrichment_service_skips_duplicate_roundup_secondary_stub():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    source_incident_repo = Mock()
+    existing_stub = SourceIncident(
+        id=uuid4(),
+        source_name="therecord",
+        source_group="news",
+        source_event_key="existing",
+        collected_at=datetime(2026, 5, 9, 12, 0, tzinfo=timezone.utc),
+        ingest_hash="existing",
+        raw_payload={},
+        is_deleted=False,
+    )
+    source_incident_repo.get_by_source_event_key.return_value = existing_stub
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    intake_service = Mock()
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Penn State University",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Penn State University",
+            "other_edu_incidents": [{"victim_name": "Secondary College", "incident_date": "2026-05-07"}],
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    document = _article_document(incident)
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        source_incident_repository=source_incident_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        intake_service=intake_service,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["secondary_source_incidents_created"] == 0
+    source_incident_repo.add.assert_not_called()
+    intake_service.ensure_initial_processing_task.assert_called_once_with(session, existing_stub)
+
+
+def test_enrichment_service_skips_primary_victim_in_roundup_secondaries():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    source_incident_repo = Mock()
+    source_incident_repo.get_by_source_event_key.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    intake_service = Mock()
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {"institution_name": "Penn State University"}
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Penn State University",
+            "other_edu_incidents": [{"victim_name": "Penn State University", "incident_date": "2026-05-08"}],
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    document = _article_document(incident)
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        source_incident_repository=source_incident_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        intake_service=intake_service,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["secondary_source_incidents_created"] == 0
+    source_incident_repo.add.assert_not_called()
+    intake_service.ensure_initial_processing_task.assert_not_called()
