@@ -107,6 +107,12 @@ _VISIBLE_HEADER_DATE_RE = re.compile(
     r"dec(?:ember)?)\s+\d{1,2}(?:st|nd|rd|th)?[,]?\s+\d{4}\b",
     re.IGNORECASE,
 )
+_ORDINAL_DAY_SUFFIX_RE = re.compile(r"(\d{1,2})(st|nd|rd|th)\b", re.IGNORECASE)
+
+
+def _strip_ordinal_day_suffixes(raw: str) -> str:
+    """Normalize ordinal day strings like 'January 8th, 2025' for date parsing."""
+    return _ORDINAL_DAY_SUFFIX_RE.sub(r"\1", raw)
 
 
 def _resolve_google_news_url(url: str) -> str:
@@ -901,6 +907,21 @@ class ArticleFetcher:
             author = None
             if article.authors:
                 author = ', '.join(article.authors) if len(article.authors) > 1 else article.authors[0]
+
+            # newspaper3k can extract the article body successfully while still
+            # missing byline metadata on modern JS-heavy pages like The Record.
+            # Reuse the downloaded HTML to backfill publish date / author before
+            # we hand the article to enrichment.
+            html = getattr(article, "html", None)
+            if html and (not publish_date or not author):
+                try:
+                    soup = BeautifulSoup(html, "html.parser")
+                    if not publish_date:
+                        publish_date = self._extract_publish_date(soup)
+                    if not author:
+                        author = self._extract_author(soup)
+                except Exception as exc:
+                    logger.debug(f"newspaper3k metadata backfill failed for {url}: {exc}")
             
             content = self._clean_content(article.text)
 
@@ -1500,7 +1521,7 @@ class ArticleFetcher:
         if not date_str:
             return None
         
-        date_str = date_str.strip()
+        date_str = _strip_ordinal_day_suffixes(date_str.strip())
         
         # Try parsing with dateutil if available (handles many formats)
         try:
@@ -1550,7 +1571,9 @@ class ArticleFetcher:
         # Common human-readable formats
         human_formats = [
             "%B %d, %Y",   # April 17, 2025
+            "%B %d %Y",    # April 17 2025
             "%b %d, %Y",   # Apr 17, 2025
+            "%b %d %Y",    # Apr 17 2025
             "%d %B %Y",    # 10 December 2021
             "%d %b %Y",    # 10 Dec 2021
             "%Y-%m-%d",    # 2025-08-11

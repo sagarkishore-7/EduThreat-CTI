@@ -34,6 +34,11 @@ def test_matches_keywords_handles_config_terms_with_punctuation():
     )
 
 
+def test_extract_date_handles_ordinal_card_dates():
+    assert common.extract_date("January 8th, 2025") == ("2025-01-08", "day")
+    assert common.extract_date("November 19th, 2025") == ("2025-11-19", "day")
+
+
 def test_build_therecord_incidents_stops_after_consecutive_stale_pages(monkeypatch):
     soups = [_make_result_soup(i, f"School board cyber-attack page {i}") for i in range(1, 6)]
     save_calls = []
@@ -58,4 +63,3 @@ def test_build_therecord_incidents_stops_after_consecutive_stale_pages(monkeypat
 
     assert len(incidents) == 2
     assert len(save_calls) == 2
-

@@ -211,6 +211,59 @@ class TestArticleFetcher:
 
         assert fetcher._extract_publish_date(soup) == "2024-03-15"
 
+    def test_extracts_ordinal_header_publish_date_when_metadata_missing(self):
+        fetcher = ArticleFetcher(http_client=Mock())
+        soup = BeautifulSoup(
+            """
+            <html><body>
+            <main>
+              <h1>Education software firm’s hack exposes personal data for students, teachers nationwide</h1>
+              <div>Suzanne Smalley January 8th, 2025</div>
+              <p>PowerSchool became aware of unauthorized access on December 28.</p>
+            </main>
+            </body></html>
+            """,
+            "html.parser",
+        )
+
+        assert fetcher._extract_publish_date(soup) == "2025-01-08"
+
+    def test_newspaper_fetch_backfills_publish_date_and_author_from_html(self):
+        class DummyArticle:
+            def __init__(self, _url, language="en"):
+                self.title = "Education software firm’s hack exposes personal data for students, teachers nationwide"
+                self.text = "PowerSchool " * 90
+                self.publish_date = None
+                self.authors = []
+                self.html = """
+                    <html><body>
+                    <script type=\"application/ld+json\">
+                    {
+                      \"@context\": \"https://schema.org\",
+                      \"@type\": \"Article\",
+                      \"datePublished\": \"2025-01-08T17:33:37.282Z\",
+                      \"author\": {\"@type\": \"Person\", \"name\": \"Suzanne Smalley\"}
+                    }
+                    </script>
+                    </body></html>
+                """
+
+            def download(self):
+                return None
+
+            def parse(self):
+                return None
+
+        fetcher = ArticleFetcher(http_client=Mock())
+
+        with patch("src.edu_cti.pipeline.phase2.storage.article_fetcher.Article", DummyArticle, create=True):
+            article = fetcher._fetch_with_newspaper("https://therecord.media/education-software-hack-exposes-student-teacher-data")
+
+        assert article is not None
+        assert article.fetch_successful is True
+        assert article.publish_date == "2025-01-08"
+        assert article.author == "Suzanne Smalley"
+
     def test_fetch_article_success(self):
         """Fetcher should return the first successful article from the fallback chain."""
         fetcher = ArticleFetcher(http_client=Mock())

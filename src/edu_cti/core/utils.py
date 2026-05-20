@@ -3,7 +3,16 @@ import os
 from importlib.resources import files
 from pathlib import Path
 import datetime
+import re
 from typing import Optional, Tuple, List
+
+
+_ORDINAL_DAY_SUFFIX_RE = re.compile(r"(\d{1,2})(st|nd|rd|th)\b", re.IGNORECASE)
+
+
+def _strip_ordinal_day_suffixes(raw: str) -> str:
+    """Normalize ordinal day strings like 'January 8th, 2025' -> 'January 8, 2025'."""
+    return _ORDINAL_DAY_SUFFIX_RE.sub(r"\1", raw)
 
 
 def parse_date_with_precision(raw: str) -> Tuple[str, str]:
@@ -21,6 +30,7 @@ def parse_date_with_precision(raw: str) -> Tuple[str, str]:
         return "", "unknown"
 
     s = raw.replace("\xa0", " ").strip()
+    s = _strip_ordinal_day_suffixes(s)
     
     # Handle ISO 8601 with timezone (e.g., "2025-11-19T11:23:06-05:00")
     # Extract just the date part before the 'T'
@@ -35,7 +45,9 @@ def parse_date_with_precision(raw: str) -> Tuple[str, str]:
     # Day-level formats
     fmts_day = [
         "%B %d, %Y",   # April 17, 2025
+        "%B %d %Y",    # April 17 2025
         "%b %d, %Y",   # Apr 17, 2025
+        "%b %d %Y",    # Apr 17 2025
         "%d %B %Y",    # 10 December 2021
         "%d %b %Y",    # 10 Dec 2021
         "%Y-%m-%d",    # 2025-08-11
