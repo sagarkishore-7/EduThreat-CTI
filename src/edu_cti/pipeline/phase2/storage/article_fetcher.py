@@ -51,6 +51,17 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _env_timeout_ms_as_seconds(name: str, default_ms: int) -> float:
+    """Read a millisecond timeout env var and convert it for clients expecting seconds."""
+    raw_value = os.environ.get(name, str(default_ms))
+    try:
+        milliseconds = int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %sms", name, raw_value, default_ms)
+        milliseconds = default_ms
+    return max(1.0, milliseconds / 1000.0)
+
+
 def _prefer_oxylabs_before_browser() -> bool:
     """Railway safe mode prefers the cloud fetch tier before local browser work."""
     if not _env_flag("PHASE2_RAILWAY_SAFE_MODE", "0"):
@@ -543,12 +554,12 @@ class ArticleFetcher:
                 content_length=0,
             )
 
-        timeout_ms = int(os.environ.get("EDU_CTI_SCRAPLING_TIMEOUT_MS", "20000"))
+        timeout_seconds = _env_timeout_ms_as_seconds("EDU_CTI_SCRAPLING_TIMEOUT_MS", 20000)
         impersonate = os.environ.get("EDU_CTI_SCRAPLING_IMPERSONATE", "chrome")
         try:
             response = ScraplingFetcher.get(
                 url,
-                timeout=timeout_ms,
+                timeout=timeout_seconds,
                 impersonate=impersonate,
                 stealthy_headers=True,
             )

@@ -31,6 +31,7 @@ from src.edu_cti.pipeline.phase2.storage.article_fetcher import (
     ArticleFetcher,
     ArticleContent,
     BLOCKED_FETCH_DOMAINS,
+    _env_timeout_ms_as_seconds,
 )
 from src.edu_cti.pipeline.phase2.storage.article_storage import (
     init_articles_table,
@@ -224,7 +225,7 @@ def _fetch_discovery_url_with_scrapling(url: str) -> Optional[str]:
         return None
     try:
         kwargs = {
-            "timeout": int(os.environ.get("EDU_CTI_SCRAPLING_DISCOVERY_TIMEOUT_MS", "20000")),
+            "timeout": _env_timeout_ms_as_seconds("EDU_CTI_SCRAPLING_DISCOVERY_TIMEOUT_MS", 20000),
             "stealthy_headers": True,
             "headers": {
                 "Accept": "application/rss+xml, application/xml, text/xml, text/html",

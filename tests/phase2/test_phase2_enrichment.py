@@ -238,6 +238,39 @@ class TestArticleFetcher:
             warnings.simplefilter("error", UnknownTimezoneWarning)
             assert fetcher._normalize_date_to_iso("20 May 2026 18:09 CEST") == "2026-05-20"
 
+    def test_scrapling_fetch_uses_millisecond_env_timeout_as_seconds(self, monkeypatch):
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
+        calls = []
+
+        class FakeScraplingFetcher:
+            @staticmethod
+            def get(url, **kwargs):
+                calls.append(kwargs)
+                return SimpleNamespace(
+                    status=200,
+                    body="""
+                    <html><head><title>School breach</title></head><body>
+                    <article>
+                    This education-sector cyber incident article has enough
+                    detail to pass the content length threshold. It describes a
+                    school breach, impacted systems, and recovery context for
+                    affected students, families, and staff.
+                    </article>
+                    </body></html>
+                    """,
+                )
+
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_TIMEOUT_MS", "1500")
+        monkeypatch.setattr(article_fetcher_module, "SCRAPLING_AVAILABLE", True)
+        monkeypatch.setattr(article_fetcher_module, "ScraplingFetcher", FakeScraplingFetcher)
+
+        result = ArticleFetcher(http_client=Mock())._fetch_with_scrapling("https://example.com/article")
+
+        assert result.fetch_successful is True
+        assert calls[0]["timeout"] == 1.5
+        assert calls[0]["impersonate"] == "chrome"
+
     def test_newspaper_fetch_backfills_publish_date_and_author_from_html(self):
         class DummyArticle:
             def __init__(self, _url, language="en"):

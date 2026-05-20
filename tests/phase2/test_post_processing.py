@@ -1089,6 +1089,30 @@ class TestSerpHeadlineBypass:
             "https://example.org/cyber-school",
         ]
 
+    def test_scrapling_discovery_uses_millisecond_env_timeout_as_seconds(self, monkeypatch):
+        from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs
+
+        calls = []
+
+        class FakeScraplingFetcher:
+            @staticmethod
+            def get(url, **kwargs):
+                calls.append(kwargs)
+
+                class Response:
+                    status = 200
+                    body = b"<rss><channel></channel></rss>"
+
+                return Response()
+
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_DISCOVERY_TIMEOUT_MS", "2500")
+        monkeypatch.setattr(fs, "SCRAPLING_DISCOVERY_AVAILABLE", True)
+        monkeypatch.setattr(fs, "ScraplingFetcher", FakeScraplingFetcher)
+
+        assert fs._fetch_discovery_url_with_scrapling("https://news.google.com/rss/search?q=test")
+        assert calls[0]["timeout"] == 2.5
+        assert calls[0]["stealthy_headers"] is True
+
     def test_yahoo_consent_fixture_returns_empty(self, monkeypatch):
         from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs
 
