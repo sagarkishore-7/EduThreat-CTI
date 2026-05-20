@@ -1,4 +1,4 @@
-from src.edu_cti_v2.source_identity import recover_source_identity
+from src.edu_cti_v2.source_identity import identity_matches_source_anchor, recover_source_identity
 
 
 def test_recover_source_identity_uses_education_title_when_needed():
@@ -32,3 +32,27 @@ def test_recover_source_identity_ignores_geography_only_subtitle():
     )
 
     assert identity is None
+
+
+def test_identity_matches_source_anchor_for_translated_name():
+    assert identity_matches_source_anchor(
+        "Sorbonne University",
+        "Sorbonne Université",
+        extracted_aliases=["Sorbonne Université"],
+    )
+
+
+def test_identity_matches_source_anchor_for_acronym_variant():
+    assert identity_matches_source_anchor(
+        "Kansas State University",
+        "Kansas State University (K-State)",
+        extracted_aliases=["K-State"],
+    )
+
+
+def test_identity_matches_source_anchor_for_campus_variant():
+    assert identity_matches_source_anchor(
+        "South East Technological University",
+        "South East Technological University Waterford Campus",
+        extracted_aliases=["South East Technological University Waterford Campus"],
+    )

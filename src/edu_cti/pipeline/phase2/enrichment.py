@@ -45,7 +45,7 @@ _NON_EDU_ALLOWED_KEYS = {
 }
 
 _STORAGE_DEBUG_KEY = "_storage_debug"
-_PROMPT_VERSION = "phase2_prompt_v3"
+_PROMPT_VERSION = "phase2_prompt_v4"
 _SCHEMA_VERSION = "phase2_schema_v1"
 _MAPPER_VERSION = "phase2_mapper_v1"
 _POST_PROCESSING_VERSION = "phase2_post_processing_v2"

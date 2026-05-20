@@ -5,7 +5,7 @@ The JSON schema is passed separately as the Ollama format= parameter (grammar-co
 generation), so it is NOT included in this prompt. This removes ~8K tokens per call while
 keeping all semantic guidance the model needs to make the right choices within the schema.
 
-Version: 3.1.0 (Victim-anchored extraction for multi-entity articles)
+Version: 3.2.0 (Victim-anchored extraction with normalized English victim identities)
 """
 
 PROMPT_TEMPLATE = """You are a Senior Cyber Threat Intelligence (CTI) Analyst specialising in education sector cyber incidents. The article may be written in any language — read it in its original language and extract all fields in English as per the normalisation rules below. Output a valid JSON object matching the schema.
@@ -42,6 +42,24 @@ CRITICAL OUTPUT REQUIREMENTS:
      * Arabic, Korean, Cyrillic, or any other non-Latin script → translate to English
      * Use the internationally recognised English name where one exists
      * If no English name exists, romanise (transliterate) to Latin characters
+     * institution_name must be the NORMALIZED ENGLISH victim label best suited for
+       cross-article matching and canonicalization.
+     * Keep the core institution only: remove campus wrappers, legal suffix clutter,
+       threat actor names, attack verbs, and headline wrappers when they are not part
+       of the victim's real name.
+     * If the article uses a local-language name, acronym, or campus-specific label,
+       normalize institution_name to the best English victim label and put the local
+       form / acronym / campus variant into institution_aliases.
+     * Examples:
+       - "Sorbonne Université" → institution_name="Sorbonne University",
+         institution_aliases includes "Sorbonne Université"
+       - "Kansas State University (K-State)" → institution_name="Kansas State University",
+         institution_aliases includes "K-State"
+       - "South East Technological University Waterford Campus" →
+         institution_name="South East Technological University",
+         institution_aliases includes "South East Technological University Waterford Campus"
+     * institution_aliases should include meaningful native-language, acronym, legal-name,
+       and campus-specific variants when explicitly present in the article.
      * institution_name must be ONLY the victim institution label, not a headline.
        Remove threat actor names, attack verbs, and wrappers like
        "Qilin Ransomware Targets ..." or "... suffers cyberattack"
@@ -78,6 +96,8 @@ CRITICAL OUTPUT REQUIREMENTS:
    INSTITUTION NAME:
    - Extract from the article body only. Do NOT derive from the article title, URL slug,
      subtitle, or metadata. If the victim is not explicitly named in the body, set to null.
+   - When named in the body, output the normalized English institution_name and place
+     any native-language or acronym forms into institution_aliases.
 
    THREAT ACTOR / RANSOMWARE:
    - threat_actor_name: Only if the article explicitly names the actor or group. Do NOT

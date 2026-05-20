@@ -18,7 +18,11 @@ from src.edu_cti_v2.repositories import (
     PipelineTaskRepository,
     SourceEnrichmentRepository,
 )
-from src.edu_cti_v2.source_identity import looks_geographic_only_identity, recover_source_identity
+from src.edu_cti_v2.source_identity import (
+    identity_matches_source_anchor,
+    looks_geographic_only_identity,
+    recover_source_identity,
+)
 
 _COLLECTIVE_IDENTITY_RE = re.compile(
     r"^(?:\d+\s+)?(?:universities|colleges|schools|school districts?|districts|campuses|providers|students)\b",
@@ -40,6 +44,12 @@ _COMMENTARY_IDENTITY_RE = re.compile(
     re.IGNORECASE,
 )
 _GENERIC_INDUSTRY_RE = re.compile(r"\bindustry\b", re.IGNORECASE)
+
+
+def _coerce_string_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item).strip() for item in value if str(item).strip()]
 
 
 def source_incident_to_base_incident(
@@ -213,7 +223,23 @@ def _repair_or_reject_primary_identity(
         reason = "Article does not identify a specific victim institution or vendor."
         return _mark_non_specific_victim(raw_json_data, reason=reason), None, "reject"
 
-    if source_identity and cleaned_extracted and not institution_names_match(cleaned_extracted, source_identity, threshold=80):
+    extracted_aliases = _coerce_string_list(raw_json_data.get("institution_aliases"))
+    source_aliases = [
+        candidate
+        for candidate in (
+            source_incident.raw_institution_name,
+            source_incident.raw_victim_name,
+            source_incident.raw_subtitle,
+        )
+        if candidate
+    ]
+    if source_identity and cleaned_extracted and not identity_matches_source_anchor(
+        cleaned_extracted,
+        source_identity,
+        extracted_aliases=extracted_aliases,
+        source_aliases=source_aliases,
+        threshold=80,
+    ):
         reason = (
             f"Extracted victim '{cleaned_extracted}' drifted from source anchor "
             f"'{source_identity}'."

@@ -40,7 +40,11 @@ from src.edu_cti_v2.repositories import (
     SourceEnrichmentRepository,
     SourceIncidentRepository,
 )
-from src.edu_cti_v2.source_identity import looks_geographic_only_identity, recover_source_identity
+from src.edu_cti_v2.source_identity import (
+    identity_matches_source_anchor,
+    looks_geographic_only_identity,
+    recover_source_identity,
+)
 
 _VENDOR_LIKE_TYPES = {
     "edtech_platform",
@@ -377,6 +381,8 @@ def _identity_match_quality(left: Optional[str], right: Optional[str]) -> int:
     right_stripped = re.sub(r"\s+\([A-Za-z0-9&.\- ]{2,}\)$", "", right_normalized).strip()
     if left_stripped and right_stripped and left_stripped == right_stripped:
         return 95
+    if identity_matches_source_anchor(left_normalized, right_normalized, threshold=85):
+        return 90
     if institution_names_match(left_normalized, right_normalized, threshold=92):
         return 92
     if institution_names_match(left_normalized, right_normalized, threshold=85):

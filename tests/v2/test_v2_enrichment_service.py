@@ -446,3 +446,97 @@ def test_enrichment_service_rejects_victim_drift_from_source_anchor():
     assert saved.manual_review_required is True
     assert "drifted from source anchor" in saved.manual_review_reason
     assert "drifted from source anchor" in saved.raw_extraction["_reason"]
+
+
+def test_enrichment_service_accepts_translated_victim_with_native_alias():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Sorbonne University",
+        "institution_aliases": ["Sorbonne Université", "SU"],
+        "attack_category": "unauthorized_access",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Sorbonne University",
+            "institution_aliases": ["Sorbonne Université", "SU"],
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.raw_title = "Cyber attack on a university in France"
+    incident.raw_subtitle = "Sorbonne Université - Paris, Île-de-France, France"
+    incident.raw_institution_name = "Sorbonne Université"
+    incident.raw_victim_name = "Sorbonne Université"
+    document = _article_document(incident)
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["enriched"] is True
+    assert outcome["is_education_related"] is True
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.manual_review_required is False
+    assert saved.typed_enrichment["institution_name"] == "Sorbonne University"
+
+
+def test_enrichment_service_accepts_acronym_variant_with_canonical_name():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Kansas State University",
+        "institution_aliases": ["K-State"],
+        "attack_category": "ransomware_encryption",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Kansas State University",
+            "institution_aliases": ["K-State"],
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.raw_title = "Cyber attack on a university in Kansas, USA"
+    incident.raw_subtitle = "Kansas State University (K-State) - Manhattan, Kansas, USA"
+    incident.raw_institution_name = "Kansas State University (K-State)"
+    incident.raw_victim_name = "Kansas State University (K-State)"
+    document = _article_document(incident)
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["enriched"] is True
+    assert outcome["is_education_related"] is True
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.manual_review_required is False
+    assert saved.typed_enrichment["institution_name"] == "Kansas State University"

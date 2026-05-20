@@ -55,15 +55,20 @@ EXTRACTION_SCHEMA = {
         "institution_name": {
             "type": "string",
             "description": (
-                "Full official name of the affected educational institution, extracted from the article body only. "
+                "Normalized English name of the affected educational institution, extracted from the article body only. "
+                "Use the best English victim label for cross-article matching (translate or romanise when needed). "
                 "Do NOT use the article headline, URL, or subtitle as the institution name. "
+                "Do NOT include threat actor names, attack verbs, or generic wrappers. "
                 "Set to null if the victim institution is not explicitly named in the article text."
             )
         },
         "institution_aliases": {
             "type": "array",
             "items": {"type": "string"},
-            "description": "Alternative names, abbreviations, or acronyms for the institution"
+            "description": (
+                "Alternative names for the institution explicitly mentioned in the article, including native-language "
+                "forms, acronyms, abbreviations, legal names, and campus-specific variants."
+            )
         },
         "institution_type": {
             "type": "string",

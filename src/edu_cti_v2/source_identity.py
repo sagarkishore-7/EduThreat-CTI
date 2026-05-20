@@ -1,12 +1,13 @@
-"""Helpers for recovering victim identity from source metadata."""
+"""Helpers for recovering and matching victim identity from source metadata."""
 
 from __future__ import annotations
 
 import re
+import unicodedata
 from typing import Optional
 
 from src.edu_cti.core.countries import get_country_code, normalize_country
-from src.edu_cti.pipeline.phase2.utils.deduplication import clean_institution_name
+from src.edu_cti.pipeline.phase2.utils.deduplication import clean_institution_name, institution_names_match
 
 _GENERIC_EDU_ENTITY_RE = (
     r"(?:university|college|school|academy|institute|polytechnic|district|"
@@ -27,6 +28,51 @@ _EDU_KEYWORD_RE = re.compile(
 )
 _NON_ASCII_RE = re.compile(r"[^\x00-\x7F]")
 _UNKNOWN_VALUES = {"", "unknown", "unnamed", "undisclosed", "n/a", "none", "null"}
+_PARENTHETICAL_ALIAS_RE = re.compile(r"\s+\(([A-Za-z0-9&.\- /]{2,24})\)\s*$")
+_TRAILING_CAMPUS_RE = re.compile(r"\b(?:[a-z0-9-]+\s+)?campus$", re.IGNORECASE)
+_IDENTITY_TOKEN_STOP_WORDS = {
+    "the",
+    "of",
+    "at",
+    "for",
+    "and",
+    "de",
+    "del",
+    "des",
+    "der",
+    "den",
+    "da",
+    "do",
+    "dos",
+    "das",
+    "du",
+    "di",
+    "degli",
+    "della",
+    "la",
+    "le",
+    "los",
+    "las",
+    "el",
+    "y",
+    "und",
+    "et",
+    "v",
+}
+_IDENTITY_TERM_REPLACEMENTS: tuple[tuple[str, str], ...] = (
+    ("university of applied sciences", "hochschule"),
+    ("universite", "university"),
+    ("universitat", "university"),
+    ("universita", "university"),
+    ("universitaet", "university"),
+    ("universidad", "university"),
+    ("universidade", "university"),
+    ("universiteit", "university"),
+    ("univerza", "university"),
+    ("universitario", "university"),
+    ("universitaria", "university"),
+    ("hochschule", "university"),
+)
 
 
 def looks_geographic_only_identity(value: Optional[str]) -> bool:
@@ -98,6 +144,99 @@ def _normalize_source_identity_candidate(value: Optional[str]) -> Optional[str]:
     if len(cleaned) < 4:
         return None
     return cleaned
+
+
+def _ascii_fold(value: str) -> str:
+    folded = unicodedata.normalize("NFKD", value)
+    return "".join(char for char in folded if not unicodedata.combining(char))
+
+
+def _normalize_identity_for_match(value: Optional[str]) -> Optional[str]:
+    cleaned = clean_institution_name(value).strip()
+    if not cleaned:
+        return None
+    normalized = _ascii_fold(cleaned).lower()
+    normalized = _PARENTHETICAL_ALIAS_RE.sub("", normalized).strip()
+    normalized = normalized.replace("/", " ")
+    normalized = normalized.replace("&", " and ")
+    normalized = re.sub(r"[^\w\s-]", " ", normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = _TRAILING_CAMPUS_RE.sub("", normalized).strip()
+    for source, target in _IDENTITY_TERM_REPLACEMENTS:
+        normalized = re.sub(rf"\b{re.escape(source)}\b", target, normalized)
+    normalized = re.sub(r"\s+", " ", normalized).strip()
+    return normalized or None
+
+
+def _identity_match_tokens(value: Optional[str]) -> set[str]:
+    normalized = _normalize_identity_for_match(value)
+    if not normalized:
+        return set()
+    return {
+        token
+        for token in normalized.split()
+        if token and token not in _IDENTITY_TOKEN_STOP_WORDS and len(token) > 1
+    }
+
+
+def _identity_match_variants(value: Optional[str]) -> set[str]:
+    normalized = _normalize_identity_for_match(value)
+    if not normalized:
+        return set()
+    variants = {normalized}
+    stripped = _PARENTHETICAL_ALIAS_RE.sub("", normalized).strip()
+    if stripped:
+        variants.add(stripped)
+    if normalized.endswith(" campus"):
+        variants.add(normalized[: -len(" campus")].strip())
+    campus_trimmed = _TRAILING_CAMPUS_RE.sub("", normalized).strip()
+    if campus_trimmed:
+        variants.add(campus_trimmed)
+    return {variant for variant in variants if variant}
+
+
+def identity_matches_source_anchor(
+    extracted_identity: Optional[str],
+    source_identity: Optional[str],
+    *,
+    extracted_aliases: Optional[list[str]] = None,
+    source_aliases: Optional[list[str]] = None,
+    threshold: int = 80,
+) -> bool:
+    """Return True when translated, romanised, or aliased forms refer to the same victim."""
+
+    left_candidates = [extracted_identity, *(extracted_aliases or [])]
+    right_candidates = [source_identity, *(source_aliases or [])]
+
+    for left in left_candidates:
+        for right in right_candidates:
+            if institution_names_match(str(left or ""), str(right or ""), threshold=threshold):
+                return True
+
+            left_variants = _identity_match_variants(left)
+            right_variants = _identity_match_variants(right)
+            if not left_variants or not right_variants:
+                continue
+            if left_variants & right_variants:
+                return True
+
+            for left_variant in left_variants:
+                for right_variant in right_variants:
+                    if left_variant == right_variant:
+                        return True
+                    left_tokens = _identity_match_tokens(left_variant)
+                    right_tokens = _identity_match_tokens(right_variant)
+                    if not left_tokens or not right_tokens:
+                        continue
+                    if left_tokens == right_tokens:
+                        return True
+                    smaller, larger = sorted((left_tokens, right_tokens), key=len)
+                    if len(smaller) >= 2 and smaller.issubset(larger) and len(smaller) / len(larger) >= 0.66:
+                        return True
+                    if institution_names_match(left_variant, right_variant, threshold=threshold):
+                        return True
+
+    return False
 
 
 def recover_source_identity(
