@@ -2,8 +2,9 @@
 Article fetching module for Phase 2 enrichment.
 
 Fetches and extracts article content from URLs for LLM processing.
-Uses newspaper3k for primary article extraction, with curl_cffi/Playwright fallback.
-Includes advanced bot detection bypass via TLS fingerprinting and headless browser.
+Defaults to a low-cost Scrapling-first chain for article enrichment, with
+Oxylabs and archive.org as fallbacks. Legacy newspaper3k/curl_cffi/Playwright
+tiers remain available behind EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1 for rollback.
 """
 
 import json
@@ -29,6 +30,15 @@ try:
 except ImportError:
     NEWSPAPER_AVAILABLE = False
 
+# Optional Scrapling support. Scrapling is the default primary article tier in
+# low-cost production mode; env flags below still allow rollback/disable paths.
+try:
+    from scrapling.fetchers import Fetcher as ScraplingFetcher
+    SCRAPLING_AVAILABLE = True
+except ImportError:
+    ScraplingFetcher = None
+    SCRAPLING_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 
 from src.edu_cti.core import metrics as _metrics
@@ -43,6 +53,46 @@ def _prefer_oxylabs_before_browser() -> bool:
     if not _env_flag("PHASE2_RAILWAY_SAFE_MODE", "0"):
         return False
     return bool(os.environ.get("RAILWAY_SERVICE_ID") or os.environ.get("RAILWAY_ENVIRONMENT"))
+
+
+def _fetch_tier_profile() -> str:
+    return os.environ.get("EDU_CTI_FETCH_TIER_PROFILE", "scrapling_first").strip().lower()
+
+
+def _legacy_fetch_tiers_enabled() -> bool:
+    return _env_flag("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", "0")
+
+
+def _fetch_newspaper_enabled() -> bool:
+    profile = _fetch_tier_profile()
+    default = "1" if _legacy_fetch_tiers_enabled() or profile in {"legacy", "default"} else "0"
+    return _env_flag("EDU_CTI_FETCH_ENABLE_NEWSPAPER", default) and not _env_flag(
+        "EDU_CTI_FETCH_DISABLE_NEWSPAPER", "0"
+    )
+
+
+def _fetch_scrapling_enabled() -> bool:
+    profile = _fetch_tier_profile()
+    default = "0" if profile in {"legacy", "default"} else "1"
+    return _env_flag("EDU_CTI_FETCH_ENABLE_SCRAPLING", default) and not _env_flag(
+        "EDU_CTI_FETCH_DISABLE_SCRAPLING", "0"
+    )
+
+
+def _fetch_httpclient_enabled() -> bool:
+    profile = _fetch_tier_profile()
+    default = "1" if _legacy_fetch_tiers_enabled() or profile in {"legacy", "default"} else "0"
+    return _env_flag("EDU_CTI_FETCH_ENABLE_HTTPCLIENT", default) and not _env_flag(
+        "EDU_CTI_FETCH_DISABLE_HTTPCLIENT", "0"
+    )
+
+
+def _fetch_oxylabs_enabled() -> bool:
+    return _env_flag("EDU_CTI_OXYLABS_ENABLED", "1") and _env_flag(
+        "EDU_CTI_FETCH_ENABLE_OXYLABS", "1"
+    ) and not _env_flag(
+        "EDU_CTI_FETCH_DISABLE_OXYLABS", "0"
+    )
 
 
 def _fetch_domain(url: str) -> str:
@@ -108,11 +158,41 @@ _VISIBLE_HEADER_DATE_RE = re.compile(
     re.IGNORECASE,
 )
 _ORDINAL_DAY_SUFFIX_RE = re.compile(r"(\d{1,2})(st|nd|rd|th)\b", re.IGNORECASE)
+_URL_PATH_YEAR_RE = re.compile(r"(?:^|[/-])(20[0-3]\d)(?:[/-]|$)")
+_DATE_LABEL_PREFIX_RE = re.compile(
+    r"^(?:published|posted|updated|last updated|date|by)\s*:?\s*",
+    re.IGNORECASE,
+)
 
 
 def _strip_ordinal_day_suffixes(raw: str) -> str:
     """Normalize ordinal day strings like 'January 8th, 2025' for date parsing."""
     return _ORDINAL_DAY_SUFFIX_RE.sub(r"\1", raw)
+
+
+def _clean_date_candidate(raw: str) -> str:
+    """Strip non-date glyphs/labels before parsing visible metadata dates."""
+    if not raw:
+        return ""
+    value = re.sub(r"[\u200b-\u200f\u202a-\u202e\ufeff]", "", str(raw))
+    value = re.sub(r"^[^A-Za-z0-9]+", "", value).strip()
+    value = _DATE_LABEL_PREFIX_RE.sub("", value).strip()
+    return _strip_ordinal_day_suffixes(value)
+
+
+def _extract_url_path_year(url: str) -> Optional[int]:
+    """Return a YYYY year from date-like URL path segments when present."""
+    try:
+        path = urlparse(url).path
+    except Exception:
+        return None
+    match = _URL_PATH_YEAR_RE.search(path or "")
+    if not match:
+        return None
+    try:
+        return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
 
 
 def _resolve_google_news_url(url: str) -> str:
@@ -191,7 +271,7 @@ BLOCKED_FETCH_DOMAINS = {
     "ithome.com.tw",
 }
 
-# Session-scoped dynamic block list. When all 4 fetch tiers fail for a domain,
+# Session-scoped dynamic block list. When all enabled fetch tiers fail for a domain,
 # we add it here so subsequent fetches to that domain short-circuit. This
 # prevents the same broken site from costing 2-3 minutes per attempt across
 # multiple incidents that happen to share its URLs.
@@ -387,6 +467,121 @@ class ArticleFetcher:
         
         return None
 
+    def _fetch_with_scrapling(self, url: str) -> Optional[ArticleContent]:
+        """Fetch article HTML with Scrapling's lightweight fetcher and local extraction."""
+        if not SCRAPLING_AVAILABLE or ScraplingFetcher is None:
+            return ArticleContent(
+                url=url,
+                title="",
+                content="",
+                fetch_successful=False,
+                error_message="Scrapling is not installed",
+                content_length=0,
+            )
+
+        timeout_ms = int(os.environ.get("EDU_CTI_SCRAPLING_TIMEOUT_MS", "20000"))
+        impersonate = os.environ.get("EDU_CTI_SCRAPLING_IMPERSONATE", "chrome")
+        try:
+            response = ScraplingFetcher.get(
+                url,
+                timeout=timeout_ms,
+                impersonate=impersonate,
+                stealthy_headers=True,
+            )
+            status = int(getattr(response, "status", None) or getattr(response, "status_code", 0) or 0)
+            body = getattr(response, "body", None)
+            if isinstance(body, bytes):
+                html = body.decode("utf-8", errors="replace")
+            elif body:
+                html = str(body)
+            else:
+                text = getattr(response, "text", "")
+                html = text() if callable(text) else str(text or "")
+
+            if status >= 400:
+                return ArticleContent(
+                    url=url,
+                    title="",
+                    content="",
+                    fetch_successful=False,
+                    error_message=f"Scrapling HTTP {status}",
+                    content_length=0,
+                )
+            if not html.strip():
+                return ArticleContent(
+                    url=url,
+                    title="",
+                    content="",
+                    fetch_successful=False,
+                    error_message="Scrapling returned empty body",
+                    content_length=0,
+                )
+
+            soup = BeautifulSoup(html, "html.parser")
+            title = self._extract_title(soup)
+            author = self._extract_author(soup)
+            publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup))
+            content = self._clean_content(self._extract_content(BeautifulSoup(html, "html.parser")))
+            if len((content or "").strip()) < 100:
+                # Some modern layouts put the article inside a parent class such
+                # as "sidebar-page-main"; the generic cleanup removes that parent.
+                # Use the semantic article node directly before declaring failure.
+                fallback_soup = BeautifulSoup(html, "html.parser")
+                article_elem = fallback_soup.find("article") or fallback_soup.select_one("main article")
+                if article_elem:
+                    fallback_text = article_elem.get_text(separator=" ", strip=True)
+                    if len(fallback_text) > len(content or ""):
+                        content = self._clean_content(fallback_text)
+
+            if _is_gate_page(title, content):
+                return ArticleContent(
+                    url=url,
+                    title=title or "",
+                    content="",
+                    author=author,
+                    publish_date=publish_date,
+                    fetch_successful=False,
+                    error_message="Gate/CAPTCHA page detected",
+                    content_length=0,
+                )
+
+            min_length = 50 if "databreaches.net" in url.lower() else 100
+            content_stripped = (content or "").strip()
+            if len(content_stripped) < min_length:
+                return ArticleContent(
+                    url=url,
+                    title=title or "",
+                    content=content or "",
+                    author=author,
+                    publish_date=publish_date,
+                    fetch_successful=False,
+                    error_message=(
+                        f"Scrapling extracted content too short "
+                        f"(length: {len(content_stripped)}, min: {min_length})"
+                    ),
+                    content_length=len(content_stripped),
+                )
+
+            return ArticleContent(
+                url=url,
+                title=title or "",
+                content=content,
+                author=author,
+                publish_date=publish_date,
+                fetch_successful=True,
+                content_length=len(content_stripped),
+            )
+        except Exception as exc:
+            logger.debug("Scrapling failed for %s: %s", url, exc)
+            return ArticleContent(
+                url=url,
+                title="",
+                content="",
+                fetch_successful=False,
+                error_message=f"Scrapling exception: {exc}",
+                content_length=0,
+            )
+
     def _fetch_with_oxylabs(self, url: str) -> Optional[ArticleContent]:
         """
         Fetch article using Oxylabs Realtime API (replaces Zyte).
@@ -414,7 +609,7 @@ class ArticleFetcher:
         title = self._extract_title(soup)
         content = self._extract_content(soup)
         author = self._extract_author(soup)
-        publish_date = self._extract_publish_date(soup)
+        publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup))
         content = self._clean_content(content)
 
         # Detect soft-404 pages (site returns 200 but content is a "not found" page)
@@ -470,8 +665,8 @@ class ArticleFetcher:
         
         logger.info(f"Fetching from archive.org: {archive_url}")
         
-        # Try newspaper3k on the archive URL
-        if NEWSPAPER_AVAILABLE:
+        # Try newspaper3k on the archive URL when that tier is enabled.
+        if NEWSPAPER_AVAILABLE and _fetch_newspaper_enabled():
             article_content = self._fetch_with_newspaper(archive_url)
             if article_content and article_content.fetch_successful:
                 # Update URL to original for consistency
@@ -513,10 +708,17 @@ class ArticleFetcher:
                     content = soup.get_text(separator=" ", strip=True)
                 
                 if len(content) > 200:  # Minimum content threshold
+                    publish_date = self._normalize_publish_date_for_url(
+                        original_url,
+                        self._extract_publish_date(soup),
+                    )
+                    author = self._extract_author(soup)
                     return ArticleContent(
                         url=original_url,
                         title=title_text,
                         content=content,
+                        author=author,
+                        publish_date=publish_date,
                         fetch_successful=True,
                         content_length=len(content)
                     )
@@ -529,12 +731,13 @@ class ArticleFetcher:
         """
         Fetch and extract article content from a URL.
 
-        Fallback chain (free local methods first, paid last):
-        1. newspaper3k  — fast, free, article-specific extraction
-        2. curl_cffi     — TLS fingerprint impersonation (Cloudflare bypass)
-        3. Playwright    — full headless browser (JS rendering)
-        4. Oxylabs API   — paid cloud scraper (anti-bot + JS rendering)
-        5. archive.org   — Wayback Machine fallback for historical articles
+        Default low-cost fallback chain:
+        1. Scrapling     — lightweight browser-like HTML fetch + local extraction
+        2. Oxylabs API   — optional paid cloud scraper for anti-bot/JS pages
+        3. archive.org   — Wayback Machine fallback for historical articles
+
+        newspaper3k and HttpClient/curl_cffi/Playwright are only attempted when
+        EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1 or explicit per-tier envs enable them.
 
         Args:
             url: URL to fetch
@@ -554,7 +757,7 @@ class ArticleFetcher:
         base_domain = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
         if domain in BLOCKED_FETCH_DOMAINS or base_domain in BLOCKED_FETCH_DOMAINS:
             logger.info(f"FETCH SKIP blocked domain={domain} url={url[:80]}")
-            _metrics.increment("article_fetch_failure_total", labels={"tier": "newspaper3k", "source": _fetch_domain(url), "reason": "blocked_domain"})
+            _metrics.increment("article_fetch_failure_total", labels={"tier": "precheck", "source": _fetch_domain(url), "reason": "blocked_domain"})
             tier_attempts.append(
                 _build_fetch_attempt_payload(
                     "precheck",
@@ -570,13 +773,13 @@ class ArticleFetcher:
                 fetch_metadata={"selected_tier": None, "tier_attempts": tier_attempts},
             )
 
-        # Reject domains that have already failed all 4 tiers earlier in this
+        # Reject domains that have already failed all enabled tiers earlier in this
         # process. Without this, one slow-broken site (e.g. tudocelular.com)
-        # can burn 6+ minutes across 3 URL variants × 4 tiers each. Cleared
+        # can burn minutes across URL variants and fetch tiers. Cleared
         # on container restart, so flaky sites get a fresh chance per deploy.
         if _domain_failed_dynamically(domain):
             logger.info(f"FETCH SKIP dynamic block (failed all tiers earlier this session) domain={domain}")
-            _metrics.increment("article_fetch_failure_total", labels={"tier": "newspaper3k", "source": _fetch_domain(url), "reason": "session_blocked"})
+            _metrics.increment("article_fetch_failure_total", labels={"tier": "precheck", "source": _fetch_domain(url), "reason": "session_blocked"})
             tier_attempts.append(
                 _build_fetch_attempt_payload(
                     "precheck",
@@ -615,8 +818,38 @@ class ArticleFetcher:
         logger.info(f"FETCH CHAIN START: {domain} — {url[:100]}")
         _src_label = _fetch_domain(url)
 
-        # --- Tier 1: newspaper3k (free, fast) ---
-        if NEWSPAPER_AVAILABLE:
+        enabled_tiers: list[str] = []
+
+        # --- Tier 1: Scrapling lightweight fetcher ---
+        if _fetch_scrapling_enabled():
+            enabled_tiers.append("scrapling")
+            _t0 = time.time()
+            scrapling_content = self._fetch_with_scrapling(url)
+            _dur = time.time() - _t0
+            _lbl = {"tier": "scrapling", "source": _src_label}
+            _metrics.increment("article_fetch_attempts_total", labels=_lbl)
+            tier_attempts.append(
+                _build_fetch_attempt_payload(
+                    "scrapling",
+                    duration_seconds=_dur,
+                    result=scrapling_content,
+                )
+            )
+            if scrapling_content and scrapling_content.fetch_successful:
+                logger.info(f"FETCH OK tier=Scrapling domain={domain} chars={scrapling_content.content_length}")
+                _metrics.increment("article_fetch_success_total", labels=_lbl)
+                _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
+                _metrics.observe("article_content_length_chars", float(scrapling_content.content_length or 0), labels=_lbl)
+                scrapling_content.fetch_metadata = {
+                    "selected_tier": "scrapling",
+                    "tier_attempts": list(tier_attempts),
+                }
+                return scrapling_content
+            _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(scrapling_content)})
+            logger.info(f"FETCH FAIL tier=Scrapling domain={domain}")
+
+        def _try_newspaper() -> Optional[ArticleContent]:
+            enabled_tiers.append("newspaper3k")
             _t0 = time.time()
             article_content = self._fetch_with_newspaper(url)
             _dur = time.time() - _t0
@@ -641,8 +874,10 @@ class ArticleFetcher:
                 return article_content
             _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(article_content)})
             logger.info(f"FETCH FAIL tier=newspaper3k domain={domain}")
+            return None
 
         def _try_httpclient() -> Optional[ArticleContent]:
+            enabled_tiers.append("httpclient")
             _t0 = time.time()
             http_content = self._fetch_with_browser(url)
             _dur = time.time() - _t0
@@ -670,6 +905,7 @@ class ArticleFetcher:
             return None
 
         def _try_oxylabs() -> Optional[ArticleContent]:
+            enabled_tiers.append("oxylabs")
             _t0 = time.time()
             oxylabs_content = self._fetch_with_oxylabs(url)
             _dur = time.time() - _t0
@@ -696,26 +932,36 @@ class ArticleFetcher:
             logger.info(f"FETCH FAIL tier=Oxylabs domain={domain}")
             return None
 
+        if NEWSPAPER_AVAILABLE and _fetch_newspaper_enabled():
+            article_content = _try_newspaper()
+            if article_content:
+                return article_content
+
         # Railway safe mode prefers Oxylabs before local browser work to avoid
         # burning memory on Chromium for cases the cloud fetcher can satisfy.
         if _prefer_oxylabs_before_browser():
-            oxylabs_content = _try_oxylabs()
-            if oxylabs_content:
-                return oxylabs_content
-            article_content = _try_httpclient()
-            if article_content:
-                return article_content
+            if _fetch_oxylabs_enabled():
+                oxylabs_content = _try_oxylabs()
+                if oxylabs_content:
+                    return oxylabs_content
+            if _fetch_httpclient_enabled():
+                article_content = _try_httpclient()
+                if article_content:
+                    return article_content
         else:
             # Standard tier order: try the local Chromium / curl_cffi fallback
             # first (free), then the paid Oxylabs cloud scraper.
-            article_content = _try_httpclient()
-            if article_content:
-                return article_content
-            oxylabs_content = _try_oxylabs()
-            if oxylabs_content:
-                return oxylabs_content
+            if _fetch_httpclient_enabled():
+                article_content = _try_httpclient()
+                if article_content:
+                    return article_content
+            if _fetch_oxylabs_enabled():
+                oxylabs_content = _try_oxylabs()
+                if oxylabs_content:
+                    return oxylabs_content
 
         # --- Tier 4: archive.org (free, historical fallback) ---
+        enabled_tiers.append("archive_org")
         _t0 = time.time()
         archive_content = self._fetch_from_archive(url)
         _dur = time.time() - _t0
@@ -749,7 +995,7 @@ class ArticleFetcher:
             title="",
             content="",
             fetch_successful=False,
-            error_message="All fetch methods failed (newspaper3k, curl_cffi/Playwright, Oxylabs, archive.org)",
+            error_message=f"All fetch methods failed; enabled tiers: {', '.join(enabled_tiers) or 'none'}",
             content_length=0,
             fetch_metadata={"selected_tier": None, "tier_attempts": tier_attempts},
         )
@@ -789,7 +1035,7 @@ class ArticleFetcher:
             title = self._extract_title(soup)
             content = self._extract_content(soup)
             author = self._extract_author(soup)
-            publish_date = self._extract_publish_date(soup)
+            publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup))
             
             logger.debug(f"HttpClient: Extracted title length: {len(title) if title else 0}, content length: {len(content) if content else 0}")
             
@@ -899,7 +1145,7 @@ class ArticleFetcher:
                 except (AttributeError, ValueError):
                     # If it's already a string, try to normalize
                     if isinstance(article.publish_date, str):
-                        publish_date = self._normalize_date_to_iso(article.publish_date)
+                        publish_date = self._normalize_publish_date_for_url(url, article.publish_date)
                     else:
                         publish_date = None
             
@@ -917,11 +1163,15 @@ class ArticleFetcher:
                 try:
                     soup = BeautifulSoup(html, "html.parser")
                     if not publish_date:
-                        publish_date = self._extract_publish_date(soup)
+                        publish_date = self._normalize_publish_date_for_url(
+                            url,
+                            self._extract_publish_date(soup),
+                        )
                     if not author:
                         author = self._extract_author(soup)
                 except Exception as exc:
                     logger.debug(f"newspaper3k metadata backfill failed for {url}: {exc}")
+            publish_date = self._normalize_publish_date_for_url(url, publish_date)
             
             content = self._clean_content(article.text)
 
@@ -1521,7 +1771,9 @@ class ArticleFetcher:
         if not date_str:
             return None
         
-        date_str = _strip_ordinal_day_suffixes(date_str.strip())
+        date_str = _clean_date_candidate(date_str)
+        if not date_str:
+            return None
         
         # Try parsing with dateutil if available (handles many formats)
         try:
@@ -1590,6 +1842,32 @@ class ArticleFetcher:
         
         # If we can't parse, return None to use original
         return None
+
+    def _normalize_publish_date_for_url(self, url: str, raw_date: Optional[str]) -> Optional[str]:
+        """Normalize publish date and reject obvious template dates from mismatched URL years."""
+        if not raw_date:
+            return None
+
+        normalized = self._normalize_date_to_iso(raw_date)
+        if not normalized:
+            return None
+
+        url_year = _extract_url_path_year(url)
+        if url_year is not None:
+            try:
+                parsed_year = int(normalized[:4])
+            except (TypeError, ValueError):
+                parsed_year = None
+            if parsed_year is not None and parsed_year != url_year:
+                logger.debug(
+                    "Discarding publish date %s for %s because URL path year is %s",
+                    normalized,
+                    url[:120],
+                    url_year,
+                )
+                return None
+
+        return normalized
     
     def _clean_content(self, content: str) -> str:
         """Clean extracted content."""

@@ -85,6 +85,18 @@ eduthreat-v2-runtime --workers 2 --no-scheduler
 - `LOG_LEVEL`
 - existing source/API credentials used by collection and enrichment
 
+### Fetch And Discovery Budget Controls
+
+- `EDU_CTI_FETCH_TIER_PROFILE=scrapling_first` is the default low-cost article chain: Scrapling -> Oxylabs -> archive.org.
+- `EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1` is the rollback switch that allows newspaper3k and HttpClient/curl_cffi/Playwright article tiers again.
+- `EDU_CTI_OXYLABS_ENABLED=0` disables all Oxylabs article fetch and paid SERP calls, even if credentials are present.
+- `EDU_CTI_ENABLE_OXYLABS_SERP=0` keeps paid SERP disabled. URL discovery still runs through free Google News RSS via Scrapling.
+- `EDU_CTI_ENABLE_YAHOO_NEWS_DISCOVERY=1` enables the optional Yahoo News HTML fallback; keep disabled unless consent pages are no longer observed.
+- `EDU_CTI_NEWS_DISCOVERY_MAX_RESULTS=5` caps discovered article URLs per URL-less incident.
+- `EDU_CTI_FETCH_DISABLE_OXYLABS=1` disables Oxylabs only inside the article fetch chain.
+- `EDU_CTI_DATABREACHES_ARCHIVE_ENABLED=1` re-enables the DataBreaches education archive crawler. It is disabled by default because the category archive currently returns anti-bot/challenge pages and the free RSS feed remains available.
+- `EDU_CTI_DATABREACHES_OXYLABS_FALLBACK=1` allows the DataBreaches archive crawler to try Oxylabs on failed category pages.
+
 ## Railway Notes
 
 For the first live `v2` bring-up:

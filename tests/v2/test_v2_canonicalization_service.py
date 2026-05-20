@@ -132,6 +132,15 @@ def test_identity_match_quality_handles_school_subunit_names():
     )
 
 
+def test_identity_match_quality_accepts_common_school_district_name_variants():
+    assert _identity_match_quality("Hartnell College", "Hartnell Community College District") >= 85
+    assert _identity_match_quality("Houston County Schools", "Houston County Board of Education") >= 85
+    assert _identity_match_quality("Cherry Hill School District", "Cherry Hill Schools") >= 85
+    assert _identity_match_quality("Livingston Public Schools", "Livingston Township Schools") >= 85
+    assert _identity_match_quality("Knox College", "Guilford College") == 0
+    assert _identity_match_quality("Monroe-Woodbury School District", "Monroe City School District") == 0
+
+
 def test_build_source_projection_promotes_education_technology_provider_as_vendor_name():
     incident = _source_incident(event_key="powerschool-story")
     incident.raw_institution_name = "PowerSchool"

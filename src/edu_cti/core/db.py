@@ -243,8 +243,8 @@ def init_db(conn: sqlite3.Connection) -> None:
             llm_excluded_reason  TEXT,
             discovery_date       TEXT,
 
-            -- SERP discovery tracking (Oxylabs Google News search)
-            -- Prevents re-spending credits on the same failed search each restart.
+            -- News discovery tracking for URL-less incidents.
+            -- Prevents retrying the same failed discovery each restart.
             -- After SERP_MAX_ATTEMPTS consecutive failures the incident is deleted.
             serp_attempt_count   INTEGER DEFAULT 0
         );

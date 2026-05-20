@@ -2,7 +2,7 @@
 Prometheus-style metrics for monitoring ingestion and enrichment.
 
 Provides counters, gauges, and histograms for:
-- Article fetch metrics per tier (newspaper3k, httpclient, oxylabs, archive_org)
+- Article fetch metrics per tier (scrapling, oxylabs, archive_org, legacy tiers)
 - LLM extraction quality (attempts, timeouts, invalid JSON, confidence)
 - Dataset completeness (field fill rates, completeness scores)
 - Source novelty and deduplication quality
@@ -340,7 +340,7 @@ class MetricsCollector:
 
     def fetch_stats_by_tier(self) -> Dict[str, Any]:
         """Return per-tier fetch statistics for /api/metrics/fetch-stats."""
-        tiers = ["newspaper3k", "httpclient", "oxylabs", "archive_org"]
+        tiers = ["scrapling", "oxylabs", "archive_org", "newspaper3k", "httpclient", "precheck"]
         result: Dict[str, Any] = {"by_tier": {}, "by_source": {}, "serp": {}, "rate_limiting": {}}
 
         for tier in tiers:

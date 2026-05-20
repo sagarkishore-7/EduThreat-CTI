@@ -271,6 +271,47 @@ def test_fetch_service_skips_enrichment_when_no_article_is_relevant():
     pipeline_task_repository.enqueue.assert_not_called()
 
 
+def test_fetch_service_rejects_year_only_match_when_article_names_different_victim():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    pipeline_task_repository = Mock()
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.return_value = ArticleContent(
+        url="https://www.galesburg.com/story/news/local/2022/12/09/knox-college-ransomware/",
+        title="Knox College president addresses ransomware incident",
+        content="Hive claimed credit for disruptions to Knox College computers.",
+        author="Reporter",
+        publish_date="2022-12-09",
+        fetch_successful=True,
+        error_message=None,
+        content_length=61,
+        fetch_metadata={"selected_tier": "scrapling", "tier_attempts": [{"tier": "scrapling", "success": True}]},
+    )
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident_with_urls(
+        ("https://www.galesburg.com/story/news/local/2022/12/09/knox-college-ransomware/", True),
+    )
+    incident.source_name = "comparitech"
+    incident.raw_title = "Ransomware attack on Guilford College (2022)"
+    incident.raw_institution_name = "Guilford College"
+    incident.raw_victim_name = "Guilford College"
+    incident.raw_incident_date = "2022-10"
+    incident.source_published_at = datetime(2022, 10, 1, 8, 0, tzinfo=timezone.utc)
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert result["articles_saved"] == 1
+    assert result["enrich_tasks_enqueued"] == 0
+    document = article_repository.add_document.call_args.args[1]
+    assert document.is_selected_for_enrichment is False
+    pipeline_task_repository.enqueue.assert_not_called()
+
+
 def test_fetch_service_strips_nul_bytes_before_persisting():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None

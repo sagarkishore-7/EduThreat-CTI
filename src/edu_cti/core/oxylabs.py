@@ -25,6 +25,10 @@ _404_SIGNALS = [
 ]
 
 
+def _env_flag(name: str, default: str = "1") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class OxylabsClient:
     """Thin wrapper around the Oxylabs Realtime API."""
 
@@ -50,8 +54,12 @@ class OxylabsClient:
                 pass
         self.timeout = timeout
 
+    def _is_enabled(self) -> bool:
+        """Return whether Oxylabs calls are allowed in this runtime."""
+        return _env_flag("EDU_CTI_OXYLABS_ENABLED", "1")
+
     def _is_configured(self) -> bool:
-        return bool(self.username and self.password)
+        return self._is_enabled() and bool(self.username and self.password)
 
     def fetch_url(self, url: str, render_js: bool = True) -> Optional[str]:
         """
@@ -64,6 +72,9 @@ class OxylabsClient:
         Returns:
             HTML string, or None if failed
         """
+        if not self._is_enabled():
+            logger.info("Oxylabs fetch disabled by EDU_CTI_OXYLABS_ENABLED=0")
+            return None
         if not self._is_configured():
             logger.warning("Oxylabs credentials not configured (OXYLABS_USERNAME/OXYLABS_PASSWORD)")
             return None
@@ -129,6 +140,9 @@ class OxylabsClient:
         Returns:
             List of dicts with keys: url, title, description, source
         """
+        if not self._is_enabled():
+            logger.info("Oxylabs SERP disabled by EDU_CTI_OXYLABS_ENABLED=0")
+            return []
         if not self._is_configured():
             logger.warning("Oxylabs credentials not configured (OXYLABS_USERNAME/OXYLABS_PASSWORD)")
             return []

@@ -35,6 +35,7 @@ dependencies = [
     "curl_cffi>=0.7.0",
     "playwright>=1.40.0",
     "playwright-stealth>=2.0.0",
+    "scrapling>=0.4.8",
 
     # Data processing
     "tldextract>=5.0.0",

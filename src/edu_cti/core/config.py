@@ -556,7 +556,7 @@ FETCH_IMPOSSIBLE_SOURCES: set = {
     "securityweek",
 }
 
-# Oxylabs API configuration (web scraping and SERP discovery)
+# Oxylabs API configuration (optional paid web scraping and SERP fallback)
 OXYLABS_USERNAME = os.getenv("OXYLABS_USERNAME", "")
 OXYLABS_PASSWORD = os.getenv("OXYLABS_PASSWORD", "")
 ENABLE_OXYLABS_NEWS_HISTORICAL = _env_flag("ENABLE_OXYLABS_NEWS_HISTORICAL", "1")

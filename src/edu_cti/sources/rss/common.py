@@ -7,10 +7,38 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from xml.etree import ElementTree as ET
 
+import requests
+
 from src.edu_cti.core.http import HttpClient
 from src.edu_cti.core.config import REQUEST_TIMEOUT_SECONDS
 
 logger = logging.getLogger(__name__)
+
+
+def _looks_like_feed_xml(body: str) -> bool:
+    body_prefix = (body or "").lstrip()[:20].lower()
+    return body_prefix.startswith("<?xml") or body_prefix.startswith("<rss") or body_prefix.startswith("<feed")
+
+
+def _fetch_rss_with_plain_requests(url: str) -> Optional[str]:
+    """Fallback for RSS endpoints that dislike browser/TLS impersonation clients."""
+    try:
+        response = requests.get(
+            url,
+            timeout=REQUEST_TIMEOUT_SECONDS,
+            headers={
+                "User-Agent": "Mozilla/5.0",
+                "Accept": "application/rss+xml, application/xml, text/xml, */*",
+            },
+        )
+    except requests.RequestException as exc:
+        logger.debug("Plain RSS fallback failed for %s: %s", url, exc)
+        return None
+    body = response.text or ""
+    if response.status_code != 200 and not _looks_like_feed_xml(body):
+        logger.debug("Plain RSS fallback returned HTTP %s for %s", response.status_code, url)
+        return None
+    return body if _looks_like_feed_xml(body) else None
 
 
 def default_client() -> HttpClient:
@@ -34,16 +62,34 @@ def fetch_rss_feed(url: str, client: Optional[HttpClient] = None) -> Optional[ET
     
     try:
         response = http_client.get(url)
-        if response is None or response.status_code != 200:
+        if response is None:
+            logger.warning(f"Failed to fetch RSS feed {url}: HTTP unknown")
+            return None
+
+        body = response.text or ""
+        looks_like_feed = _looks_like_feed_xml(body)
+        if response.status_code != 200 and not looks_like_feed:
             status_code = response.status_code if response else "unknown"
             logger.warning(f"Failed to fetch RSS feed {url}: HTTP {status_code}")
             return None
+        if response.status_code != 200 and looks_like_feed:
+            logger.info(
+                "Parsing RSS feed body from %s despite HTTP %s because the body is valid feed XML",
+                url,
+                response.status_code,
+            )
         
         # Parse XML
         try:
-            root = ET.fromstring(response.text)
+            root = ET.fromstring(body)
             return root
         except ET.ParseError as e:
+            fallback_body = _fetch_rss_with_plain_requests(url)
+            if fallback_body:
+                try:
+                    return ET.fromstring(fallback_body)
+                except ET.ParseError:
+                    pass
             logger.error(f"Failed to parse RSS feed XML from {url}: {e}")
             return None
             
@@ -179,4 +225,3 @@ def has_education_category(categories: list[str]) -> bool:
             return True
     
     return False
-

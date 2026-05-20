@@ -723,7 +723,7 @@ SCHEMA_DOC = SchemaResponse(
             name="articles",
             description="Raw fetched article content. One row per (incident_id, article_url) pair. "
                         "Used by the LLM enricher as input text.",
-            row_count_note="Multiple articles per incident possible. Fetch chain: newspaper3k → HttpClient → Oxylabs → archive.org",
+            row_count_note="Multiple articles per incident possible. Default fetch chain: Scrapling → Oxylabs → archive.org; legacy newspaper3k/HttpClient tiers require rollback env.",
             columns=[
                 ColumnDoc(name="incident_id", type="TEXT", populated_by="pipeline",
                           description="References incidents.incident_id."),

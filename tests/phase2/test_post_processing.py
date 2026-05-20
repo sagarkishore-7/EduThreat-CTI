@@ -3,7 +3,7 @@ Tests for all post-processing fixes (April 2026).
 
 Covers every function in post_processing.py plus the two downstream fixes
 that depend on it:
-  - fetching_strategy.discover_articles_via_serp: skips SERP when
+  - fetching_strategy.discover_articles_via_serp: skips news discovery when
     institution_name is a headline (is_headline_format check).
   - api/database.py get_incident_detail: flat-table values override the raw
     LLM JSON blob for ransomware_family and attack_vector in attack_dynamics.
@@ -1002,43 +1002,94 @@ class TestSerpHeadlineBypass:
             "incident_date": "2025-01-15",
         }
 
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy._discover_google_news_rss_with_scrapling")
     @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy.OxylabsClient")
-    def test_serp_skipped_for_headline_name(self, mock_oxylabs_cls):
+    def test_serp_skipped_for_headline_name(self, mock_oxylabs_cls, mock_google):
         from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
 
         headline = "Cyberattack forces British high school to shut down for a week - Cybernews"
         incident = self._make_incident(headline)
         result = discover_articles_via_serp(incident)
 
-        # Oxylabs should never be called
+        mock_google.assert_not_called()
         mock_oxylabs_cls.return_value.search_news.assert_not_called()
         assert result == []
 
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy._discover_google_news_rss_with_scrapling")
     @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy.OxylabsClient")
-    def test_serp_called_for_normal_name(self, mock_oxylabs_cls):
+    def test_free_google_news_used_for_normal_name(self, mock_oxylabs_cls, mock_google):
         from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
 
-        mock_client = mock_oxylabs_cls.return_value
-        mock_client._is_configured.return_value = True
-        mock_client.search_news.return_value = [
-            {"url": "https://example.com/article", "title": "University breach", "description": ""}
-        ]
+        mock_google.return_value = ["https://example.com/article"]
 
         incident = self._make_incident("University of Michigan", "University of Michigan breach")
         result = discover_articles_via_serp(incident)
 
-        mock_client.search_news.assert_called_once()
+        assert result == ["https://example.com/article"]
+        mock_google.assert_called_once()
+        mock_oxylabs_cls.return_value.search_news.assert_not_called()
 
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy._discover_google_news_rss_with_scrapling")
     @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy.OxylabsClient")
-    def test_serp_skipped_for_very_long_name(self, mock_oxylabs_cls):
+    def test_serp_skipped_for_very_long_name(self, mock_oxylabs_cls, mock_google):
         from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
 
         long_name = "This is a very long institution name that clearly exceeds seventy characters total"
         incident = self._make_incident(long_name)
         result = discover_articles_via_serp(incident)
 
+        mock_google.assert_not_called()
         mock_oxylabs_cls.return_value.search_news.assert_not_called()
         assert result == []
+
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy._discover_google_news_rss_with_scrapling")
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy.OxylabsClient")
+    def test_oxylabs_only_used_when_enabled_and_free_empty(self, mock_oxylabs_cls, mock_google, monkeypatch):
+        from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
+
+        monkeypatch.setenv("EDU_CTI_ENABLE_OXYLABS_SERP", "1")
+        mock_google.return_value = []
+        mock_oxylabs_cls.return_value.search_news.return_value = [
+            {"url": "https://example.com/paid-fallback", "title": "University breach"}
+        ]
+
+        incident = self._make_incident("University of Michigan", "University of Michigan breach")
+        result = discover_articles_via_serp(incident)
+
+        assert result == ["https://example.com/paid-fallback"]
+        mock_oxylabs_cls.return_value.search_news.assert_called_once()
+
+    def test_google_news_rss_fixture_filters_and_caps(self, monkeypatch):
+        from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs
+
+        fixture = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss><channel>
+          <item><title>A</title><link>https://news.google.com/rss/articles/wrapped</link></item>
+          <item><title>B</title><link>https://twitter.com/not-an-article</link></item>
+          <item><title>C</title><link>https://example.org/cyber-school</link></item>
+        </channel></rss>"""
+        monkeypatch.setattr(fs, "_fetch_discovery_url_with_scrapling", lambda _url: fixture)
+        monkeypatch.setattr(
+            fs,
+            "_resolve_google_news_article_url",
+            lambda link: "https://example.com/article" if "wrapped" in link else link,
+        )
+
+        assert fs._discover_google_news_rss_with_scrapling("university breach", 2) == [
+            "https://example.com/article",
+            "https://example.org/cyber-school",
+        ]
+
+    def test_yahoo_consent_fixture_returns_empty(self, monkeypatch):
+        from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs
+
+        monkeypatch.setattr(
+            fs,
+            "_fetch_discovery_url_with_scrapling",
+            lambda _url: "<html><title>Consent</title><body>consent.yahoo.com privacy dashboard</body></html>",
+        )
+
+        assert fs._discover_yahoo_news_with_scrapling("university breach", 5) == []
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

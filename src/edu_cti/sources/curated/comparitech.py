@@ -143,7 +143,10 @@ def build_comparitech_incidents(
             continue
         edu_rows.append(row)
 
-    logger.info(f"Comparitech: {len(edu_rows)} education rows found, saving immediately (article discovery via Oxylabs SERP in Phase 2)")
+    logger.info(
+        f"Comparitech: {len(edu_rows)} education rows found, saving immediately "
+        "(article discovery happens in Phase 2 news discovery)"
+    )
 
     for idx, row in enumerate(edu_rows, 1):
         name = (row.get("Company Affected") or "").strip()
@@ -213,7 +216,7 @@ def build_comparitech_incidents(
             title=title,
             subtitle=None,
             primary_url=None,
-            all_urls=[],  # Phase 2 discovers articles via Oxylabs SERP
+            all_urls=[],  # Phase 2 discovers articles via low-cost news discovery
             leak_site_url=None,
             source_detail_url=None,  # Reference page, not an article — would cause all incidents to dedup into one
             screenshot_url=None,

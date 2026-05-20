@@ -59,6 +59,28 @@ _IDENTITY_TOKEN_STOP_WORDS = {
     "et",
     "v",
 }
+_GENERIC_IDENTITY_TOKENS = {
+    "academy",
+    "board",
+    "centre",
+    "center",
+    "college",
+    "colleges",
+    "community",
+    "department",
+    "district",
+    "education",
+    "institute",
+    "institution",
+    "joint",
+    "office",
+    "public",
+    "school",
+    "schools",
+    "township",
+    "unified",
+    "university",
+}
 _IDENTITY_TERM_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("university of applied sciences", "hochschule"),
     ("universite", "university"),
@@ -233,6 +255,27 @@ def identity_matches_source_anchor(
                     smaller, larger = sorted((left_tokens, right_tokens), key=len)
                     if len(smaller) >= 2 and smaller.issubset(larger) and len(smaller) / len(larger) >= 0.66:
                         return True
+                    left_distinct = left_tokens - _GENERIC_IDENTITY_TOKENS
+                    right_distinct = right_tokens - _GENERIC_IDENTITY_TOKENS
+                    if left_distinct and right_distinct:
+                        if left_distinct == right_distinct:
+                            return True
+                        distinct_smaller, distinct_larger = sorted(
+                            (left_distinct, right_distinct),
+                            key=len,
+                        )
+                        if (
+                            len(distinct_smaller) >= 2
+                            and distinct_smaller.issubset(distinct_larger)
+                            and len(distinct_smaller) / len(distinct_larger) >= 0.66
+                        ):
+                            return True
+                        if (
+                            len(distinct_smaller) == 1
+                            and distinct_smaller.issubset(distinct_larger)
+                            and len(next(iter(distinct_smaller))) >= 6
+                        ):
+                            return True
                     if institution_names_match(left_variant, right_variant, threshold=threshold):
                         return True
 

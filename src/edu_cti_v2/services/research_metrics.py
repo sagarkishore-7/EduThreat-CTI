@@ -195,6 +195,9 @@ class V2ResearchMetricsService:
             )
 
         tier_lookup = {row["fetch_tier"]: row for row in tier_rows}
+        scrapling_selected_avg = float(
+            (((tier_lookup.get("scrapling") or {}).get("selected_content_length_chars") or {}).get("avg") or 0.0)
+        )
         oxylabs_selected_avg = float(
             (((tier_lookup.get("oxylabs") or {}).get("selected_content_length_chars") or {}).get("avg") or 0.0)
         )
@@ -305,15 +308,23 @@ class V2ResearchMetricsService:
                     "success_rate_pct": _safe_pct(len(successful_attempts), len(attempts)),
                     "selected_successes_total": len(selected_attempts),
                     "fallback_selected_share_pct": _safe_pct(
-                        sum(1 for attempt in selected_attempts if attempt.fetch_tier != "newspaper3k"),
+                        sum(1 for attempt in selected_attempts if attempt.fetch_tier != "scrapling"),
                         len(selected_attempts),
                     ),
                 },
                 "tiers": tier_rows,
                 "richness_comparison": {
                     "richest_selected_tier": richest_selected_tier,
+                    "primary_selected_tier": "scrapling",
+                    "scrapling_selected_avg_chars": scrapling_selected_avg,
                     "oxylabs_selected_avg_chars": oxylabs_selected_avg,
                     "newspaper3k_selected_avg_chars": newspaper_selected_avg,
+                    "oxylabs_vs_scrapling_selected_char_delta": oxylabs_selected_avg - scrapling_selected_avg,
+                    "oxylabs_vs_scrapling_selected_char_gain_pct": (
+                        ((oxylabs_selected_avg - scrapling_selected_avg) / scrapling_selected_avg * 100.0)
+                        if scrapling_selected_avg
+                        else 0.0
+                    ),
                     "oxylabs_vs_newspaper3k_selected_char_delta": oxylabs_selected_avg - newspaper_selected_avg,
                     "oxylabs_vs_newspaper3k_selected_char_gain_pct": (
                         ((oxylabs_selected_avg - newspaper_selected_avg) / newspaper_selected_avg * 100.0)

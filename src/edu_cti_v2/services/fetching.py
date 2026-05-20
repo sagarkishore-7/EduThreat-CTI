@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from src.edu_cti.pipeline.phase2.storage import ArticleContent, ArticleFetcher
 from src.edu_cti_v2.models import ArticleDocument, ArticleFetchAttempt, PipelineTask, SourceIncident
 from src.edu_cti_v2.repositories import ArticleRepository, PipelineTaskRepository
+from src.edu_cti_v2.source_identity import recover_source_identity
 
 _TITLE_SOURCE_SUFFIX_RE = re.compile(r"\s+-\s+([^-\n]+)$")
 _SOURCE_NOTE_RE = re.compile(r"(?:^|;)\s*source=([^;]+)")
@@ -57,6 +58,21 @@ _STOP_TOKENS = {
     "breach",
     "ransomware",
     "hacked",
+}
+_IDENTITY_ANCHOR_STOP_TOKENS = _STOP_TOKENS | {
+    "academy",
+    "board",
+    "centre",
+    "center",
+    "community",
+    "department",
+    "education",
+    "institute",
+    "institution",
+    "joint",
+    "office",
+    "township",
+    "unified",
 }
 _MIN_SELECTED_ARTICLE_SCORE = 12.0
 _BINARY_CONTENT_PREFIXES = ("%PDF-", "PK\x03\x04")
@@ -142,6 +158,47 @@ def _source_reference_tokens(source_incident: SourceIncident) -> set[str]:
     return tokens
 
 
+def _source_identity_anchor_tokens(source_incident: SourceIncident) -> set[str]:
+    """Distinct victim-name tokens that should appear in a relevant fetched article."""
+    identity = recover_source_identity(
+        raw_institution_name=source_incident.raw_institution_name,
+        raw_victim_name=source_incident.raw_victim_name,
+        raw_subtitle=source_incident.raw_subtitle,
+        raw_title=source_incident.raw_title,
+    )
+    if not identity:
+        return set()
+    return {
+        token
+        for token in _TOKEN_RE.findall(identity.lower())
+        if len(token) >= 3 and token not in _IDENTITY_ANCHOR_STOP_TOKENS
+    }
+
+
+def _article_mentions_source_identity(
+    source_incident: SourceIncident,
+    *,
+    article: ArticleContent,
+    source_url: str,
+) -> bool:
+    """Avoid selecting SERP/RSS results that only match the incident year/topic."""
+    anchor_tokens = _source_identity_anchor_tokens(source_incident)
+    if not anchor_tokens:
+        return True
+    candidate_text = " ".join(
+        value
+        for value in (
+            urlparse(source_url).netloc,
+            unquote(urlparse(source_url).path),
+            article.title or "",
+            (article.content or "")[:2400],
+        )
+        if value
+    )
+    candidate_tokens = _tokenize(candidate_text)
+    return bool(anchor_tokens & candidate_tokens)
+
+
 def _source_year_hint(source_incident: SourceIncident) -> Optional[int]:
     if source_incident.source_published_at is not None:
         return source_incident.source_published_at.year
@@ -209,6 +266,12 @@ def _score_article_candidate(
 
     if source_tokens and not title_overlap and not preview_overlap:
         score -= 10.0
+    if not _article_mentions_source_identity(
+        source_incident,
+        article=article,
+        source_url=source_url,
+    ):
+        score -= 40.0
 
     source_year = _source_year_hint(source_incident)
     publish_year = _parse_publish_date(article.publish_date)

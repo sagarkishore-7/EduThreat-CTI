@@ -264,8 +264,8 @@ class TestArticleFetcher:
         assert article.publish_date == "2025-01-08"
         assert article.author == "Suzanne Smalley"
 
-    def test_fetch_article_success(self):
-        """Fetcher should return the first successful article from the fallback chain."""
+    def test_fetch_article_success(self, monkeypatch):
+        """Default fetch chain should return Scrapling success without paid fallbacks."""
         fetcher = ArticleFetcher(http_client=Mock())
         success = ArticleContent(
             url="https://example.com/article",
@@ -274,24 +274,22 @@ class TestArticleFetcher:
             fetch_successful=True,
             content_length=42,
         )
-        failed = ArticleContent(
-            url="https://example.com/article",
-            title="",
-            content="",
-            fetch_successful=False,
-            error_message="newspaper failed",
-        )
+        monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", raising=False)
+        monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_NEWSPAPER", raising=False)
+        monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_HTTPCLIENT", raising=False)
 
-        with patch.object(fetcher, "_fetch_with_newspaper", return_value=failed), patch.object(
-            fetcher, "_fetch_with_browser", return_value=success
+        with patch.object(fetcher, "_fetch_with_scrapling", return_value=success) as mock_scrapling, patch.object(
+            fetcher, "_fetch_with_oxylabs", side_effect=AssertionError("Oxylabs should not run after Scrapling success")
         ):
             result = fetcher.fetch_article("https://example.com/article")
 
         assert result.fetch_successful is True
         assert result.title == "Test Article"
         assert "test content" in result.content.lower()
+        assert result.fetch_metadata["selected_tier"] == "scrapling"
+        mock_scrapling.assert_called_once()
 
-    def test_fetch_article_failure(self):
+    def test_fetch_article_failure(self, monkeypatch):
         """Fetcher should return an error result if every tier fails."""
         fetcher = ArticleFetcher(http_client=Mock())
         failed = ArticleContent(
@@ -302,42 +300,63 @@ class TestArticleFetcher:
             error_message="failed",
         )
 
-        with patch.object(fetcher, "_fetch_with_newspaper", return_value=failed), patch.object(
-            fetcher, "_fetch_with_browser", return_value=failed
-        ), patch.object(fetcher, "_fetch_with_oxylabs", return_value=failed), patch.object(
+        monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "1")
+        monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", raising=False)
+        with patch.object(fetcher, "_fetch_with_scrapling", return_value=failed), patch.object(
+            fetcher, "_fetch_with_oxylabs", return_value=failed
+        ), patch.object(
             fetcher, "_fetch_from_archive", return_value=failed
         ):
             result = fetcher.fetch_article("https://example.com/article")
 
         assert result.fetch_successful is False
         assert "All fetch methods failed" in result.error_message
+        assert [attempt["tier"] for attempt in result.fetch_metadata["tier_attempts"]] == [
+            "scrapling",
+            "oxylabs",
+            "archive_org",
+        ]
 
-    def test_fetch_article_prefers_oxylabs_before_browser_in_railway_safe_mode(self, monkeypatch):
+    def test_legacy_rollback_allows_httpclient_tier(self, monkeypatch):
         from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
 
         fetcher = ArticleFetcher(http_client=Mock())
-        oxylabs_success = ArticleContent(
+        http_success = ArticleContent(
             url="https://example.com/article",
-            title="Oxylabs Article",
-            content="Cloud-fetched article body about an education cyber incident.",
+            title="HttpClient Article",
+            content="Legacy-fetched article body about an education cyber incident.",
             fetch_successful=True,
             content_length=60,
         )
 
-        monkeypatch.setenv("RAILWAY_SERVICE_ID", "svc_123")
-        monkeypatch.setenv("PHASE2_RAILWAY_SAFE_MODE", "1")
+        monkeypatch.setenv("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", "1")
+        monkeypatch.setenv("EDU_CTI_FETCH_DISABLE_NEWSPAPER", "1")
+        monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "0")
         article_fetcher_module._DYNAMIC_FAILED_DOMAINS.clear()
 
-        with patch.object(fetcher, "_fetch_with_newspaper", return_value=None), patch.object(
-            fetcher, "_fetch_with_oxylabs", return_value=oxylabs_success
-        ) as mock_oxylabs, patch.object(
-            fetcher, "_fetch_with_browser", side_effect=AssertionError("browser should not run first")
+        with patch.object(fetcher, "_fetch_with_scrapling", return_value=None), patch.object(
+            fetcher, "_fetch_with_browser", return_value=http_success
+        ) as mock_httpclient, patch.object(
+            fetcher, "_fetch_from_archive", side_effect=AssertionError("archive should not run")
         ):
             result = fetcher.fetch_article("https://example.com/article")
 
         assert result.fetch_successful is True
-        assert result.title == "Oxylabs Article"
-        mock_oxylabs.assert_called_once()
+        assert result.title == "HttpClient Article"
+        assert result.fetch_metadata["selected_tier"] == "httpclient"
+        mock_httpclient.assert_called_once()
+
+    def test_publish_date_rejects_url_year_mismatch(self):
+        fetcher = ArticleFetcher(http_client=Mock())
+
+        assert fetcher._normalize_publish_date_for_url(
+            "https://example.com/2026/05/powerschool-article.html",
+            "October 30, 2020",
+        ) is None
+        assert fetcher._normalize_publish_date_for_url(
+            "https://example.com/2026/05/powerschool-article.html",
+            "\ue802May 18, 2026",
+        ) == "2026-05-18"
 
 
 class TestEnrichmentDatabase:

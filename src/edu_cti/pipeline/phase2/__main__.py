@@ -686,7 +686,7 @@ def _create_secondary_incidents(
             title=victim_name,
             subtitle=None,
             primary_url=None,
-            all_urls=[],  # empty: SERP discovery will find a dedicated article
+            all_urls=[],  # empty: news discovery will find a dedicated article
             attack_type_hint=attack_type,
             notes=stub_notes,
         )
@@ -1589,7 +1589,7 @@ def enrich_articles_phase(
                         # --- Secondary incidents from roundup articles ---
                         # If the LLM detected other edu victims in the same article
                         # (e.g. "week in breach" digest), create stub incidents for each.
-                        # They have no article URLs yet — Phase 2 SERP discovery will
+                        # They have no article URLs yet — Phase 2 news discovery will
                         # find dedicated articles for them on the next pipeline run.
                         if enrichment_result.other_edu_incidents:
                             _ig2 = (lambda f: incident.get(f) if isinstance(incident, dict) else getattr(incident, f, None))

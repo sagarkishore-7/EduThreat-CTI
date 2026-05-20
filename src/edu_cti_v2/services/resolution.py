@@ -141,7 +141,7 @@ def _resolve_google_wrapper_urls(source_incident: SourceIncident) -> list[tuple[
 
 
 def source_incident_to_discovery_payload(source_incident: SourceIncident) -> Dict[str, object]:
-    """Map a v2 source incident into the SERP discovery payload shape."""
+    """Map a v2 source incident into the news-discovery payload shape."""
     institution_name = _filter_source_institution_name(source_incident)
     victim_raw_name = _clean_discovery_name(source_incident.raw_victim_name)
     return {

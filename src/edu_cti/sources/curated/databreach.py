@@ -12,6 +12,7 @@ Supports incremental ingestion:
 from __future__ import annotations
 
 import logging
+import os
 from datetime import datetime
 from typing import Callable, Iterable, List, Optional
 
@@ -40,8 +41,15 @@ SOURCE_NAME = config.SOURCE_DATABREACHES
 logger = logging.getLogger(__name__)
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _fetch_with_oxylabs(url: str) -> Optional[BeautifulSoup]:
     """Fallback HTML fetch via Oxylabs Universal Scraper (bypasses anti-bot 403)."""
+    if not _env_flag("EDU_CTI_DATABREACHES_OXYLABS_FALLBACK", "0"):
+        logger.info("DataBreaches Oxylabs fallback disabled; using RSS/alternate sources instead")
+        return None
     try:
         from src.edu_cti.core.oxylabs import OxylabsClient
         client = OxylabsClient()
@@ -138,6 +146,13 @@ def build_databreach_incidents(
         save_callback: Optional callback to save incidents incrementally
         incremental: If True, stop when reaching already-ingested articles
     """
+    if not _env_flag("EDU_CTI_DATABREACHES_ARCHIVE_ENABLED", "0"):
+        logger.info(
+            "DataBreaches education archive crawler disabled "
+            "(EDU_CTI_DATABREACHES_ARCHIVE_ENABLED=0); use databreaches_rss for live coverage"
+        )
+        return []
+
     http_client = client or default_client()
     incidents: List[BaseIncident] = []
     ingested_at = now_utc_iso()

@@ -5,7 +5,7 @@ Covers:
 - MetricsCollector core API (increment, observe, set_gauge, timers)
 - Prometheus text format correctness (label quoting, TYPE dedup, percentiles)
 - fetch_stats_by_tier() and research_summary() JSON helpers
-- Article fetcher tier instrumentation (all 4 tiers + blocked domain)
+- Article fetcher tier instrumentation (Scrapling-first chain + blocked domain)
 - Enrichment LLM instrumentation (timeouts, invalid JSON, edu relevance, confidence)
 - Deduplication metrics (events, cross-source agreement, field gain)
 - SERP and rate-limit metrics
@@ -216,6 +216,7 @@ class TestFetchStatsByTier:
     def _populated(self) -> MetricsCollector:
         m = _fresh()
         for tier, attempts, successes in [
+            ("scrapling",   120, 100),
             ("newspaper3k", 100, 80),
             ("httpclient",  20,  15),
             ("oxylabs",     5,   4),
@@ -239,7 +240,7 @@ class TestFetchStatsByTier:
 
     def test_all_tiers_present(self):
         stats = self._populated().fetch_stats_by_tier()
-        for tier in ["newspaper3k", "httpclient", "oxylabs", "archive_org"]:
+        for tier in ["scrapling", "newspaper3k", "httpclient", "oxylabs", "archive_org", "precheck"]:
             assert tier in stats["by_tier"]
 
     def test_success_rate_calculation(self):
@@ -276,7 +277,7 @@ class TestFetchStatsByTier:
     def test_zero_attempts_success_rate_is_zero(self):
         m = _fresh()
         stats = m.fetch_stats_by_tier()
-        for tier in ["newspaper3k", "httpclient", "oxylabs", "archive_org"]:
+        for tier in ["scrapling", "newspaper3k", "httpclient", "oxylabs", "archive_org", "precheck"]:
             assert stats["by_tier"][tier]["success_rate"] == 0
 
 
@@ -386,49 +387,47 @@ class TestArticleFetcherMetrics:
         return ArticleContent(url=url, title="", content="", fetch_successful=False,
                               error_message=msg, content_length=0)
 
-    def test_newspaper3k_success_records_metrics(self):
+    def test_scrapling_success_records_metrics(self, monkeypatch):
         m = _fresh()
         fetcher, patch_obj, ArticleContent = self._make_fetcher(m)
         try:
-            # Use a non-blocked domain — databreaches.net is now in
-            # BLOCKED_FETCH_DOMAINS and would return immediately without
-            # attempting any tier, so no metric would be recorded.
-            with patch.object(fetcher, "_fetch_with_newspaper", return_value=self._ok()), \
-                 patch("src.edu_cti.pipeline.phase2.storage.article_fetcher.NEWSPAPER_AVAILABLE", True):
+            monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", raising=False)
+            with patch.object(fetcher, "_fetch_with_scrapling", return_value=self._ok()):
                 fetcher.fetch_article("http://example-news.com/story")
-            assert m.counters['article_fetch_attempts_total{source="example-news.com",tier="newspaper3k"}'] == 1
-            assert m.counters['article_fetch_success_total{source="example-news.com",tier="newspaper3k"}'] == 1
-            assert len(m.histograms['article_fetch_duration_seconds{source="example-news.com",tier="newspaper3k"}']) == 1
+            assert m.counters['article_fetch_attempts_total{source="example-news.com",tier="scrapling"}'] == 1
+            assert m.counters['article_fetch_success_total{source="example-news.com",tier="scrapling"}'] == 1
+            assert len(m.histograms['article_fetch_duration_seconds{source="example-news.com",tier="scrapling"}']) == 1
         finally:
             patch_obj.stop()
 
-    def test_newspaper3k_fail_falls_through_to_httpclient(self):
+    def test_scrapling_fail_falls_through_to_oxylabs(self, monkeypatch):
         m = _fresh()
         fetcher, patch_obj, ArticleContent = self._make_fetcher(m)
         try:
-            with patch.object(fetcher, "_fetch_with_newspaper", return_value=self._fail()), \
-                 patch.object(fetcher, "_fetch_with_browser", return_value=self._ok()), \
-                 patch("src.edu_cti.pipeline.phase2.storage.article_fetcher.NEWSPAPER_AVAILABLE", True):
+            monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "1")
+            monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", raising=False)
+            with patch.object(fetcher, "_fetch_with_scrapling", return_value=self._fail()), \
+                 patch.object(fetcher, "_fetch_with_oxylabs", return_value=self._ok()):
                 fetcher.fetch_article("http://bleepingcomputer.com/news/a")
-            assert m.counters.get('article_fetch_failure_total{reason="403",source="bleepingcomputer.com",tier="newspaper3k"}', 0) == 1
-            assert m.counters.get('article_fetch_success_total{source="bleepingcomputer.com",tier="httpclient"}', 0) == 1
+            assert m.counters.get('article_fetch_failure_total{reason="403",source="bleepingcomputer.com",tier="scrapling"}', 0) == 1
+            assert m.counters.get('article_fetch_success_total{source="bleepingcomputer.com",tier="oxylabs"}', 0) == 1
         finally:
             patch_obj.stop()
 
-    def test_all_four_tiers_fail_records_four_failures(self):
+    def test_default_tiers_fail_records_three_failures(self, monkeypatch):
         m = _fresh()
         fetcher, patch_obj, ArticleContent = self._make_fetcher(m)
         try:
-            with patch.object(fetcher, "_fetch_with_newspaper", return_value=self._fail()), \
-                 patch.object(fetcher, "_fetch_with_browser", return_value=self._fail()), \
+            monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "1")
+            monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", raising=False)
+            with patch.object(fetcher, "_fetch_with_scrapling", return_value=self._fail()), \
                  patch.object(fetcher, "_fetch_with_oxylabs", return_value=self._fail()), \
-                 patch.object(fetcher, "_fetch_from_archive", return_value=self._fail()), \
-                 patch("src.edu_cti.pipeline.phase2.storage.article_fetcher.NEWSPAPER_AVAILABLE", True):
+                 patch.object(fetcher, "_fetch_from_archive", return_value=self._fail()):
                 result = fetcher.fetch_article("http://example.com/article")
             assert not result.fetch_successful
             total_failures = sum(v for k, v in m.counters.items()
                                  if "article_fetch_failure_total" in k and "example.com" in k)
-            assert total_failures == 4
+            assert total_failures == 3
         finally:
             patch_obj.stop()
 
@@ -445,28 +444,26 @@ class TestArticleFetcherMetrics:
         finally:
             patch_obj.stop()
 
-    def test_oxylabs_success_emits_correct_tier_label(self):
+    def test_oxylabs_success_emits_correct_tier_label(self, monkeypatch):
         m = _fresh()
         fetcher, patch_obj, ArticleContent = self._make_fetcher(m)
         try:
-            with patch.object(fetcher, "_fetch_with_newspaper", return_value=self._fail()), \
-                 patch.object(fetcher, "_fetch_with_browser", return_value=self._fail()), \
-                 patch.object(fetcher, "_fetch_with_oxylabs", return_value=self._ok("http://example.com/x")), \
-                 patch("src.edu_cti.pipeline.phase2.storage.article_fetcher.NEWSPAPER_AVAILABLE", True):
+            monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "1")
+            with patch.object(fetcher, "_fetch_with_scrapling", return_value=self._fail()), \
+                 patch.object(fetcher, "_fetch_with_oxylabs", return_value=self._ok("http://example.com/x")):
                 fetcher.fetch_article("http://example.com/article")
             assert m.counters.get('article_fetch_success_total{source="example.com",tier="oxylabs"}', 0) == 1
         finally:
             patch_obj.stop()
 
-    def test_archive_org_success_records_duration(self):
+    def test_archive_org_success_records_duration(self, monkeypatch):
         m = _fresh()
         fetcher, patch_obj, ArticleContent = self._make_fetcher(m)
         try:
-            with patch.object(fetcher, "_fetch_with_newspaper", return_value=self._fail()), \
-                 patch.object(fetcher, "_fetch_with_browser", return_value=self._fail()), \
+            monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "1")
+            with patch.object(fetcher, "_fetch_with_scrapling", return_value=self._fail()), \
                  patch.object(fetcher, "_fetch_with_oxylabs", return_value=self._fail()), \
-                 patch.object(fetcher, "_fetch_from_archive", return_value=self._ok("http://example.com/x")), \
-                 patch("src.edu_cti.pipeline.phase2.storage.article_fetcher.NEWSPAPER_AVAILABLE", True):
+                 patch.object(fetcher, "_fetch_from_archive", return_value=self._ok("http://example.com/x")):
                 fetcher.fetch_article("http://example.com/article")
             dur_key = 'article_fetch_duration_seconds{source="example.com",tier="archive_org"}'
             assert len(m.histograms.get(dur_key, [])) == 1
@@ -898,7 +895,7 @@ class TestMetricsAPIEndpoints:
         assert "by_tier" in data
         assert "serp" in data
         assert "rate_limiting" in data
-        for tier in ["newspaper3k", "httpclient", "oxylabs", "archive_org"]:
+        for tier in ["scrapling", "newspaper3k", "httpclient", "oxylabs", "archive_org", "precheck"]:
             assert tier in data["by_tier"]
 
     def test_research_summary_endpoint_returns_200_json(self, client):
@@ -914,7 +911,7 @@ class TestMetricsAPIEndpoints:
 
     def test_fetch_stats_tier_has_required_keys(self, client):
         r = client.get("/api/metrics/fetch-stats")
-        tier = r.json()["by_tier"]["newspaper3k"]
+        tier = r.json()["by_tier"]["scrapling"]
         for key in ["attempts", "successes", "failures", "success_rate",
                     "failure_breakdown", "duration_s", "content_length_chars"]:
             assert key in tier
