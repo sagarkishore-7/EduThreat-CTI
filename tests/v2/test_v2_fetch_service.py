@@ -116,6 +116,7 @@ def test_fetch_service_persists_successful_article_and_enqueues_enrichment():
         "articles_saved": 1,
         "articles_failed": 0,
         "enrich_tasks_enqueued": 1,
+        "resolve_tasks_enqueued": 0,
     }
 
 
@@ -269,6 +270,53 @@ def test_fetch_service_skips_enrichment_when_no_article_is_relevant():
     documents = [call.args[1] for call in article_repository.add_document.call_args_list]
     assert documents[0].is_selected_for_enrichment is False
     pipeline_task_repository.enqueue.assert_not_called()
+
+
+def test_fetch_service_retries_discovery_for_curated_stale_homepage():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    pipeline_task_repository = Mock()
+    pipeline_task_repository.get_active_for_target.return_value = None
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.return_value = ArticleContent(
+        url="https://www.uni-due.de/index.php",
+        title="Willkommen an der Universität Duisburg-Essen",
+        content=(
+            "Uni Duisburg welcomes prospective students to campus. "
+            "Study programmes, admissions, events and research news are available here."
+        ),
+        author=None,
+        publish_date=None,
+        fetch_successful=True,
+        error_message=None,
+        content_length=126,
+        fetch_metadata={"selected_tier": "scrapling", "tier_attempts": [{"tier": "scrapling", "success": True}]},
+    )
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident_with_urls(("https://www.uni-due.de/index.php", True))
+    incident.source_name = "konbriefing"
+    incident.source_group = "curated"
+    incident.raw_title = "Cyber attack on a university in Germany"
+    incident.raw_institution_name = "Uni Duisburg"
+    incident.raw_victim_name = "Uni Duisburg"
+    incident.raw_incident_date = "2022-11-27"
+    incident.source_published_at = datetime(2022, 11, 27, 8, 0, tzinfo=timezone.utc)
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert result["articles_saved"] == 1
+    assert result["enrich_tasks_enqueued"] == 0
+    assert result["resolve_tasks_enqueued"] == 1
+    document = article_repository.add_document.call_args.args[1]
+    assert document.is_selected_for_enrichment is False
+    task = pipeline_task_repository.enqueue.call_args.args[1]
+    assert task.task_type == "resolve_url"
+    assert task.payload["force_discovery"] is True
 
 
 def test_fetch_service_rejects_year_only_match_when_article_names_different_victim():

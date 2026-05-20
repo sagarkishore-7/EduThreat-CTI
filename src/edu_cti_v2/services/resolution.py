@@ -172,10 +172,13 @@ class V2ResolveUrlService:
         self,
         session: Session,
         source_incident: SourceIncident,
+        *,
+        force_discovery: bool = False,
     ) -> Dict[str, int]:
         existing_urls = list(source_incident.urls or [])
         existing_normalized = {row.normalized_url for row in existing_urls}
         existing_fetchable = [row for row in existing_urls if row.url_kind == "article" and not row.is_wrapper]
+        had_existing_fetchable = bool(existing_fetchable)
 
         wrapper_resolutions = _resolve_google_wrapper_urls(source_incident)
         direct_urls_discovered = 0
@@ -212,7 +215,7 @@ class V2ResolveUrlService:
             added_count += 1
 
         discovered_urls: list[str] = []
-        if not existing_fetchable:
+        if force_discovery or not existing_fetchable:
             discovered_urls = self.article_discovery(source_incident_to_discovery_payload(source_incident))
         ranked_urls = sorted(
             (
@@ -247,7 +250,13 @@ class V2ResolveUrlService:
             existing_fetchable.append(row)
 
         fetch_task_enqueued = 0
-        if existing_fetchable or added_count > 0:
+        should_enqueue_fetch = bool(existing_fetchable or added_count > 0)
+        if force_discovery and had_existing_fetchable:
+            # Forced discovery usually follows a fetch pass that found only stale/low-quality
+            # pages. Do not loop back into fetch unless discovery actually added a new URL.
+            should_enqueue_fetch = added_count > 0
+
+        if should_enqueue_fetch:
             existing_fetch_task = self.pipeline_task_repository.get_active_for_target(
                 session,
                 task_type="fetch_article",

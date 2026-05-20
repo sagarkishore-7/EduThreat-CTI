@@ -30,6 +30,11 @@ CRITICAL OUTPUT REQUIREMENTS:
      * Theological seminaries, religious educational institutions, Bible colleges
      * Any institution with "seminary", "academy", "institute", "college", "university", "school" in the name
      * Educational service providers, student information systems, learning management systems
+     * Third-party/vendor, software supply-chain, or service-provider incidents that
+       affected a named education institution, even if the institution's own systems
+       were not directly breached. Mark the attack as third_party_compromise,
+       supply_chain_software, or an equivalent vendor-related category where supported,
+       and capture the vendor/provider separately when the article names it.
    - education_relevance_reasoning: Provide a 1-2 sentence explanation WHY this is or isn't
      a specific education sector incident, citing direct evidence from the article.
    - Examples of TRUE: "University of X suffered ransomware attack", "XYZ School District breach"
@@ -85,6 +90,10 @@ CRITICAL OUTPUT REQUIREMENTS:
    SOURCE-VICTIM ANCHORING:
    - The incident metadata provided with the article title/subtitle identifies the
      source victim this record is about. Treat that victim as the anchor for extraction.
+   - If the article says the anchored source victim was affected through a vendor,
+     clearinghouse, software product, managed service, or other third party, this is still
+     an education-sector incident for the anchored victim. Do NOT mark it false merely
+     because the vendor was the directly compromised system.
    - If the article mentions multiple institutions, vendors, or unrelated organizations,
      extract ONLY the facts that apply to the anchored source victim.
    - Do NOT switch the incident focus to a more prominent organization mentioned in the

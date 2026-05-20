@@ -101,6 +101,13 @@ def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
     return max(minimum, value)
 
 
+def _minimum_article_content_length(url: str) -> int:
+    """Return the minimum body length needed before an extraction is trusted."""
+    if "databreaches.net" in url.lower():
+        return _env_int("EDU_CTI_DATABREACHES_ARTICLE_MIN_CONTENT_CHARS", 50, minimum=25)
+    return _env_int("EDU_CTI_ARTICLE_MIN_CONTENT_CHARS", 500, minimum=100)
+
+
 _SCRAPLING_BROWSER_SEMAPHORE = threading.BoundedSemaphore(
     _env_int("EDU_CTI_SCRAPLING_BROWSER_MAX_CONCURRENCY", 1)
 )
@@ -379,9 +386,6 @@ BLOCKED_FETCH_DOMAINS = {
     "malwarebazaar.abuse.ch",
     "otx.alienvault.com",
     "nvd.nist.gov",
-    # Hard paywall — all 4 fetch tiers return login-gate HTML.
-    # SERP fallback (fetching_strategy.py) will find the same story on an open source.
-    "securityweek.com",
     # Permanently unreachable / returns 0 useful chars across all tiers.
     "syracuse.com",
     # JS-heavy paywalled sites — Oxylabs returns HTML shell, extractor gets 0 chars.
@@ -520,10 +524,22 @@ _GATE_PAGE_SIGNALS = [
     "prove you are not a robot",
     "subscribe to continue",
     "subscribe to read",
+    "subscribe to the",
+    "subscribe now",
+    "subscription required",
+    "newspaper home delivery",
+    "digital subscription",
+    "subscriber-only content",
+    "sign up to read",
+    "login or subscribe",
     "sign in to read",
     "log in to continue",
     "create a free account to continue",
     "register to read",
+    "before you continue to youtube",
+    "continue to youtube",
+    "sign in to confirm your age",
+    "this helps protect our community",
 ]
 
 
@@ -697,7 +713,7 @@ class ArticleFetcher:
                 content_length=0,
             )
 
-        min_length = 50 if "databreaches.net" in url.lower() else 100
+        min_length = _minimum_article_content_length(url)
         content_stripped = (content or "").strip()
         if len(content_stripped) < min_length:
             return ArticleContent(
@@ -744,6 +760,7 @@ class ArticleFetcher:
                 timeout=timeout_seconds,
                 impersonate=impersonate,
                 stealthy_headers=True,
+                follow_redirects=True,
             )
             status = int(getattr(response, "status", None) or getattr(response, "status_code", 0) or 0)
             if status >= 400:
@@ -930,7 +947,7 @@ class ArticleFetcher:
             logger.info(f"Oxylabs: gate/CAPTCHA page detected for {url} — falling through to archive.org")
             return None
 
-        min_length = 50 if "databreaches.net" in url.lower() else 100
+        min_length = _minimum_article_content_length(url)
         content_stripped = (content or "").strip()
         if content_stripped and len(content_stripped) >= min_length:
             logger.info(f"Oxylabs succeeded for {url} ({len(content_stripped)} chars)")
@@ -1412,7 +1429,7 @@ class ArticleFetcher:
             logger.debug(f"HttpClient: Content length after cleaning: {len(content) if content else 0} (was {len(content_before_clean) if content_before_clean else 0})")
             
             # Check for meaningful content - lower threshold for databreaches.net and similar sites
-            min_length = 50 if "databreaches.net" in url.lower() else 100
+            min_length = _minimum_article_content_length(url)
             content_stripped = content.strip() if content else ""
             
             if not content or len(content_stripped) < min_length:
@@ -1489,7 +1506,7 @@ class ArticleFetcher:
             #   from a JS-rendered page (e.g. BBC, Guardian) and won't give the
             #   LLM enough to work with. Falling through to HttpClient/Oxylabs
             #   gets the real article body via JS rendering.
-            min_length = 50 if "databreaches.net" in url.lower() else 500
+            min_length = _minimum_article_content_length(url)
             text_stripped = article.text.strip() if article.text else ""
 
             if not article.text or len(text_stripped) < min_length:

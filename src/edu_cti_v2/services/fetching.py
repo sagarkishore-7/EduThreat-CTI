@@ -76,6 +76,25 @@ _IDENTITY_ANCHOR_STOP_TOKENS = _STOP_TOKENS | {
 }
 _MIN_SELECTED_ARTICLE_SCORE = 12.0
 _BINARY_CONTENT_PREFIXES = ("%PDF-", "PK\x03\x04")
+_CYBER_EVIDENCE_RE = re.compile(
+    r"\b("
+    r"cyber(?:attack| attack|security| security| incident| incident)?|"
+    r"ransomware|malware|phishing|breach(?:ed)?|data breach|"
+    r"hacker|hackers|hacked|hacking|ddos|denial[- ]of[- ]service|"
+    r"unauthori[sz]ed access|unauthori[sz]ed users?|"
+    r"security incident|privacy breach|data leak|exfiltrat(?:e|ed|ion)|"
+    r"compromis(?:e|ed)|moveit|cl0p|lockbit"
+    r")\b",
+    re.IGNORECASE,
+)
+_HOMEPAGEISH_TITLE_RE = re.compile(
+    r"\b("
+    r"home|welcome|announcements?|newsroom|aktuelles|portrait|about us|"
+    r"studieren|campus|events?|veranstaltungen"
+    r")\b",
+    re.IGNORECASE,
+)
+_CURATED_SOURCE_NAMES = {"konbriefing", "comparitech"}
 
 
 def _parse_publish_date(value: Optional[str]) -> Optional[date]:
@@ -215,6 +234,43 @@ def _extract_url_year(url: str) -> Optional[int]:
     return int(match.group(1))
 
 
+def _source_requires_cyber_evidence(source_incident: SourceIncident) -> bool:
+    """Return true when the source metadata says this row should be a cyber incident."""
+    metadata_text = " ".join(
+        value
+        for value in (
+            source_incident.raw_title,
+            source_incident.raw_subtitle,
+            source_incident.raw_attack_hint,
+            source_incident.raw_notes,
+        )
+        if value
+    )
+    return bool(_CYBER_EVIDENCE_RE.search(metadata_text))
+
+
+def _article_has_cyber_evidence(article: ArticleContent) -> bool:
+    candidate_text = " ".join(
+        value
+        for value in (
+            article.title,
+            (article.content or "")[:3000],
+            article.url,
+        )
+        if value
+    )
+    return bool(_CYBER_EVIDENCE_RE.search(candidate_text))
+
+
+def _looks_like_current_homepage(article: ArticleContent, source_url: str) -> bool:
+    parsed = urlparse(source_url)
+    path = (parsed.path or "/").strip().lower()
+    title = article.title or ""
+    if path in {"", "/", "/home", "/home/", "/index.php", "/index.html", "/announcements", "/announcements/"}:
+        return True
+    return bool(_HOMEPAGEISH_TITLE_RE.search(title))
+
+
 def _domain_matches_publisher(url: str, publisher_hint: Optional[str]) -> bool:
     if not publisher_hint:
         return False
@@ -273,6 +329,11 @@ def _score_article_candidate(
     ):
         score -= 40.0
 
+    if _source_requires_cyber_evidence(source_incident) and not _article_has_cyber_evidence(article):
+        # Current homepages often retain the victim name but have lost the incident notice.
+        # They should not become the selected enrichment article for historical rows.
+        score -= 45.0 if _looks_like_current_homepage(article, source_url) else 30.0
+
     source_year = _source_year_hint(source_incident)
     publish_year = _parse_publish_date(article.publish_date)
     publish_year = publish_year.year if publish_year else None
@@ -286,6 +347,27 @@ def _score_article_candidate(
         score += 10.0
 
     return score
+
+
+def _should_retry_discovery_after_low_quality_selection(
+    source_incident: SourceIncident,
+    selected_candidates: list[dict[str, Any]],
+) -> bool:
+    """Ask discovery for alternatives when trusted source URLs fetched stale pages."""
+    if not selected_candidates:
+        return False
+    if (source_incident.source_name or "").lower() not in _CURATED_SOURCE_NAMES:
+        return False
+    if not _source_requires_cyber_evidence(source_incident):
+        return False
+    return bool(
+        recover_source_identity(
+            raw_institution_name=source_incident.raw_institution_name,
+            raw_victim_name=source_incident.raw_victim_name,
+            raw_subtitle=source_incident.raw_subtitle,
+            raw_title=source_incident.raw_title,
+        )
+    )
 
 
 def _sanitize_db_text(value: Optional[str]) -> Optional[str]:
@@ -502,6 +584,7 @@ class V2FetchService:
             )
 
         enrich_task_enqueued = 0
+        resolve_task_enqueued = 0
         if selected_candidates:
             best_candidate = max(selected_candidates, key=lambda candidate: float(candidate["score"]))
             best_score = float(best_candidate["score"])
@@ -546,10 +629,39 @@ class V2FetchService:
                 )
                 self.pipeline_task_repository.enqueue(session, enrich_task)
                 enrich_task_enqueued = 1
+        elif _should_retry_discovery_after_low_quality_selection(source_incident, selected_candidates):
+            existing_resolve_task = self.pipeline_task_repository.get_active_for_target(
+                session,
+                task_type="resolve_url",
+                target_table="source_incidents",
+                target_id=source_incident.id,
+            )
+            if existing_resolve_task is None:
+                resolve_task = PipelineTask(
+                    run_id=None,
+                    task_type="resolve_url",
+                    target_table="source_incidents",
+                    target_id=source_incident.id,
+                    status="queued",
+                    priority=70,
+                    payload={
+                        "source_incident_id": str(source_incident.id),
+                        "source_name": source_incident.source_name,
+                        "force_discovery": True,
+                        "reason": "no_relevant_article_selected",
+                    },
+                    result={},
+                    available_at=now,
+                    attempt_count=0,
+                    max_attempts=3,
+                )
+                self.pipeline_task_repository.enqueue(session, resolve_task)
+                resolve_task_enqueued = 1
 
         return {
             "urls_total": len(fetchable_urls),
             "articles_saved": success_count,
             "articles_failed": failure_count,
             "enrich_tasks_enqueued": enrich_task_enqueued,
+            "resolve_tasks_enqueued": resolve_task_enqueued,
         }

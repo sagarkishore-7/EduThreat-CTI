@@ -155,10 +155,18 @@ class V2TaskRuntime:
                     pipeline_task_repository=self.pipeline_task_repository,
                 )
                 self.resolve_url_service = resolve_url_service
-                result = resolve_url_service.resolve_source_incident_urls(
-                    session,
-                    source_incident,
-                )
+                task_payload = task.payload if isinstance(getattr(task, "payload", None), dict) else {}
+                if task_payload.get("force_discovery"):
+                    result = resolve_url_service.resolve_source_incident_urls(
+                        session,
+                        source_incident,
+                        force_discovery=True,
+                    )
+                else:
+                    result = resolve_url_service.resolve_source_incident_urls(
+                        session,
+                        source_incident,
+                    )
             elif task.task_type == "enrich_source":
                 enrichment_service = self.enrichment_service or V2EnrichmentService(
                     pipeline_task_repository=self.pipeline_task_repository,

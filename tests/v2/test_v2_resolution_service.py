@@ -128,6 +128,55 @@ def test_resolve_url_service_reuses_existing_fetch_task_and_dedupes_urls():
     task_repo.enqueue.assert_not_called()
 
 
+def test_resolve_url_service_force_discovery_with_existing_fetchable_url():
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    service = V2ResolveUrlService(
+        pipeline_task_repository=task_repo,
+        article_discovery=lambda payload: [
+            "https://www.example-news.com/2022/11/uni-duisburg-cyber-attack"
+        ],
+    )
+    session = Mock()
+    incident = _source_incident(with_fetchable_url=True)
+    incident.source_name = "konbriefing"
+    incident.raw_title = "Cyber attack on a university in Germany"
+    incident.raw_institution_name = "Uni Duisburg"
+    incident.raw_victim_name = "Uni Duisburg"
+    incident.raw_incident_date = "2022-11-27"
+    incident.source_published_at = datetime(2022, 11, 27, 8, 0, tzinfo=timezone.utc)
+
+    result = service.resolve_source_incident_urls(session, incident, force_discovery=True)
+
+    assert result == {
+        "urls_discovered": 1,
+        "urls_added": 1,
+        "fetch_tasks_enqueued": 1,
+    }
+    assert len([row for row in incident.urls if row.url_kind == "article"]) == 2
+    task_repo.enqueue.assert_called_once()
+
+
+def test_resolve_url_service_force_discovery_does_not_refetch_when_nothing_new():
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    service = V2ResolveUrlService(
+        pipeline_task_repository=task_repo,
+        article_discovery=lambda payload: ["https://example.com/article"],
+    )
+    session = Mock()
+    incident = _source_incident(with_fetchable_url=True)
+
+    result = service.resolve_source_incident_urls(session, incident, force_discovery=True)
+
+    assert result == {
+        "urls_discovered": 1,
+        "urls_added": 0,
+        "fetch_tasks_enqueued": 0,
+    }
+    task_repo.enqueue.assert_not_called()
+
+
 def test_resolve_url_service_filters_irrelevant_discovered_urls():
     task_repo = Mock()
     task_repo.get_active_for_target.return_value = None

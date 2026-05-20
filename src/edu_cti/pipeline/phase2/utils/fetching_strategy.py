@@ -15,7 +15,7 @@ import xml.etree.ElementTree as ET
 from typing import List, Dict, Set, Optional, Tuple
 from collections import defaultdict
 from datetime import datetime, timedelta
-from urllib.parse import quote_plus, unquote, urlparse
+from urllib.parse import parse_qs, quote_plus, unquote, urlparse
 import sqlite3
 
 from bs4 import BeautifulSoup
@@ -142,6 +142,20 @@ def _news_discovery_max_results() -> int:
         return 5
 
 
+def _news_discovery_decode_limit(max_results: int) -> int:
+    try:
+        configured = int(os.environ.get("EDU_CTI_NEWS_DISCOVERY_DECODE_LIMIT", "20"))
+    except (TypeError, ValueError):
+        configured = 20
+    return max(max_results, configured)
+
+
+def _strip_title_source_suffix(title: str) -> str:
+    """Remove common trailing publisher suffixes from a news headline."""
+    cleaned = re.sub(r"\s+[-–—|]\s+[^-–—|]{2,60}$", "", title or "").strip()
+    return cleaned or (title or "").strip()
+
+
 def _build_news_discovery_query(incident: Dict) -> Optional[Tuple[str, str]]:
     """Build a stable news-search query without exposing callers to provider details."""
     name = (incident.get("institution_name") or incident.get("victim_raw_name") or "").strip()
@@ -182,6 +196,39 @@ def _build_news_discovery_query(incident: Dict) -> Optional[Tuple[str, str]]:
         return f'"{title}"', f"title '{title[:60]}'"
 
     return None
+
+
+def _build_news_discovery_queries(incident: Dict) -> List[Tuple[str, str]]:
+    """Build ordered query variants for URL discovery.
+
+    Title-only sources often include a publisher suffix or slightly different
+    punctuation than Google News has indexed. Try the precise query first, then
+    a stripped/unquoted variant before declaring the source unresolved.
+    """
+    query_spec = _build_news_discovery_query(incident)
+    if not query_spec:
+        return []
+
+    query, log_label = query_spec
+    queries: List[Tuple[str, str]] = [(query, log_label)]
+    title = (incident.get("title") or "").strip()
+    if log_label.startswith("title ") and title:
+        stripped_title = _strip_title_source_suffix(title)
+        if stripped_title and stripped_title != title:
+            variants = [
+                (f'"{stripped_title}"', f"stripped title '{stripped_title[:60]}'"),
+                (stripped_title, f"loose title '{stripped_title[:60]}'"),
+            ]
+        else:
+            variants = [(title, f"loose title '{title[:60]}'")]
+
+        seen = {query}
+        for variant_query, variant_label in variants:
+            if variant_query not in seen:
+                queries.append((variant_query, variant_label))
+                seen.add(variant_query)
+
+    return queries
 
 
 def _is_blocked_discovered_url(url: str) -> bool:
@@ -227,6 +274,7 @@ def _fetch_discovery_url_with_scrapling(url: str) -> Optional[str]:
         kwargs = {
             "timeout": _env_timeout_ms_as_seconds("EDU_CTI_SCRAPLING_DISCOVERY_TIMEOUT_MS", 20000),
             "stealthy_headers": True,
+            "follow_redirects": True,
             "headers": {
                 "Accept": "application/rss+xml, application/xml, text/xml, text/html",
                 "User-Agent": _NEWS_DISCOVERY_USER_AGENT,
@@ -273,7 +321,7 @@ def _discover_google_news_rss_with_scrapling(query: str, max_results: int) -> Li
 
     urls: List[str] = []
     seen: Set[str] = set()
-    for item in root.findall(".//item"):
+    for item in root.findall(".//item")[: _news_discovery_decode_limit(max_results)]:
         link = (item.findtext("link") or "").strip()
         if not link:
             continue
@@ -291,6 +339,41 @@ def _discover_google_news_rss_with_scrapling(query: str, max_results: int) -> Li
             break
 
     return urls
+
+
+def _extract_bing_result_url(link: str) -> Optional[str]:
+    if not link:
+        return None
+    link = link.strip()
+    parsed = urlparse(link)
+    if parsed.netloc.lower().endswith("bing.com") and parsed.path.endswith("/news/apiclick.aspx"):
+        target = (parse_qs(parsed.query).get("url") or [""])[0]
+        return unquote(target) if target else None
+    return link if link.startswith(("http://", "https://")) else None
+
+
+def _discover_bing_news_rss_with_scrapling(query: str, max_results: int) -> List[str]:
+    """Discover article URLs through Bing News RSS as a free no-key fallback."""
+    if not _env_flag("EDU_CTI_ENABLE_BING_NEWS_DISCOVERY", "1"):
+        return []
+
+    rss_url = f"https://www.bing.com/news/search?q={quote_plus(query)}&format=rss"
+    xml_text = _fetch_discovery_url_with_scrapling(rss_url)
+    if not xml_text:
+        return []
+
+    try:
+        root = ET.fromstring(xml_text.encode("utf-8") if isinstance(xml_text, str) else xml_text)
+    except ET.ParseError as exc:
+        logger.debug("Bing News RSS parse failed: %s", exc)
+        return []
+
+    urls: List[str] = []
+    for item in root.findall(".//item")[: _news_discovery_decode_limit(max_results)]:
+        target = _extract_bing_result_url(item.findtext("link") or "")
+        if target:
+            urls.append(target)
+    return _filter_discovered_urls(urls, max_results)
 
 
 def _extract_yahoo_result_url(href: str) -> Optional[str]:
@@ -346,14 +429,15 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
 
     Provider order:
     1. Google News RSS fetched through Scrapling (free/default)
-    2. Yahoo News HTML through Scrapling (optional, disabled by default)
-    3. Oxylabs Google News SERP (paid, opt-in only)
+    2. Bing News RSS through Scrapling (free fallback, direct URLs)
+    3. Yahoo News HTML through Scrapling (optional, disabled by default)
+    4. Oxylabs Google News SERP (paid, opt-in only)
 
     Query modes:
     1. Named institution (institution_name is set): query = '"Name" attack_hint year'
     2. Title-based fallback (institution_name blank): query = title (quoted)
-       Used for paywalled sources (securityweek) where we have a headline but
-       no accessible article text — finds the same story on an open source.
+       Used when we have a headline but no accessible article text — finds the
+       same story on an open source.
 
     Args:
         incident: Incident dict with institution_name, attack_type_hint, incident_date, title
@@ -361,23 +445,44 @@ def discover_articles_via_serp(incident: Dict) -> List[str]:
     Returns:
         List of discovered article URLs (may be empty if no provider returns usable results)
     """
-    query_spec = _build_news_discovery_query(incident)
-    if not query_spec:
+    query_specs = _build_news_discovery_queries(incident)
+    if not query_specs:
         return []
 
-    query, log_label = query_spec
     max_results = _news_discovery_max_results()
     _src_label = (incident.get("incident_id") or "unknown").split("_")[0]
     _metrics.increment("serp_queries_total", labels={"source": _src_label})
 
     provider_name = "google_news_rss_scrapling"
-    urls = _discover_google_news_rss_with_scrapling(query, max_results)
+    urls: List[str] = []
+    log_label = query_specs[0][1]
+    if _env_flag("EDU_CTI_ENABLE_GOOGLE_NEWS_DISCOVERY", "1"):
+        for query, candidate_label in query_specs:
+            urls = _discover_google_news_rss_with_scrapling(query, max_results)
+            if urls:
+                log_label = candidate_label
+                break
+    if not urls:
+        provider_name = "bing_news_rss_scrapling"
+        for query, candidate_label in query_specs:
+            urls = _discover_bing_news_rss_with_scrapling(query, max_results)
+            if urls:
+                log_label = candidate_label
+                break
     if not urls and _env_flag("EDU_CTI_ENABLE_YAHOO_NEWS_DISCOVERY", "0"):
         provider_name = "yahoo_news_scrapling"
-        urls = _discover_yahoo_news_with_scrapling(query, max_results)
+        for query, candidate_label in query_specs:
+            urls = _discover_yahoo_news_with_scrapling(query, max_results)
+            if urls:
+                log_label = candidate_label
+                break
     if not urls:
         provider_name = "oxylabs_serp"
-        urls = _discover_articles_via_oxylabs_serp(query, max_results)
+        for query, candidate_label in query_specs:
+            urls = _discover_articles_via_oxylabs_serp(query, max_results)
+            if urls:
+                log_label = candidate_label
+                break
     if not urls:
         provider_name = "none"
 
@@ -950,8 +1055,7 @@ class SmartArticleFetchingStrategy:
                 except Exception as be:
                     logger.warning(f"Failed to persist broken URLs for {incident_id}: {be}")
 
-            # If primary URLs all failed, fall back to SERP discovery
-            # (catches paywalled sources like securityweek.com where all tiers fail)
+            # If primary URLs all failed, fall back to discovery.
             if not incident_articles and all_urls:
                 logger.info(
                     f"Primary URL(s) all failed for {incident_id} — trying SERP fallback"

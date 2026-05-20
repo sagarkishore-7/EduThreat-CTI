@@ -15,15 +15,18 @@ URL pattern:
 """
 
 import html
+import json
 import logging
+import os
 import re
 import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Callable, List, Optional, Tuple
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 
 import requests
+from bs4 import BeautifulSoup
 
 from src.edu_cti.core.config import (
     HISTORICAL_START_YEAR,
@@ -38,6 +41,83 @@ logger = logging.getLogger(__name__)
 # Queries are defined centrally in:
 #   src/edu_cti/core/config.py → GOOGLE_NEWS_RSS_QUERIES
 # Each entry is a (query, language_code, country_code) tuple.
+
+
+def _google_news_decode_timeout() -> float:
+    try:
+        return max(1.0, float(os.environ.get("EDU_CTI_GOOGLE_NEWS_DECODE_TIMEOUT_SECONDS", "4")))
+    except (TypeError, ValueError):
+        return 4.0
+
+
+def _extract_google_news_base64(link: str) -> Optional[str]:
+    try:
+        parsed = urlparse(link)
+    except Exception:
+        return None
+    path = parsed.path.split("/")
+    if parsed.hostname == "news.google.com" and len(path) > 1 and path[-2] in {"articles", "read"}:
+        return path[-1]
+    return None
+
+
+def _resolve_google_news_article_url_with_timeouts(link: str) -> Optional[str]:
+    """Resolve newer Google News wrappers with bounded network calls."""
+    base64_str = _extract_google_news_base64(link)
+    if not base64_str:
+        return None
+
+    timeout = _google_news_decode_timeout()
+    params = None
+    for path_prefix in ("articles", "rss/articles"):
+        try:
+            response = requests.get(
+                f"https://news.google.com/{path_prefix}/{base64_str}",
+                timeout=timeout,
+            )
+            response.raise_for_status()
+        except requests.RequestException:
+            continue
+
+        element = BeautifulSoup(response.text, "html.parser").select_one("c-wiz > div[jscontroller]")
+        if element:
+            params = {
+                "signature": element.get("data-n-a-sg"),
+                "timestamp": element.get("data-n-a-ts"),
+            }
+            break
+
+    if not params or not params.get("signature") or not params.get("timestamp"):
+        return None
+
+    payload = [
+        "Fbv4je",
+        (
+            '["garturlreq",[["X","X",["X","X"],null,null,1,1,"US:en",null,1,'
+            f'null,null,null,null,null,0,1],"X","X",1,[1,1,1],1,1,null,0,0,null,0],'
+            f'"{base64_str}",{params["timestamp"]},"{params["signature"]}"]'
+        ),
+    ]
+    try:
+        response = requests.post(
+            "https://news.google.com/_/DotsSplashUi/data/batchexecute",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+            },
+            data=f"f.req={quote(json.dumps([[payload]]))}",
+            timeout=timeout,
+        )
+        response.raise_for_status()
+        parsed_data = json.loads(response.text.split("\n\n")[1])[:-2]
+        decoded_url = json.loads(parsed_data[0][2])[1]
+    except (requests.RequestException, json.JSONDecodeError, IndexError, TypeError, KeyError):
+        return None
+
+    if decoded_url and "news.google.com" not in decoded_url:
+        return str(decoded_url).strip()
+    return None
 # Edit config.py to add/modify queries — changes apply here automatically.
 GOOGLE_NEWS_QUERIES = GOOGLE_NEWS_RSS_QUERIES
 
@@ -107,16 +187,17 @@ def _resolve_google_news_article_url(link: str) -> Optional[str]:
         return link
 
     try:
-        from googlenewsdecoder import new_decoderv1
+        from googlenewsdecoder.decoderv1 import decode_google_news_url
 
-        result = new_decoderv1(link)
-        resolved = (result or {}).get("decoded_url")
-        if resolved and "news.google.com" not in resolved:
+        resolved = decode_google_news_url(link)
+        if resolved and resolved.startswith(("http://", "https://")) and "news.google.com" not in resolved:
             return str(resolved).strip()
-    except ImportError:
-        logger.warning("googlenewsdecoder not installed — Google RSS links will require SERP discovery")
     except Exception as exc:
-        logger.debug("Failed to resolve Google News RSS article URL %s: %s", link[:120], exc)
+        logger.debug("Fast Google News RSS decode failed for %s: %s", link[:120], exc)
+
+    resolved = _resolve_google_news_article_url_with_timeouts(link)
+    if resolved:
+        return resolved
 
     return None
 

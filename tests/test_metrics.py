@@ -414,7 +414,7 @@ class TestArticleFetcherMetrics:
         finally:
             patch_obj.stop()
 
-    def test_default_tiers_fail_records_three_failures(self, monkeypatch):
+    def test_default_tiers_fail_records_enabled_tier_failures(self, monkeypatch):
         m = _fresh()
         fetcher, patch_obj, ArticleContent = self._make_fetcher(m)
         try:
@@ -427,7 +427,7 @@ class TestArticleFetcherMetrics:
             assert not result.fetch_successful
             total_failures = sum(v for k, v in m.counters.items()
                                  if "article_fetch_failure_total" in k and "example.com" in k)
-            assert total_failures == 3
+            assert total_failures == 4
         finally:
             patch_obj.stop()
 
@@ -441,6 +441,19 @@ class TestArticleFetcherMetrics:
             blocked_failures = sum(v for k, v in m.counters.items()
                                    if "blocked_domain" in k)
             assert blocked_failures >= 1
+        finally:
+            patch_obj.stop()
+
+    def test_securityweek_is_not_preblocked(self, monkeypatch):
+        m = _fresh()
+        fetcher, patch_obj, ArticleContent = self._make_fetcher(m)
+        try:
+            monkeypatch.delenv("EDU_CTI_FETCH_ENABLE_LEGACY_TIERS", raising=False)
+            with patch.object(fetcher, "_fetch_with_scrapling", return_value=self._ok("https://www.securityweek.com/story")):
+                result = fetcher.fetch_article("https://www.securityweek.com/story")
+            assert result.fetch_successful is True
+            assert result.fetch_metadata["selected_tier"] == "scrapling"
+            assert not any("blocked_domain" in key for key in m.counters)
         finally:
             patch_obj.stop()
 

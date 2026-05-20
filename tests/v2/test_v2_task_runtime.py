@@ -205,6 +205,44 @@ def test_task_runtime_processes_resolve_url_task_and_marks_complete():
     task_repo.mark_completed.assert_called_once_with(session, task, {"urls_added": 1})
 
 
+def test_task_runtime_passes_force_discovery_for_resolve_retry_tasks():
+    task_repo = Mock()
+    source_repo = Mock()
+    fetch_service = Mock()
+    resolve_service = Mock()
+    enrich_service = Mock()
+
+    task = SimpleNamespace(
+        id=uuid4(),
+        task_type="resolve_url",
+        target_id=uuid4(),
+        payload={"force_discovery": True},
+    )
+    source_incident = SimpleNamespace(id=task.target_id)
+    task_repo.lease_batch.return_value = [task]
+    source_repo.get_by_id.return_value = source_incident
+    resolve_service.resolve_source_incident_urls.return_value = {"urls_added": 1}
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        fetch_service=fetch_service,
+        resolve_url_service=resolve_service,
+        enrichment_service=enrich_service,
+    )
+    session = Mock()
+    session.get.return_value = task
+
+    processed = runtime.process_next_task(session, worker_id="worker-1")
+
+    assert processed is task
+    resolve_service.resolve_source_incident_urls.assert_called_once_with(
+        session,
+        source_incident,
+        force_discovery=True,
+    )
+
+
 def test_task_runtime_pauses_resolve_when_fetch_backlog_is_too_high():
     task_repo = Mock()
     source_repo = Mock()

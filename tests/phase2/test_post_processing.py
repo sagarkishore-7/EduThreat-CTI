@@ -1040,6 +1040,25 @@ class TestSerpHeadlineBypass:
 
     @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy._discover_google_news_rss_with_scrapling")
     @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy.OxylabsClient")
+    def test_title_discovery_retries_with_stripped_loose_headline(self, mock_oxylabs_cls, mock_google):
+        from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
+
+        mock_google.side_effect = [[], [], ["https://example.com/canvas"]]
+        incident = self._make_incident(
+            "",
+            "Canvas cyberattack disrupts schools across Canada - Example News",
+        )
+
+        result = discover_articles_via_serp(incident)
+
+        assert result == ["https://example.com/canvas"]
+        assert mock_google.call_args_list[0].args[0] == '"Canvas cyberattack disrupts schools across Canada - Example News"'
+        assert mock_google.call_args_list[1].args[0] == '"Canvas cyberattack disrupts schools across Canada"'
+        assert mock_google.call_args_list[2].args[0] == "Canvas cyberattack disrupts schools across Canada"
+        mock_oxylabs_cls.return_value.search_news.assert_not_called()
+
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy._discover_google_news_rss_with_scrapling")
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy.OxylabsClient")
     def test_serp_skipped_for_very_long_name(self, mock_oxylabs_cls, mock_google):
         from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
 
@@ -1089,6 +1108,39 @@ class TestSerpHeadlineBypass:
             "https://example.org/cyber-school",
         ]
 
+    def test_bing_news_rss_fixture_extracts_apiclick_urls(self, monkeypatch):
+        from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs
+
+        fixture = """<?xml version="1.0" encoding="UTF-8"?>
+        <rss><channel>
+          <item><title>A</title><link>http://www.bing.com/news/apiclick.aspx?url=https%3A%2F%2Fexample.com%2Farticle</link></item>
+          <item><title>B</title><link>https://twitter.com/not-an-article</link></item>
+          <item><title>C</title><link>https://example.org/cyber-school</link></item>
+        </channel></rss>"""
+        monkeypatch.setattr(fs, "_fetch_discovery_url_with_scrapling", lambda _url: fixture)
+
+        assert fs._discover_bing_news_rss_with_scrapling("university breach", 2) == [
+            "https://example.com/article",
+            "https://example.org/cyber-school",
+        ]
+
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy._discover_google_news_rss_with_scrapling")
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy._discover_bing_news_rss_with_scrapling")
+    @patch("src.edu_cti.pipeline.phase2.utils.fetching_strategy.OxylabsClient")
+    def test_bing_used_when_google_news_empty(self, mock_oxylabs_cls, mock_bing, mock_google):
+        from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
+
+        mock_google.return_value = []
+        mock_bing.return_value = ["https://example.com/bing-article"]
+
+        incident = self._make_incident("University of Michigan", "University of Michigan breach")
+        result = discover_articles_via_serp(incident)
+
+        assert result == ["https://example.com/bing-article"]
+        mock_google.assert_called_once()
+        mock_bing.assert_called_once()
+        mock_oxylabs_cls.return_value.search_news.assert_not_called()
+
     def test_scrapling_discovery_uses_millisecond_env_timeout_as_seconds(self, monkeypatch):
         from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs
 
@@ -1112,6 +1164,7 @@ class TestSerpHeadlineBypass:
         assert fs._fetch_discovery_url_with_scrapling("https://news.google.com/rss/search?q=test")
         assert calls[0]["timeout"] == 2.5
         assert calls[0]["stealthy_headers"] is True
+        assert calls[0]["follow_redirects"] is True
 
     def test_yahoo_consent_fixture_returns_empty(self, monkeypatch):
         from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs

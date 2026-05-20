@@ -25,7 +25,7 @@ from src.edu_cti.pipeline.phase2.schemas import (
     MITREAttackTechnique,
     TimelineEvent,
 )
-from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent, ArticleFetcher
+from src.edu_cti.pipeline.phase2.storage.article_fetcher import ArticleContent, ArticleFetcher, _is_gate_page
 from src.edu_cti.pipeline.phase2.storage.article_storage import init_articles_table, save_article
 from src.edu_cti.pipeline.phase2.storage.db import (
     checkpoint_clear,
@@ -238,6 +238,33 @@ class TestArticleFetcher:
             warnings.simplefilter("error", UnknownTimezoneWarning)
             assert fetcher._normalize_date_to_iso("20 May 2026 18:09 CEST") == "2026-05-20"
 
+    def test_gate_detection_catches_subscription_landing_pages(self):
+        assert _is_gate_page(
+            "Subscribe to The Australian | Newspaper home delivery, website, iPad, iPhone & Android app",
+            "Choose your digital subscription to continue reading.",
+        )
+        assert _is_gate_page(
+            "Before you continue to YouTube",
+            "We use cookies and data to deliver and maintain Google services. "
+            "Sign in to confirm your age. This helps protect our community.",
+        )
+
+    def test_scrapling_extraction_rejects_short_article_snippets(self):
+        fetcher = ArticleFetcher(http_client=Mock())
+
+        result = fetcher._extract_article_from_html(
+            url="https://example.com/school-breach",
+            html="""
+            <html><head><title>School breach report</title></head><body>
+            <article>A tiny teaser, not enough context for safe incident extraction.</article>
+            </body></html>
+            """,
+            tier_label="Scrapling",
+        )
+
+        assert result.fetch_successful is False
+        assert "too short" in (result.error_message or "")
+
     def test_scrapling_fetch_uses_millisecond_env_timeout_as_seconds(self, monkeypatch):
         from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
 
@@ -254,8 +281,16 @@ class TestArticleFetcher:
                     <article>
                     This education-sector cyber incident article has enough
                     detail to pass the content length threshold. It describes a
-                    school breach, impacted systems, and recovery context for
-                    affected students, families, and staff.
+                    school breach, impacted systems, recovery context for
+                    affected students, families, and staff, how the institution
+                    communicated the incident, what systems were unavailable,
+                    whether personal information was exposed, what remediation
+                    steps were taken, and how students and staff were advised to
+                    monitor account activity after the security incident.
+                    The article also provides enough surrounding narrative that
+                    the enrichment model can distinguish a real education-sector
+                    incident from a login page, subscription teaser, video page,
+                    or syndicated search-result shell during local testing.
                     </article>
                     </body></html>
                     """,
@@ -270,6 +305,7 @@ class TestArticleFetcher:
         assert result.fetch_successful is True
         assert calls[0]["timeout"] == 1.5
         assert calls[0]["impersonate"] == "chrome"
+        assert calls[0]["follow_redirects"] is True
 
     def test_newspaper_fetch_backfills_publish_date_and_author_from_html(self):
         class DummyArticle:
@@ -485,6 +521,7 @@ class TestArticleFetcher:
         monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_WAIT_MS", "750")
         monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_RETRIES", "0")
         monkeypatch.setenv("EDU_CTI_SCRAPLING_PROXY_POOL", "http://proxy-one.example:8080")
+        monkeypatch.setenv("EDU_CTI_ARTICLE_MIN_CONTENT_CHARS", "100")
 
         result = ArticleFetcher(http_client=Mock())._fetch_with_scrapling_browser("https://example.com/article")
 
@@ -524,6 +561,7 @@ class TestArticleFetcher:
         monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_MODE", "stealthy")
         monkeypatch.setenv("EDU_CTI_SCRAPLING_SOLVE_CLOUDFLARE", "1")
         monkeypatch.setenv("EDU_CTI_SCRAPLING_PROXY_POOL", "http://stealth-proxy.example:8080")
+        monkeypatch.setenv("EDU_CTI_ARTICLE_MIN_CONTENT_CHARS", "100")
 
         result = ArticleFetcher(http_client=Mock())._fetch_with_scrapling_browser("https://example.com/article")
 
@@ -561,6 +599,7 @@ class TestArticleFetcher:
         monkeypatch.setattr(article_fetcher_module, "SCRAPLING_BROWSER_AVAILABLE", True)
         monkeypatch.setattr(article_fetcher_module, "DynamicFetcher", FakeDynamicFetcher)
         monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_MODE", "stealthy")
+        monkeypatch.setenv("EDU_CTI_ARTICLE_MIN_CONTENT_CHARS", "100")
 
         result = ArticleFetcher(http_client=Mock())._fetch_with_scrapling_browser(
             "https://example.com/article",

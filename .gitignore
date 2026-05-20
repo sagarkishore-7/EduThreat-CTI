@@ -50,6 +50,9 @@ htmlcov/
 .nox/
 
 # Data files (generated at runtime) - NEVER commit database files
+*.db
+*.db-shm
+*.db-wal
 data/*.db
 data/*.db-shm
 data/*.db-wal
@@ -57,7 +60,20 @@ data/eduthreat.db
 data/eduthreat_sandbox.db
 data/raw/
 data/processed/
+data/hf_cache/
+data/benchmark_results*.json
+data/mitre_*.json
+data/mitre_*.npy
 !data/.gitkeep
+
+# Local-only runtime helpers
+docker-compose.local.yml
+docker-compose.override.yml
+
+# Local benchmarking/research scratch outputs
+docs/model_selection_benchmark.md
+scripts/benchmark_models.py
+scripts/run_full_benchmark.py
 
 # Logs
 logs/
@@ -82,7 +98,9 @@ Thumbs.db
 
 # Environment variables (keep .env.example)
 .env
+.env.*
 !.env.example
+!.env.*.example
 
 # Paper directory (LaTeX source — managed separately on Overleaf)
 paper/
