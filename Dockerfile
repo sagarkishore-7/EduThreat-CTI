@@ -38,6 +38,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright browsers (chromium only to save space)
 RUN playwright install chromium --with-deps
+RUN patchright install chromium
 
 # Copy the source code
 COPY src/ ./src/

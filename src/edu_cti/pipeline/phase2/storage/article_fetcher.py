@@ -3,8 +3,9 @@ Article fetching module for Phase 2 enrichment.
 
 Fetches and extracts article content from URLs for LLM processing.
 Defaults to a low-cost Scrapling-first chain for article enrichment, with
-newspaper3k rescue, Oxylabs, and archive.org as fallbacks. Heavier legacy
-curl_cffi/Playwright tiers remain available behind
+newspaper3k rescue, optional browser-backed Scrapling rescue, Oxylabs, and
+archive.org as fallbacks. Heavier legacy curl_cffi/Playwright tiers remain
+available behind
 EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1 for rollback.
 """
 
@@ -14,6 +15,7 @@ import os
 import time
 import random
 import re
+import threading
 import requests
 from typing import List, Optional, Dict
 from dataclasses import dataclass
@@ -43,6 +45,27 @@ except ImportError as exc:
     SCRAPLING_AVAILABLE = False
     SCRAPLING_IMPORT_ERROR = str(exc)
 
+# Optional browser-backed Scrapling fetchers. These are intentionally separate
+# from the static Fetcher because they launch Chromium and must stay opt-in.
+# Import them independently so StealthyFetcher extras cannot disable DynamicFetcher.
+_scrapling_browser_import_errors: list[str] = []
+try:
+    from scrapling.fetchers import DynamicFetcher
+except Exception as exc:
+    DynamicFetcher = None
+    _scrapling_browser_import_errors.append(f"DynamicFetcher: {exc}")
+
+try:
+    from scrapling.fetchers import StealthyFetcher
+except Exception as exc:
+    StealthyFetcher = None
+    _scrapling_browser_import_errors.append(f"StealthyFetcher: {exc}")
+
+SCRAPLING_BROWSER_AVAILABLE = DynamicFetcher is not None or StealthyFetcher is not None
+SCRAPLING_BROWSER_IMPORT_ERROR: str | None = (
+    "; ".join(_scrapling_browser_import_errors) if _scrapling_browser_import_errors else None
+)
+
 logger = logging.getLogger(__name__)
 
 from src.edu_cti.core import metrics as _metrics
@@ -52,15 +75,35 @@ def _env_flag(name: str, default: str = "0") -> bool:
     return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
 
 
-def _env_timeout_ms_as_seconds(name: str, default_ms: int) -> float:
-    """Read a millisecond timeout env var and convert it for clients expecting seconds."""
+def _env_timeout_ms(name: str, default_ms: int) -> int:
+    """Read a millisecond timeout env var with a safe lower bound."""
     raw_value = os.environ.get(name, str(default_ms))
     try:
         milliseconds = int(raw_value)
     except (TypeError, ValueError):
         logger.warning("Invalid %s=%r; using default %sms", name, raw_value, default_ms)
         milliseconds = default_ms
-    return max(1.0, milliseconds / 1000.0)
+    return max(1000, milliseconds)
+
+
+def _env_timeout_ms_as_seconds(name: str, default_ms: int) -> float:
+    """Read a millisecond timeout env var and convert it for clients expecting seconds."""
+    return _env_timeout_ms(name, default_ms) / 1000.0
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw_value = os.environ.get(name, str(default))
+    try:
+        value = int(raw_value)
+    except (TypeError, ValueError):
+        logger.warning("Invalid %s=%r; using default %s", name, raw_value, default)
+        value = default
+    return max(minimum, value)
+
+
+_SCRAPLING_BROWSER_SEMAPHORE = threading.BoundedSemaphore(
+    _env_int("EDU_CTI_SCRAPLING_BROWSER_MAX_CONCURRENCY", 1)
+)
 
 
 def _prefer_oxylabs_before_browser() -> bool:
@@ -95,6 +138,66 @@ def _fetch_scrapling_enabled() -> bool:
     return _env_flag("EDU_CTI_FETCH_ENABLE_SCRAPLING", default) and not _env_flag(
         "EDU_CTI_FETCH_DISABLE_SCRAPLING", "0"
     )
+
+
+def _fetch_scrapling_browser_enabled() -> bool:
+    profile = _fetch_tier_profile()
+    default = "1" if profile in {"scrapling_browser", "browser_rescue"} else "0"
+    return _env_flag("EDU_CTI_FETCH_ENABLE_SCRAPLING_BROWSER", default) and not _env_flag(
+        "EDU_CTI_FETCH_DISABLE_SCRAPLING_BROWSER", "0"
+    )
+
+
+def _scrapling_browser_mode() -> str:
+    mode = os.environ.get("EDU_CTI_SCRAPLING_BROWSER_MODE", "dynamic").strip().lower()
+    if mode not in {"dynamic", "stealthy"}:
+        logger.warning("Invalid EDU_CTI_SCRAPLING_BROWSER_MODE=%r; using dynamic", mode)
+        return "dynamic"
+    return mode
+
+
+def _scrapling_browser_early_mode() -> str:
+    """Use the cheaper browser renderer before archive; reserve stealth for last."""
+    mode = _scrapling_browser_mode()
+    if mode == "stealthy":
+        return os.environ.get("EDU_CTI_SCRAPLING_EARLY_BROWSER_MODE", "dynamic").strip().lower() or "dynamic"
+    return mode
+
+
+def _fetch_scrapling_stealth_last_enabled() -> bool:
+    default = "1" if _scrapling_browser_mode() == "stealthy" else "0"
+    return _fetch_scrapling_browser_enabled() and _env_flag(
+        "EDU_CTI_FETCH_ENABLE_SCRAPLING_STEALTH_LAST",
+        default,
+    ) and not _env_flag("EDU_CTI_FETCH_DISABLE_SCRAPLING_STEALTH_LAST", "0")
+
+
+def _scrapling_browser_trigger_reasons() -> set[str]:
+    raw_value = os.environ.get(
+        "EDU_CTI_SCRAPLING_BROWSER_TRIGGER_REASONS",
+        "403,empty_content,soft_404",
+    )
+    return {part.strip().lower() for part in raw_value.split(",") if part.strip()}
+
+
+def _should_try_scrapling_browser(result: Optional["ArticleContent"]) -> bool:
+    if _env_flag("EDU_CTI_SCRAPLING_BROWSER_ALWAYS", "0"):
+        return True
+    reason = _classify_fetch_failure(result)
+    return reason in _scrapling_browser_trigger_reasons()
+
+
+def _configured_scrapling_proxy() -> Optional[str]:
+    proxy_pool = os.environ.get("EDU_CTI_SCRAPLING_PROXY_POOL", "")
+    proxies = [
+        proxy.strip()
+        for proxy in re.split(r"[\n,]+", proxy_pool)
+        if proxy.strip()
+    ]
+    if proxies:
+        return random.choice(proxies)
+    proxy_url = os.environ.get("EDU_CTI_SCRAPLING_PROXY_URL", "").strip()
+    return proxy_url or None
 
 
 def _fetch_httpclient_enabled() -> bool:
@@ -546,6 +649,81 @@ class ArticleFetcher:
         
         return None
 
+    @staticmethod
+    def _scrapling_response_html(response) -> str:
+        body = getattr(response, "body", None)
+        if isinstance(body, bytes):
+            return body.decode("utf-8", errors="replace")
+        if body:
+            return str(body)
+        html = getattr(response, "html", "")
+        if html:
+            return html() if callable(html) else str(html)
+        text = getattr(response, "text", "")
+        return text() if callable(text) else str(text or "")
+
+    def _extract_article_from_html(
+        self,
+        *,
+        url: str,
+        html: str,
+        tier_label: str,
+    ) -> ArticleContent:
+        soup = BeautifulSoup(html, "html.parser")
+        title = self._extract_title(soup)
+        author = self._extract_author(soup)
+        publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup))
+        content = self._clean_content(self._extract_content(BeautifulSoup(html, "html.parser")))
+        if len((content or "").strip()) < 100:
+            # Some modern layouts put the article inside a parent class such
+            # as "sidebar-page-main"; the generic cleanup removes that parent.
+            # Use the semantic article node directly before declaring failure.
+            fallback_soup = BeautifulSoup(html, "html.parser")
+            article_elem = fallback_soup.find("article") or fallback_soup.select_one("main article")
+            if article_elem:
+                fallback_text = article_elem.get_text(separator=" ", strip=True)
+                if len(fallback_text) > len(content or ""):
+                    content = self._clean_content(fallback_text)
+
+        if _is_gate_page(title, content):
+            return ArticleContent(
+                url=url,
+                title=title or "",
+                content="",
+                author=author,
+                publish_date=publish_date,
+                fetch_successful=False,
+                error_message=f"{tier_label} gate/CAPTCHA page detected",
+                content_length=0,
+            )
+
+        min_length = 50 if "databreaches.net" in url.lower() else 100
+        content_stripped = (content or "").strip()
+        if len(content_stripped) < min_length:
+            return ArticleContent(
+                url=url,
+                title=title or "",
+                content=content or "",
+                author=author,
+                publish_date=publish_date,
+                fetch_successful=False,
+                error_message=(
+                    f"{tier_label} extracted content too short "
+                    f"(length: {len(content_stripped)}, min: {min_length})"
+                ),
+                content_length=len(content_stripped),
+            )
+
+        return ArticleContent(
+            url=url,
+            title=title or "",
+            content=content,
+            author=author,
+            publish_date=publish_date,
+            fetch_successful=True,
+            content_length=len(content_stripped),
+        )
+
     def _fetch_with_scrapling(self, url: str) -> Optional[ArticleContent]:
         """Fetch article HTML with Scrapling's lightweight fetcher and local extraction."""
         if not SCRAPLING_AVAILABLE or ScraplingFetcher is None:
@@ -568,15 +746,6 @@ class ArticleFetcher:
                 stealthy_headers=True,
             )
             status = int(getattr(response, "status", None) or getattr(response, "status_code", 0) or 0)
-            body = getattr(response, "body", None)
-            if isinstance(body, bytes):
-                html = body.decode("utf-8", errors="replace")
-            elif body:
-                html = str(body)
-            else:
-                text = getattr(response, "text", "")
-                html = text() if callable(text) else str(text or "")
-
             if status >= 400:
                 return ArticleContent(
                     url=url,
@@ -586,6 +755,8 @@ class ArticleFetcher:
                     error_message=f"Scrapling HTTP {status}",
                     content_length=0,
                 )
+
+            html = self._scrapling_response_html(response)
             if not html.strip():
                 return ArticleContent(
                     url=url,
@@ -596,60 +767,7 @@ class ArticleFetcher:
                     content_length=0,
                 )
 
-            soup = BeautifulSoup(html, "html.parser")
-            title = self._extract_title(soup)
-            author = self._extract_author(soup)
-            publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup))
-            content = self._clean_content(self._extract_content(BeautifulSoup(html, "html.parser")))
-            if len((content or "").strip()) < 100:
-                # Some modern layouts put the article inside a parent class such
-                # as "sidebar-page-main"; the generic cleanup removes that parent.
-                # Use the semantic article node directly before declaring failure.
-                fallback_soup = BeautifulSoup(html, "html.parser")
-                article_elem = fallback_soup.find("article") or fallback_soup.select_one("main article")
-                if article_elem:
-                    fallback_text = article_elem.get_text(separator=" ", strip=True)
-                    if len(fallback_text) > len(content or ""):
-                        content = self._clean_content(fallback_text)
-
-            if _is_gate_page(title, content):
-                return ArticleContent(
-                    url=url,
-                    title=title or "",
-                    content="",
-                    author=author,
-                    publish_date=publish_date,
-                    fetch_successful=False,
-                    error_message="Gate/CAPTCHA page detected",
-                    content_length=0,
-                )
-
-            min_length = 50 if "databreaches.net" in url.lower() else 100
-            content_stripped = (content or "").strip()
-            if len(content_stripped) < min_length:
-                return ArticleContent(
-                    url=url,
-                    title=title or "",
-                    content=content or "",
-                    author=author,
-                    publish_date=publish_date,
-                    fetch_successful=False,
-                    error_message=(
-                        f"Scrapling extracted content too short "
-                        f"(length: {len(content_stripped)}, min: {min_length})"
-                    ),
-                    content_length=len(content_stripped),
-                )
-
-            return ArticleContent(
-                url=url,
-                title=title or "",
-                content=content,
-                author=author,
-                publish_date=publish_date,
-                fetch_successful=True,
-                content_length=len(content_stripped),
-            )
+            return self._extract_article_from_html(url=url, html=html, tier_label="Scrapling")
         except Exception as exc:
             logger.debug("Scrapling failed for %s: %s", url, exc)
             return ArticleContent(
@@ -658,6 +776,111 @@ class ArticleFetcher:
                 content="",
                 fetch_successful=False,
                 error_message=f"Scrapling exception: {exc}",
+                content_length=0,
+            )
+
+    def _fetch_with_scrapling_browser(
+        self,
+        url: str,
+        *,
+        mode_override: Optional[str] = None,
+    ) -> Optional[ArticleContent]:
+        """Render JS-heavy/protected article pages with Scrapling's browser fetchers."""
+        if not SCRAPLING_BROWSER_AVAILABLE:
+            return ArticleContent(
+                url=url,
+                title="",
+                content="",
+                fetch_successful=False,
+                error_message=(
+                    "Scrapling browser unavailable: "
+                    f"{SCRAPLING_BROWSER_IMPORT_ERROR or 'import failed'}"
+                ),
+                content_length=0,
+            )
+
+        mode = (mode_override or _scrapling_browser_mode()).strip().lower()
+        if mode not in {"dynamic", "stealthy"}:
+            logger.warning("Invalid Scrapling browser mode override=%r; using dynamic", mode)
+            mode = "dynamic"
+        fetcher = StealthyFetcher if mode == "stealthy" else DynamicFetcher
+        if fetcher is None:
+            return ArticleContent(
+                url=url,
+                title="",
+                content="",
+                fetch_successful=False,
+                error_message=(
+                    f"Scrapling {mode} fetcher unavailable: "
+                    f"{SCRAPLING_BROWSER_IMPORT_ERROR or 'import failed'}"
+                ),
+                content_length=0,
+            )
+
+        default_timeout_ms = 60000 if mode == "stealthy" and _env_flag(
+            "EDU_CTI_SCRAPLING_SOLVE_CLOUDFLARE", "0"
+        ) else 30000
+        kwargs: dict[str, object] = {
+            "timeout": _env_timeout_ms("EDU_CTI_SCRAPLING_BROWSER_TIMEOUT_MS", default_timeout_ms),
+            "disable_resources": _env_flag("EDU_CTI_SCRAPLING_BROWSER_DISABLE_RESOURCES", "1"),
+            "block_ads": _env_flag("EDU_CTI_SCRAPLING_BROWSER_BLOCK_ADS", "1"),
+            "network_idle": _env_flag("EDU_CTI_SCRAPLING_BROWSER_NETWORK_IDLE", "0"),
+            "load_dom": _env_flag("EDU_CTI_SCRAPLING_BROWSER_LOAD_DOM", "1"),
+            "wait": _env_int("EDU_CTI_SCRAPLING_BROWSER_WAIT_MS", 500, minimum=0),
+            "retries": _env_int("EDU_CTI_SCRAPLING_BROWSER_RETRIES", 1, minimum=0),
+            "retry_delay": _env_int("EDU_CTI_SCRAPLING_BROWSER_RETRY_DELAY_SECONDS", 1, minimum=0),
+        }
+        wait_selector = os.environ.get("EDU_CTI_SCRAPLING_BROWSER_WAIT_SELECTOR", "").strip()
+        if wait_selector:
+            kwargs["wait_selector"] = wait_selector
+        cdp_url = os.environ.get("EDU_CTI_SCRAPLING_CDP_URL", "").strip()
+        if cdp_url:
+            kwargs["cdp_url"] = cdp_url
+        proxy = _configured_scrapling_proxy()
+        if proxy:
+            kwargs["proxy"] = proxy
+            kwargs["dns_over_https"] = _env_flag("EDU_CTI_SCRAPLING_DNS_OVER_HTTPS", "1")
+            if mode == "stealthy":
+                kwargs["block_webrtc"] = _env_flag("EDU_CTI_SCRAPLING_BLOCK_WEBRTC", "1")
+        if mode == "stealthy":
+            kwargs["solve_cloudflare"] = _env_flag("EDU_CTI_SCRAPLING_SOLVE_CLOUDFLARE", "0")
+            kwargs["hide_canvas"] = _env_flag("EDU_CTI_SCRAPLING_HIDE_CANVAS", "1")
+
+        tier_label = "Scrapling Stealthy" if mode == "stealthy" else "Scrapling Dynamic"
+        try:
+            with _SCRAPLING_BROWSER_SEMAPHORE:
+                response = fetcher.fetch(url, **kwargs)
+            status = int(getattr(response, "status", None) or getattr(response, "status_code", 0) or 0)
+            if status >= 400:
+                return ArticleContent(
+                    url=url,
+                    title="",
+                    content="",
+                    fetch_successful=False,
+                    error_message=f"{tier_label} HTTP {status}",
+                    content_length=0,
+                )
+
+            html = self._scrapling_response_html(response)
+            if not html.strip():
+                return ArticleContent(
+                    url=url,
+                    title="",
+                    content="",
+                    fetch_successful=False,
+                    error_message=f"{tier_label} returned empty body",
+                    content_length=0,
+                )
+
+            return self._extract_article_from_html(url=url, html=html, tier_label=tier_label)
+        except Exception as exc:
+            logger.debug("%s failed for %s: %s", tier_label, url, exc)
+            return ArticleContent(
+                url=url,
+                title="",
+                content="",
+                fetch_successful=False,
+                error_message=f"{tier_label} exception: {exc}",
                 content_length=0,
             )
 
@@ -811,11 +1034,15 @@ class ArticleFetcher:
         Fetch and extract article content from a URL.
 
         Default low-cost fallback chain:
-        1. Scrapling     — lightweight browser-like HTML fetch + local extraction
-        2. Oxylabs API   — optional paid cloud scraper for anti-bot/JS pages
-        3. archive.org   — Wayback Machine fallback for historical articles
+        1. Scrapling              — lightweight browser-like HTML fetch + local extraction
+        2. newspaper3k            — cheap parser rescue after Scrapling misses
+        3. Scrapling Dynamic/Stealthy — optional bounded JS/browser rescue
+        4. Oxylabs API            — optional paid cloud scraper for anti-bot/JS pages
+        5. archive.org            — Wayback Machine fallback for historical articles
 
-        newspaper3k is kept as a free rescue parser after Scrapling misses.
+        The browser-backed Scrapling tier is opt-in and only runs for selected
+        static-Scrapling failure reasons by default. It is intentionally
+        separate from the legacy HttpClient/curl_cffi/Playwright rollback tier.
         HttpClient/curl_cffi/Playwright are only attempted when
         EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1 or explicit per-tier envs enable them.
 
@@ -899,6 +1126,7 @@ class ArticleFetcher:
         _src_label = _fetch_domain(url)
 
         enabled_tiers: list[str] = []
+        scrapling_content: Optional[ArticleContent] = None
 
         # --- Tier 1: Scrapling lightweight fetcher ---
         if _fetch_scrapling_enabled():
@@ -954,6 +1182,36 @@ class ArticleFetcher:
                 return article_content
             _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(article_content)})
             logger.info(f"FETCH FAIL tier=newspaper3k domain={domain}")
+            return None
+
+        def _try_scrapling_browser(mode: Optional[str] = None) -> Optional[ArticleContent]:
+            mode = (mode or _scrapling_browser_mode()).strip().lower()
+            tier = "scrapling_stealthy" if mode == "stealthy" else "scrapling_dynamic"
+            enabled_tiers.append(tier)
+            _t0 = time.time()
+            browser_content = self._fetch_with_scrapling_browser(url, mode_override=mode)
+            _dur = time.time() - _t0
+            _lbl = {"tier": tier, "source": _src_label}
+            _metrics.increment("article_fetch_attempts_total", labels=_lbl)
+            tier_attempts.append(
+                _build_fetch_attempt_payload(
+                    tier,
+                    duration_seconds=_dur,
+                    result=browser_content,
+                )
+            )
+            if browser_content and browser_content.fetch_successful:
+                logger.info(f"FETCH OK tier={tier} domain={domain} chars={browser_content.content_length}")
+                _metrics.increment("article_fetch_success_total", labels=_lbl)
+                _metrics.observe("article_fetch_duration_seconds", _dur, labels=_lbl)
+                _metrics.observe("article_content_length_chars", float(browser_content.content_length or 0), labels=_lbl)
+                browser_content.fetch_metadata = {
+                    "selected_tier": tier,
+                    "tier_attempts": list(tier_attempts),
+                }
+                return browser_content
+            _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(browser_content)})
+            logger.info(f"FETCH FAIL tier={tier} domain={domain}")
             return None
 
         def _try_httpclient() -> Optional[ArticleContent]:
@@ -1017,6 +1275,12 @@ class ArticleFetcher:
             if article_content:
                 return article_content
 
+        if _fetch_scrapling_browser_enabled() and _should_try_scrapling_browser(scrapling_content):
+            early_mode = _scrapling_browser_early_mode()
+            browser_content = _try_scrapling_browser(early_mode)
+            if browser_content:
+                return browser_content
+
         # Railway safe mode prefers Oxylabs before local browser work to avoid
         # burning memory on Chromium for cases the cloud fetcher can satisfy.
         if _prefer_oxylabs_before_browser():
@@ -1065,6 +1329,11 @@ class ArticleFetcher:
             }
             return archive_content
         _metrics.increment("article_fetch_failure_total", labels={**_lbl, "reason": _classify_fetch_failure(archive_content)})
+
+        if _fetch_scrapling_stealth_last_enabled():
+            browser_content = _try_scrapling_browser("stealthy")
+            if browser_content:
+                return browser_content
 
         # All methods failed. Only session-block the domain when at least one
         # real source-domain tier failed for a block-worthy reason; otherwise a

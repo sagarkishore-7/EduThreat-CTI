@@ -15,6 +15,30 @@ Use the same repository for both `v2-api` and `v2-worker`, but point each servic
 - `Dockerfile.v2-api`
 - `Dockerfile.v2-worker`
 
+If both services are linked to the same repository without service-specific
+watch paths, every push can rebuild/restart both services even when only worker
+fetching code changed. This repo includes service-specific Railway config files
+for that split:
+
+- `railway.v2-api.json`
+- `railway.v2-worker.json`
+
+Set each Railway service's config file path to the matching file above. The
+files set `build.watchPatterns` and the matching Dockerfile path, so
+`RAILWAY_DOCKERFILE_PATH` is optional once the config file path is active.
+Configure or adjust Railway watch paths per service if you want separate
+redeploys:
+
+- `v2-worker`: include `Dockerfile.v2-worker`, dependency files, `alembic/**`,
+  worker/runtime modules, source collection modules, and enrichment/fetching
+  code such as `src/edu_cti/**`.
+- `v2-api`: include `Dockerfile.v2-api`, dependency files, `alembic/**`, API
+  modules, read-model/query services, shared models, and shared DB code.
+
+Shared schema/model changes should intentionally redeploy both services.
+Fetcher-only changes can be worker-only when the API watch paths exclude the
+fetch/enrichment pipeline.
+
 ## What Changes Compared to the Old Stack
 
 - no SQLite volume is required for the new `v2` runtime
@@ -143,7 +167,9 @@ Optional DB tuning:
 - click `New` -> `GitHub Repo`
 - select this repository
 - name the service `v2-api`
-- in the service variables/settings, set:
+- set the Railway config file path to:
+  - `/railway.v2-api.json`
+- if you are not using the config file path yet, set:
   - `RAILWAY_DOCKERFILE_PATH=Dockerfile.v2-api`
 - enable public networking for this service
 - set the HTTP healthcheck path to:
@@ -156,7 +182,9 @@ You do not need to override the start command if you use `Dockerfile.v2-api`.
 - click `New` -> `GitHub Repo`
 - select this repository again
 - name the service `v2-worker`
-- in the service variables/settings, set:
+- set the Railway config file path to:
+  - `/railway.v2-worker.json`
+- if you are not using the config file path yet, set:
   - `RAILWAY_DOCKERFILE_PATH=Dockerfile.v2-worker`
 - disable public networking for this service if you do not need external access
 - do not attach a public domain to the worker

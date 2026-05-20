@@ -10,6 +10,9 @@ playwright>=1.40.0
 playwright-stealth>=2.0.0
 scrapling>=0.4.8
 browserforge>=1.2.4
+apify_fingerprint_datapoints>=0.13.0
+msgspec>=0.19.0
+patchright>=1.59.1
 
 # Data processing
 tldextract>=5.0.0

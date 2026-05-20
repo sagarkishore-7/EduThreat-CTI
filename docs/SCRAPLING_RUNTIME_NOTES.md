@@ -8,6 +8,29 @@ a gate page, empty body, or transient source error:
 
 `Scrapling -> newspaper3k -> Oxylabs -> archive.org`
 
+There is also optional browser-backed Scrapling rescue:
+
+`Scrapling -> newspaper3k -> Scrapling Dynamic -> Oxylabs -> archive.org -> Scrapling Stealthy`
+
+Keep this tier off unless static Scrapling/newspaper are missing useful articles
+that need JavaScript rendering or stronger anti-bot handling. It launches
+Chromium, so the safe production defaults are:
+
+- `EDU_CTI_FETCH_ENABLE_SCRAPLING_BROWSER=0`
+- `EDU_CTI_SCRAPLING_BROWSER_MODE=dynamic`
+- `EDU_CTI_SCRAPLING_BROWSER_TRIGGER_REASONS=403,empty_content,soft_404`
+- `EDU_CTI_SCRAPLING_BROWSER_MAX_CONCURRENCY=1`
+
+Stealth mode uses Scrapling's `StealthyFetcher`, which depends on Patchright.
+The v2 worker Docker image runs both `playwright install chromium --with-deps`
+and `patchright install chromium`. When `EDU_CTI_SCRAPLING_BROWSER_MODE=stealthy`,
+the pipeline still lets archive.org run before StealthyFetcher; stealth is the
+last resort after the free archive fallback fails.
+
+Proxy support is env-provided only through `EDU_CTI_SCRAPLING_PROXY_URL` or
+`EDU_CTI_SCRAPLING_PROXY_POOL`. Do not scrape public free proxy lists into the
+worker; they create noisy failures, security risk, and domain reputation drift.
+
 Google News RSS discovery also uses Scrapling before any paid SERP fallback.
 
 ## Concurrent Crawling Options

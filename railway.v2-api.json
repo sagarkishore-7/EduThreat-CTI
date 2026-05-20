@@ -1,0 +1,32 @@
+{
+  "$schema": "https://railway.app/railway.schema.json",
+  "build": {
+    "builder": "DOCKERFILE",
+    "dockerfilePath": "Dockerfile.v2-api",
+    "watchPatterns": [
+      "/Dockerfile.v2-api",
+      "/requirements.txt",
+      "/pyproject.toml",
+      "/setup.py",
+      "/alembic.ini",
+      "/alembic/**",
+      "/src/edu_cti/api/**",
+      "/src/edu_cti_v2/api_app.py",
+      "/src/edu_cti_v2/api_server.py",
+      "/src/edu_cti_v2/auth.py",
+      "/src/edu_cti_v2/preflight_cli.py",
+      "/src/edu_cti_v2/db/**",
+      "/src/edu_cti_v2/models/**",
+      "/src/edu_cti_v2/repositories/**",
+      "/src/edu_cti_v2/services/analytics.py",
+      "/src/edu_cti_v2/services/operations.py",
+      "/src/edu_cti_v2/services/preflight.py",
+      "/src/edu_cti_v2/services/read_models.py",
+      "/src/edu_cti_v2/services/research_metrics.py"
+    ]
+  },
+  "deploy": {
+    "healthcheckPath": "/api/health",
+    "healthcheckTimeout": 40
+  }
+}

@@ -372,6 +372,256 @@ class TestArticleFetcher:
         ]
         mock_newspaper.assert_called_once()
 
+    def test_scrapling_browser_rescue_runs_for_empty_content_when_enabled(self, monkeypatch):
+        """Optional browser-backed Scrapling rescue runs only for selected static misses."""
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
+        fetcher = ArticleFetcher(http_client=Mock())
+        failed = ArticleContent(
+            url="https://example.com/article",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="Scrapling extracted content too short",
+            content_length=0,
+        )
+        browser_success = ArticleContent(
+            url="https://example.com/article",
+            title="Rendered Article",
+            content="Scrapling Dynamic recovered a JS-rendered education cyber incident article body.",
+            fetch_successful=True,
+            content_length=78,
+        )
+
+        monkeypatch.setenv("EDU_CTI_FETCH_ENABLE_SCRAPLING_BROWSER", "1")
+        monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "0")
+        monkeypatch.setattr(article_fetcher_module, "NEWSPAPER_AVAILABLE", False)
+        article_fetcher_module._DYNAMIC_FAILED_DOMAINS.clear()
+        article_fetcher_module._DYNAMIC_DOMAIN_FAILURE_COUNTS.clear()
+
+        with patch.object(fetcher, "_fetch_with_scrapling", return_value=failed), patch.object(
+            fetcher, "_fetch_with_scrapling_browser", return_value=browser_success
+        ) as mock_browser, patch.object(
+            fetcher, "_fetch_from_archive", side_effect=AssertionError("archive should not run after browser rescue")
+        ):
+            result = fetcher.fetch_article("https://example.com/article")
+
+        assert result.fetch_successful is True
+        assert result.fetch_metadata["selected_tier"] == "scrapling_dynamic"
+        assert [attempt["tier"] for attempt in result.fetch_metadata["tier_attempts"]] == [
+            "scrapling",
+            "scrapling_dynamic",
+        ]
+        mock_browser.assert_called_once()
+
+    def test_scrapling_browser_rescue_skips_404_by_default(self, monkeypatch):
+        """404s should fall through instead of launching Chromium by default."""
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
+        fetcher = ArticleFetcher(http_client=Mock())
+        failed = ArticleContent(
+            url="https://example.com/missing",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="Scrapling HTTP 404",
+            content_length=0,
+        )
+        archive_success = ArticleContent(
+            url="https://example.com/missing",
+            title="Archived Article",
+            content="Archive recovered an education-sector cyber incident article body.",
+            fetch_successful=True,
+            content_length=66,
+        )
+
+        monkeypatch.setenv("EDU_CTI_FETCH_ENABLE_SCRAPLING_BROWSER", "1")
+        monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "0")
+        monkeypatch.setattr(article_fetcher_module, "NEWSPAPER_AVAILABLE", False)
+        article_fetcher_module._DYNAMIC_FAILED_DOMAINS.clear()
+        article_fetcher_module._DYNAMIC_DOMAIN_FAILURE_COUNTS.clear()
+
+        with patch.object(fetcher, "_fetch_with_scrapling", return_value=failed), patch.object(
+            fetcher,
+            "_fetch_with_scrapling_browser",
+            side_effect=AssertionError("browser rescue should not run for 404"),
+        ), patch.object(fetcher, "_fetch_from_archive", return_value=archive_success):
+            result = fetcher.fetch_article("https://example.com/missing")
+
+        assert result.fetch_successful is True
+        assert result.fetch_metadata["selected_tier"] == "archive_org"
+        assert [attempt["tier"] for attempt in result.fetch_metadata["tier_attempts"]] == [
+            "scrapling",
+            "archive_org",
+        ]
+
+    def test_scrapling_browser_fetch_passes_bounded_options_and_proxy(self, monkeypatch):
+        """Browser-backed Scrapling gets explicit timeout/proxy controls from env."""
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
+        calls = []
+
+        class FakeDynamicFetcher:
+            @staticmethod
+            def fetch(url, **kwargs):
+                calls.append((url, kwargs))
+                return SimpleNamespace(
+                    status=200,
+                    body="""
+                    <html><head><title>Rendered school breach</title></head><body>
+                    <article>
+                    This rendered article describes an education-sector cyber incident with
+                    enough detail to pass the extraction threshold after browser rendering.
+                    It includes affected systems, recovery status, and victim context.
+                    </article>
+                    </body></html>
+                    """,
+                )
+
+        monkeypatch.setattr(article_fetcher_module, "SCRAPLING_BROWSER_AVAILABLE", True)
+        monkeypatch.setattr(article_fetcher_module, "DynamicFetcher", FakeDynamicFetcher)
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_MODE", "dynamic")
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_TIMEOUT_MS", "12345")
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_WAIT_MS", "750")
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_RETRIES", "0")
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_PROXY_POOL", "http://proxy-one.example:8080")
+
+        result = ArticleFetcher(http_client=Mock())._fetch_with_scrapling_browser("https://example.com/article")
+
+        assert result.fetch_successful is True
+        assert calls[0][0] == "https://example.com/article"
+        assert calls[0][1]["timeout"] == 12345
+        assert calls[0][1]["wait"] == 750
+        assert calls[0][1]["retries"] == 0
+        assert calls[0][1]["proxy"] == "http://proxy-one.example:8080"
+        assert calls[0][1]["disable_resources"] is True
+
+    def test_scrapling_stealthy_fetch_passes_stealth_controls(self, monkeypatch):
+        """Stealth mode should select StealthyFetcher and pass anti-bot controls."""
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
+        calls = []
+
+        class FakeStealthyFetcher:
+            @staticmethod
+            def fetch(url, **kwargs):
+                calls.append((url, kwargs))
+                return SimpleNamespace(
+                    status=200,
+                    body="""
+                    <html><head><title>Stealth rendered breach</title></head><body>
+                    <article>
+                    This stealth rendered article describes a cyber incident at an
+                    education institution with enough victim, impact, and recovery
+                    detail to pass the article extraction threshold.
+                    </article>
+                    </body></html>
+                    """,
+                )
+
+        monkeypatch.setattr(article_fetcher_module, "SCRAPLING_BROWSER_AVAILABLE", True)
+        monkeypatch.setattr(article_fetcher_module, "StealthyFetcher", FakeStealthyFetcher)
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_MODE", "stealthy")
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_SOLVE_CLOUDFLARE", "1")
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_PROXY_POOL", "http://stealth-proxy.example:8080")
+
+        result = ArticleFetcher(http_client=Mock())._fetch_with_scrapling_browser("https://example.com/article")
+
+        assert result.fetch_successful is True
+        assert calls[0][0] == "https://example.com/article"
+        assert calls[0][1]["solve_cloudflare"] is True
+        assert calls[0][1]["hide_canvas"] is True
+        assert calls[0][1]["block_webrtc"] is True
+        assert calls[0][1]["proxy"] == "http://stealth-proxy.example:8080"
+        assert calls[0][1]["timeout"] == 60000
+
+    def test_scrapling_browser_mode_override_uses_dynamic_before_archive(self, monkeypatch):
+        """Global stealth mode can still run the cheaper dynamic renderer early."""
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
+        calls = []
+
+        class FakeDynamicFetcher:
+            @staticmethod
+            def fetch(url, **kwargs):
+                calls.append((url, kwargs))
+                return SimpleNamespace(
+                    status=200,
+                    body="""
+                    <html><head><title>Dynamic rendered breach</title></head><body>
+                    <article>
+                    This dynamic rendered article describes a school cyber incident with
+                    enough detail about impact, systems, and victim context to pass the
+                    extraction threshold before falling back to archive or stealth.
+                    </article>
+                    </body></html>
+                    """,
+                )
+
+        monkeypatch.setattr(article_fetcher_module, "SCRAPLING_BROWSER_AVAILABLE", True)
+        monkeypatch.setattr(article_fetcher_module, "DynamicFetcher", FakeDynamicFetcher)
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_MODE", "stealthy")
+
+        result = ArticleFetcher(http_client=Mock())._fetch_with_scrapling_browser(
+            "https://example.com/article",
+            mode_override="dynamic",
+        )
+
+        assert result.fetch_successful is True
+        assert calls[0][0] == "https://example.com/article"
+        assert "solve_cloudflare" not in calls[0][1]
+
+    def test_fetch_article_runs_stealthy_after_archive_failure_when_selected(self, monkeypatch):
+        """Stealth mode should be the last resort after archive misses."""
+        from src.edu_cti.pipeline.phase2.storage import article_fetcher as article_fetcher_module
+
+        fetcher = ArticleFetcher(http_client=Mock())
+        failed = ArticleContent(
+            url="https://example.com/article",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="Scrapling HTTP 403",
+            content_length=0,
+        )
+        stealth_success = ArticleContent(
+            url="https://example.com/article",
+            title="Stealth Article",
+            content="StealthyFetcher recovered the full education cyber incident article body.",
+            fetch_successful=True,
+            content_length=72,
+        )
+        archive_failed = ArticleContent(
+            url="https://example.com/article",
+            title="",
+            content="",
+            fetch_successful=False,
+            error_message="archive failed",
+            content_length=0,
+        )
+
+        monkeypatch.setenv("EDU_CTI_FETCH_ENABLE_SCRAPLING_BROWSER", "1")
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_MODE", "stealthy")
+        monkeypatch.setenv("EDU_CTI_SCRAPLING_BROWSER_TRIGGER_REASONS", "soft_404")
+        monkeypatch.setenv("EDU_CTI_OXYLABS_ENABLED", "0")
+        monkeypatch.setattr(article_fetcher_module, "NEWSPAPER_AVAILABLE", False)
+        article_fetcher_module._DYNAMIC_FAILED_DOMAINS.clear()
+        article_fetcher_module._DYNAMIC_DOMAIN_FAILURE_COUNTS.clear()
+
+        with patch.object(fetcher, "_fetch_with_scrapling", return_value=failed), patch.object(
+            fetcher, "_fetch_with_scrapling_browser", return_value=stealth_success
+        ) as mock_browser, patch.object(fetcher, "_fetch_from_archive", return_value=archive_failed):
+            result = fetcher.fetch_article("https://example.com/article")
+
+        assert result.fetch_successful is True
+        assert result.fetch_metadata["selected_tier"] == "scrapling_stealthy"
+        assert [attempt["tier"] for attempt in result.fetch_metadata["tier_attempts"]] == [
+            "scrapling",
+            "archive_org",
+            "scrapling_stealthy",
+        ]
+        mock_browser.assert_called_once_with("https://example.com/article", mode_override="stealthy")
+
     def test_fetch_article_failure(self, monkeypatch):
         """Fetcher should return an error result if every tier fails."""
         fetcher = ArticleFetcher(http_client=Mock())
