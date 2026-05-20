@@ -58,9 +58,11 @@ _INVALID_DISCOVERY_NAMES = {
 try:
     from scrapling.fetchers import Fetcher as ScraplingFetcher
     SCRAPLING_DISCOVERY_AVAILABLE = True
-except ImportError:
+    SCRAPLING_DISCOVERY_IMPORT_ERROR: str | None = None
+except ImportError as exc:
     ScraplingFetcher = None
     SCRAPLING_DISCOVERY_AVAILABLE = False
+    SCRAPLING_DISCOVERY_IMPORT_ERROR = str(exc)
 
 
 def _env_flag(name: str, default: str = "0") -> bool:
@@ -215,7 +217,10 @@ def _filter_discovered_urls(urls: List[str], max_results: int) -> List[str]:
 def _fetch_discovery_url_with_scrapling(url: str) -> Optional[str]:
     """Fetch search/RSS pages with Scrapling, returning body text only."""
     if not SCRAPLING_DISCOVERY_AVAILABLE or ScraplingFetcher is None:
-        logger.debug("Scrapling discovery unavailable")
+        logger.info(
+            "Scrapling discovery unavailable: %s",
+            SCRAPLING_DISCOVERY_IMPORT_ERROR or "import failed",
+        )
         return None
     try:
         kwargs = {

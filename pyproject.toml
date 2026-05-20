@@ -36,6 +36,7 @@ dependencies = [
     "playwright>=1.40.0",
     "playwright-stealth>=2.0.0",
     "scrapling>=0.4.8",
+    "browserforge>=1.2.4",
 
     # Data processing
     "tldextract>=5.0.0",

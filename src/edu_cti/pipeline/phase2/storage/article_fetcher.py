@@ -35,9 +35,11 @@ except ImportError:
 try:
     from scrapling.fetchers import Fetcher as ScraplingFetcher
     SCRAPLING_AVAILABLE = True
-except ImportError:
+    SCRAPLING_IMPORT_ERROR: str | None = None
+except ImportError as exc:
     ScraplingFetcher = None
     SCRAPLING_AVAILABLE = False
+    SCRAPLING_IMPORT_ERROR = str(exc)
 
 logger = logging.getLogger(__name__)
 
@@ -475,7 +477,7 @@ class ArticleFetcher:
                 title="",
                 content="",
                 fetch_successful=False,
-                error_message="Scrapling is not installed",
+                error_message=f"Scrapling unavailable: {SCRAPLING_IMPORT_ERROR or 'import failed'}",
                 content_length=0,
             )
 
