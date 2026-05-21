@@ -129,6 +129,10 @@ CRITICAL OUTPUT REQUIREMENTS:
    NUMERIC / FINANCIAL FIELDS:
    - records_affected_exact/min/max: Only from explicitly stated numbers. Do NOT estimate
      from context (e.g., "students affected" without a number → null).
+   - Use records_affected_exact only for a confirmed exact victim/record count.
+     If a number is an attacker claim, threat, ransom demand, "up to", "could affect",
+     "potentially affected", or otherwise unverified, put that number in
+     records_affected_max and leave records_affected_exact null.
    - data_volume_gb: Only if explicitly stated in the article.
    - All financial fields (ransom_amount, recovery_cost, etc.): Only from explicitly
      stated figures. Do NOT estimate costs.

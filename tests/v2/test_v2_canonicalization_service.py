@@ -183,6 +183,39 @@ def test_build_source_projection_promotes_education_technology_provider_as_vendo
     assert projection["vendor_name"] == "PowerSchool"
 
 
+def test_build_source_projection_promotes_known_edtech_vendor_even_without_type():
+    incident = _source_incident(event_key="powerschool-legal-followup")
+    incident.raw_institution_name = "PowerSchool"
+    incident.raw_victim_name = "PowerSchool"
+    incident.raw_institution_type = None
+    incident.raw_title = "Prosecutors seek 7-year prison term for sophisticated PowerSchool hacker"
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "PowerSchool",
+            "country": "United States",
+            "country_code": "US",
+            "incident_date": "2024-08-01",
+            "incident_date_precision": "month",
+            "attack_category": "ransomware_double_extortion",
+            "enriched_summary": "The PowerSchool hacker was prosecuted after a breach of student and teacher data.",
+            "timeline": [],
+        },
+        raw_extraction={"institution_name": "PowerSchool"},
+        is_education_related=True,
+    )
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["institution_name"] == "PowerSchool"
+    assert projection["vendor_name"] == "PowerSchool"
+
+
 def test_build_source_projection_does_not_inherit_raw_location_from_mismatched_vendor_placeholder():
     incident = _source_incident(event_key="powerschool-placeholder")
     incident.raw_institution_name = "Forrest City School District"
@@ -1344,6 +1377,92 @@ def test_canonicalization_service_rejects_country_conflict_even_with_name_match(
     assert outcome["canonicalized"] is True
     assert outcome["match_type"] == "seed"
     assert added_canonicals
+
+
+def test_canonicalization_service_merges_exact_same_event_despite_country_conflict():
+    canonical_repo = Mock()
+    canonical_repo.get_membership_for_source_incident.return_value = None
+    canonical_repo.find_by_url_candidates.return_value = []
+    canonical_repo.find_name_date_candidates.return_value = []
+    existing_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="gyudmed-securityweek",
+        status="open",
+        institution_name="Gyudmed Tantric University",
+        country="India",
+        country_code="IN",
+        incident_date=datetime(2024, 5, 31, tzinfo=timezone.utc).date(),
+        date_precision="day",
+        attack_category="espionage",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    canonical_repo.find_identity_candidates.return_value = [existing_canonical]
+    canonical_repo.list_memberships.return_value = []
+
+    source_repo = Mock()
+    incident = _source_incident(event_key="gyudmed-therecord", url="https://example.com/gyudmed")
+    incident.raw_institution_name = "Gyudmed Tantric University"
+    incident.raw_victim_name = "Gyudmed Tantric University"
+    incident.raw_country = "China"
+    incident.raw_title = "China-linked group hacked Tibetan media and university sites"
+    incident.raw_incident_date = "2024-05-31"
+    source_repo.get_by_id.return_value = incident
+
+    enrichment = _source_enrichment(incident)
+    enrichment.typed_enrichment.update(
+        {
+            "institution_name": "Gyudmed Tantric University",
+            "country": "China",
+            "country_code": "CN",
+            "incident_date": "2024-05-31",
+            "incident_date_precision": "day",
+            "attack_category": "espionage",
+            "enriched_summary": "Gyudmed Tantric University was targeted in an espionage campaign.",
+        }
+    )
+    enrichment.raw_extraction.update(
+        {
+            "institution_name": "Gyudmed Tantric University",
+            "country_code": "CN",
+            "incident_date": "2024-05-31",
+            "attack_category": "espionage",
+        }
+    )
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = object()
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+    session.flush.return_value = None
+    session.execute.return_value.scalars.return_value.all.return_value = [enrichment]
+    session.query.return_value.filter_by.return_value.delete.return_value = None
+
+    added_memberships = []
+
+    def _capture_membership(_session, membership):
+        added_memberships.append(membership)
+        membership.id = membership.id or uuid4()
+        return membership
+
+    canonical_repo.add_membership.side_effect = _capture_membership
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is True
+    assert outcome["match_type"] == "exact_identity_same_event"
+    assert added_memberships
+    assert added_memberships[0].canonical_incident_id == existing_canonical.id
 
 
 def test_canonicalization_service_merges_vendor_followup_candidates_across_country_conflict():

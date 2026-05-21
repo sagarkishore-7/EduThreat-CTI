@@ -2170,8 +2170,6 @@ DERIVED_OR_METADATA_FIELDS = (
     "institution_size",
     "incident_severity",
     "dwell_time_days",
-    "records_affected_min",
-    "records_affected_max",
     "users_affected_min",
     "users_affected_max",
     "ransom_amount_min",

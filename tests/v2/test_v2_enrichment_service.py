@@ -453,6 +453,52 @@ def test_enrichment_service_rejects_victim_drift_from_source_anchor():
     assert "drifted from source anchor" in saved.raw_extraction["_reason"]
 
 
+def test_enrichment_service_accepts_victim_named_in_title_despite_noisy_anchor():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "University of North Florida",
+        "attack_category": "data_breach_external",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "University of North Florida",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.raw_title = "University of North Florida Data Breach - 106,884 Individuals Potentially Exposed to Hackers"
+    incident.raw_subtitle = "Related: University of Calgary pays ransom after cyberattack"
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    document = _article_document(incident)
+    document.title = incident.raw_title
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["enriched"] is True
+    assert outcome["is_education_related"] is True
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.manual_review_required is False
+    assert saved.typed_enrichment["institution_name"] == "University of North Florida"
+
+
 def test_enrichment_service_accepts_translated_victim_with_native_alias():
     article_repo = Mock()
     source_enrichment_repo = Mock()

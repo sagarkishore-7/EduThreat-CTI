@@ -4,6 +4,7 @@ Mapper to convert JSON schema extraction response to CTIEnrichmentResult.
 Includes dynamic normalization to handle unexpected LLM outputs gracefully.
 """
 
+import re
 from typing import Dict, Any, Optional, List
 from src.edu_cti.pipeline.phase2.schemas import (
     CTIEnrichmentResult,
@@ -710,6 +711,12 @@ def _build_summary(json_data: Dict[str, Any]) -> str:
     if llm_summary:
         return llm_summary
 
+    raw_edu = json_data.get("is_edu_cyber_incident")
+    if isinstance(raw_edu, str):
+        is_edu = raw_edu.strip().lower() in ("true", "yes", "1")
+    else:
+        is_edu = bool(raw_edu) if raw_edu is not None else True
+
     # Fallback: build from metadata
     parts: list[str] = []
     name = json_data.get("institution_name") or json_data.get("institution_name_en")
@@ -718,6 +725,12 @@ def _build_summary(json_data: Dict[str, Any]) -> str:
     country = json_data.get("country")
     actor = json_data.get("threat_actor_name")
     ransomware = json_data.get("ransomware_family")
+
+    if not is_edu and not name:
+        parts.append("The article was assessed as not a specific education-sector cyber incident")
+        if date:
+            parts.append(f"on or around {date}")
+        return " ".join(parts).rstrip(",") + "."
 
     subj = name or "An educational institution"
     verb = "was targeted"
@@ -737,6 +750,84 @@ def _build_summary(json_data: Dict[str, Any]) -> str:
         extras.append(f"Ransomware family: {ransomware}.")
 
     return " ".join([sentence] + extras)
+
+
+_UNVERIFIED_RECORD_CUE_RE = re.compile(
+    r"\b("
+    r"alleged|allegedly|claim|claimed|claims|could|extortion message|"
+    r"if\s+\w+\s+(?:did\s+not\s+)?pay|may|might|potential|potentially|"
+    r"ransom demand|threat|threaten|threatened|threatening|would"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _record_count_context_text(json_data: Dict[str, Any]) -> str:
+    parts: list[str] = []
+    for key in ("enriched_summary", "summary", "extraction_notes", "initial_access_description"):
+        value = json_data.get(key)
+        if value:
+            parts.append(str(value))
+    for quote in json_data.get("key_quotes") or []:
+        if quote:
+            parts.append(str(quote))
+    for event in json_data.get("timeline") or []:
+        if isinstance(event, dict) and event.get("event_description"):
+            parts.append(str(event.get("event_description")))
+    return " ".join(parts)
+
+
+def _record_value_patterns(value: Any) -> list[str]:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return []
+    if number <= 0:
+        return []
+
+    patterns = [re.escape(f"{number:,}"), re.escape(str(number))]
+    if number % 1_000_000 == 0:
+        patterns.append(rf"{number // 1_000_000}\s*(?:million|m)\b")
+    if number % 1_000 == 0:
+        patterns.append(rf"{number // 1_000}\s*(?:thousand|k)\b")
+    return patterns
+
+
+def _record_exact_is_unverified_claim(json_data: Dict[str, Any], value: Any) -> bool:
+    text = _record_count_context_text(json_data)
+    if not text:
+        return False
+    for pattern in _record_value_patterns(value):
+        for match in re.finditer(pattern, text, flags=re.IGNORECASE):
+            start = max(0, match.start() - 180)
+            end = min(len(text), match.end() + 180)
+            if _UNVERIFIED_RECORD_CUE_RE.search(text[start:end]):
+                return True
+    return False
+
+
+def _resolve_record_count_fields(json_data: Dict[str, Any]) -> Dict[str, Any]:
+    records_min = json_data.get("records_affected_min")
+    records_max = json_data.get("records_affected_max")
+    records_exact = json_data.get("pii_records_leaked") or json_data.get("records_affected_exact")
+
+    estimated_records = json_data.get("records_exfiltrated_estimate")
+    if estimated_records is not None and records_max is None and records_exact is None:
+        records_max = estimated_records
+
+    if (
+        records_exact is not None
+        and json_data.get("pii_records_leaked") is None
+        and _record_exact_is_unverified_claim(json_data, records_exact)
+    ):
+        records_max = records_max if records_max is not None else records_exact
+        records_exact = None
+
+    return {
+        "records_affected_min": records_min,
+        "records_affected_max": records_max,
+        "records_affected_exact": records_exact,
+    }
 
 
 def json_to_cti_enrichment(
@@ -1008,6 +1099,7 @@ def json_to_cti_enrichment(
     _data_cats = json_data.get("data_categories") or json_data.get("data_types") or []
     if json_data.get("data_breached") or _data_cats:
         data_types_dict = map_data_types(_data_cats)
+        record_counts = _resolve_record_count_fields(json_data)
         data_impact = {
             "personal_information": data_types_dict.get("personal_information"),
             "student_data": data_types_dict.get("student_data"),
@@ -1018,9 +1110,9 @@ def json_to_cti_enrichment(
             "intellectual_property": None,
             "medical_records": data_types_dict.get("medical_records"),
             "administrative_data": data_types_dict.get("administrative_data"),
-            "records_affected_min": json_data.get("records_affected_min"),
-            "records_affected_max": json_data.get("records_affected_max"),
-            "records_affected_exact": json_data.get("pii_records_leaked") or json_data.get("records_exfiltrated_estimate") or json_data.get("records_affected_exact"),
+            "records_affected_min": record_counts["records_affected_min"],
+            "records_affected_max": record_counts["records_affected_max"],
+            "records_affected_exact": record_counts["records_affected_exact"],
             "data_types_affected": _data_cats,
             "data_encrypted": json_data.get("encryption_at_rest") == "yes",
             "data_exfiltrated": json_data.get("data_breached") or json_data.get("data_exfiltrated")

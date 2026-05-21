@@ -364,6 +364,36 @@ class TestRegressions:
         _, flat = _enrich_and_flatten(_base_payload(records_affected_exact=45000))
         assert flat["records_affected_exact"] == 45000
 
+    def test_claimed_record_count_is_not_treated_as_exact(self):
+        enrichment = json_to_cti_enrichment(
+            _base_payload(
+                data_breached=True,
+                data_categories=["student_pii"],
+                records_affected_exact=275000000,
+                enriched_summary=(
+                    "A hacking group threatened to leak data from 275 million students "
+                    "and faculty if schools did not pay a ransom."
+                ),
+            ),
+            primary_url="https://example.com/article",
+        )
+
+        assert enrichment.data_impact["records_affected_exact"] is None
+        assert enrichment.data_impact["records_affected_max"] == 275000000
+
+    def test_non_education_fallback_summary_is_not_education_targeted(self):
+        enrichment = json_to_cti_enrichment(
+            {
+                "is_edu_cyber_incident": False,
+                "education_relevance_reasoning": "Not an education-sector victim.",
+                "incident_date": "2026-01-01",
+            },
+            primary_url="https://example.com/article",
+        )
+
+        assert "not a specific education-sector cyber incident" in enrichment.enriched_summary
+        assert "educational institution was targeted" not in enrichment.enriched_summary.lower()
+
     def test_data_categories_stored_as_json(self):
         _, flat = _enrich_and_flatten(_base_payload(data_categories=["student_pii", "employee_ssn"]))
         parsed = json.loads(flat["data_categories"])

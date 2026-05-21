@@ -181,6 +181,41 @@ def _clean_identity(value: Optional[str]) -> Optional[str]:
     return cleaned or None
 
 
+def _normalized_identity_text(value: Optional[str]) -> str:
+    cleaned = _clean_identity(value)
+    if not cleaned:
+        return ""
+    return re.sub(r"\s+", " ", cleaned).strip().lower()
+
+
+def _source_metadata_supports_extracted_identity(source_incident, cleaned_extracted: Optional[str]) -> bool:
+    """Return True when source metadata itself clearly names the extracted victim.
+
+    Some news collectors have noisy subtitle/anchor text from related links. If
+    the article title or source-provided victim fields explicitly contain the
+    extracted victim, we should not send the row to manual review just because a
+    weaker recovered anchor drifted.
+    """
+    extracted_norm = _normalized_identity_text(cleaned_extracted)
+    if not extracted_norm:
+        return False
+
+    for candidate in (
+        source_incident.raw_institution_name,
+        source_incident.raw_victim_name,
+        source_incident.raw_title,
+        source_incident.raw_subtitle,
+    ):
+        candidate_norm = _normalized_identity_text(candidate)
+        if not candidate_norm:
+            continue
+        if extracted_norm == candidate_norm or extracted_norm in candidate_norm:
+            return True
+        if identity_matches_source_anchor(cleaned_extracted, candidate, threshold=75):
+            return True
+    return False
+
+
 def _looks_invalid_primary_identity(
     value: Optional[str],
     *,
@@ -303,6 +338,8 @@ def _repair_or_reject_primary_identity(
         source_aliases=source_aliases,
         threshold=80,
     ):
+        if _source_metadata_supports_extracted_identity(source_incident, cleaned_extracted):
+            return raw_json_data, typed_enrichment, "ok"
         reason = (
             f"Extracted victim '{cleaned_extracted}' drifted from source anchor "
             f"'{source_identity}'."
