@@ -62,6 +62,11 @@ class BaseIncident:
     re_enrich_attempts: Optional[int] = None
     re_enrich_reason: Optional[str] = None
 
+    # Full source-native payload when the collector receives structured API data.
+    # This keeps future fields available in v2 raw_payload without requiring a
+    # schema change every time an upstream source adds a key.
+    raw_source_payload: Optional[dict] = None
+
     def to_dict(self) -> dict:
         """
         Flatten to dict for CSV writing.

@@ -24,6 +24,9 @@ import json
 import logging
 import time
 from typing import Any, Callable, Dict, List, Optional
+from urllib.parse import urlparse
+
+import requests
 
 from src.edu_cti.core.http import HttpClient, build_http_client
 from src.edu_cti.core.models import BaseIncident, make_incident_id
@@ -32,6 +35,7 @@ from src.edu_cti.core.utils import now_utc_iso, parse_date_with_precision
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.ransomware.live/v2"
+DATA_VICTIMS_URL = "https://data.ransomware.live/victims.json"
 MAX_RETRIES = 3
 BACKOFF_SECONDS = 2.0
 
@@ -61,6 +65,20 @@ def _get_json(path: str, client: Optional[HttpClient] = None) -> Any:
                 raise
             logger.debug(f"ransomware.live fetch attempt {attempt} failed: {exc}")
             time.sleep(BACKOFF_SECONDS * attempt)
+
+
+def _get_public_data_victims() -> List[Dict[str, Any]]:
+    """Fetch the official open JSON database exposed by ransomware.live."""
+    resp = requests.get(
+        DATA_VICTIMS_URL,
+        timeout=90,
+        headers={"Accept": "application/json"},
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    if not isinstance(payload, list):
+        raise ValueError(f"Unexpected ransomware.live data payload: {type(payload).__name__}")
+    return [row for row in payload if isinstance(row, dict)]
 
 
 def _guess_institution_type(name: str, description: str = "") -> Optional[str]:
@@ -129,13 +147,35 @@ def _build_infostealer_note(infostealer: Any) -> Optional[str]:
     return "infostealer(" + "; ".join(parts) + ")" if parts else None
 
 
+def _compact_json_note(prefix: str, value: Any, *, max_chars: int = 600) -> Optional[str]:
+    if not value:
+        return None
+    try:
+        compact = json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    except TypeError:
+        compact = str(value)
+    if not compact or compact in {"{}", "[]", '""'}:
+        return None
+    if len(compact) > max_chars:
+        compact = compact[: max_chars - 3] + "..."
+    return f"{prefix}={compact}"
+
+
+def _domain_from_website(value: str) -> str:
+    value = _safe_str(value).strip()
+    if not value:
+        return ""
+    parsed = urlparse(value if value.startswith(("http://", "https://")) else f"https://{value}")
+    return (parsed.netloc or parsed.path).lower().strip("/")
+
+
 def _dedup_raw_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     from collections import defaultdict
     groups: dict = defaultdict(list)
     for row in records:
-        domain = _safe_str(row.get("domain") or "").lower().strip()
+        domain = _safe_str(row.get("domain") or _domain_from_website(row.get("website") or "") or "").lower().strip()
         domain_root = domain.split(".")[0] if domain else ""
-        date_key = _safe_str(row.get("attackdate") or "")[:10]
+        date_key = _safe_str(row.get("attackdate") or row.get("published") or row.get("discovered") or "")[:10]
         if domain_root and date_key:
             groups[(domain_root, date_key)].append(row)
         else:
@@ -147,10 +187,10 @@ def _dedup_raw_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             merged.append(group[0])
             continue
         primary = next(
-            (r for r in group if "." not in _safe_str(r.get("victim") or r.get("name") or "")),
+            (r for r in group if "." not in _safe_str(r.get("victim") or r.get("name") or r.get("post_title") or "")),
             group[0],
         )
-        all_groups = sorted({_safe_str(r.get("group") or "") for r in group} - {""})
+        all_groups = sorted({_safe_str(r.get("group") or r.get("group_name") or "") for r in group} - {""})
         primary = dict(primary)
         primary["all_groups"] = all_groups
         logger.info(
@@ -162,11 +202,28 @@ def _dedup_raw_records(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 def fetch_sector_education_victims(client: Optional[HttpClient] = None) -> List[Dict[str, Any]]:
+    try:
+        rows = _get_public_data_victims()
+        education_rows = [
+            row
+            for row in rows
+            if _safe_str(row.get("activity") or "").strip().lower() == "education"
+        ]
+        logger.info(
+            "RansomwareLive: fetched %d education victims from public data JSON (%d total rows)",
+            len(education_rows),
+            len(rows),
+        )
+        return education_rows
+    except Exception as exc:
+        logger.warning("RansomwareLive public data JSON fetch failed; trying API endpoint: %s", exc)
+
     data = _get_json("/sectorvictims/Education", client=client)
     if isinstance(data, list):
-        return data
+        return [row for row in data if isinstance(row, dict)]
     if isinstance(data, dict):
-        return data.get("victims") or data.get("data") or []
+        rows = data.get("victims") or data.get("data") or []
+        return [row for row in rows if isinstance(row, dict)]
     return []
 
 
@@ -199,16 +256,18 @@ def build_ransomwarelive_incidents(
         if activity and activity.lower() != "education":
             continue
 
-        victim_name = _safe_str(row.get("victim") or row.get("name") or row.get("company"))
+        victim_name = _safe_str(row.get("victim") or row.get("name") or row.get("company") or row.get("post_title"))
         if not victim_name:
             continue
 
         description = _safe_str(row.get("description") or "")
-        group = _safe_str(row.get("group") or "")
-        raw_attackdate = _safe_str(row.get("attackdate") or "")
+        group = _safe_str(row.get("group") or row.get("group_name") or "")
+        raw_published = _safe_str(row.get("published") or "")
+        raw_attackdate = _safe_str(row.get("attackdate") or raw_published or row.get("discovered") or "")
         raw_discovered = _safe_str(row.get("discovered") or "")
         country = _safe_str(row.get("country") or row.get("countrycode") or "")
-        domain = _safe_str(row.get("domain") or "")
+        website = _safe_str(row.get("website") or "")
+        domain = _safe_str(row.get("domain") or _domain_from_website(website))
 
         uniq_key = f"{victim_name}|{domain}|{raw_attackdate}|{group}|{country}"
         if uniq_key in seen_keys:
@@ -227,16 +286,21 @@ def build_ransomwarelive_incidents(
             d2, _ = parse_date_with_precision(raw_discovered.split("T", 1)[0].split(" ", 1)[0])
             discovery_date = d2 or None
 
-        # source_published_date = discovery_date (closest to "publication" semantics)
-        source_published_date = discovery_date or incident_date
+        source_published_date: Optional[str] = None
+        if raw_published:
+            d3, _ = parse_date_with_precision(raw_published.split("T", 1)[0].split(" ", 1)[0])
+            source_published_date = d3 or None
+        # If the older API shape has no published field, discovered is the best
+        # available disclosure timestamp from the source.
+        source_published_date = source_published_date or discovery_date or incident_date
 
         # Press article URLs for Phase 2 enrichment
         all_urls = _extract_press_article_urls(row.get("press"))
 
         # CTI infrastructure URLs
         detail_url = _safe_str(row.get("url") or "")
-        claim_url = _safe_str(row.get("claim_url") or "")
-        screenshot_url = _safe_str(row.get("screenshot") or "")
+        claim_url = _safe_str(row.get("claim_url") or row.get("post_url") or "")
+        screenshot_url = _safe_str(row.get("screenshot") or row.get("screen") or "")
 
         source_event_id = ""
         if detail_url:
@@ -263,6 +327,14 @@ def build_ransomwarelive_incidents(
         ransom = row.get("ransom")
         if ransom and isinstance(ransom, (str, int, float)):
             note_parts.append(f"ransom={ransom}")
+        if website:
+            note_parts.append(f"victim_website={website}")
+        activity = _safe_str(row.get("activity") or "")
+        if activity:
+            note_parts.append(f"activity={activity}")
+        extrainfos_note = _compact_json_note("extrainfos", row.get("extrainfos"))
+        if extrainfos_note:
+            note_parts.append(extrainfos_note)
 
         notes = "; ".join(note_parts) if note_parts else None
 
@@ -299,6 +371,7 @@ def build_ransomwarelive_incidents(
             status="suspected",
             source_confidence="medium",
             notes=notes,
+            raw_source_payload=dict(row),
         )
         incidents.append(incident)
 

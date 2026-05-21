@@ -39,6 +39,7 @@ def _incident(source: str, event_key: str) -> BaseIncident:
         source_confidence="high",
         notes="Records affected: 1234",
         threat_actor="SomeGroup",
+        raw_source_payload={"source_native": "value"},
     )
 
 
@@ -73,6 +74,7 @@ def test_build_source_incident_record_maps_v1_fields_to_raw_observation():
     assert row.raw_attack_hint == "ransomware"
     assert row.raw_payload["v1_incident_id"] == incident.incident_id
     assert row.raw_payload["source_event_key"] == "story-1"
+    assert row.raw_payload["raw_source_payload"] == {"source_native": "value"}
 
 
 def test_build_source_incident_urls_classifies_article_wrapper_and_reference_urls():

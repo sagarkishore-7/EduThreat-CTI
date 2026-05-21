@@ -5,29 +5,28 @@ RansomLook (https://www.ransomlook.io) is the active successor to the archived
 ransomware.live project (archived March 2026). It monitors ransomware group
 leak sites and provides a free JSON API.
 
-API: https://www.ransomlook.io/api/victims
+API: https://www.ransomlook.io/api/recent
+Historical mirror: https://raw.githubusercontent.com/joshhighet/ransomwatch/refs/heads/main/posts.json
 Cost: FREE (no API key needed)
 Coverage: Real-time ransomware victim tracking from 100+ leak sites
 Historical: Data available from ~2020 onwards
 """
 
 import logging
-import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Callable, List, Optional
+from urllib.parse import urljoin
 
 import requests
 
 from src.edu_cti.core.models import BaseIncident, make_incident_id
-from src.edu_cti.core.config import EDUCATION_KEYWORDS
-from src.edu_cti.core.countries import normalize_country, get_country_code
+from src.edu_cti.core.countries import normalize_country
 
 logger = logging.getLogger(__name__)
 
-RANSOMLOOK_API_URLS = [
-    "https://www.ransomlook.io/api/recent",
-    "https://raw.githubusercontent.com/joshhighet/ransomwatch/refs/heads/main/posts.json",  # Static archive mirror
-]
+RANSOMLOOK_BASE_URL = "https://www.ransomlook.io"
+RANSOMLOOK_RECENT_API_URL = f"{RANSOMLOOK_BASE_URL}/api/recent"
+RANSOMLOOK_ARCHIVE_API_URL = "https://raw.githubusercontent.com/joshhighet/ransomwatch/refs/heads/main/posts.json"
 SOURCE_NAME = "ransomlook"
 
 # Education-related terms for filtering victims
@@ -50,6 +49,91 @@ def _is_education_victim(victim_name: str, description: str = "") -> bool:
     """Check if a ransomware victim appears to be an education institution."""
     combined = f"{victim_name} {description}".lower()
     return any(term in combined for term in EDU_FILTER_TERMS)
+
+
+def _absolute_ransomlook_url(value: str) -> Optional[str]:
+    """Return an absolute RansomLook URL for relative detail/screenshot paths."""
+    value = (value or "").strip()
+    if not value:
+        return None
+    if value.startswith(("http://", "https://")):
+        return value
+    return urljoin(RANSOMLOOK_BASE_URL + "/", value.lstrip("/"))
+
+
+def _fetch_records(url: str) -> list[dict]:
+    resp = requests.get(
+        url,
+        timeout=60,
+        headers={"Accept": "application/json"},
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    if not isinstance(payload, list):
+        raise ValueError(f"Unexpected RansomLook payload type: {type(payload).__name__}")
+    return [row for row in payload if isinstance(row, dict)]
+
+
+def _fetch_ransomlook_records(*, incremental: bool) -> list[dict]:
+    """Fetch RansomLook rows, using the archive for historical runs."""
+    # /api/recent is only the latest 100 rows. Historical runs must use the
+    # static archive or they silently miss old education victims.
+    urls = [RANSOMLOOK_RECENT_API_URL] if incremental else [RANSOMLOOK_ARCHIVE_API_URL, RANSOMLOOK_RECENT_API_URL]
+    fallback_urls = [RANSOMLOOK_ARCHIVE_API_URL] if incremental else []
+
+    merged: dict[tuple[str, str, str], dict] = {}
+    fetched_any = False
+    for api_url in urls:
+        try:
+            records = _fetch_records(api_url)
+            fetched_any = True
+            logger.info("RansomLook: fetched %d records from %s", len(records), api_url)
+        except requests.RequestException as e:
+            logger.warning("Failed to fetch RansomLook from %s: %s", api_url, e)
+            continue
+        except ValueError as e:
+            logger.warning("Failed to parse RansomLook JSON from %s: %s", api_url, e)
+            continue
+
+        for row in records:
+            key = (
+                (row.get("group_name") or row.get("group") or "").strip().lower(),
+                (row.get("post_title") or row.get("victim") or row.get("name") or "").strip().lower(),
+                (row.get("discovered") or row.get("date") or "").strip()[:19],
+            )
+            if not any(key):
+                continue
+            existing = merged.get(key)
+            if existing is None:
+                merged[key] = dict(row)
+            else:
+                # Prefer richer recent API fields while keeping archive-only keys.
+                merged[key] = {**existing, **{k: v for k, v in row.items() if v not in (None, "")}}
+
+    if not merged:
+        for api_url in fallback_urls:
+            try:
+                records = _fetch_records(api_url)
+                fetched_any = True
+                logger.info("RansomLook: fetched %d fallback records from %s", len(records), api_url)
+            except requests.RequestException as e:
+                logger.warning("Failed to fetch RansomLook fallback from %s: %s", api_url, e)
+                continue
+            except ValueError as e:
+                logger.warning("Failed to parse RansomLook fallback JSON from %s: %s", api_url, e)
+                continue
+            for row in records:
+                key = (
+                    (row.get("group_name") or row.get("group") or "").strip().lower(),
+                    (row.get("post_title") or row.get("victim") or row.get("name") or "").strip().lower(),
+                    (row.get("discovered") or row.get("date") or "").strip()[:19],
+                )
+                if any(key):
+                    merged[key] = dict(row)
+
+    if not fetched_any:
+        logger.error("Failed to fetch RansomLook from all endpoints")
+    return list(merged.values())
 
 
 def build_ransomlook_incidents(
@@ -77,27 +161,8 @@ def build_ransomlook_incidents(
 
     incidents: List[BaseIncident] = []
 
-    victims = None
-    for api_url in RANSOMLOOK_API_URLS:
-        try:
-            resp = requests.get(
-                api_url,
-                timeout=60,
-                headers={"Accept": "application/json"},
-            )
-            resp.raise_for_status()
-            victims = resp.json()
-            logger.info(f"RansomLook: fetched from {api_url}")
-            break
-        except requests.RequestException as e:
-            logger.warning(f"Failed to fetch RansomLook from {api_url}: {e}")
-            continue
-        except ValueError as e:
-            logger.warning(f"Failed to parse RansomLook JSON from {api_url}: {e}")
-            continue
-
-    if victims is None:
-        logger.error("Failed to fetch RansomLook from all endpoints")
+    victims = _fetch_ransomlook_records(incremental=incremental)
+    if not victims:
         return incidents
 
     logger.info(f"RansomWatch returned {len(victims)} total victims, filtering for education...")
@@ -109,8 +174,12 @@ def build_ransomlook_incidents(
         group_name = victim.get("group_name", "") or victim.get("group", "")
         discovered = victim.get("discovered", "") or victim.get("date", "")
         country = victim.get("country", "")
-        website = victim.get("website", "") or victim.get("link", "")
-        post_url = victim.get("post_url", "") or victim.get("url", "")
+        website = victim.get("website", "")
+        raw_url = victim.get("url", "") or ""
+        detail_url = _absolute_ransomlook_url(victim.get("link", "") or raw_url)
+        post_url = victim.get("post_url", "") or (raw_url if ".onion" in raw_url else "")
+        screenshot_url = _absolute_ransomlook_url(victim.get("screen", "") or victim.get("screenshot", ""))
+        magnet = victim.get("magnet")
 
         if not victim_name:
             continue
@@ -133,12 +202,13 @@ def build_ransomlook_incidents(
         # Normalize country
         country_normalized = normalize_country(country) if country else None
 
-        # Build URLs list
-        all_urls = []
-        if post_url:
-            all_urls.append(post_url)
-        if website and website.startswith("http"):
-            all_urls.append(website)
+        note_parts = []
+        if group_name:
+            note_parts.append(f"group={group_name}")
+        if website:
+            note_parts.append(f"victim_website={website}")
+        if magnet:
+            note_parts.append("magnet_available=true")
 
         # Create incident
         source_event_id = f"{group_name}_{victim_name}_{discovered}".replace(" ", "_").lower()
@@ -157,16 +227,21 @@ def build_ransomlook_incidents(
             incident_date=discovered[:10] if discovered and len(discovered) >= 10 else None,
             date_precision="day" if discovered and len(discovered) >= 10 else "unknown",
             source_published_date=discovered[:10] if discovered else None,
-            ingested_at=datetime.utcnow().isoformat(),
+            discovery_date=discovered[:10] if discovered and len(discovered) >= 10 else None,
+            ingested_at=datetime.now(timezone.utc).isoformat(),
             title=f"{victim_name} - {group_name} ransomware",
             subtitle=description[:200] if description else None,
             primary_url=None,
-            all_urls=all_urls,
+            all_urls=[],
             leak_site_url=post_url if post_url else None,
+            source_detail_url=detail_url,
+            screenshot_url=screenshot_url,
             attack_type_hint="ransomware",
+            threat_actor=group_name or None,
             status="confirmed",
             source_confidence="high",
-            notes=f"group={group_name}" if group_name else None,
+            notes="; ".join(note_parts) if note_parts else None,
+            raw_source_payload=dict(victim),
         )
 
         incidents.append(incident)
