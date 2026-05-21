@@ -5,7 +5,7 @@ from uuid import uuid4
 
 from src.edu_cti_v2.models import CanonicalIncident, CanonicalMembership, SourceEnrichment, SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.services import V2CanonicalizationService, build_source_projection
-from src.edu_cti_v2.services.canonicalization import _build_merged_projection, _identity_match_quality
+from src.edu_cti_v2.services.canonicalization import _build_merged_projection, _identity_match_quality, _member_score
 
 
 def _source_incident(*, event_key: str = "story-1", url: str = "https://example.com/article") -> SourceIncident:
@@ -214,6 +214,45 @@ def test_build_source_projection_promotes_known_edtech_vendor_even_without_type(
 
     assert projection["institution_name"] == "PowerSchool"
     assert projection["vendor_name"] == "PowerSchool"
+
+
+def test_member_score_prefers_vendor_wide_edtech_source_over_school_specific_followup():
+    vendor_incident = _source_incident(event_key="canvas-vendor", url="https://example.com/canvas-vendor")
+    vendor_incident.raw_title = "Canvas Breach Disrupts Schools & Colleges Nationwide"
+    vendor_incident.raw_institution_name = "Instructure"
+    vendor_incident.raw_victim_name = "Instructure"
+    vendor_enrichment = _source_enrichment(vendor_incident)
+    vendor_enrichment.typed_enrichment.update(
+        {
+            "institution_name": "Instructure",
+            "incident_date": "2026-05-01",
+            "attack_category": "supply_chain_software",
+            "enriched_summary": "Instructure Canvas suffered a platform-wide incident affecting schools and colleges.",
+        }
+    )
+    vendor_projection = build_source_projection(vendor_incident, vendor_enrichment)
+
+    school_incident = _source_incident(event_key="canvas-school", url="https://example.com/canvas-school")
+    school_incident.raw_title = "Canvas System Is Online After a Cyberattack Disrupted Thousands of Schools"
+    school_incident.raw_institution_name = "Wayne State University"
+    school_incident.raw_victim_name = "Wayne State University"
+    school_enrichment = _source_enrichment(school_incident)
+    school_enrichment.typed_enrichment.update(
+        {
+            "institution_name": "Wayne State University",
+            "vendor_name": "Instructure",
+            "incident_date": "2026-05-01",
+            "attack_category": "supply_chain_software",
+            "enriched_summary": "Wayne State University was affected by the Canvas platform incident.",
+        }
+    )
+    school_projection = build_source_projection(school_incident, school_enrichment)
+
+    assert _member_score("krebsonsecurity", vendor_projection, vendor_enrichment) > _member_score(
+        "securityweek",
+        school_projection,
+        school_enrichment,
+    )
 
 
 def test_build_source_projection_does_not_inherit_raw_location_from_mismatched_vendor_placeholder():

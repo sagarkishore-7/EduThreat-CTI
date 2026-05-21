@@ -873,6 +873,8 @@ def _build_member_score_breakdown(
     typed = projection.get("typed_enrichment") or {}
     timeline = projection.get("timeline") or []
     identity = projection.get("vendor_name") or projection.get("institution_name")
+    institution_name = projection.get("institution_name")
+    vendor_name = projection.get("vendor_name")
     raw_title = str(projection.get("raw_title") or "").strip().lower()
     raw_subtitle = str(projection.get("raw_subtitle") or "").strip().lower()
 
@@ -890,6 +892,13 @@ def _build_member_score_breakdown(
         breakdown["actor_or_family_bonus"] = 4
     if projection.get("country_code"):
         breakdown["country_bonus"] = 2
+    if vendor_name:
+        vendor_is_known_edtech = _is_known_edtech_vendor_name(vendor_name)
+        same_vendor_identity = not institution_name or _identity_match_quality(institution_name, vendor_name) >= 85
+        if vendor_is_known_edtech and same_vendor_identity:
+            breakdown["vendor_wide_source_bonus"] = 18
+        elif vendor_is_known_edtech and institution_name:
+            breakdown["school_specific_vendor_source_penalty"] = -12
     if identity:
         normalized_identity = _normalized_identity(identity)
         if normalized_identity:
