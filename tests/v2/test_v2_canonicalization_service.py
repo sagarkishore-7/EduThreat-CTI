@@ -1515,7 +1515,7 @@ def test_canonicalization_service_merges_vendor_followup_candidates_across_count
             "city": "Toronto",
             "incident_date": "2023-12-01",
             "incident_date_precision": "month",
-            "attack_category": "data_breach_external",
+            "attack_category": "ransomware_double_extortion",
             "enriched_summary": "Canadian regulators say schools share blame for the PowerSchool hack that exposed student and teacher data.",
             "timeline": [],
         },
@@ -1524,7 +1524,7 @@ def test_canonicalization_service_merges_vendor_followup_candidates_across_count
             "institution_type": "education_technology_provider",
             "country_code": "CA",
             "incident_date": "2023-12-01",
-            "attack_category": "data_breach_external",
+            "attack_category": "ransomware_double_extortion",
         },
         is_education_related=True,
     )

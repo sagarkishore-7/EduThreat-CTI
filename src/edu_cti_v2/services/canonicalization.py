@@ -589,6 +589,13 @@ def _score_candidate_match(
         candidate_attack_family = _attack_category_family(candidate.attack_category)
         if relaxed_vendor_followup and projection_attack_family and projection_attack_family == candidate_attack_family:
             score += 4.0
+        elif relaxed_vendor_followup and exact_vendor_identity and (
+            _is_known_edtech_vendor_name(best_incoming_value)
+            or _is_known_edtech_vendor_name(best_candidate_value)
+        ):
+            # Legal/regulatory follow-up articles often relabel the same vendor incident
+            # as breach, extortion, or ransomware depending on the article angle.
+            score -= 2.0
         elif relaxed_vendor_followup and projection.get("attack_category") and candidate.attack_category:
             return 0.0, None
     if projection.get("ransomware_family") and candidate.ransomware_family == projection.get("ransomware_family"):
