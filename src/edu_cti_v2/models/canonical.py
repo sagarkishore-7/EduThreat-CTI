@@ -80,7 +80,7 @@ class CanonicalMembership(UUIDPrimaryKeyMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "match_type IN ('url_exact', 'url_resolved', 'name_date', 'vendor_platform', 'vendor_date', 'vendor_followup', 'manual', 'seed')",
+            "match_type IN ('url_exact', 'url_resolved', 'name_date', 'vendor_platform', 'vendor_date', 'vendor_followup', 'exact_identity_same_event', 'manual', 'seed')",
             name="canonical_memberships_match_type",
         ),
         UniqueConstraint("source_incident_id", name="uq_canonical_memberships_source_incident_id"),

@@ -211,7 +211,7 @@ CREATE TABLE IF NOT EXISTS canonical_memberships (
     matcher_version text NOT NULL,
     matched_at timestamptz NOT NULL DEFAULT now(),
     CONSTRAINT ck_membership_match_type CHECK (
-        match_type IN ('url_exact', 'url_resolved', 'name_date', 'vendor_platform', 'vendor_date', 'vendor_followup', 'manual', 'seed')
+        match_type IN ('url_exact', 'url_resolved', 'name_date', 'vendor_platform', 'vendor_date', 'vendor_followup', 'exact_identity_same_event', 'manual', 'seed')
     )
 );
 
