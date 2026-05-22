@@ -3,7 +3,13 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
-from src.edu_cti_v2.models import CanonicalIncident, CanonicalMembership, SourceEnrichment, SourceIncident, SourceIncidentUrl
+from src.edu_cti_v2.models import (
+    CanonicalIncident,
+    CanonicalMembership,
+    SourceEnrichment,
+    SourceIncident,
+    SourceIncidentUrl,
+)
 from src.edu_cti_v2.services import V2CanonicalizationService, build_source_projection
 from src.edu_cti_v2.services.canonicalization import (
     _build_merged_projection,
@@ -13,7 +19,9 @@ from src.edu_cti_v2.services.canonicalization import (
 )
 
 
-def _source_incident(*, event_key: str = "story-1", url: str = "https://example.com/article") -> SourceIncident:
+def _source_incident(
+    *, event_key: str = "story-1", url: str = "https://example.com/article"
+) -> SourceIncident:
     incident = SourceIncident(
         id=uuid4(),
         source_name="therecord",
@@ -141,13 +149,11 @@ def test_canonical_completeness_score_is_bounded_for_large_merged_projection():
         "public_disclosure_date": "2026-05-10",
         "recovery_duration_days": 5,
         "mitre_attack_techniques": [
-            {"tactic": "Initial Access", "technique": "Valid Accounts"}
-            for _ in range(500)
+            {"tactic": "Initial Access", "technique": "Valid Accounts"} for _ in range(500)
         ],
         "diamond_model": {"victim": {"primary": "schools"}},
         "timeline": [
-            {"date": "2026-05-05", "event_description": f"Event {index}"}
-            for index in range(500)
+            {"date": "2026-05-05", "event_description": f"Event {index}"} for index in range(500)
         ],
     }
 
@@ -182,11 +188,16 @@ def test_identity_match_quality_handles_school_subunit_names():
 
 def test_identity_match_quality_accepts_common_school_district_name_variants():
     assert _identity_match_quality("Hartnell College", "Hartnell Community College District") >= 85
-    assert _identity_match_quality("Houston County Schools", "Houston County Board of Education") >= 85
+    assert (
+        _identity_match_quality("Houston County Schools", "Houston County Board of Education") >= 85
+    )
     assert _identity_match_quality("Cherry Hill School District", "Cherry Hill Schools") >= 85
     assert _identity_match_quality("Livingston Public Schools", "Livingston Township Schools") >= 85
     assert _identity_match_quality("Knox College", "Guilford College") == 0
-    assert _identity_match_quality("Monroe-Woodbury School District", "Monroe City School District") == 0
+    assert (
+        _identity_match_quality("Monroe-Woodbury School District", "Monroe City School District")
+        == 0
+    )
 
 
 def test_identity_match_quality_treats_canvas_as_instructure_vendor_alias():
@@ -202,7 +213,9 @@ def test_build_source_projection_promotes_education_technology_provider_as_vendo
     incident.raw_country = "United States"
     incident.raw_region = "California"
     incident.raw_city = None
-    incident.raw_title = "Texas sues PowerSchool for breach exposing the data of students and teachers"
+    incident.raw_title = (
+        "Texas sues PowerSchool for breach exposing the data of students and teachers"
+    )
 
     enrichment = SourceEnrichment(
         id=uuid4(),
@@ -270,7 +283,9 @@ def test_build_source_projection_promotes_known_edtech_vendor_even_without_type(
 
 
 def test_member_score_prefers_vendor_wide_edtech_source_over_school_specific_followup():
-    vendor_incident = _source_incident(event_key="canvas-vendor", url="https://example.com/canvas-vendor")
+    vendor_incident = _source_incident(
+        event_key="canvas-vendor", url="https://example.com/canvas-vendor"
+    )
     vendor_incident.raw_title = "Canvas Breach Disrupts Schools & Colleges Nationwide"
     vendor_incident.raw_institution_name = "Instructure"
     vendor_incident.raw_victim_name = "Instructure"
@@ -285,8 +300,12 @@ def test_member_score_prefers_vendor_wide_edtech_source_over_school_specific_fol
     )
     vendor_projection = build_source_projection(vendor_incident, vendor_enrichment)
 
-    school_incident = _source_incident(event_key="canvas-school", url="https://example.com/canvas-school")
-    school_incident.raw_title = "Canvas System Is Online After a Cyberattack Disrupted Thousands of Schools"
+    school_incident = _source_incident(
+        event_key="canvas-school", url="https://example.com/canvas-school"
+    )
+    school_incident.raw_title = (
+        "Canvas System Is Online After a Cyberattack Disrupted Thousands of Schools"
+    )
     school_incident.raw_institution_name = "Wayne State University"
     school_incident.raw_victim_name = "Wayne State University"
     school_enrichment = _source_enrichment(school_incident)
@@ -430,7 +449,9 @@ def test_build_source_projection_drops_sentence_like_article_text_as_identity():
 def test_build_source_projection_drops_vague_plural_identity():
     incident = _source_incident()
     incident.raw_title = "Kolkata: Hackers attack several colleges websites"
-    incident.raw_subtitle = "Unknown cyber-hackers hacked the official websites of few colleges in Kolkata."
+    incident.raw_subtitle = (
+        "Unknown cyber-hackers hacked the official websites of few colleges in Kolkata."
+    )
     incident.raw_institution_name = "several colleges websites"
     incident.raw_victim_name = "several colleges websites"
     incident.raw_country = "India"
@@ -501,7 +522,9 @@ def test_build_source_projection_normalizes_country_from_institution_country():
 def test_build_source_projection_keeps_raw_country_when_generic_title_differs_but_identity_matches():
     incident = _source_incident(event_key="morehead")
     incident.raw_title = "Cyber attack on a university in Kentucky, USA"
-    incident.raw_subtitle = "Morehead State University (MSU) - Morehead, Kentucky, USA (Rowan County)"
+    incident.raw_subtitle = (
+        "Morehead State University (MSU) - Morehead, Kentucky, USA (Rowan County)"
+    )
     incident.raw_institution_name = "Morehead State University (MSU)"
     incident.raw_victim_name = "Morehead State University (MSU)"
     incident.raw_country = "USA"
@@ -585,9 +608,13 @@ def test_build_merged_projection_backfills_missing_deep_fields_from_supporting_s
     selected_enrichment.typed_enrichment["attack_dynamics"].pop("attack_vector", None)
     selected_projection = build_source_projection(selected_incident, selected_enrichment)
 
-    supporting_incident = _source_incident(event_key="supporting-story", url="https://example.com/supporting-article")
+    supporting_incident = _source_incident(
+        event_key="supporting-story", url="https://example.com/supporting-article"
+    )
     supporting_enrichment = _source_enrichment(supporting_incident)
-    supporting_enrichment.typed_enrichment["attack_dynamics"]["attack_vector"] = "stolen_credentials"
+    supporting_enrichment.typed_enrichment["attack_dynamics"][
+        "attack_vector"
+    ] = "stolen_credentials"
     supporting_enrichment.typed_enrichment["system_impact"] = {
         "systems_affected": ["email", "student_portal"],
         "critical_systems_affected": True,
@@ -624,10 +651,19 @@ def test_build_merged_projection_backfills_missing_deep_fields_from_supporting_s
 
     assert merged_projection["attack_vector"] == "stolen_credentials"
     assert merged_projection["typed_enrichment"]["data_impact"]["records_affected_exact"] == 5000
-    assert merged_projection["typed_enrichment"]["user_impact"]["total_individuals_affected"] == 5000
-    assert merged_projection["typed_enrichment"]["system_impact"]["critical_systems_affected"] is True
-    assert merged_projection["typed_enrichment"]["system_impact"]["systems_affected"] == ["email", "student_portal"]
-    assert projection_field_sources["data_impact.records_affected_exact"] == [str(supporting_enrichment.id)]
+    assert (
+        merged_projection["typed_enrichment"]["user_impact"]["total_individuals_affected"] == 5000
+    )
+    assert (
+        merged_projection["typed_enrichment"]["system_impact"]["critical_systems_affected"] is True
+    )
+    assert merged_projection["typed_enrichment"]["system_impact"]["systems_affected"] == [
+        "email",
+        "student_portal",
+    ]
+    assert projection_field_sources["data_impact.records_affected_exact"] == [
+        str(supporting_enrichment.id)
+    ]
     assert projection_field_sources["system_impact.systems_affected"] == [
         str(selected_enrichment.id),
         str(supporting_enrichment.id),
@@ -825,7 +861,9 @@ def test_canonicalization_service_does_not_merge_distinct_victims_on_shared_roun
     enrichment.typed_enrichment["city"] = "Jerusalem"
     enrichment.typed_enrichment["incident_date"] = "2023-04-04"
     enrichment.typed_enrichment["attack_category"] = "ddos_volumetric"
-    enrichment.typed_enrichment["enriched_summary"] = "Hebrew University of Jerusalem website was attacked."
+    enrichment.typed_enrichment["enriched_summary"] = (
+        "Hebrew University of Jerusalem website was attacked."
+    )
     enrichment.typed_enrichment["threat_actor_name"] = "Anonymous Sudan"
     enrichment.raw_extraction["institution_name"] = "Hebrew University of Jerusalem"
     enrichment.raw_extraction["country_code"] = "IL"
@@ -881,7 +919,9 @@ def test_build_source_projection_recovers_identity_from_subtitle_when_llm_name_m
         "הַאוּנִיבֶרְסִיטָה הַעִבְרִית בִּירוּשָׁלַיִם - Jerusalem / ירושלים, Israel"
     )
     incident.raw_institution_name = None
-    incident.raw_victim_name = "Hebrew University of Jerusalem (HUJI) / הַאוּנִיבֶרְסִיטָה הַעִבְרִית בִּירוּשָׁלַיִם"
+    incident.raw_victim_name = (
+        "Hebrew University of Jerusalem (HUJI) / הַאוּנִיבֶרְסִיטָה הַעִבְרִית בִּירוּשָׁלַיִם"
+    )
 
     enrichment = _source_enrichment(incident)
     enrichment.typed_enrichment["institution_name"] = None
@@ -895,8 +935,12 @@ def test_build_source_projection_recovers_identity_from_subtitle_when_llm_name_m
 def test_build_source_projection_recovers_specific_identity_from_compound_generic_llm_label():
     incident = _source_incident(event_key="bremen-story")
     incident.raw_title = "Cyber attack on a university institute in Germany"
-    incident.raw_subtitle = "Universität Bremen, Institut für Didaktik der Naturwissenschaften - Bremen, Germany"
-    incident.raw_institution_name = "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    incident.raw_subtitle = (
+        "Universität Bremen, Institut für Didaktik der Naturwissenschaften - Bremen, Germany"
+    )
+    incident.raw_institution_name = (
+        "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    )
     incident.raw_victim_name = "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
     incident.raw_country = "Germany"
 
@@ -928,7 +972,10 @@ def test_build_source_projection_recovers_specific_identity_from_compound_generi
 
     projection = build_source_projection(incident, enrichment)
 
-    assert projection["institution_name"] == "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    assert (
+        projection["institution_name"]
+        == "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    )
     assert projection["country"] == "Germany"
     assert projection["country_code"] == "DE"
 
@@ -1034,6 +1081,68 @@ def test_canonicalization_service_skips_new_generic_identity_seed():
     task_repo.enqueue.assert_not_called()
 
 
+def test_canonicalization_service_excludes_manual_review_member():
+    canonical_repo = Mock()
+    canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="manual-review-cleanup",
+        status="open",
+        institution_name="University of Virginia",
+        country="United States",
+        country_code="US",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    incident = _source_incident(event_key="manual-review-member")
+    membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=canonical.id,
+        source_incident_id=incident.id,
+        match_type="seed",
+        match_score=100.0,
+        survivor_score=90.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+    canonical_repo.get_membership_for_source_incident.return_value = membership
+    canonical_repo.get_by_id.return_value = canonical
+    canonical_repo.list_memberships.return_value = [membership]
+
+    source_repo = Mock()
+    source_repo.get_by_id.return_value = incident
+
+    enrichment = _source_enrichment(incident)
+    enrichment.manual_review_required = True
+    enrichment.manual_review_reason = "Extracted victim drifted from structured source target."
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.side_effect = [None, None]
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is False
+    assert outcome["reason"] == "manual_review_required"
+    assert outcome["canonical_status"] == "excluded"
+    assert canonical.status == "excluded"
+    assert canonical.primary_source_incident_id is None
+    assert membership.survivor_score == -1
+    assert task_repo.enqueue.call_count == 2
+
+
 def test_canonicalization_service_updates_existing_canonical_with_better_projection():
     canonical_repo = Mock()
     existing_canonical = CanonicalIncident(
@@ -1129,7 +1238,9 @@ def test_canonicalization_service_refreshes_existing_canonical_after_generic_mem
         matcher_version="v2",
         matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
     )
-    valid_incident = _source_incident(event_key="valid-member", url="https://example.com/valid-member")
+    valid_incident = _source_incident(
+        event_key="valid-member", url="https://example.com/valid-member"
+    )
     valid_membership = CanonicalMembership(
         id=uuid4(),
         canonical_incident_id=canonical.id,
@@ -1180,7 +1291,9 @@ def test_canonicalization_service_refreshes_existing_canonical_after_generic_mem
     valid_enrichment = _source_enrichment(valid_incident)
     enrichment_repo = Mock()
     enrichment_repo.get_by_source_incident.side_effect = lambda _session, source_incident_id: (
-        invalid_enrichment if str(source_incident_id) == str(invalid_incident.id) else valid_enrichment
+        invalid_enrichment
+        if str(source_incident_id) == str(invalid_incident.id)
+        else valid_enrichment
     )
 
     task_repo = Mock()
@@ -1209,7 +1322,10 @@ def test_canonicalization_service_refreshes_existing_canonical_after_generic_mem
 
 def test_canonicalization_service_refreshes_canonical_fields_from_primary_member_projection():
     canonical_repo = Mock()
-    incident = _source_incident(event_key="powerschool-primary-refresh", url="https://example.com/powerschool-primary-refresh")
+    incident = _source_incident(
+        event_key="powerschool-primary-refresh",
+        url="https://example.com/powerschool-primary-refresh",
+    )
     incident.raw_institution_name = "PowerSchool"
     incident.raw_victim_name = "PowerSchool"
     incident.raw_institution_type = "education_technology_provider"
@@ -1582,7 +1698,9 @@ def test_canonicalization_service_merges_vendor_followup_candidates_across_count
     canonical_repo.list_memberships.return_value = []
 
     source_repo = Mock()
-    incident = _source_incident(event_key="powerschool-followup", url="https://example.com/powerschool-followup")
+    incident = _source_incident(
+        event_key="powerschool-followup", url="https://example.com/powerschool-followup"
+    )
     incident.raw_institution_name = "PowerSchool"
     incident.raw_victim_name = "PowerSchool"
     incident.raw_institution_type = "education_technology_provider"
@@ -1715,7 +1833,10 @@ def test_canonicalization_service_reassigns_existing_membership_to_better_vendor
     ]
 
     source_repo = Mock()
-    incident = _source_incident(event_key="powerschool-followup-reassign", url="https://example.com/powerschool-followup-reassign")
+    incident = _source_incident(
+        event_key="powerschool-followup-reassign",
+        url="https://example.com/powerschool-followup-reassign",
+    )
     incident.raw_institution_name = "PowerSchool"
     incident.raw_victim_name = "PowerSchool"
     incident.raw_institution_type = "education_technology_provider"

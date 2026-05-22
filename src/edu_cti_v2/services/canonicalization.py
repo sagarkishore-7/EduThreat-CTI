@@ -325,7 +325,11 @@ def _looks_generic_institution_label(value: Optional[str]) -> bool:
         return True
     if "website of" in lowered or "websites of" in lowered:
         return True
-    if re.search(r"\b(?:few|several|multiple|various|many|some)\s+(?:colleges?|schools?|universities?|districts?)\b", text, re.IGNORECASE):
+    if re.search(
+        r"\b(?:few|several|multiple|various|many|some)\s+(?:colleges?|schools?|universities?|districts?)\b",
+        text,
+        re.IGNORECASE,
+    ):
         return True
     if len(words) >= 10:
         return True
@@ -336,7 +340,9 @@ def _looks_generic_institution_label(value: Optional[str]) -> bool:
     return False
 
 
-def _resolve_institution_name(source_incident, typed: Dict[str, Any], raw: Dict[str, Any]) -> Optional[str]:
+def _resolve_institution_name(
+    source_incident, typed: Dict[str, Any], raw: Dict[str, Any]
+) -> Optional[str]:
     extracted_candidates = [
         typed.get("institution_name"),
         typed.get("institution_name_en"),
@@ -437,13 +443,21 @@ def _normalize_country_fields(
     return country, country_code
 
 
-def _choose_canonical_institution_name(existing: Optional[str], new: Optional[str]) -> Optional[str]:
+def _choose_canonical_institution_name(
+    existing: Optional[str], new: Optional[str]
+) -> Optional[str]:
     existing_clean = clean_institution_name(existing)
     new_clean = clean_institution_name(new)
 
-    if new_clean and (_looks_generic_institution_label(existing_clean) and not _looks_generic_institution_label(new_clean)):
+    if new_clean and (
+        _looks_generic_institution_label(existing_clean)
+        and not _looks_generic_institution_label(new_clean)
+    ):
         return new_clean
-    if existing_clean and (_looks_generic_institution_label(new_clean) and not _looks_generic_institution_label(existing_clean)):
+    if existing_clean and (
+        _looks_generic_institution_label(new_clean)
+        and not _looks_generic_institution_label(existing_clean)
+    ):
         return existing_clean
 
     return choose_best_institution_name(existing_clean, new_clean)
@@ -627,12 +641,20 @@ def _score_candidate_match(
         return 0.0, None
     exact_vendor_identity = best_match_type == "vendor_date" and best_quality >= 100
 
-    projection_date = parse_incident_date(str(projection.get("incident_date")) if projection.get("incident_date") else None)
-    candidate_date = parse_incident_date(str(candidate.incident_date) if candidate.incident_date else None)
+    projection_date = parse_incident_date(
+        str(projection.get("incident_date")) if projection.get("incident_date") else None
+    )
+    candidate_date = parse_incident_date(
+        str(candidate.incident_date) if candidate.incident_date else None
+    )
     if projection_date and candidate_date:
         if dates_within_window(projection_date, candidate_date, 14):
             date_score = 20.0 if dates_within_window(projection_date, candidate_date, 3) else 12.0
-        elif relaxed_vendor_followup and exact_vendor_identity and dates_within_window(projection_date, candidate_date, 400):
+        elif (
+            relaxed_vendor_followup
+            and exact_vendor_identity
+            and dates_within_window(projection_date, candidate_date, 400)
+        ):
             date_score = 8.0
         else:
             return 0.0, None
@@ -640,7 +662,11 @@ def _score_candidate_match(
         date_score = 4.0
 
     projection_country = projection.get("country_code")
-    same_country = projection_country and candidate.country_code and projection_country == candidate.country_code
+    same_country = (
+        projection_country
+        and candidate.country_code
+        and projection_country == candidate.country_code
+    )
     if projection_country and candidate.country_code and not same_country:
         exact_same_event = (
             allow_exact_cross_country_same_event
@@ -663,28 +689,48 @@ def _score_candidate_match(
     elif projection_country or candidate.country_code:
         score += 2.0
 
-    if projection.get("attack_category") and candidate.attack_category == projection.get("attack_category"):
+    if projection.get("attack_category") and candidate.attack_category == projection.get(
+        "attack_category"
+    ):
         score += 6.0
     else:
         projection_attack_family = _attack_category_family(projection.get("attack_category"))
         candidate_attack_family = _attack_category_family(candidate.attack_category)
-        if relaxed_vendor_followup and projection_attack_family and projection_attack_family == candidate_attack_family:
+        if (
+            relaxed_vendor_followup
+            and projection_attack_family
+            and projection_attack_family == candidate_attack_family
+        ):
             score += 4.0
-        elif relaxed_vendor_followup and exact_vendor_identity and (
-            _is_known_edtech_vendor_name(best_incoming_value)
-            or _is_known_edtech_vendor_name(best_candidate_value)
+        elif (
+            relaxed_vendor_followup
+            and exact_vendor_identity
+            and (
+                _is_known_edtech_vendor_name(best_incoming_value)
+                or _is_known_edtech_vendor_name(best_candidate_value)
+            )
         ):
             # Legal/regulatory follow-up articles often relabel the same vendor incident
             # as breach, extortion, or ransomware depending on the article angle.
             score -= 2.0
-        elif relaxed_vendor_followup and projection.get("attack_category") and candidate.attack_category:
+        elif (
+            relaxed_vendor_followup
+            and projection.get("attack_category")
+            and candidate.attack_category
+        ):
             return 0.0, None
-    if projection.get("ransomware_family") and candidate.ransomware_family == projection.get("ransomware_family"):
+    if projection.get("ransomware_family") and candidate.ransomware_family == projection.get(
+        "ransomware_family"
+    ):
         score += 4.0
-    if projection.get("threat_actor_name") and candidate.threat_actor_name == projection.get("threat_actor_name"):
+    if projection.get("threat_actor_name") and candidate.threat_actor_name == projection.get(
+        "threat_actor_name"
+    ):
         score += 4.0
 
-    if _looks_generic_institution_label(best_incoming_value) or _looks_generic_institution_label(best_candidate_value):
+    if _looks_generic_institution_label(best_incoming_value) or _looks_generic_institution_label(
+        best_candidate_value
+    ):
         score -= 20.0
 
     return score, best_match_type
@@ -706,7 +752,9 @@ def _url_candidate_identity_compatible(
     best_quality = 0
     for incoming_value in incoming_identities:
         for candidate_value in candidate_identities:
-            best_quality = max(best_quality, _identity_match_quality(incoming_value, candidate_value))
+            best_quality = max(
+                best_quality, _identity_match_quality(incoming_value, candidate_value)
+            )
 
     if best_quality < 85:
         return False
@@ -747,9 +795,18 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
     )
     country, country_code = _normalize_country_fields(source_incident, typed, raw)
     if not trust_raw_identity_fallback:
-        if typed.get("country") is None and typed.get("institution_country") is None and raw.get("country") is None and raw.get("institution_country") is None:
+        if (
+            typed.get("country") is None
+            and typed.get("institution_country") is None
+            and raw.get("country") is None
+            and raw.get("institution_country") is None
+        ):
             country = None
-        if typed.get("country_code") is None and raw.get("country_code") is None and country is None:
+        if (
+            typed.get("country_code") is None
+            and raw.get("country_code") is None
+            and country is None
+        ):
             country_code = None
     region = _first_present(
         typed.get("region"),
@@ -762,7 +819,9 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
         source_incident.raw_city if trust_raw_identity_fallback else None,
     )
     incident_date = _parse_date_only(
-        _first_present(typed.get("incident_date"), raw.get("incident_date"), source_incident.raw_incident_date)
+        _first_present(
+            typed.get("incident_date"), raw.get("incident_date"), source_incident.raw_incident_date
+        )
     )
     date_precision = _normalize_canonical_date_precision(
         _first_present(
@@ -781,9 +840,9 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
     )
     ransomware_family = normalize_ransomware_family(
         _first_present(
-        attack_dynamics.get("ransomware_family"),
-        typed.get("ransomware_family"),
-        raw.get("ransomware_family"),
+            attack_dynamics.get("ransomware_family"),
+            typed.get("ransomware_family"),
+            raw.get("ransomware_family"),
         )
     )
     threat_actor_name = normalize_threat_actor_name(
@@ -912,8 +971,12 @@ def _apply_projection_to_canonical(
         canonical.source_published_at = projection.get("source_published_at")
         canonical.attack_category = projection.get("attack_category")
         canonical.attack_vector = projection.get("attack_vector")
-        canonical.threat_actor_name = normalize_threat_actor_name(projection.get("threat_actor_name"))
-        canonical.ransomware_family = normalize_ransomware_family(projection.get("ransomware_family"))
+        canonical.threat_actor_name = normalize_threat_actor_name(
+            projection.get("threat_actor_name")
+        )
+        canonical.ransomware_family = normalize_ransomware_family(
+            projection.get("ransomware_family")
+        )
         canonical.is_education_related = projection.get("is_education_related")
         canonical.severity = projection.get("severity")
         canonical.canonical_summary = projection.get("canonical_summary")
@@ -921,7 +984,8 @@ def _apply_projection_to_canonical(
         if projection_date and (
             canonical.incident_date is None
             or not _safe_canonical_date(canonical.incident_date)
-            or _date_precision_rank(projection_precision) > _date_precision_rank(canonical.date_precision)
+            or _date_precision_rank(projection_precision)
+            > _date_precision_rank(canonical.date_precision)
         ):
             canonical.incident_date = projection_date
             canonical.date_precision = projection_precision
@@ -935,9 +999,13 @@ def _apply_projection_to_canonical(
         if projection.get("attack_vector"):
             canonical.attack_vector = projection.get("attack_vector")
         if projection.get("threat_actor_name"):
-            canonical.threat_actor_name = normalize_threat_actor_name(projection.get("threat_actor_name"))
+            canonical.threat_actor_name = normalize_threat_actor_name(
+                projection.get("threat_actor_name")
+            )
         if projection.get("ransomware_family"):
-            canonical.ransomware_family = normalize_ransomware_family(projection.get("ransomware_family"))
+            canonical.ransomware_family = normalize_ransomware_family(
+                projection.get("ransomware_family")
+            )
         if projection.get("is_education_related") is not None:
             canonical.is_education_related = projection.get("is_education_related")
         if projection.get("severity"):
@@ -962,7 +1030,9 @@ def _build_member_score_breakdown(
     breakdown: Dict[str, int] = {
         "source_rank": int(_SURVIVOR_SOURCE_RANK.get(source_name, 0)),
         "structured_field_coverage": int(_count_present_fields(typed)),
-        "summary_richness": int(min(len(str(projection.get("canonical_summary") or "")) // 120, 10)),
+        "summary_richness": int(
+            min(len(str(projection.get("canonical_summary") or "")) // 120, 10)
+        ),
         "timeline_depth": int(min(len(timeline), 10) * 3),
     }
     if projection.get("institution_name"):
@@ -975,7 +1045,9 @@ def _build_member_score_breakdown(
         breakdown["country_bonus"] = 2
     if vendor_name:
         vendor_is_known_edtech = _is_known_edtech_vendor_name(vendor_name)
-        same_vendor_identity = not institution_name or _identity_match_quality(institution_name, vendor_name) >= 85
+        same_vendor_identity = (
+            not institution_name or _identity_match_quality(institution_name, vendor_name) >= 85
+        )
         if vendor_is_known_edtech and same_vendor_identity:
             breakdown["vendor_wide_source_bonus"] = 18
         elif vendor_is_known_edtech and institution_name:
@@ -994,7 +1066,9 @@ def _build_member_score_breakdown(
     return breakdown
 
 
-def _member_score(source_name: str, projection: Dict[str, Any], source_enrichment: SourceEnrichment) -> int:
+def _member_score(
+    source_name: str, projection: Dict[str, Any], source_enrichment: SourceEnrichment
+) -> int:
     return sum(_build_member_score_breakdown(source_name, projection, source_enrichment).values())
 
 
@@ -1055,7 +1129,8 @@ def _extract_disclosure_field_values(
         "records_affected_exact": data_impact.get("records_affected_exact"),
         "records_affected_min": data_impact.get("records_affected_min"),
         "records_affected_max": data_impact.get("records_affected_max"),
-        "data_categories": data_impact.get("data_categories") or data_impact.get("data_types_affected"),
+        "data_categories": data_impact.get("data_categories")
+        or data_impact.get("data_types_affected"),
         "data_exfiltrated": data_impact.get("data_exfiltrated"),
         "data_breached": typed.get("data_breached"),
         "systems_affected": system_impact.get("systems_affected"),
@@ -1084,7 +1159,9 @@ def _build_source_disclosure_document(
     projection_field_sources: Optional[Dict[str, List[str]]] = None,
     resolved_field_values: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    selected_enrichment_id = str(selected_source_enrichment_id) if selected_source_enrichment_id else None
+    selected_enrichment_id = (
+        str(selected_source_enrichment_id) if selected_source_enrichment_id else None
+    )
     source_entries: List[Dict[str, Any]] = []
     field_contributors: Dict[str, List[str]] = {}
 
@@ -1108,7 +1185,9 @@ def _build_source_disclosure_document(
                 "raw_title": source_incident.raw_title,
                 "raw_subtitle": source_incident.raw_subtitle,
                 "source_published_at": (
-                    source_incident.source_published_at.isoformat() if source_incident.source_published_at else None
+                    source_incident.source_published_at.isoformat()
+                    if source_incident.source_published_at
+                    else None
                 ),
                 "is_primary_member": bool(membership.is_primary_member),
                 "survivor_score": float(membership.survivor_score or 0.0),
@@ -1166,7 +1245,11 @@ def _build_source_disclosure_document(
                 break
 
     selected_source = next(
-        (entry for entry in source_entries if str(entry.get("source_enrichment_id")) == selected_enrichment_id),
+        (
+            entry
+            for entry in source_entries
+            if str(entry.get("source_enrichment_id")) == selected_enrichment_id
+        ),
         None,
     )
     return {
@@ -1177,14 +1260,18 @@ def _build_source_disclosure_document(
             "version": 1,
             "selection_basis": "highest_survivor_score",
             "selected_source_enrichment_id": selected_enrichment_id,
-            "selected_source_incident_id": selected_source.get("source_incident_id") if selected_source else None,
+            "selected_source_incident_id": (
+                selected_source.get("source_incident_id") if selected_source else None
+            ),
             "tracked_field_labels": _DISCLOSURE_FIELD_LABELS,
             "sources": source_entries,
         },
     }
 
 
-def _add_projection_source(provenance: Dict[str, List[str]], path: str, source_enrichment_id: str) -> None:
+def _add_projection_source(
+    provenance: Dict[str, List[str]], path: str, source_enrichment_id: str
+) -> None:
     if not path:
         return
     contributors = provenance.setdefault(path, [])
@@ -1205,7 +1292,9 @@ def _seed_projection_provenance(
     if isinstance(normalized_value, dict):
         for key, nested_value in normalized_value.items():
             child_path = f"{path}.{key}" if path else str(key)
-            _seed_projection_provenance(nested_value, source_enrichment_id, provenance, path=child_path)
+            _seed_projection_provenance(
+                nested_value, source_enrichment_id, provenance, path=child_path
+            )
         return
     _add_projection_source(provenance, path, source_enrichment_id)
 
@@ -1229,7 +1318,9 @@ def _merge_typed_value(
             child_path = f"{path}.{key}" if path else str(key)
             if key not in merged:
                 merged[key] = deepcopy(source_value)
-                _seed_projection_provenance(source_value, source_enrichment_id, provenance, path=child_path)
+                _seed_projection_provenance(
+                    source_value, source_enrichment_id, provenance, path=child_path
+                )
             else:
                 merged[key] = _merge_typed_value(
                     merged[key],
@@ -1303,7 +1394,10 @@ def _merge_projection_top_level(base: Dict[str, Any], incoming: Dict[str, Any]) 
     elif not current_precision and incoming_precision:
         merged["date_precision"] = incoming_precision
 
-    if merged.get("source_published_at") is None and incoming.get("source_published_at") is not None:
+    if (
+        merged.get("source_published_at") is None
+        and incoming.get("source_published_at") is not None
+    ):
         merged["source_published_at"] = incoming.get("source_published_at")
     return merged
 
@@ -1346,7 +1440,9 @@ def _build_merged_projection(
         merged_projection = _merge_projection_top_level(merged_projection, incoming_projection)
 
     merged_projection["typed_enrichment"] = merged_typed
-    merged_projection["timeline"] = merged_typed.get("timeline") or merged_projection.get("timeline") or []
+    merged_projection["timeline"] = (
+        merged_typed.get("timeline") or merged_projection.get("timeline") or []
+    )
     return merged_projection, projection_field_sources
 
 
@@ -1366,9 +1462,13 @@ class V2CanonicalizationService:
     ) -> None:
         self.canonical_repository = canonical_repository or CanonicalIncidentRepository()
         self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
-        self.source_enrichment_repository = source_enrichment_repository or SourceEnrichmentRepository()
+        self.source_enrichment_repository = (
+            source_enrichment_repository or SourceEnrichmentRepository()
+        )
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
-        self.analytics_refresh_repository = analytics_refresh_repository or AnalyticsRefreshRepository()
+        self.analytics_refresh_repository = (
+            analytics_refresh_repository or AnalyticsRefreshRepository()
+        )
 
     def _find_existing_canonical(
         self,
@@ -1386,7 +1486,9 @@ class V2CanonicalizationService:
         ]
         url_candidates = [
             candidate
-            for candidate in self.canonical_repository.find_by_url_candidates(session, normalized_urls)
+            for candidate in self.canonical_repository.find_by_url_candidates(
+                session, normalized_urls
+            )
             if str(candidate.id) not in excluded_ids
         ]
         compatible_url_candidates = [
@@ -1613,14 +1715,19 @@ class V2CanonicalizationService:
         projection: Dict[str, Any],
     ) -> CanonicalEnrichment:
         existing = session.execute(
-            select(CanonicalEnrichment).where(CanonicalEnrichment.canonical_incident_id == canonical.id).limit(1)
+            select(CanonicalEnrichment)
+            .where(CanonicalEnrichment.canonical_incident_id == canonical.id)
+            .limit(1)
         ).scalar_one_or_none()
         if existing is None:
             existing = CanonicalEnrichment(canonical_incident_id=canonical.id)
 
         member_rows = session.execute(
             select(CanonicalMembership, SourceEnrichment, SourceIncident)
-            .join(SourceEnrichment, SourceEnrichment.source_incident_id == CanonicalMembership.source_incident_id)
+            .join(
+                SourceEnrichment,
+                SourceEnrichment.source_incident_id == CanonicalMembership.source_incident_id,
+            )
             .join(SourceIncident, SourceIncident.id == CanonicalMembership.source_incident_id)
             .where(CanonicalMembership.canonical_incident_id == canonical.id)
         ).all()
@@ -1651,8 +1758,15 @@ class V2CanonicalizationService:
             member_documents.append(
                 {
                     "membership": SimpleNamespace(
-                        is_primary_member=str(canonical.primary_source_incident_id or source_incident.id) == str(source_incident.id),
-                        survivor_score=float(_member_score(source_incident.source_name, projection, source_enrichment)),
+                        is_primary_member=str(
+                            canonical.primary_source_incident_id or source_incident.id
+                        )
+                        == str(source_incident.id),
+                        survivor_score=float(
+                            _member_score(
+                                source_incident.source_name, projection, source_enrichment
+                            )
+                        ),
                     ),
                     "source_enrichment": source_enrichment,
                     "source_incident": source_incident,
@@ -1668,7 +1782,9 @@ class V2CanonicalizationService:
         merged_projection, projection_field_sources = _build_merged_projection(
             projection,
             member_documents,
-            selected_source_enrichment_id=str(source_enrichment.id) if source_enrichment.id else None,
+            selected_source_enrichment_id=(
+                str(source_enrichment.id) if source_enrichment.id else None
+            ),
         )
         _apply_projection_to_canonical(canonical, merged_projection, authoritative=True)
         session.add(canonical)
@@ -1678,7 +1794,9 @@ class V2CanonicalizationService:
         field_provenance = _build_source_disclosure_document(
             canonical,
             member_documents,
-            selected_source_enrichment_id=str(source_enrichment.id) if source_enrichment.id else None,
+            selected_source_enrichment_id=(
+                str(source_enrichment.id) if source_enrichment.id else None
+            ),
             projection_field_sources=projection_field_sources,
             resolved_field_values=resolved_field_values,
         )
@@ -1691,7 +1809,11 @@ class V2CanonicalizationService:
             "vendor_name": merged_projection.get("vendor_name"),
             "country": merged_projection.get("country"),
             "country_code": merged_projection.get("country_code"),
-            "incident_date": merged_projection.get("incident_date").isoformat() if merged_projection.get("incident_date") else None,
+            "incident_date": (
+                merged_projection.get("incident_date").isoformat()
+                if merged_projection.get("incident_date")
+                else None
+            ),
             "attack_category": merged_projection.get("attack_category"),
             "attack_vector": merged_projection.get("attack_vector"),
             "threat_actor_name": merged_projection.get("threat_actor_name"),
@@ -1704,7 +1826,9 @@ class V2CanonicalizationService:
         session.add(existing)
 
         session.execute(
-            select(CanonicalTimelineEvent).where(CanonicalTimelineEvent.canonical_incident_id == canonical.id)
+            select(CanonicalTimelineEvent).where(
+                CanonicalTimelineEvent.canonical_incident_id == canonical.id
+            )
         ).scalars().all()
         session.query(CanonicalTimelineEvent).filter_by(canonical_incident_id=canonical.id).delete()
         for index, event in enumerate(merged_projection.get("timeline") or [], start=1):
@@ -1731,7 +1855,9 @@ class V2CanonicalizationService:
     ) -> Tuple[Optional[SourceEnrichment], Optional[Dict[str, Any]]]:
         if canonical.primary_source_incident_id is None:
             return None, None
-        primary_source_incident = self.source_incident_repository.get_by_id(session, canonical.primary_source_incident_id)
+        primary_source_incident = self.source_incident_repository.get_by_id(
+            session, canonical.primary_source_incident_id
+        )
         if primary_source_incident is None:
             return None, None
         primary_source_enrichment = self.source_enrichment_repository.get_by_source_incident(
@@ -1740,7 +1866,9 @@ class V2CanonicalizationService:
         )
         if primary_source_enrichment is None or not primary_source_enrichment.typed_enrichment:
             return None, None
-        primary_projection = build_source_projection(primary_source_incident, primary_source_enrichment)
+        primary_projection = build_source_projection(
+            primary_source_incident, primary_source_enrichment
+        )
         return primary_source_enrichment, primary_projection
 
     def _refresh_canonical_from_valid_members(
@@ -1757,10 +1885,19 @@ class V2CanonicalizationService:
 
         valid_members: List[Tuple[CanonicalMembership, SourceEnrichment, Dict[str, Any]]] = []
         for membership in memberships:
-            enrichment = self.source_enrichment_repository.get_by_source_incident(session, membership.source_incident_id)
-            if enrichment is None or enrichment.is_education_related is False or not enrichment.typed_enrichment:
+            enrichment = self.source_enrichment_repository.get_by_source_incident(
+                session, membership.source_incident_id
+            )
+            if (
+                enrichment is None
+                or enrichment.manual_review_required
+                or enrichment.is_education_related is False
+                or not enrichment.typed_enrichment
+            ):
                 continue
-            source_incident = self.source_incident_repository.get_by_id(session, membership.source_incident_id)
+            source_incident = self.source_incident_repository.get_by_id(
+                session, membership.source_incident_id
+            )
             if source_incident is None:
                 continue
             projection = build_source_projection(source_incident, enrichment)
@@ -1799,7 +1936,9 @@ class V2CanonicalizationService:
         if existing_membership is None:
             return {"canonicalized": False, "reason": reason}
 
-        canonical = self.canonical_repository.get_by_id(session, str(existing_membership.canonical_incident_id))
+        canonical = self.canonical_repository.get_by_id(
+            session, str(existing_membership.canonical_incident_id)
+        )
         if canonical is None:
             return {"canonicalized": False, "reason": "dangling_membership"}
 
@@ -1808,13 +1947,19 @@ class V2CanonicalizationService:
         existing_membership.field_contribution = {}
         session.add(existing_membership)
 
-        has_valid_member, primary_source_enrichment, primary_projection = self._refresh_canonical_from_valid_members(
-            session,
-            canonical=canonical,
+        has_valid_member, primary_source_enrichment, primary_projection = (
+            self._refresh_canonical_from_valid_members(
+                session,
+                canonical=canonical,
+            )
         )
         canonical.status = "open" if has_valid_member else "excluded"
         canonical.is_education_related = True if has_valid_member else False
-        if has_valid_member and primary_source_enrichment is not None and primary_projection is not None:
+        if (
+            has_valid_member
+            and primary_source_enrichment is not None
+            and primary_projection is not None
+        ):
             _apply_projection_to_canonical(canonical, primary_projection, authoritative=True)
             self._upsert_canonical_enrichment(
                 session,
@@ -1865,18 +2010,30 @@ class V2CanonicalizationService:
             metadata_field="last_non_education_source_incident_id",
         )
 
-    def canonicalize_source_incident(self, session: Session, source_incident_id) -> Dict[str, object]:
+    def canonicalize_source_incident(
+        self, session: Session, source_incident_id
+    ) -> Dict[str, object]:
         source_incident = self.source_incident_repository.get_by_id(session, source_incident_id)
         if source_incident is None:
             return {"canonicalized": False, "reason": "missing_source_incident"}
 
-        source_enrichment = self.source_enrichment_repository.get_by_source_incident(session, source_incident.id)
+        source_enrichment = self.source_enrichment_repository.get_by_source_incident(
+            session, source_incident.id
+        )
         if source_enrichment is None:
             return {"canonicalized": False, "reason": "missing_source_enrichment"}
         existing_membership = self.canonical_repository.get_membership_for_source_incident(
             session,
             str(source_incident.id),
         )
+        if source_enrichment.manual_review_required:
+            return self._handle_invalid_source_membership(
+                session,
+                source_incident=source_incident,
+                existing_membership=existing_membership,
+                reason="manual_review_required",
+                metadata_field="last_manual_review_source_incident_id",
+            )
         if source_enrichment.is_education_related is False:
             return self._handle_non_education_source(
                 session,
@@ -1901,29 +2058,39 @@ class V2CanonicalizationService:
 
         old_canonical = None
         if existing_membership is not None:
-            old_canonical = self.canonical_repository.get_by_id(session, str(existing_membership.canonical_incident_id))
+            old_canonical = self.canonical_repository.get_by_id(
+                session, str(existing_membership.canonical_incident_id)
+            )
             canonical = old_canonical
             if canonical is None:
                 return {"canonicalized": False, "reason": "dangling_membership"}
-            replacement_canonical, replacement_match_type, replacement_match_score = self._find_existing_canonical(
-                session,
-                source_incident,
-                projection,
-                exclude_canonical_ids=(canonical.id,),
+            replacement_canonical, replacement_match_type, replacement_match_score = (
+                self._find_existing_canonical(
+                    session,
+                    source_incident,
+                    projection,
+                    exclude_canonical_ids=(canonical.id,),
+                )
             )
-            if replacement_canonical is not None and str(replacement_canonical.id) != str(canonical.id):
+            if replacement_canonical is not None and str(replacement_canonical.id) != str(
+                canonical.id
+            ):
                 existing_membership.canonical_incident_id = replacement_canonical.id
                 existing_membership.match_type = replacement_match_type
                 existing_membership.match_score = replacement_match_score
                 existing_membership.matched_at = now
                 canonical = replacement_canonical
             existing_membership.survivor_score = member_score
-            existing_membership.field_contribution = _build_field_provenance(projection, source_enrichment.id)
+            existing_membership.field_contribution = _build_field_provenance(
+                projection, source_enrichment.id
+            )
             session.add(existing_membership)
             match_type = existing_membership.match_type
             match_score = float(existing_membership.match_score or 0.0)
         else:
-            canonical, match_type, match_score = self._find_existing_canonical(session, source_incident, projection)
+            canonical, match_type, match_score = self._find_existing_canonical(
+                session, source_incident, projection
+            )
             if canonical is None:
                 canonical = CanonicalIncident(
                     canonical_key=_canonical_key_for_projection(projection, source_incident.id),
@@ -1964,7 +2131,9 @@ class V2CanonicalizationService:
         session.flush()
 
         self._recalculate_primary_membership(session, canonical)
-        primary_source_enrichment, primary_projection = self._resolve_primary_projection(session, canonical)
+        primary_source_enrichment, primary_projection = self._resolve_primary_projection(
+            session, canonical
+        )
         if primary_source_enrichment is not None and primary_projection is not None:
             _apply_projection_to_canonical(canonical, primary_projection, authoritative=True)
             session.add(canonical)
@@ -2003,8 +2172,14 @@ class V2CanonicalizationService:
             "canonical_incident_id": str(canonical.id),
             "match_type": match_type,
             "match_score": float(match_score),
-            "primary_source_incident_id": str(canonical.primary_source_incident_id) if canonical.primary_source_incident_id else None,
-            "canonical_enrichment_id": str(canonical_enrichment.id) if canonical_enrichment.id else None,
+            "primary_source_incident_id": (
+                str(canonical.primary_source_incident_id)
+                if canonical.primary_source_incident_id
+                else None
+            ),
+            "canonical_enrichment_id": (
+                str(canonical_enrichment.id) if canonical_enrichment.id else None
+            ),
             "refresh_tasks_enqueued": refresh_task_enqueued,
             "retired_refresh_tasks_enqueued": retired_refresh_tasks_enqueued,
             "dashboard_refresh_tasks_enqueued": dashboard_refresh_enqueued,
