@@ -789,6 +789,18 @@ def _url_candidate_identity_compatible(
     return True
 
 
+def _replacement_outscores_current_canonical(
+    projection: Dict[str, Any],
+    current_canonical: CanonicalIncident,
+    replacement_score: float,
+    replacement_match_type: Optional[str],
+) -> bool:
+    if replacement_match_type == "vendor_followup":
+        return True
+    current_score, _ = _score_candidate_match(projection, current_canonical)
+    return replacement_score > current_score
+
+
 def build_source_projection(source_incident, source_enrichment: SourceEnrichment) -> Dict[str, Any]:
     """Project a source incident + source enrichment into canonical-shaped fields."""
     typed = source_enrichment.typed_enrichment or {}
@@ -2106,11 +2118,17 @@ class V2CanonicalizationService:
             if replacement_canonical is not None and str(replacement_canonical.id) != str(
                 canonical.id
             ):
-                existing_membership.canonical_incident_id = replacement_canonical.id
-                existing_membership.match_type = replacement_match_type
-                existing_membership.match_score = replacement_match_score
-                existing_membership.matched_at = now
-                canonical = replacement_canonical
+                if _replacement_outscores_current_canonical(
+                    projection,
+                    canonical,
+                    replacement_match_score,
+                    replacement_match_type,
+                ):
+                    existing_membership.canonical_incident_id = replacement_canonical.id
+                    existing_membership.match_type = replacement_match_type
+                    existing_membership.match_score = replacement_match_score
+                    existing_membership.matched_at = now
+                    canonical = replacement_canonical
             existing_membership.survivor_score = member_score
             existing_membership.field_contribution = _build_field_provenance(
                 projection, source_enrichment.id

@@ -16,6 +16,7 @@ from src.edu_cti_v2.services.canonicalization import (
     _canonical_completeness_score,
     _identity_match_quality,
     _member_score,
+    _replacement_outscores_current_canonical,
     _score_candidate_match,
 )
 
@@ -287,6 +288,44 @@ def test_find_existing_scores_url_candidates_against_larger_vendor_campaign():
     assert candidate is larger_campaign_candidate
     assert match_type == "vendor_date"
     assert score > 140
+
+
+def test_existing_membership_only_moves_to_better_vendor_campaign_cluster():
+    projection = {
+        "institution_name": "Instructure",
+        "vendor_name": "Instructure",
+        "country_code": "US",
+        "incident_date": "2026-05-07",
+        "attack_category": "supply_chain_software",
+    }
+    larger_current = SimpleNamespace(
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country_code="US",
+        incident_date=datetime(2026, 5, 1).date(),
+        attack_category="supply_chain_software",
+        ransomware_family=None,
+        threat_actor_name=None,
+        memberships=[object() for _ in range(50)],
+    )
+    smaller_replacement = SimpleNamespace(
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country_code="US",
+        incident_date=datetime(2026, 5, 7).date(),
+        attack_category="supply_chain_software",
+        ransomware_family=None,
+        threat_actor_name=None,
+        memberships=[object() for _ in range(3)],
+    )
+    smaller_score, _ = _score_candidate_match(projection, smaller_replacement)
+
+    assert not _replacement_outscores_current_canonical(
+        projection,
+        larger_current,
+        smaller_score,
+        "vendor_date",
+    )
 
 
 def test_build_source_projection_promotes_education_technology_provider_as_vendor_name():
