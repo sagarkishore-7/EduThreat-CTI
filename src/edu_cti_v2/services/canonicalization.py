@@ -758,8 +758,8 @@ def _score_candidate_match(
         # Vendor-wide incidents are often covered over several days with
         # inconsistent incident dates. Prefer the larger existing campaign
         # cluster so late and early source articles converge instead of
-        # fragmenting into date-nearest canonicals.
-        score += min(len(getattr(candidate, "memberships", []) or []), 50) / 5.0
+        # fragmenting into date-nearest or country-nearest canonicals.
+        score += min(len(getattr(candidate, "memberships", []) or []), 75) / 3.0
 
     return score, best_match_type
 

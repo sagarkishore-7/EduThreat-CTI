@@ -366,6 +366,48 @@ def test_existing_vendor_membership_moves_to_larger_same_family_campaign_cluster
     )
 
 
+def test_existing_vendor_membership_moves_to_larger_campaign_despite_country_nearest_cluster():
+    projection = {
+        "institution_name": "Instructure",
+        "vendor_name": "Instructure",
+        "country_code": "CA",
+        "incident_date": "2026-04-29",
+        "attack_category": "third_party_compromise",
+    }
+    smaller_country_nearest = SimpleNamespace(
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country_code="CA",
+        incident_date=datetime(2026, 4, 29).date(),
+        attack_category="third_party_compromise",
+        ransomware_family=None,
+        threat_actor_name=None,
+        memberships=[object() for _ in range(2)],
+    )
+    larger_global_campaign = SimpleNamespace(
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country_code="US",
+        incident_date=datetime(2026, 5, 1).date(),
+        attack_category="supply_chain_software",
+        ransomware_family=None,
+        threat_actor_name=None,
+        memberships=[object() for _ in range(107)],
+    )
+    replacement_score, replacement_type = _score_candidate_match(
+        projection,
+        larger_global_campaign,
+        allow_exact_cross_country_same_event=True,
+    )
+
+    assert _replacement_outscores_current_canonical(
+        projection,
+        smaller_country_nearest,
+        replacement_score,
+        replacement_type,
+    )
+
+
 def test_known_edtech_vendor_campaign_can_match_cross_country_within_campaign_window():
     projection = {
         "institution_name": "Instructure",
