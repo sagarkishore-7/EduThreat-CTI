@@ -189,6 +189,11 @@ def test_identity_match_quality_accepts_common_school_district_name_variants():
     assert _identity_match_quality("Monroe-Woodbury School District", "Monroe City School District") == 0
 
 
+def test_identity_match_quality_treats_canvas_as_instructure_vendor_alias():
+    assert _identity_match_quality("Canvas", "Instructure") == 100
+    assert _identity_match_quality("Canvas LMS", "Instructure Inc.") == 100
+
+
 def test_build_source_projection_promotes_education_technology_provider_as_vendor_name():
     incident = _source_incident(event_key="powerschool-story")
     incident.raw_institution_name = "PowerSchool"

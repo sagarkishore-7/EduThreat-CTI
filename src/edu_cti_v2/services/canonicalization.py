@@ -85,6 +85,13 @@ _KNOWN_EDTECH_VENDOR_RE = re.compile(
     r")$",
     re.IGNORECASE,
 )
+_KNOWN_EDTECH_VENDOR_ALIASES = {
+    "canvas": "instructure",
+    "canvas lms": "instructure",
+    "canvas learning management system": "instructure",
+    "instructure inc": "instructure",
+    "instructure incorporated": "instructure",
+}
 _VENDOR_CONTEXT_CUES = (
     "education tech provider",
     "education technology provider",
@@ -450,11 +457,38 @@ def _normalized_identity(value: Optional[str]) -> Optional[str]:
     return normalized or None
 
 
+def _known_edtech_vendor_identity(value: Optional[str]) -> Optional[str]:
+    normalized = _normalized_identity(value)
+    if not normalized:
+        return None
+    normalized = re.sub(
+        r"\b(?:inc|incorporated|llc|ltd|corp|corporation)\.?\b",
+        "",
+        normalized,
+    )
+    normalized = re.sub(r"\s+", " ", normalized).strip(" .")
+    return _KNOWN_EDTECH_VENDOR_ALIASES.get(normalized, normalized)
+
+
 def _identity_match_quality(left: Optional[str], right: Optional[str]) -> int:
     left_normalized = _normalized_identity(left)
     right_normalized = _normalized_identity(right)
     if not left_normalized or not right_normalized:
         return 0
+    left_vendor = _known_edtech_vendor_identity(left_normalized)
+    right_vendor = _known_edtech_vendor_identity(right_normalized)
+    if (
+        left_vendor
+        and right_vendor
+        and left_vendor == right_vendor
+        and (
+            left_vendor != left_normalized
+            or right_vendor != right_normalized
+            or _is_known_edtech_vendor_name(left_normalized)
+            or _is_known_edtech_vendor_name(right_normalized)
+        )
+    ):
+        return 100
     if left_normalized == right_normalized:
         return 100
     left_stripped = re.sub(r"\s+\([A-Za-z0-9&.\- ]{2,}\)$", "", left_normalized).strip()
