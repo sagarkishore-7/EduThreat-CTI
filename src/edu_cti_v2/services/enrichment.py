@@ -342,16 +342,16 @@ def _structured_curated_source_should_review_non_edu_article(source_incident) ->
         )
         if value
     )
-    if _HEALTHCARE_SCOPE_RE.search(evidence) and not re.search(
-        r"\b(?:school|college|academy|polytechnic|school\s+district)\b",
-        evidence,
-        re.IGNORECASE,
-    ):
-        return False
+    title_text = _compact_text(getattr(source_incident, "raw_title", None))
+    if _HEALTHCARE_SCOPE_RE.search(evidence):
+        title_has_healthcare_scope = bool(_HEALTHCARE_SCOPE_RE.search(title_text))
+        title_has_education_scope = bool(_EDUCATION_SCOPE_RE.search(title_text))
+        if title_has_healthcare_scope or not title_has_education_scope:
+            return False
     has_education_scope = bool(_EDUCATION_SCOPE_RE.search(evidence))
     has_attack_context = bool(
         _coerce_attack_hint(getattr(source_incident, "raw_attack_hint", None))
-        or _INCIDENT_LANGUAGE_RE.search(getattr(source_incident, "raw_title", "") or "")
+        or _INCIDENT_LANGUAGE_RE.search(title_text)
     )
     return has_education_scope and has_attack_context
 
