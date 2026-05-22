@@ -906,6 +906,89 @@ def test_enrichment_service_reviews_curated_target_when_selected_article_is_unre
     assert "supporting article" in saved.manual_review_reason
 
 
+def test_enrichment_service_reviews_curated_university_target_even_without_attack_hint():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    enricher = Mock()
+    enricher._enrich_article.return_value = (
+        None,
+        {
+            "is_edu_cyber_incident": False,
+            "education_relevance_reasoning": "The article did not contain the target victim.",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "konbriefing"
+    incident.source_group = "curated"
+    incident.raw_title = "Ransomware at a university in Texas"
+    incident.raw_institution_name = "Rice University"
+    incident.raw_victim_name = "Rice University"
+    incident.raw_attack_hint = None
+    document = _article_document(incident)
+    document.title = "Unrelated campus technology story"
+    document.content_text = "The article discusses general technology procurement."
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is False
+    assert outcome["is_education_related"] is None
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.manual_review_required is True
+    assert "supporting article" in saved.manual_review_reason
+
+
+def test_enrichment_service_does_not_review_curated_university_hospital_non_edu_row():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    enricher = Mock()
+    enricher._enrich_article.return_value = (
+        None,
+        {
+            "is_edu_cyber_incident": False,
+            "education_relevance_reasoning": "The source is a hospital operator.",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "konbriefing"
+    incident.source_group = "curated"
+    incident.raw_title = "Cyber attack on a university hospital in Spain"
+    incident.raw_institution_name = "Hospital Clinic de Barcelona"
+    incident.raw_victim_name = "Hospital Clinic de Barcelona"
+    incident.raw_attack_hint = None
+    document = _article_document(incident)
+    document.title = "Hospital service disruption after cyberattack"
+    document.content_text = "The article discusses hospital systems and patient care."
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is False
+    assert outcome["is_education_related"] is False
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.manual_review_required is False
+
+
 def test_enrichment_service_keeps_structured_source_multi_victim_drift_in_review():
     article_repo = Mock()
     source_enrichment_repo = Mock()

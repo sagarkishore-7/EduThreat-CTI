@@ -640,6 +640,10 @@ def _score_candidate_match(
     if best_quality <= 0 or best_match_type is None:
         return 0.0, None
     exact_vendor_identity = best_match_type == "vendor_date" and best_quality >= 100
+    exact_known_vendor_campaign = exact_vendor_identity and (
+        _is_known_edtech_vendor_name(best_incoming_value)
+        or _is_known_edtech_vendor_name(best_candidate_value)
+    )
 
     projection_date = parse_incident_date(
         str(projection.get("incident_date")) if projection.get("incident_date") else None
@@ -649,10 +653,6 @@ def _score_candidate_match(
     )
     if projection_date and candidate_date:
         if dates_within_window(projection_date, candidate_date, 14):
-            exact_known_vendor_campaign = exact_vendor_identity and (
-                _is_known_edtech_vendor_name(best_incoming_value)
-                or _is_known_edtech_vendor_name(best_candidate_value)
-            )
             date_score = (
                 20.0
                 if exact_known_vendor_campaign
@@ -682,7 +682,11 @@ def _score_candidate_match(
             and best_quality >= 100
             and projection_date is not None
             and candidate_date is not None
-            and dates_within_window(projection_date, candidate_date, 3)
+            and dates_within_window(
+                projection_date,
+                candidate_date,
+                14 if exact_known_vendor_campaign else 3,
+            )
             and _same_event_category_family(projection, candidate)
         )
         if not ((relaxed_vendor_followup and exact_vendor_identity) or exact_same_event):
@@ -2120,6 +2124,11 @@ class V2CanonicalizationService:
             canonical = old_canonical
             if canonical is None:
                 return {"canonicalized": False, "reason": "dangling_membership"}
+            current_match_score, _current_match_type = _score_candidate_match(
+                projection,
+                canonical,
+                allow_exact_cross_country_same_event=True,
+            )
             replacement_canonical, replacement_match_type, replacement_match_score = (
                 self._find_existing_canonical(
                     session,
@@ -2142,6 +2151,37 @@ class V2CanonicalizationService:
                     existing_membership.match_score = replacement_match_score
                     existing_membership.matched_at = now
                     canonical = replacement_canonical
+            should_detach_stale_membership = False
+            if str(canonical.id) == str(old_canonical.id) and current_match_score <= 0:
+                existing_canonical_memberships = self.canonical_repository.list_memberships(
+                    session, str(old_canonical.id)
+                )
+                if isinstance(existing_canonical_memberships, list):
+                    source_ids = {
+                        str(membership.source_incident_id)
+                        for membership in existing_canonical_memberships
+                    }
+                    should_detach_stale_membership = (
+                        str(source_incident.id) in source_ids and len(source_ids) > 1
+                    )
+            if should_detach_stale_membership:
+                canonical = CanonicalIncident(
+                    canonical_key=_canonical_key_for_projection(projection, source_incident.id),
+                    status="open",
+                    first_seen_at=source_incident.collected_at,
+                    last_seen_at=source_incident.collected_at,
+                    resolution_version=self.MATCHER_VERSION,
+                    resolution_metadata={
+                        "seeded_from_stale_membership": str(existing_membership.id),
+                        "previous_canonical_id": str(old_canonical.id),
+                    },
+                )
+                self.canonical_repository.add(session, canonical)
+                session.flush()
+                existing_membership.canonical_incident_id = canonical.id
+                existing_membership.match_type = "seed"
+                existing_membership.match_score = 100.0
+                existing_membership.matched_at = now
             existing_membership.survivor_score = member_score
             existing_membership.field_contribution = _build_field_provenance(
                 projection, source_enrichment.id

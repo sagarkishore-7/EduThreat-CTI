@@ -84,6 +84,17 @@ _ONLINE_COURSE_SCOPE_RE = re.compile(
     r"\b(?:andrew\s+tate|the\s+real\s+world|hustler'?s\s+university)\b",
     re.IGNORECASE,
 )
+_EDUCATION_SCOPE_RE = re.compile(
+    r"\b(?:university|universit(?:y|ies)|universit[a\u00e4]t|universidad|universidade|"
+    r"universit\u00e0|universiteit|college|school|academy|polytechnic|hochschule|"
+    r"school\s+district|community\s+college|technical\s+college)\b",
+    re.IGNORECASE,
+)
+_HEALTHCARE_SCOPE_RE = re.compile(
+    r"\b(?:hospital|hospitals|clinic|clinical|medicine|medical|health|nhs|"
+    r"klinikum|universit[a\u00e4]tsklinikum|chu)\b",
+    re.IGNORECASE,
+)
 _IDENTITY_TOKEN_STOP_WORDS = {
     "the",
     "of",
@@ -322,7 +333,27 @@ def _structured_curated_source_should_review_non_edu_article(source_incident) ->
         return False
     if not _source_has_strong_structured_identity(source_incident):
         return False
-    return bool(_coerce_attack_hint(getattr(source_incident, "raw_attack_hint", None)))
+    evidence = " ".join(
+        _compact_text(value)
+        for value in (
+            getattr(source_incident, "raw_institution_name", None),
+            getattr(source_incident, "raw_victim_name", None),
+            getattr(source_incident, "raw_title", None),
+        )
+        if value
+    )
+    if _HEALTHCARE_SCOPE_RE.search(evidence) and not re.search(
+        r"\b(?:school|college|academy|polytechnic|school\s+district)\b",
+        evidence,
+        re.IGNORECASE,
+    ):
+        return False
+    has_education_scope = bool(_EDUCATION_SCOPE_RE.search(evidence))
+    has_attack_context = bool(
+        _coerce_attack_hint(getattr(source_incident, "raw_attack_hint", None))
+        or _INCIDENT_LANGUAGE_RE.search(getattr(source_incident, "raw_title", "") or "")
+    )
+    return has_education_scope and has_attack_context
 
 
 def _coerce_attack_hint(value: Any) -> Optional[str]:
@@ -935,8 +966,7 @@ class V2EnrichmentService:
                 is_education_related = False
 
         if (
-            result is not None
-            and isinstance(raw_json_data, dict)
+            isinstance(raw_json_data, dict)
             and is_education_related is False
             and _structured_curated_source_should_review_non_edu_article(source_incident)
         ):
