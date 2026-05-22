@@ -54,6 +54,18 @@ def _is_safe_date(value: Any) -> bool:
     return True
 
 
+def _is_safe_incident_date_for_source(value: Any, source_published: Any) -> bool:
+    if value is None or not str(value).strip():
+        return True
+    if source_published is None or not str(source_published).strip():
+        return _is_safe_date(value)
+    if not _is_safe_date(value) or not _is_safe_date(source_published):
+        return False
+    incident_date = date.fromisoformat(str(value)[:10])
+    published_date = date.fromisoformat(str(source_published)[:10])
+    return (incident_date - published_date).days <= 90
+
+
 def _iter_timeline_dates(payload: dict[str, Any] | None) -> list[str]:
     timeline = []
     if isinstance(payload, dict):
@@ -118,12 +130,21 @@ def _diagnose_source_enrichment(enrichment: SourceEnrichment, source_incident) -
     )
     if not _is_safe_date(source_published):
         reasons.append(f"source_published_date={source_published!r}")
+    elif not _is_safe_incident_date_for_source(incident_date, source_published):
+        reasons.append(
+            f"incident_date_after_source_published_date={incident_date!r}>{source_published!r}"
+        )
 
     discovery_date = typed.get("discovery_date") or raw.get("discovery_date")
     if not _is_safe_date(discovery_date):
         reasons.append(f"discovery_date={discovery_date!r}")
 
-    timeline_dates = [value for value in (_iter_timeline_dates(typed) + _iter_timeline_dates(raw)) if not _is_safe_date(value)]
+    timeline_dates = [
+        value
+        for value in (_iter_timeline_dates(typed) + _iter_timeline_dates(raw))
+        if not _is_safe_date(value)
+        or not _is_safe_incident_date_for_source(value, source_published)
+    ]
     if timeline_dates:
         reasons.append(f"timeline_dates={timeline_dates[:3]!r}")
 

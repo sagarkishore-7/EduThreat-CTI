@@ -14,6 +14,7 @@ Covers:
 - API endpoints /metrics, /api/metrics/fetch-stats, /api/metrics/research-summary
 """
 
+import os
 import re
 import time
 import sqlite3
@@ -663,7 +664,15 @@ class TestSerpMetrics:
     def test_serp_query_increments_counter(self):
         m = _fresh()
         from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs_module
-        with patch.object(fs_module, "_metrics", m), \
+        with patch.dict(
+            os.environ,
+            {
+                "EDU_CTI_ENABLE_GOOGLE_NEWS_DISCOVERY": "0",
+                "EDU_CTI_ENABLE_BING_NEWS_DISCOVERY": "0",
+                "EDU_CTI_ENABLE_OXYLABS_SERP": "1",
+            },
+        ), \
+             patch.object(fs_module, "_metrics", m), \
              patch.object(fs_module.OxylabsClient, "search_news", return_value=[
                  {"url": "https://bleepingcomputer.com/news/a"}
              ]):
@@ -682,7 +691,15 @@ class TestSerpMetrics:
         from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs_module
         # Use two non-blocked domains. databreaches.net is in BLOCKED_FETCH_DOMAINS
         # (consistently fails all fetch tiers) so it is filtered out by SERP.
-        with patch.object(fs_module, "_metrics", m), \
+        with patch.dict(
+            os.environ,
+            {
+                "EDU_CTI_ENABLE_GOOGLE_NEWS_DISCOVERY": "0",
+                "EDU_CTI_ENABLE_BING_NEWS_DISCOVERY": "0",
+                "EDU_CTI_ENABLE_OXYLABS_SERP": "1",
+            },
+        ), \
+             patch.object(fs_module, "_metrics", m), \
              patch.object(fs_module.OxylabsClient, "search_news", return_value=[
                  {"url": "https://bleepingcomputer.com/news/a"},
                  {"url": "https://therecord.media/b"},
@@ -700,7 +717,15 @@ class TestSerpMetrics:
     def test_serp_zero_results_increments(self):
         m = _fresh()
         from src.edu_cti.pipeline.phase2.utils import fetching_strategy as fs_module
-        with patch.object(fs_module, "_metrics", m), \
+        with patch.dict(
+            os.environ,
+            {
+                "EDU_CTI_ENABLE_GOOGLE_NEWS_DISCOVERY": "0",
+                "EDU_CTI_ENABLE_BING_NEWS_DISCOVERY": "0",
+                "EDU_CTI_ENABLE_OXYLABS_SERP": "1",
+            },
+        ), \
+             patch.object(fs_module, "_metrics", m), \
              patch.object(fs_module.OxylabsClient, "search_news", return_value=[]):
             incident = {
                 "incident_id": "konbriefing_101",

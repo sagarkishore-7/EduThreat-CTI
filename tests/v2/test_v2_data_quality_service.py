@@ -86,6 +86,45 @@ def test_data_quality_service_requeues_bad_enrichment_for_reenrich():
     assert queued_task.payload["re_enrich_attempts"] == 1
 
 
+def test_data_quality_service_requeues_dates_after_source_publication_window():
+    source_incident = _source_incident()
+    source_incident.source_published_at = datetime(2026, 1, 12, 8, 0, tzinfo=timezone.utc)
+    source_incident.raw_incident_date = None
+    enrichment = _source_enrichment(source_incident)
+    enrichment.raw_extraction = {
+        "institution_name": "University of Hawaii",
+        "incident_date": "2026-08-01",
+        "source_published_date": "2026-01-12",
+        "timeline": [{"date": "2026-08-01"}],
+    }
+    enrichment.typed_enrichment = {
+        "institution_name": "University of Hawaii",
+        "incident_date": "2026-08-01",
+        "source_published_date": "2026-01-12",
+        "timeline": [{"date": "2026-08-01"}],
+    }
+    enrichment_repo = Mock()
+    enrichment_repo.list_for_quality_sweep.return_value = [enrichment]
+    source_repo = Mock()
+    source_repo.get_by_id.return_value = source_incident
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    session = Mock()
+
+    service = V2DataQualityService(
+        source_enrichment_repository=enrichment_repo,
+        source_incident_repository=source_repo,
+        pipeline_task_repository=task_repo,
+    )
+
+    result = service.sweep_invalid_source_enrichments(session)
+
+    assert result["requeued_for_reenrichment"] == 1
+    assert "incident_date_after_source_published_date=" in enrichment.re_enrich_reason
+    assert "timeline_dates=" in enrichment.re_enrich_reason
+    task_repo.enqueue.assert_called_once()
+
+
 def test_data_quality_service_flags_manual_review_after_max_attempts():
     source_incident = _source_incident()
     enrichment = _source_enrichment(source_incident)

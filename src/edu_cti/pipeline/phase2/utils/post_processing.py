@@ -121,6 +121,18 @@ _LAST_MONTH_RE = re.compile(r"\blast\s+month\b", re.IGNORECASE)
 _LAST_YEAR_RE = re.compile(r"\blast\s+year\b", re.IGNORECASE)
 _EARLIER_THIS_MONTH_RE = re.compile(r"\bearlier\s+this\s+month\b", re.IGNORECASE)
 _EARLIER_THIS_YEAR_RE = re.compile(r"\bearlier\s+this\s+year\b", re.IGNORECASE)
+_FUTURE_DATE_TOLERANCE_DAYS = 3
+_MAX_EVENT_DAYS_AFTER_PUBLICATION = 90
+_IMPRECISE_DATE_PRECISIONS = {
+    "approx",
+    "approximate",
+    "estimated",
+    "month",
+    "month_only",
+    "year",
+    "year_only",
+    "unknown",
+}
 
 _OCCURRENCE_EVENT_TYPES = {
     "initial_access", "reconnaissance", "exploitation",
@@ -1155,6 +1167,137 @@ def _derive_relative_incident_date(
     return None
 
 
+def _precision_is_imprecise(value: Any) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip().lower().replace("-", "_")
+    return text in _IMPRECISE_DATE_PRECISIONS
+
+
+def _same_day_previous_year(value: _date) -> _date:
+    try:
+        return value.replace(year=value.year - 1)
+    except ValueError:
+        # Leap-day dates cannot be represented in most previous years.
+        return value.replace(year=value.year - 1, day=28)
+
+
+def _repair_date_against_publication_anchor(
+    value: Any,
+    *,
+    precision: Any,
+    publication_date: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """Repair or discard dates that are impossible relative to publication.
+
+    LLMs occasionally expand month-only phrases such as "in August" using the
+    article publication year even when the article is published in January and
+    the month must refer to the previous year. For imprecise dates we can safely
+    move that value back one year; exact dates are discarded instead of guessed.
+    """
+    candidate_iso = _coerce_iso_date(value)
+    if not candidate_iso:
+        return None, "invalid_date"
+
+    try:
+        candidate_date = _date.fromisoformat(candidate_iso)
+    except ValueError:
+        return None, "invalid_date"
+
+    anchor_iso = _coerce_iso_date(publication_date)
+    anchor_date = None
+    if anchor_iso:
+        try:
+            anchor_date = _date.fromisoformat(anchor_iso)
+        except ValueError:
+            anchor_date = None
+
+    is_imprecise = _precision_is_imprecise(precision)
+    if anchor_date and (candidate_date - anchor_date).days > _MAX_EVENT_DAYS_AFTER_PUBLICATION:
+        shifted = _same_day_previous_year(candidate_date)
+        if (
+            is_imprecise
+            and candidate_date.year == anchor_date.year
+            and shifted >= _date(1990, 1, 1)
+            and (shifted - anchor_date).days <= _MAX_EVENT_DAYS_AFTER_PUBLICATION
+        ):
+            return shifted.isoformat(), "shifted_previous_year_after_publication"
+        return None, "discarded_after_publication"
+
+    today_limit = _date.today() + timedelta(days=_FUTURE_DATE_TOLERANCE_DAYS)
+    if candidate_date > today_limit:
+        shifted = _same_day_previous_year(candidate_date)
+        if (
+            anchor_date
+            and is_imprecise
+            and candidate_date.year == anchor_date.year
+            and shifted >= _date(1990, 1, 1)
+            and shifted <= today_limit
+        ):
+            return shifted.isoformat(), "shifted_previous_year_future_date"
+        return None, "discarded_future_date"
+
+    return candidate_iso, None
+
+
+def _repair_extracted_future_dates(payload: Dict[str, Any], publication_date: Optional[str]) -> None:
+    incident_date = payload.get("incident_date")
+    if incident_date:
+        repaired, reason = _repair_date_against_publication_anchor(
+            incident_date,
+            precision=payload.get("incident_date_precision") or payload.get("date_precision"),
+            publication_date=publication_date,
+        )
+        if repaired:
+            if repaired != _coerce_iso_date(incident_date):
+                payload["incident_date"] = repaired
+                payload["incident_date_basis"] = reason
+        elif reason:
+            payload["incident_date"] = None
+            payload["incident_date_basis"] = reason
+
+    timeline = payload.get("timeline")
+    if not isinstance(timeline, list):
+        return
+
+    changed = False
+    for event in timeline:
+        if not isinstance(event, dict) or not event.get("date"):
+            continue
+        repaired, reason = _repair_date_against_publication_anchor(
+            event.get("date"),
+            precision=event.get("date_precision"),
+            publication_date=publication_date,
+        )
+        original = _coerce_iso_date(event.get("date"))
+        if repaired and repaired != original:
+            event["date"] = repaired
+            event["date_repair_basis"] = reason
+            changed = True
+        elif repaired is None and reason:
+            event["date"] = None
+            event["date_precision"] = event.get("date_precision") or "approximate"
+            event["date_repair_basis"] = reason
+            changed = True
+
+    if changed:
+        payload["timeline"] = timeline
+
+
+def _publication_date_after_source_window(
+    publication_date: Optional[str],
+    source_publication_date: Optional[str],
+) -> bool:
+    if not publication_date or not source_publication_date:
+        return False
+    try:
+        publication_dt = _date.fromisoformat(publication_date)
+        source_dt = _date.fromisoformat(source_publication_date)
+    except ValueError:
+        return False
+    return (publication_dt - source_dt).days > _MAX_EVENT_DAYS_AFTER_PUBLICATION
+
+
 def _fill_timeline_list_dates(payload: Dict[str, Any]) -> None:
     timeline = payload.get("timeline")
     if not isinstance(timeline, list):
@@ -1210,6 +1353,11 @@ def apply_extraction_date_fallbacks(
     article_publication_date = _coerce_iso_date(article_publish_date)
     source_publication_date = _coerce_iso_date(source_published_date)
 
+    if _publication_date_after_source_window(existing_publication_date, source_publication_date):
+        existing_publication_date = None
+    if _publication_date_after_source_window(article_publication_date, source_publication_date):
+        article_publication_date = None
+
     publication_date = existing_publication_date or article_publication_date or source_publication_date
     if publication_date and not existing_publication_date:
         payload["publication_date"] = publication_date
@@ -1245,6 +1393,7 @@ def apply_extraction_date_fallbacks(
             if current_precision in {"", "unknown", "null", "none"}:
                 payload["incident_date_precision"] = precision
 
+    _repair_extracted_future_dates(payload, publication_date or source_date)
     _fill_timeline_list_dates(payload)
 
 

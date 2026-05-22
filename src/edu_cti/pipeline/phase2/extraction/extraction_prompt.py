@@ -145,6 +145,10 @@ CRITICAL OUTPUT REQUIREMENTS:
    - Only include timeline entries and date fields for events explicitly mentioned in the
      article. Do NOT interpolate intermediate dates across a multi-year narrative.
    - Do NOT add "monthly checkpoint" dates that are not specifically referenced.
+   - Never place an incident or timeline event after the Article Publish Date unless the
+     article explicitly states a future scheduled event. If the article is published early
+     in a year and says only "in August", "in December", etc., infer the most recent prior
+     matching month, not the upcoming month in the article year.
 
 4. ATTACK CATEGORY — choose the most specific tag that applies:
    RANSOMWARE:

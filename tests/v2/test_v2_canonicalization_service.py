@@ -124,6 +124,31 @@ def test_build_source_projection_maps_typed_enrichment_into_canonical_fields():
     assert projection["date_precision"] == "day"
 
 
+def test_build_source_projection_rejects_future_incident_dates():
+    incident = _source_incident()
+    enrichment = _source_enrichment(incident)
+    enrichment.typed_enrichment["incident_date"] = "2099-08-01"
+    enrichment.typed_enrichment["incident_date_precision"] = "month"
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["incident_date"] is None
+    assert projection["date_precision"] is None
+
+
+def test_build_source_projection_rejects_dates_after_publication_window():
+    incident = _source_incident()
+    incident.source_published_at = datetime(2026, 1, 12, 8, 0, tzinfo=timezone.utc)
+    enrichment = _source_enrichment(incident)
+    enrichment.typed_enrichment["incident_date"] = "2026-08-01"
+    enrichment.typed_enrichment["incident_date_precision"] = "month"
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["incident_date"] is None
+    assert projection["date_precision"] is None
+
+
 def test_canonical_completeness_score_is_bounded_for_large_merged_projection():
     projection = {
         "institution_name": "Instructure",

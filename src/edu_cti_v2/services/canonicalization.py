@@ -872,6 +872,10 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
             source_incident.raw_date_precision,
         )
     )
+    source_published_at = source_incident.source_published_at
+    incident_date = _safe_projection_incident_date(incident_date, source_published_at)
+    if incident_date is None:
+        date_precision = None
     attack_category = _first_present(typed.get("attack_category"), raw.get("attack_category"))
     attack_vector = _first_present(
         attack_dynamics.get("attack_vector"),
@@ -909,7 +913,7 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
         "city": city,
         "incident_date": incident_date,
         "date_precision": date_precision,
-        "source_published_at": source_incident.source_published_at,
+        "source_published_at": source_published_at,
         "attack_category": attack_category,
         "attack_vector": attack_vector,
         "threat_actor_name": threat_actor_name,
@@ -954,6 +958,21 @@ def _safe_canonical_date(value: Optional[date]) -> bool:
     lower_bound = date(1990, 1, 1)
     upper_bound = date.today() + timedelta(days=3)
     return lower_bound <= value <= upper_bound
+
+
+def _safe_projection_incident_date(
+    value: Optional[date],
+    source_published_at: Optional[datetime],
+) -> Optional[date]:
+    if value is None:
+        return None
+    if not _safe_canonical_date(value):
+        return None
+    if source_published_at is not None:
+        source_date = source_published_at.date()
+        if (value - source_date).days > 90:
+            return None
+    return value
 
 
 def _apply_projection_to_canonical(

@@ -991,6 +991,108 @@ class TestExtractionDateFallbacks:
         assert payload["incident_date"] == "2024-03-14"
         assert payload["incident_date_basis"] == "llm_extracted"
 
+    def test_shifts_month_only_dates_that_llm_anchors_after_publication(self):
+        payload = {
+            "publication_date": None,
+            "incident_date": "2026-08-01",
+            "incident_date_precision": "month_only",
+            "timeline": [
+                {
+                    "event_type": "compromise",
+                    "event_description": "Hackers broke in during August.",
+                    "date": "2026-08-01",
+                    "date_precision": "month_only",
+                },
+                {
+                    "event_type": "regulatory_filing",
+                    "event_description": "The report was filed in December.",
+                    "date": "2026-12-01",
+                    "date_precision": "month_only",
+                },
+                {
+                    "event_type": "public_disclosure",
+                    "event_description": "The article was published.",
+                    "date": "2026-01-12",
+                    "date_precision": "day",
+                },
+            ],
+        }
+
+        apply_extraction_date_fallbacks(
+            payload,
+            article_text="The breach happened in August and was reported in December.",
+            article_publish_date="2026-01-12",
+            source_published_date=None,
+        )
+
+        assert payload["incident_date"] == "2025-08-01"
+        assert payload["incident_date_basis"] == "shifted_previous_year_after_publication"
+        assert payload["timeline"][0]["date"] == "2025-08-01"
+        assert payload["timeline"][1]["date"] == "2025-12-01"
+        assert payload["timeline"][2]["date"] == "2026-01-12"
+
+    def test_discards_exact_dates_that_are_after_publication_window(self):
+        payload = {
+            "publication_date": None,
+            "incident_date": "2026-08-15",
+            "incident_date_precision": "day",
+            "timeline": [
+                {
+                    "event_type": "initial_access",
+                    "event_description": "The LLM invented an exact future date.",
+                    "date": "2026-08-15",
+                    "date_precision": "day",
+                },
+            ],
+        }
+
+        apply_extraction_date_fallbacks(
+            payload,
+            article_text="The university disclosed the breach in January.",
+            article_publish_date="2026-01-12",
+            source_published_date=None,
+        )
+
+        assert payload["incident_date"] is None
+        assert payload["incident_date_basis"] == "discarded_after_publication"
+        assert payload["timeline"][0]["date"] is None
+        assert payload["timeline"][0]["date_repair_basis"] == "discarded_after_publication"
+
+    def test_source_publication_date_wins_over_much_newer_article_metadata(self):
+        payload = {
+            "publication_date": None,
+            "incident_date": "2026-05-28",
+            "incident_date_precision": "day",
+            "timeline": [
+                {
+                    "event_type": "data_exfiltration",
+                    "event_description": "Leaked student portal records were uploaded.",
+                    "date": "2026-05-28",
+                    "date_precision": "day",
+                },
+                {
+                    "event_type": "disclosure",
+                    "event_description": "The university acknowledged the incident.",
+                    "date": "2026-05-18",
+                    "date_precision": "approximate",
+                },
+            ],
+        }
+
+        apply_extraction_date_fallbacks(
+            payload,
+            article_text="The leaked information was uploaded last May 28.",
+            article_publish_date="2026-05-18",
+            source_published_date="2020-06-17",
+        )
+
+        assert payload["publication_date"] == "2020-06-17"
+        assert payload["publication_date_basis"] == "source_metadata_fallback"
+        assert payload["incident_date"] is None
+        assert payload["incident_date_basis"] == "discarded_after_publication"
+        assert payload["timeline"][0]["date"] is None
+        assert payload["timeline"][1]["date"] == "2020-06-17"
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 8. fetching_strategy: SERP bypass for headline institution_name
