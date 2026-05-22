@@ -179,6 +179,38 @@ def _source_reference_tokens(source_incident: SourceIncident) -> set[str]:
     return tokens
 
 
+def _source_title_core(source_incident: SourceIncident) -> str:
+    title = (source_incident.raw_title or "").strip()
+    match = _TITLE_SOURCE_SUFFIX_RE.search(title)
+    if match:
+        title = title[: match.start()].strip()
+    return title
+
+
+def _normalize_title_for_exact_match(value: Optional[str]) -> str:
+    return " ".join(_TOKEN_RE.findall((value or "").lower()))
+
+
+def _article_title_strongly_matches_source(
+    source_incident: SourceIncident,
+    article_title: Optional[str],
+) -> bool:
+    source_title = _source_title_core(source_incident)
+    normalized_source = _normalize_title_for_exact_match(source_title)
+    normalized_article = _normalize_title_for_exact_match(article_title)
+    if normalized_source and normalized_source == normalized_article:
+        return True
+
+    source_tokens = _tokenize(source_title)
+    article_tokens = _tokenize(article_title)
+    if len(source_tokens) < 4 or not article_tokens:
+        return False
+    union = source_tokens | article_tokens
+    if not union:
+        return False
+    return len(source_tokens & article_tokens) / len(union) >= 0.85
+
+
 def _source_identity_anchor_tokens(source_incident: SourceIncident) -> set[str]:
     """Distinct victim-name tokens that should appear in a relevant fetched article."""
     identity = recover_source_identity(
@@ -350,7 +382,10 @@ def _score_article_candidate(
     article: ArticleContent,
     source_url: str,
 ) -> float:
-    if _article_publish_date_after_source_window(source_incident, article.publish_date):
+    if (
+        _article_publish_date_after_source_window(source_incident, article.publish_date)
+        and not _article_title_strongly_matches_source(source_incident, article.title)
+    ):
         return -100.0
     if not article.publish_date and _url_year_after_source_window(source_incident, source_url):
         return -100.0

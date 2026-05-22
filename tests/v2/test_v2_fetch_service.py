@@ -281,6 +281,46 @@ def test_fetch_service_rejects_article_far_after_news_source_date():
     pipeline_task_repository.enqueue.assert_not_called()
 
 
+def test_fetch_service_keeps_exact_title_match_with_stale_article_metadata_date():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    pipeline_task_repository = Mock()
+    pipeline_task_repository.get_active_for_target.return_value = None
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.return_value = ArticleContent(
+        url="https://example.edu/news/feu-student-portal-leak",
+        title="Alleged hacker leaks FEU student portal account details",
+        content="An alleged hacker leaked Far Eastern University student portal account details.",
+        author="Reporter",
+        publish_date="2026-05-18",
+        fetch_successful=True,
+        error_message=None,
+        content_length=76,
+        fetch_metadata={"selected_tier": "scrapling", "tier_attempts": [{"tier": "scrapling", "success": True}]},
+    )
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident_with_urls(("https://example.edu/news/feu-student-portal-leak", True))
+    incident.source_name = "googlenews_rss"
+    incident.source_group = "rss"
+    incident.raw_title = "Alleged hacker leaks FEU student portal account details - FEU Advocate"
+    incident.raw_institution_name = "Far Eastern University"
+    incident.raw_incident_date = "2020-06-17"
+    incident.source_published_at = datetime(2020, 6, 17, 8, 0, tzinfo=timezone.utc)
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert result["articles_saved"] == 1
+    assert result["enrich_tasks_enqueued"] == 1
+    document = article_repository.add_document.call_args.args[1]
+    assert document.is_selected_for_enrichment is True
+    pipeline_task_repository.enqueue.assert_called_once()
+
+
 def test_fetch_service_skips_enrichment_when_no_article_is_relevant():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
