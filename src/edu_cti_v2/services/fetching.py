@@ -95,6 +95,8 @@ _HOMEPAGEISH_TITLE_RE = re.compile(
     re.IGNORECASE,
 )
 _CURATED_SOURCE_NAMES = {"konbriefing", "comparitech"}
+_SOURCE_DATE_RELATIVE_GUARD_GROUPS = {"news", "rss"}
+_MAX_ARTICLE_DAYS_AFTER_SOURCE = 90
 
 
 def _parse_publish_date(value: Optional[str]) -> Optional[date]:
@@ -227,11 +229,46 @@ def _source_year_hint(source_incident: SourceIncident) -> Optional[int]:
     return None
 
 
+def _source_date_relative_guard_applies(source_incident: SourceIncident) -> bool:
+    return (
+        source_incident.source_published_at is not None
+        and str(source_incident.source_group or "").strip().lower()
+        in _SOURCE_DATE_RELATIVE_GUARD_GROUPS
+    )
+
+
+def _article_publish_date_after_source_window(
+    source_incident: SourceIncident,
+    publish_date: Optional[str],
+) -> bool:
+    if not _source_date_relative_guard_applies(source_incident):
+        return False
+    parsed = _parse_publish_date(publish_date)
+    if parsed is None:
+        return False
+    source_date = source_incident.source_published_at.date()
+    return (parsed - source_date).days > _MAX_ARTICLE_DAYS_AFTER_SOURCE
+
+
 def _extract_url_year(url: str) -> Optional[int]:
     match = _URL_YEAR_RE.search(urlparse(url).path or "")
     if not match:
         return None
     return int(match.group(1))
+
+
+def _url_year_after_source_window(source_incident: SourceIncident, url: str) -> bool:
+    if not _source_date_relative_guard_applies(source_incident):
+        return False
+    url_year = _extract_url_year(url)
+    if url_year is None:
+        return False
+    # Use Jan 1 as a conservative lower bound for URL-year-only evidence.
+    # If even Jan 1 is too far after the source date, the discovered article
+    # cannot be the same news item or a near-term follow-up.
+    earliest_url_year_date = date(url_year, 1, 1)
+    source_date = source_incident.source_published_at.date()
+    return (earliest_url_year_date - source_date).days > _MAX_ARTICLE_DAYS_AFTER_SOURCE
 
 
 def _source_requires_cyber_evidence(source_incident: SourceIncident) -> bool:
@@ -282,6 +319,9 @@ def _domain_matches_publisher(url: str, publisher_hint: Optional[str]) -> bool:
 
 
 def _score_url_candidate(source_incident: SourceIncident, url: str) -> float:
+    if _url_year_after_source_window(source_incident, url):
+        return -100.0
+
     score = 0.0
     publisher_hint = _extract_publisher_hint(source_incident)
     if _domain_matches_publisher(url, publisher_hint):
@@ -310,6 +350,11 @@ def _score_article_candidate(
     article: ArticleContent,
     source_url: str,
 ) -> float:
+    if _article_publish_date_after_source_window(source_incident, article.publish_date):
+        return -100.0
+    if not article.publish_date and _url_year_after_source_window(source_incident, source_url):
+        return -100.0
+
     score = _score_url_candidate(source_incident, source_url)
     source_tokens = _source_reference_tokens(source_incident)
     article_title_tokens = _tokenize(article.title)

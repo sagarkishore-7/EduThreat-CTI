@@ -180,8 +180,20 @@ def test_fetch_service_selects_best_matching_article_instead_of_first_success():
     pipeline_task_repository = Mock()
     pipeline_task_repository.get_active_for_target.return_value = None
     article_fetcher = Mock()
-    article_fetcher.fetch_article.side_effect = [
-        ArticleContent(
+    def fetch_article(url):
+        if "nytimes.com" in url:
+            return ArticleContent(
+                url="https://www.nytimes.com/2022/05/09/us/lincoln-college-illinois-closure.html",
+                title="Lincoln College to Close, Hurt by Pandemic and Ransomware Attack",
+                content="Lincoln College said a ransomware attack contributed to its closure.",
+                author="Reporter",
+                publish_date="2022-05-09",
+                fetch_successful=True,
+                error_message=None,
+                content_length=68,
+                fetch_metadata={"selected_tier": "httpclient", "tier_attempts": [{"tier": "httpclient", "success": True}]},
+            )
+        return ArticleContent(
             url="https://www.cnn.com/2026/05/07/us/canvas-hack-strands-college-students-finals-week",
             title="Canvas hack strands college students during finals week",
             content="Thousands of schools use Canvas. ShinyHunters claimed responsibility.",
@@ -191,19 +203,9 @@ def test_fetch_service_selects_best_matching_article_instead_of_first_success():
             error_message=None,
             content_length=70,
             fetch_metadata={"selected_tier": "httpclient", "tier_attempts": [{"tier": "httpclient", "success": True}]},
-        ),
-        ArticleContent(
-            url="https://www.nytimes.com/2022/05/09/us/lincoln-college-illinois-closure.html",
-            title="Lincoln College to Close, Hurt by Pandemic and Ransomware Attack",
-            content="Lincoln College said a ransomware attack contributed to its closure.",
-            author="Reporter",
-            publish_date="2022-05-09",
-            fetch_successful=True,
-            error_message=None,
-            content_length=68,
-            fetch_metadata={"selected_tier": "httpclient", "tier_attempts": [{"tier": "httpclient", "success": True}]},
-        ),
-    ]
+        )
+
+    article_fetcher.fetch_article.side_effect = fetch_article
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
@@ -230,6 +232,53 @@ def test_fetch_service_selects_best_matching_article_instead_of_first_success():
     selected_attempts = [attempt for attempt in attempts if attempt.response_metadata["selected_for_enrichment"]]
     assert len(selected_attempts) == 1
     assert "nytimes.com" in selected_attempts[0].response_metadata["fetched_url"]
+
+
+def test_fetch_service_rejects_article_far_after_news_source_date():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    pipeline_task_repository = Mock()
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.return_value = ArticleContent(
+        url="https://www.desmoinesregister.com/story/news/education/2026/05/08/des-moines-public-schools-canvas-instructure-access-disrupted-cyberattack/89987446007/",
+        title="Des Moines schools' Canvas access disrupted by cyberattack",
+        content=(
+            "Des Moines Public Schools is among schools affected by a Canvas "
+            "cybersecurity attack disclosed by Instructure."
+        ),
+        author="Reporter",
+        publish_date="2026-05-08",
+        fetch_successful=True,
+        error_message=None,
+        content_length=112,
+        fetch_metadata={"selected_tier": "scrapling", "tier_attempts": [{"tier": "scrapling", "success": True}]},
+    )
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident_with_urls(
+        (
+            "https://www.desmoinesregister.com/story/news/education/2026/05/08/des-moines-public-schools-canvas-instructure-access-disrupted-cyberattack/89987446007/",
+            True,
+        ),
+    )
+    incident.source_name = "googlenews_rss"
+    incident.source_group = "rss"
+    incident.raw_title = "Data exposed in Des Moines schools ransomware attack that disrupted district - The Des Moines Register"
+    incident.raw_institution_name = None
+    incident.raw_incident_date = "2023-02-17"
+    incident.source_published_at = datetime(2023, 2, 17, 8, 0, tzinfo=timezone.utc)
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert result["articles_saved"] == 1
+    assert result["enrich_tasks_enqueued"] == 0
+    document = article_repository.add_document.call_args.args[1]
+    assert document.is_selected_for_enrichment is False
+    pipeline_task_repository.enqueue.assert_not_called()
 
 
 def test_fetch_service_skips_enrichment_when_no_article_is_relevant():

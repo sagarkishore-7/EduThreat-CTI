@@ -208,6 +208,38 @@ def test_resolve_url_service_filters_irrelevant_discovered_urls():
     task_repo.enqueue.assert_called_once()
 
 
+def test_resolve_url_service_rejects_discovered_articles_far_after_news_source_date():
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    service = V2ResolveUrlService(
+        pipeline_task_repository=task_repo,
+        article_discovery=lambda payload: [
+            "https://www.desmoinesregister.com/story/news/education/2026/05/08/des-moines-public-schools-canvas-instructure-access-disrupted-cyberattack/89987446007/",
+            "https://www.desmoinesregister.com/story/news/education/2023/02/17/data-exposed-des-moines-schools-ransomware-attack/",
+        ],
+    )
+    session = Mock()
+    incident = _source_incident(with_fetchable_url=False)
+    incident.source_name = "googlenews_rss"
+    incident.source_group = "rss"
+    incident.raw_title = "Data exposed in Des Moines schools ransomware attack that disrupted district - The Des Moines Register"
+    incident.raw_institution_name = None
+    incident.raw_incident_date = "2023-02-17"
+    incident.source_published_at = datetime(2023, 2, 17, 8, 0, tzinfo=timezone.utc)
+
+    result = service.resolve_source_incident_urls(session, incident)
+
+    assert result == {
+        "urls_discovered": 2,
+        "urls_added": 1,
+        "fetch_tasks_enqueued": 1,
+    }
+    added_article_urls = [row.url for row in incident.urls if row.url_kind == "article"]
+    assert added_article_urls == [
+        "https://www.desmoinesregister.com/story/news/education/2023/02/17/data-exposed-des-moines-schools-ransomware-attack/"
+    ]
+
+
 def test_resolve_url_service_skips_fetch_when_only_irrelevant_urls_are_discovered():
     task_repo = Mock()
     task_repo.get_active_for_target.return_value = None
