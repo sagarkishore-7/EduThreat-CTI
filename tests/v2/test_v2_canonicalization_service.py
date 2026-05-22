@@ -241,6 +241,54 @@ def test_score_prefers_larger_known_edtech_vendor_campaign_cluster():
     assert large_score > small_score
 
 
+def test_find_existing_scores_url_candidates_against_larger_vendor_campaign():
+    source = _source_incident(event_key="instructure-url-collision")
+    projection = {
+        "institution_name": "Instructure",
+        "vendor_name": "Instructure",
+        "country_code": "US",
+        "incident_date": "2026-05-07",
+        "attack_category": "supply_chain_software",
+    }
+    url_candidate = SimpleNamespace(
+        id=uuid4(),
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country_code="US",
+        incident_date=datetime(2026, 4, 29).date(),
+        attack_category="third_party_compromise",
+        ransomware_family=None,
+        threat_actor_name=None,
+        memberships=[object() for _ in range(18)],
+    )
+    larger_campaign_candidate = SimpleNamespace(
+        id=uuid4(),
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country_code="US",
+        incident_date=datetime(2026, 5, 1).date(),
+        attack_category="supply_chain_software",
+        ransomware_family=None,
+        threat_actor_name=None,
+        memberships=[object() for _ in range(50)],
+    )
+    canonical_repo = Mock()
+    canonical_repo.find_by_url_candidates.return_value = [url_candidate]
+    canonical_repo.find_name_date_candidates.return_value = [larger_campaign_candidate]
+    canonical_repo.find_identity_candidates.return_value = []
+    service = V2CanonicalizationService(canonical_repository=canonical_repo)
+
+    candidate, match_type, score = service._find_existing_canonical(
+        Mock(),
+        source,
+        projection,
+    )
+
+    assert candidate is larger_campaign_candidate
+    assert match_type == "vendor_date"
+    assert score > 140
+
+
 def test_build_source_projection_promotes_education_technology_provider_as_vendor_name():
     incident = _source_incident(event_key="powerschool-story")
     incident.raw_institution_name = "PowerSchool"

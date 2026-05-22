@@ -1514,27 +1514,40 @@ class V2CanonicalizationService:
             for candidate in url_candidates
             if _url_candidate_identity_compatible(projection, candidate)
         ]
-        if compatible_url_candidates:
-            return compatible_url_candidates[0], "url_exact", 100.0
+        url_candidate_ids = {str(candidate.id) for candidate in compatible_url_candidates}
 
         candidate_name = projection.get("institution_name") or projection.get("vendor_name")
         if not candidate_name:
+            if compatible_url_candidates:
+                return compatible_url_candidates[0], "url_exact", 100.0
             return None, "seed", 0.0
 
-        candidates = [
+        candidates_by_id = {
+            str(candidate.id): candidate
+            for candidate in compatible_url_candidates
+            if str(candidate.id) not in excluded_ids
+        }
+        for candidate in [
             candidate
-            for candidate in self.canonical_repository.find_name_date_candidates(
-                session,
-                incident_date=projection.get("incident_date"),
-                country_code=projection.get("country_code"),
+            for candidate in _as_candidate_list(
+                self.canonical_repository.find_name_date_candidates(
+                    session,
+                    incident_date=projection.get("incident_date"),
+                    country_code=projection.get("country_code"),
+                )
             )
             if str(candidate.id) not in excluded_ids
-        ]
+        ]:
+            candidates_by_id.setdefault(str(candidate.id), candidate)
+        candidates = list(candidates_by_id.values())
         best_candidate: Optional[CanonicalIncident] = None
         best_match_type = "seed"
         best_score = 0.0
         for candidate in candidates:
             score, candidate_match_type = _score_candidate_match(projection, candidate)
+            if str(candidate.id) in url_candidate_ids and score > 0:
+                score += 10.0
+                candidate_match_type = "url_exact"
             if score <= best_score or candidate_match_type is None:
                 continue
             best_candidate = candidate
