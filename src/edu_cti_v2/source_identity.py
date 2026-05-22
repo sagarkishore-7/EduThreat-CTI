@@ -7,7 +7,10 @@ import unicodedata
 from typing import Optional
 
 from src.edu_cti.core.countries import get_country_code, normalize_country
-from src.edu_cti.pipeline.phase2.utils.deduplication import clean_institution_name, institution_names_match
+from src.edu_cti.pipeline.phase2.utils.deduplication import (
+    clean_institution_name,
+    institution_names_match,
+)
 
 _GENERIC_EDU_ENTITY_RE = (
     r"(?:university|college|school|academy|institute|polytechnic|district|"
@@ -83,10 +86,16 @@ _GENERIC_IDENTITY_TOKENS = {
     "public",
     "school",
     "schools",
+    "system",
+    "systems",
     "township",
     "unified",
     "university",
 }
+_VENDOR_ANCHOR_RE = re.compile(
+    r"\b(?:canvas|classrooms|instructure|powerschool|software|vendor)\b",
+    re.IGNORECASE,
+)
 _IDENTITY_TERM_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("university of applied sciences", "hochschule"),
     ("universite", "university"),
@@ -132,7 +141,11 @@ def _looks_generic_identity(value: Optional[str]) -> bool:
         return True
     if _WEBSITE_OF_RE.search(text):
         return True
-    if re.search(r"\b(?:few|several|multiple|various|many|some)\s+(?:colleges?|schools?|universities?|districts?)\b", text, re.IGNORECASE):
+    if re.search(
+        r"\b(?:few|several|multiple|various|many|some)\s+(?:colleges?|schools?|universities?|districts?)\b",
+        text,
+        re.IGNORECASE,
+    ):
         return True
     words = text.split()
     if len(words) >= 10:
@@ -177,6 +190,82 @@ def _normalize_source_identity_candidate(value: Optional[str]) -> Optional[str]:
     if len(cleaned) < 4:
         return None
     return cleaned
+
+
+def _compact_metadata_text(value: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", str(value or "").strip()).strip()
+
+
+def _looks_like_rss_title_copy(raw_value: Optional[str], raw_title: Optional[str]) -> bool:
+    """Detect RSS descriptions that are just the headline plus publisher.
+
+    Google/Bing RSS often stores descriptions as "Headline Publisher" while
+    titles use "Headline - Publisher". If we normalize only after
+    clean_institution_name(), the remaining fragment can look like a victim
+    anchor. Catch the raw pattern before institution cleaning.
+    """
+
+    value = _compact_metadata_text(raw_value).strip("\"'“”")
+    title = _compact_metadata_text(raw_title).strip("\"'“”")
+    if not value or not title:
+        return False
+    if value.lower() == title.lower():
+        return True
+    title_without_separator = re.sub(r"\s+-\s+", " ", title).strip()
+    if value.lower() == title_without_separator.lower():
+        return True
+    if " - " in title:
+        headline, publisher = title.rsplit(" - ", 1)
+        combined = f"{headline.strip()} {publisher.strip()}".strip()
+        if value.lower() == combined.lower():
+            return True
+        if value.lower().startswith(headline.strip().lower()) and value.lower().endswith(
+            publisher.strip().lower()
+        ):
+            return True
+    return False
+
+
+def _looks_like_related_or_excerpt_subtitle(raw_value: Optional[str]) -> bool:
+    value = _compact_metadata_text(raw_value)
+    if not value:
+        return False
+    lowered = value.lower()
+    return value.startswith(("...", "…")) or "related:" in lowered
+
+
+def _looks_like_descriptive_subtitle(raw_value: Optional[str], normalized: str) -> bool:
+    value = _compact_metadata_text(raw_value)
+    if not value:
+        return False
+
+    # Check both the displayed text and the romanised/mapped match form so
+    # legitimate non-English labels such as "Universität ..." are preserved.
+    match_form = _normalize_identity_for_match(normalized) or ""
+    evidence = f"{value} {normalized} {match_form}"
+    if _EDU_KEYWORD_RE.search(evidence) or _VENDOR_ANCHOR_RE.search(evidence):
+        return False
+
+    if re.match(r"^(?:through|via|using|after|about|following)\b", value, re.IGNORECASE):
+        return True
+    return len(value.split()) >= 5 and value.endswith(".")
+
+
+def _looks_like_location_label(value: Optional[str]) -> bool:
+    text = str(value or "").strip()
+    if not text:
+        return False
+    if _EDU_KEYWORD_RE.search(text) or _VENDOR_ANCHOR_RE.search(text):
+        return False
+    if "/" in text and not re.search(
+        r"\b(?:college|school|university|classrooms|systems?)\b", text, re.IGNORECASE
+    ):
+        return True
+    parts = [part.strip() for part in re.split(r"[,/]", text) if part.strip()]
+    normalized_country = normalize_country(parts[-1]) if parts else None
+    if len(parts) >= 2 and normalized_country and get_country_code(normalized_country):
+        return True
+    return False
 
 
 def _normalized_token_set(value: Optional[str]) -> set[str]:
@@ -334,7 +423,7 @@ def identity_matches_source_anchor(
                     if left_tokens == right_tokens:
                         return True
                     smaller, larger = sorted((left_tokens, right_tokens), key=len)
-                    if len(smaller) >= 2 and smaller.issubset(larger) and len(smaller) / len(larger) >= 0.66:
+                    if len(smaller) >= 2 and smaller.issubset(larger):
                         return True
                     left_distinct = left_tokens - _GENERIC_IDENTITY_TOKENS
                     right_distinct = right_tokens - _GENERIC_IDENTITY_TOKENS
@@ -387,13 +476,21 @@ def recover_source_identity(
         (raw_subtitle, "subtitle"),
         (raw_title, "title"),
     ):
+        if origin == "subtitle" and _looks_like_rss_title_copy(raw, raw_title):
+            continue
         normalized = _normalize_source_identity_candidate(raw)
         if not normalized:
+            continue
+        if _looks_like_location_label(normalized):
             continue
         if origin == "subtitle":
             # Google/Bing RSS descriptions often duplicate the headline with the
             # publisher suffix stripped or transformed. Those strings are useful
             # search evidence, but they are not victim anchors.
+            if _looks_like_related_or_excerpt_subtitle(raw):
+                continue
+            if _looks_like_descriptive_subtitle(raw, normalized):
+                continue
             if _looks_like_title_publisher(normalized, raw_title):
                 continue
             if _looks_like_repeated_headline(normalized, raw_title):

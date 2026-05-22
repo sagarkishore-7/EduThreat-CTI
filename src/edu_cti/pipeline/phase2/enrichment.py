@@ -55,19 +55,17 @@ def _build_target_institution_line(incident: BaseIncident, title: str) -> str:
     """Inject an explicit victim anchor for roundup or generic-title articles."""
     notes_text = (incident.notes or "").strip()
     is_roundup_stub = notes_text.startswith("Extracted from roundup:")
-    known_name = (
-        (incident.institution_name or "").strip()
-        or (getattr(incident, "victim_raw_name", None) or "").strip()
-    )
+    known_name = (incident.institution_name or "").strip() or (
+        getattr(incident, "victim_raw_name", None) or ""
+    ).strip()
     _UNKNOWN_NAMES = {"unknown", "n/a", "none", "unnamed", "undisclosed", ""}
     title_text = (title or "").strip().lower()
-    subtitle_text = (incident.subtitle or "").strip()
-    force_target_anchor = bool(
-        known_name
-        and subtitle_text
-        and known_name.lower() not in title_text
-    )
-    if not ((is_roundup_stub or force_target_anchor) and known_name and known_name.lower() not in _UNKNOWN_NAMES):
+    force_target_anchor = bool(known_name and known_name.lower() not in title_text)
+    if not (
+        (is_roundup_stub or force_target_anchor)
+        and known_name
+        and known_name.lower() not in _UNKNOWN_NAMES
+    ):
         return ""
     return (
         f"\n- TARGET INSTITUTION: {known_name}"
@@ -100,9 +98,7 @@ def _strip_non_education_cti_fields(json_data: Dict[str, Any]) -> Dict[str, Any]
     is_edu_cyber_incident=false. Stripping those fields here prevents non-education
     rows from leaking into downstream analytics or incident detail views.
     """
-    sanitized = {
-        key: value for key, value in json_data.items() if key in _NON_EDU_ALLOWED_KEYS
-    }
+    sanitized = {key: value for key, value in json_data.items() if key in _NON_EDU_ALLOWED_KEYS}
     sanitized["is_edu_cyber_incident"] = False
     sanitized["education_relevance_reasoning"] = (
         sanitized.get("education_relevance_reasoning")
@@ -119,9 +115,7 @@ def _build_storage_debug_payload(
     """Capture exact model artifacts plus lightweight provenance metadata."""
     return {
         "raw_llm_responses": {
-            key: value
-            for key, value in raw_llm_responses.items()
-            if value is not None
+            key: value for key, value in raw_llm_responses.items() if value is not None
         },
         "llm_metadata": {
             "provider": "ollama",
@@ -155,18 +149,18 @@ def _attach_storage_debug(
 def count_filled_fields(enrichment_result: CTIEnrichmentResult) -> int:
     """
     Count how many schema fields are filled (not None) in the enrichment result.
-    
+
     This is used to score articles - the article that fills the most fields
     is considered the best source.
-    
+
     Args:
         enrichment_result: CTIEnrichmentResult to count fields for
-        
+
     Returns:
         Number of filled fields
     """
     count = 0
-    
+
     # Count top-level optional fields
     if enrichment_result.primary_url:
         count += 1
@@ -178,27 +172,45 @@ def count_filled_fields(enrichment_result: CTIEnrichmentResult) -> int:
         count += len(enrichment_result.mitre_attack_techniques)
     if enrichment_result.attack_dynamics:
         count += 1
-    
+
     # Count nested impact metrics
-    for attr in ['data_impact', 'system_impact', 'user_impact', 'operational_impact_metrics',
-                 'financial_impact', 'regulatory_impact', 'recovery_metrics', 
-                 'transparency_metrics', 'research_impact']:
+    for attr in [
+        "data_impact",
+        "system_impact",
+        "user_impact",
+        "operational_impact_metrics",
+        "financial_impact",
+        "regulatory_impact",
+        "recovery_metrics",
+        "transparency_metrics",
+        "research_impact",
+    ]:
         val = getattr(enrichment_result, attr, None)
         if val:
             count += 1
             # Count non-None values in dict
             if isinstance(val, dict):
                 count += sum(1 for v in val.values() if v is not None)
-    
+
     # Count attack dynamics fields
     if enrichment_result.attack_dynamics:
         ad = enrichment_result.attack_dynamics
-        for attr in ['attack_vector', 'attack_chain', 'ransomware_family', 'data_exfiltration',
-                     'encryption_impact', 'ransom_demanded', 'ransom_amount', 'ransom_paid',
-                     'recovery_timeframe_days', 'business_impact', 'operational_impact']:
+        for attr in [
+            "attack_vector",
+            "attack_chain",
+            "ransomware_family",
+            "data_exfiltration",
+            "encryption_impact",
+            "ransom_demanded",
+            "ransom_amount",
+            "ransom_paid",
+            "recovery_timeframe_days",
+            "business_impact",
+            "operational_impact",
+        ]:
             if getattr(ad, attr, None) is not None:
                 count += 1
-    
+
     return count
 
 
@@ -262,7 +274,7 @@ class IncidentEnricher:
         """Return True when combined article text exceeds the split threshold."""
         total = sum(len(a.content or "") for a in article_contents.values())
         return total >= self.SPLIT_THRESHOLD_CHARS
-    
+
     def process_incident(
         self,
         incident: BaseIncident,
@@ -271,43 +283,44 @@ class IncidentEnricher:
     ) -> Tuple[Optional[CTIEnrichmentResult], Optional[Dict[str, Any]]]:
         """
         Process an incident through the LLM enrichment pipeline.
-        
+
         For incidents with multiple articles, enriches each article individually,
         scores them based on field coverage, and selects the best one.
-        
+
         Args:
             incident: BaseIncident to enrich
             skip_if_not_education: If True, skip incidents not related to education
             conn: Database connection (required to read articles from DB)
-            
+
         Returns:
             Tuple of (CTIEnrichmentResult, raw_json_data) if incident is enriched, (None, None) otherwise
         """
         if conn is None:
             raise ValueError("Database connection required to read articles from DB")
-        
+
         from src.edu_cti.pipeline.phase2.storage.article_storage import (
             get_all_articles_for_incident,
             promote_primary_article,
         )
-        
+
         # Get articles from database
         all_articles_data = get_all_articles_for_incident(conn, incident.incident_id)
-        
+
         if not all_articles_data:
             logger.warning(f"No articles found in DB for incident {incident.incident_id}")
             return None, None
-        
+
         # Filter to only successful articles with content
         valid_articles_data = [
-            art for art in all_articles_data
+            art
+            for art in all_articles_data
             if art["fetch_successful"] and art["content"] and len(art["content"].strip()) > 50
         ]
-        
+
         if not valid_articles_data:
             logger.warning(f"No valid articles found in DB for incident {incident.incident_id}")
             return None, None
-        
+
         # Convert article data to ArticleContent objects
         article_contents = {}
         for art_data in valid_articles_data:
@@ -321,7 +334,7 @@ class IncidentEnricher:
                 error_message=art_data.get("error_message"),
                 content_length=art_data.get("content_length", 0),
             )
-        
+
         # Process articles — use the 3-call split for long articles
         if len(article_contents) > 1:
             enrichment_result, raw_json_data = self._process_multiple_articles(
@@ -336,30 +349,41 @@ class IncidentEnricher:
                 )
             _enrich = self._enrich_article_split if use_split else self._enrich_article
             enrichment_result, raw_json_data = _enrich(incident, article_contents)
-            
+
             if not enrichment_result:
                 # If _enrich_article already set a marker (e.g. _not_education_related),
                 # preserve it so __main__ can delete rather than retry.
-                if raw_json_data and isinstance(raw_json_data, dict) and (
-                    raw_json_data.get("_not_education_related") or raw_json_data.get("_enrichment_failed")
+                if (
+                    raw_json_data
+                    and isinstance(raw_json_data, dict)
+                    and (
+                        raw_json_data.get("_not_education_related")
+                        or raw_json_data.get("_enrichment_failed")
+                    )
                 ):
                     return None, raw_json_data
                 logger.warning(f"Failed to enrich incident {incident.incident_id}")
                 return None, {"_enrichment_failed": True, "_reason": "LLM enrichment failed"}
-            
+
             # Check education relevance - directly from LLM analysis
-            if skip_if_not_education and not enrichment_result.education_relevance.is_education_related:
+            if (
+                skip_if_not_education
+                and not enrichment_result.education_relevance.is_education_related
+            ):
                 logger.debug(
                     f"{incident.incident_id} not edu-related: "
                     f"{enrichment_result.education_relevance.reasoning}"
                 )
                 # Return marker indicating explicitly not education-related
-                return None, {"_not_education_related": True, "_reason": enrichment_result.education_relevance.reasoning}
-            
+                return None, {
+                    "_not_education_related": True,
+                    "_reason": enrichment_result.education_relevance.reasoning,
+                }
+
             # Set primary URL
             if not enrichment_result.primary_url and article_contents:
                 enrichment_result.primary_url = list(article_contents.keys())[0]
-        
+
         if not enrichment_result:
             # Preserve raw_json_data so __main__ can act on _not_education_related /
             # _enrichment_failed markers rather than treating this as "no article content".
@@ -377,9 +401,9 @@ class IncidentEnricher:
             f"{incident.incident_id}: enrichment done "
             f"(edu={enrichment_result.education_relevance.is_education_related})"
         )
-        
+
         return enrichment_result, raw_json_data
-    
+
     def _process_multiple_articles(
         self,
         incident: BaseIncident,
@@ -416,8 +440,13 @@ class IncidentEnricher:
             if enrichment_result:
                 is_edu = enrichment_result.education_relevance.is_education_related
                 if skip_if_not_education and not is_edu:
-                    logger.info(f"{incident.incident_id}: combined call — not education-related, skipping")
-                    return None, {"_not_education_related": True, "_reason": "Combined article not education-related"}
+                    logger.info(
+                        f"{incident.incident_id}: combined call — not education-related, skipping"
+                    )
+                    return None, {
+                        "_not_education_related": True,
+                        "_reason": "Combined article not education-related",
+                    }
 
                 enrichment_result.primary_url = primary_url
                 score = count_filled_fields(enrichment_result)
@@ -438,10 +467,14 @@ class IncidentEnricher:
                     f"({raw_json_data.get('_reason', 'unknown')}) — trying per-article fallback"
                 )
             else:
-                logger.warning(f"{incident.incident_id}: combined call returned None — trying per-article fallback")
+                logger.warning(
+                    f"{incident.incident_id}: combined call returned None — trying per-article fallback"
+                )
 
         except Exception as e:
-            logger.warning(f"{incident.incident_id}: combined call exception ({e}) — trying per-article fallback")
+            logger.warning(
+                f"{incident.incident_id}: combined call exception ({e}) — trying per-article fallback"
+            )
 
         # ── Step 2: per-article fallback ─────────────────────────────────────────
         logger.debug(f"{incident.incident_id}: per-article fallback ({n} articles)")
@@ -461,7 +494,10 @@ class IncidentEnricher:
 
                 if enrichment_result:
                     all_not_education = False
-                    if skip_if_not_education and not enrichment_result.education_relevance.is_education_related:
+                    if (
+                        skip_if_not_education
+                        and not enrichment_result.education_relevance.is_education_related
+                    ):
                         logger.info(f"  ⊘ {url[:80]} — not education-related")
                         continue
                     score = count_filled_fields(enrichment_result)
@@ -483,15 +519,20 @@ class IncidentEnricher:
         if not article_scores:
             if all_not_education:
                 logger.debug(f"All articles for {incident.incident_id} are not education-related")
-                return None, {"_not_education_related": True, "_reason": "All articles not education-related"}
-            logger.debug(f"No articles scored for {incident.incident_id} (all failed or irrelevant)")
+                return None, {
+                    "_not_education_related": True,
+                    "_reason": "All articles not education-related",
+                }
+            logger.debug(
+                f"No articles scored for {incident.incident_id} (all failed or irrelevant)"
+            )
             return None, {"_enrichment_failed": True, "_reason": "All articles failed to enrich"}
 
         best_url, best_result, best_score, best_raw_json = max(article_scores, key=lambda x: x[2])
         logger.debug(f"Primary: {best_url[:80]} ({best_score} fields)")
         best_result.primary_url = best_url
         return best_result, best_raw_json
-    
+
     def _enrich_article(
         self,
         incident: BaseIncident,
@@ -499,23 +540,23 @@ class IncidentEnricher:
     ) -> Tuple[Optional[CTIEnrichmentResult], Optional[Dict[str, Any]]]:
         """
         Enrich incident using JSON schema extraction with centralized prompt.
-        
+
         Uses PROMPT_TEMPLATE from extraction_prompt.py for consistent prompting.
-        
+
         Args:
             incident: BaseIncident to enrich
             article_contents: Dictionary mapping URL to ArticleContent
-            
+
         Returns:
             Tuple of (CTIEnrichmentResult, raw_json_data) or (None, None) on error
         """
         if not article_contents:
             return None, None
-        
+
         # Get primary article
         primary_url = list(article_contents.keys())[0]
         primary_article = article_contents[primary_url]
-        
+
         # Combine all article content
         all_text = []
         for url, article in article_contents.items():
@@ -527,7 +568,7 @@ class IncidentEnricher:
             if article.author:
                 all_text.append(f"Author: {article.author}")
             all_text.append(f"\n{article.content}\n")
-        
+
         combined_text = "\n".join(all_text)
         title = primary_article.title or ""
 
@@ -561,16 +602,23 @@ class IncidentEnricher:
 
         article_metadata_lines = []
         if incident.source_published_date:
-            article_metadata_lines.append(f"- Source Published Date: {incident.source_published_date}")
+            article_metadata_lines.append(
+                f"- Source Published Date: {incident.source_published_date}"
+            )
         if primary_article.publish_date:
             article_metadata_lines.append(f"- Article Publish Date: {primary_article.publish_date}")
         if primary_article.author:
             article_metadata_lines.append(f"- Article Author: {primary_article.author}")
-        article_metadata_block = ("\n" + "\n".join(article_metadata_lines)) if article_metadata_lines else "\n- Article Metadata: unknown"
+        article_metadata_block = (
+            ("\n" + "\n".join(article_metadata_lines))
+            if article_metadata_lines
+            else "\n- Article Metadata: unknown"
+        )
 
         # ── GLiNER NER pre-pass ────────────────────────────────────────────────
         try:
             from src.edu_cti.pipeline.phase2.extraction.ner_preprocessor import build_ner_hint_block
+
             _ner_hint = build_ner_hint_block(combined_text, title)
         except Exception:
             _ner_hint = None
@@ -578,6 +626,7 @@ class IncidentEnricher:
         # ── IntelEX RAG: retrieve top-5 MITRE technique candidates ────────────
         try:
             from src.edu_cti.pipeline.phase2.extraction.mitre_rag import build_mitre_rag_block
+
             _rag_block = build_mitre_rag_block(combined_text)
         except Exception:
             _rag_block = None
@@ -588,6 +637,7 @@ class IncidentEnricher:
         _re_enrich_hint = None
         try:
             from src.edu_cti.pipeline.data_quality import format_re_enrich_hint
+
             _attempts = (
                 incident.get("re_enrich_attempts")
                 if isinstance(incident, dict)
@@ -611,13 +661,16 @@ class IncidentEnricher:
         if _rag_block:
             _extra += f"\n\n{_rag_block}"
 
-        user_prompt = PROMPT_TEMPLATE.format(
-            url=primary_url,
-            title=title,
-            target_institution_line=target_institution_line,
-            article_metadata_block=article_metadata_block,
-            text=combined_text
-        ) + _extra
+        user_prompt = (
+            PROMPT_TEMPLATE.format(
+                url=primary_url,
+                title=title,
+                target_institution_line=target_institution_line,
+                article_metadata_block=article_metadata_block,
+                text=combined_text,
+            )
+            + _extra
+        )
 
         try:
             # Call LLM — pass EXTRACTION_SCHEMA as format so Ollama builds a GBNF grammar
@@ -661,7 +714,10 @@ class IncidentEnricher:
             # Grammar-constrained generation occasionally wraps a single value in an array.
             # We normalise here so that BOTH json_to_cti_enrichment AND the raw_json_data
             # returned to save_enrichment_result see consistent scalar types.
-            from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import _coerce_llm_scalars
+            from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import (
+                _coerce_llm_scalars,
+            )
+
             json_data = _coerce_llm_scalars(json_data)
 
             # Some models still emit structured CTI fields even after concluding the
@@ -680,7 +736,11 @@ class IncidentEnricher:
                 try:
                     _institution = (
                         json_data.get("institution_name")
-                        or (incident.university_name if hasattr(incident, "university_name") else None)
+                        or (
+                            incident.university_name
+                            if hasattr(incident, "university_name")
+                            else None
+                        )
                         or "Unknown institution"
                     )
                     _attack_cat = json_data.get("attack_category") or "unknown"
@@ -714,7 +774,8 @@ class IncidentEnricher:
                     elif isinstance(_chat_resp, dict):
                         _msg = _chat_resp.get("message", {})
                         _summary_text = (
-                            _msg.get("content", "") if isinstance(_msg, dict)
+                            _msg.get("content", "")
+                            if isinstance(_msg, dict)
                             else getattr(_msg, "content", None)
                         )
                     summary_raw_text = _summary_text
@@ -772,9 +833,13 @@ class IncidentEnricher:
             # Emit education relevance and confidence metrics
             _src_label = getattr(incident, "source_name", None) or "unknown"
             if coerced_edu is not False:
-                _metrics.increment("llm_education_relevance_pass_total", labels={"source": _src_label})
+                _metrics.increment(
+                    "llm_education_relevance_pass_total", labels={"source": _src_label}
+                )
             else:
-                _metrics.increment("llm_education_relevance_fail_total", labels={"source": _src_label})
+                _metrics.increment(
+                    "llm_education_relevance_fail_total", labels={"source": _src_label}
+                )
             _conf = json_data.get("confidence_score")
             if isinstance(_conf, (int, float)) and 0.0 <= _conf <= 1.0:
                 _metrics.observe("llm_confidence_score", float(_conf))
@@ -784,26 +849,28 @@ class IncidentEnricher:
         except Exception as e:
             logger.error(f"Error during enrichment: {e}", exc_info=True)
             return None, None
-    
+
     def _parse_json_response(self, raw_response: str) -> Optional[Dict[str, Any]]:
         """Parse JSON from LLM response, handling various formats."""
         try:
             raw_response = raw_response.strip()
-            
+
             # Try to extract JSON from markdown code blocks
-            json_match = re.search(r'```(?:json)?\s*(\{.*\})\s*```', raw_response, re.DOTALL)
+            json_match = re.search(r"```(?:json)?\s*(\{.*\})\s*```", raw_response, re.DOTALL)
             if json_match:
                 raw_response = json_match.group(1).strip()
             else:
                 # Try to find JSON object directly
-                json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
+                json_match = re.search(r"\{.*\}", raw_response, re.DOTALL)
                 if json_match:
                     raw_response = json_match.group(0).strip()
-            
+
             # Handle escaped newlines
-            if raw_response.startswith('{\\n') or raw_response.startswith('{\\\\n'):
-                raw_response = raw_response.replace('\\n', '\n').replace('\\r', '\r').replace('\\t', '\t')
-            
+            if raw_response.startswith("{\\n") or raw_response.startswith("{\\\\n"):
+                raw_response = (
+                    raw_response.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
+                )
+
             # Parse JSON
             try:
                 parsed = json.loads(raw_response)
@@ -822,10 +889,10 @@ class IncidentEnricher:
                 fixed_response = fixed_response.replace("\\'", "'")
 
                 # Fix 2: Handle double-escaped quotes
-                fixed_response = fixed_response.replace('\\"', '"').replace('\\\\', '\\')
+                fixed_response = fixed_response.replace('\\"', '"').replace("\\\\", "\\")
 
                 # Fix 3: Remove trailing commas before } or ] — deepseek often emits these
-                fixed_response = re.sub(r',\s*([}\]])', r'\1', fixed_response)
+                fixed_response = re.sub(r",\s*([}\]])", r"\1", fixed_response)
 
                 # Fix 4: deepseek injects Chinese lottery-spam tokens into the JSON in
                 # three patterns:
@@ -842,13 +909,13 @@ class IncidentEnricher:
                 # JSON structural chars at all (pure unquoted garbage).
                 fixed_response = re.sub(
                     r'^\s*"[^"\n]*[^\x00-\x7F][^"\n]*"\s*,?\s*$',
-                    '',
+                    "",
                     fixed_response,
                     flags=re.MULTILINE,
                 )
                 fixed_response = re.sub(
                     r'^\s*"[^"\n]*"\s*,?\s*$',
-                    '',
+                    "",
                     fixed_response,
                     flags=re.MULTILINE,
                 )
@@ -857,28 +924,28 @@ class IncidentEnricher:
                     stripped = line.strip()
                     if not stripped:
                         return False  # keep blank lines
-                    has_nonascii = bool(re.search(r'[^\x00-\x7F]', stripped))
+                    has_nonascii = bool(re.search(r"[^\x00-\x7F]", stripped))
                     if not has_nonascii:
                         return False  # no non-ASCII → not spam
                     # If the line has a colon it's likely a key-value pair — keep it
                     # (e.g. `"field极": null` — handled later by key-name strip).
-                    if ':' in stripped:
+                    if ":" in stripped:
                         return False
                     # No colon + has non-ASCII → spam line (bare string / garbage)
                     return True
 
-                fixed_response = '\n'.join(
-                    line for line in fixed_response.split('\n')
-                    if not _is_spam_line(line) and (
-                        re.search(r'[":{}\[\]]', line) or not line.strip()
-                    )
+                fixed_response = "\n".join(
+                    line
+                    for line in fixed_response.split("\n")
+                    if not _is_spam_line(line)
+                    and (re.search(r'[":{}\[\]]', line) or not line.strip())
                 )
                 # Strip leading non-ASCII prefix from remaining lines.
-                fixed_response = re.sub(r'^[^\x00-\x7F]+', '', fixed_response, flags=re.MULTILINE)
+                fixed_response = re.sub(r"^[^\x00-\x7F]+", "", fixed_response, flags=re.MULTILINE)
                 # Strip non-ASCII embedded within key names.
-                fixed_response = re.sub(r'([A-Za-z_]\w*)[^\x00-\x7F]+(")', r'\1\2', fixed_response)
+                fixed_response = re.sub(r'([A-Za-z_]\w*)[^\x00-\x7F]+(")', r"\1\2", fixed_response)
                 # Re-apply trailing comma removal (spam-line removal may expose new `,}`)
-                fixed_response = re.sub(r',\s*([}\]])', r'\1', fixed_response)
+                fixed_response = re.sub(r",\s*([}\]])", r"\1", fixed_response)
 
                 # Fix 5: Try with fixed response
                 try:
@@ -886,28 +953,28 @@ class IncidentEnricher:
                 except json.JSONDecodeError as e5:
                     # Log what fixed_response looks like near the new failure position
                     # so we can diagnose any remaining garbage patterns
-                    if hasattr(e5, 'pos') and e5.pos is not None:
-                        snip = fixed_response[max(0, e5.pos - 60):e5.pos + 30]
+                    if hasattr(e5, "pos") and e5.pos is not None:
+                        snip = fixed_response[max(0, e5.pos - 60) : e5.pos + 30]
                         logger.error(f"Fix5 still failing at pos={e5.pos}: {repr(snip)}")
 
                 # Fix 5b: Nuclear — strip ALL non-ASCII chars from the entire response.
                 # Last resort for responses with many scattered garbage injections.
                 # May corrupt non-ASCII string values but JSON is unparseable anyway.
                 try:
-                    nuclear = re.sub(r'[^\x00-\x7F]', '', fixed_response)
+                    nuclear = re.sub(r"[^\x00-\x7F]", "", fixed_response)
                     # Re-apply trailing comma removal after stripping (new `,}` may appear)
-                    nuclear = re.sub(r',\s*([}\]])', r'\1', nuclear)
+                    nuclear = re.sub(r",\s*([}\]])", r"\1", nuclear)
                     # Remove orphaned empty strings left by nuclear strip of spam lines.
                     # e.g. `"极速赛车官网",` → `"",` which is invalid in object context.
-                    nuclear = re.sub(r'^\s*""\s*,?\s*$', '', nuclear, flags=re.MULTILINE)
-                    nuclear = re.sub(r',\s*([}\]])', r'\1', nuclear)
+                    nuclear = re.sub(r'^\s*""\s*,?\s*$', "", nuclear, flags=re.MULTILINE)
+                    nuclear = re.sub(r",\s*([}\]])", r"\1", nuclear)
                     return json.loads(nuclear)
                 except json.JSONDecodeError:
                     pass
 
                 # Fix 6: Handle leading newline after brace
-                if raw_response.startswith('{\n'):
-                    fixed = '{' + raw_response[2:].lstrip()
+                if raw_response.startswith("{\n"):
+                    fixed = "{" + raw_response[2:].lstrip()
                     try:
                         return json.loads(fixed)
                     except json.JSONDecodeError:
@@ -922,7 +989,8 @@ class IncidentEnricher:
                 #      we can delete non-education incidents without a full retry.
                 edu_match = re.search(
                     r'"is_edu_cyber_incident"\s*:\s*(true|false)',
-                    raw_response, re.IGNORECASE,
+                    raw_response,
+                    re.IGNORECASE,
                 )
                 if edu_match:
                     is_edu = edu_match.group(1).lower() == "true"
@@ -930,7 +998,9 @@ class IncidentEnricher:
                         r'"education_relevance_reasoning"\s*:\s*"([^"]*)"',
                         raw_response,
                     )
-                    reason = reason_match.group(1) if reason_match else "Extracted from truncated JSON"
+                    reason = (
+                        reason_match.group(1) if reason_match else "Extracted from truncated JSON"
+                    )
 
                     # Attempt JSON repair: strip trailing partial field and close object
                     repaired = None
@@ -943,7 +1013,9 @@ class IncidentEnricher:
                         # by stripping back to the last comma or opening brace.
                         last_comma = truncated.rfind(",")
                         last_open = truncated.rfind("{")
-                        cut_pos = max(last_comma, last_open) if last_comma > last_open else last_comma
+                        cut_pos = (
+                            max(last_comma, last_open) if last_comma > last_open else last_comma
+                        )
                         if cut_pos > 0:
                             candidate = truncated[:cut_pos].rstrip().rstrip(",") + "\n}"
                             try:
@@ -984,16 +1056,16 @@ class IncidentEnricher:
                 logger.error(f"JSON parse error: {e}")
                 logger.error(f"Response (first 500 chars): {repr(raw_response[:500])}")
                 # Log chars around the failure position to diagnose the pattern
-                if hasattr(e, 'pos') and e.pos is not None:
+                if hasattr(e, "pos") and e.pos is not None:
                     pos = e.pos
-                    snippet = raw_response[max(0, pos - 80):pos + 40]
+                    snippet = raw_response[max(0, pos - 80) : pos + 40]
                     logger.error(f"Context around error (pos={pos}): {repr(snippet)}")
                 return None
-            
+
         except Exception as e:
             logger.error(f"Error parsing response: {e}")
             return None
-    
+
     def _enrich_article_split(
         self,
         incident: BaseIncident,
@@ -1046,14 +1118,21 @@ class IncidentEnricher:
 
         article_metadata_lines = []
         if incident.source_published_date:
-            article_metadata_lines.append(f"- Source Published Date: {incident.source_published_date}")
+            article_metadata_lines.append(
+                f"- Source Published Date: {incident.source_published_date}"
+            )
         if primary_article.publish_date:
             article_metadata_lines.append(f"- Article Publish Date: {primary_article.publish_date}")
-        article_metadata_block = ("\n" + "\n".join(article_metadata_lines)) if article_metadata_lines else "\n- Article Metadata: unknown"
+        article_metadata_block = (
+            ("\n" + "\n".join(article_metadata_lines))
+            if article_metadata_lines
+            else "\n- Article Metadata: unknown"
+        )
 
         # ── GLiNER NER pre-pass ────────────────────────────────────────────────
         try:
             from src.edu_cti.pipeline.phase2.extraction.ner_preprocessor import build_ner_hint_block
+
             _ner_hint = build_ner_hint_block(combined_text, title)
         except Exception:
             _ner_hint = None
@@ -1063,6 +1142,7 @@ class IncidentEnricher:
         _re_enrich_hint = None
         try:
             from src.edu_cti.pipeline.data_quality import format_re_enrich_hint
+
             if getattr(incident, "re_enrich_attempts", None):
                 _re_enrich_hint = format_re_enrich_hint(
                     int(incident.re_enrich_attempts),
@@ -1072,13 +1152,17 @@ class IncidentEnricher:
             _re_enrich_hint = None
         _re_enrich_block = f"\n\n{_re_enrich_hint}" if _re_enrich_hint else ""
 
-        part1_prompt = PROMPT_TEMPLATE.format(
-            url=primary_url,
-            title=title,
-            target_institution_line=target_institution_line,
-            article_metadata_block=article_metadata_block,
-            text=combined_text,
-        ) + _re_enrich_block + _ner_block
+        part1_prompt = (
+            PROMPT_TEMPLATE.format(
+                url=primary_url,
+                title=title,
+                target_institution_line=target_institution_line,
+                article_metadata_block=article_metadata_block,
+                text=combined_text,
+            )
+            + _re_enrich_block
+            + _ner_block
+        )
 
         try:
             _t0 = _time_module.time()
@@ -1101,6 +1185,7 @@ class IncidentEnricher:
             return self._enrich_article(incident, article_contents)
 
         from src.edu_cti.pipeline.phase2.extraction.json_to_schema_mapper import _coerce_llm_scalars
+
         json_part1 = _coerce_llm_scalars(json_part1)
 
         coerced_edu = _coerce_bool_like(json_part1.get("is_edu_cyber_incident"))
@@ -1122,6 +1207,7 @@ class IncidentEnricher:
         # ── IntelEX RAG: retrieve top-5 MITRE techniques for grounding ────────
         try:
             from src.edu_cti.pipeline.phase2.extraction.mitre_rag import build_mitre_rag_block
+
             _rag_block = build_mitre_rag_block(combined_text)
         except Exception:
             _rag_block = None
@@ -1135,7 +1221,9 @@ class IncidentEnricher:
             ransomware_family=_fmt(json_part1.get("ransomware_family")),
             data_categories=_fmt(json_part1.get("data_categories")),
             records_affected_exact=_fmt(json_part1.get("records_affected_exact")),
-            publication_date=_fmt(json_part1.get("publication_date") or primary_article.publish_date),
+            publication_date=_fmt(
+                json_part1.get("publication_date") or primary_article.publish_date
+            ),
             url=primary_url,
             title=title,
             text=part2_text,
@@ -1177,7 +1265,9 @@ class IncidentEnricher:
             try:
                 _institution = (
                     merged.get("institution_name")
-                    or (incident.institution_name if hasattr(incident, "institution_name") else None)
+                    or (
+                        incident.institution_name if hasattr(incident, "institution_name") else None
+                    )
                     or "Unknown institution"
                 )
                 _attack_cat = merged.get("attack_category") or "unknown"
@@ -1188,10 +1278,13 @@ class IncidentEnricher:
                 )
                 _chat_resp = self.llm_client.chat(
                     messages=[
-                        {"role": "system", "content": (
-                            "You are a Cyber Threat Intelligence analyst. "
-                            "Write a concise 2-3 sentence summary of the cyber incident."
-                        )},
+                        {
+                            "role": "system",
+                            "content": (
+                                "You are a Cyber Threat Intelligence analyst. "
+                                "Write a concise 2-3 sentence summary of the cyber incident."
+                            ),
+                        },
                         {"role": "user", "content": _summary_prompt},
                     ],
                     format=None,
@@ -1204,7 +1297,8 @@ class IncidentEnricher:
                 elif isinstance(_chat_resp, dict):
                     _msg = _chat_resp.get("message", {})
                     _summary_text = (
-                        _msg.get("content", "") if isinstance(_msg, dict)
+                        _msg.get("content", "")
+                        if isinstance(_msg, dict)
                         else getattr(_msg, "content", None)
                     )
                 summary_raw_text = _summary_text

@@ -45,6 +45,17 @@ def test_recover_source_identity_ignores_rss_headline_subtitle():
     assert identity is None
 
 
+def test_recover_source_identity_ignores_quoted_rss_headline_subtitle():
+    identity = recover_source_identity(
+        raw_institution_name=None,
+        raw_victim_name=None,
+        raw_subtitle="'Universiteiten benaderen ShinyHunters om datalek na Canvas-hack te voorkomen' Tweakers",
+        raw_title="'Universiteiten benaderen ShinyHunters om datalek na Canvas-hack te voorkomen' - Tweakers",
+    )
+
+    assert identity is None
+
+
 def test_recover_source_identity_ignores_rss_publisher_subtitle():
     identity = recover_source_identity(
         raw_institution_name=None,
@@ -76,6 +87,42 @@ def test_recover_source_identity_keeps_long_specific_subtitle_anchor():
     )
 
     assert identity == "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+
+
+def test_recover_source_identity_ignores_related_story_excerpt_subtitle():
+    identity = recover_source_identity(
+        raw_institution_name=None,
+        raw_victim_name=None,
+        raw_subtitle=(
+            "... respond to the cyberattacks and stop future data loss. "
+            "Related: Cyberattacks Inflict Deep Harm at Technology-Rich Schools"
+        ),
+        raw_title="Louisiana School Systems Cyber Attacked; Emergency Declared",
+    )
+
+    assert identity is None
+
+
+def test_recover_source_identity_ignores_location_only_structured_label():
+    identity = recover_source_identity(
+        raw_institution_name="Kiryat Ono / קִרְיַת אוֹנוֹ",
+        raw_victim_name="Kiryat Ono / קִרְיַת אוֹנוֹ",
+        raw_subtitle="Kiryat Ono / קִרְיַת אוֹנוֹ, Israel",
+        raw_title="Unauthorized access at a college in Israel",
+    )
+
+    assert identity is None
+
+
+def test_recover_source_identity_keeps_vendor_anchor_with_location_suffix():
+    identity = recover_source_identity(
+        raw_institution_name="3rd Millennium Classrooms",
+        raw_victim_name="3rd Millennium Classrooms",
+        raw_subtitle="3rd Millennium Classrooms - Austin, Texas, USA",
+        raw_title="Unauthorized access at U.S. e-learning provider",
+    )
+
+    assert identity == "3rd Millennium Classrooms"
 
 
 def test_identity_matches_source_anchor_for_translated_name():
@@ -113,4 +160,18 @@ def test_identity_matches_source_anchor_for_nc_abbreviation():
     assert identity_matches_source_anchor(
         "North Carolina Central University",
         "NC Central University",
+    )
+
+
+def test_identity_matches_source_anchor_for_parent_university_system():
+    assert identity_matches_source_anchor(
+        "University of Hawaii Cancer Center",
+        "University of Hawaii System",
+    )
+
+
+def test_identity_matches_source_anchor_for_health_sciences_subunit():
+    assert identity_matches_source_anchor(
+        "Texas Tech University Health Sciences Center",
+        "Texas Tech University",
     )

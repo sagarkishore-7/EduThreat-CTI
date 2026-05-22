@@ -3,6 +3,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 from uuid import uuid4
 
+from src.edu_cti.core.models import BaseIncident
+from src.edu_cti.pipeline.phase2.enrichment import _build_target_institution_line
 from src.edu_cti_v2.models import ArticleDocument, SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.services import V2EnrichmentService, source_incident_to_base_incident
 
@@ -79,6 +81,36 @@ def test_source_incident_to_base_incident_preserves_key_context():
     assert base.all_urls == ["https://example.com/article"]
 
 
+def test_target_institution_line_is_added_for_known_target_without_subtitle():
+    incident = BaseIncident(
+        incident_id="incident-1",
+        source="comparitech",
+        source_event_id="comparitech-1",
+        institution_name="Southeastern Louisiana University",
+        victim_raw_name="Southeastern Louisiana University",
+        institution_type="university",
+        country="United States",
+        region=None,
+        city=None,
+        incident_date="2023-02-23",
+        date_precision="day",
+        source_published_date=None,
+        ingested_at=None,
+        title="Ransomware attack on Southeastern Louisiana University (2023)",
+        subtitle=None,
+        primary_url=None,
+        all_urls=[],
+    )
+
+    line = _build_target_institution_line(
+        incident,
+        "5 Louisiana colleges shut down internet after security threat",
+    )
+
+    assert "TARGET INSTITUTION: Southeastern Louisiana University" in line
+    assert "multiple institutions" in line
+
+
 def test_source_incident_to_base_incident_recovers_identity_from_subtitle():
     incident = _source_incident()
     incident.raw_institution_name = None
@@ -120,7 +152,7 @@ def test_enrichment_service_persists_typed_source_enrichment():
                     "mapper_version": "phase2_mapper_v1",
                     "post_processing_version": "phase2_post_processing_v1",
                 },
-                "raw_llm_responses": {"extraction": "{\"ok\":true}"},
+                "raw_llm_responses": {"extraction": '{"ok":true}'},
             },
             "institution_name": "Penn State University",
         },
@@ -146,7 +178,7 @@ def test_enrichment_service_persists_typed_source_enrichment():
     assert saved.article_document_id == document.id
     assert saved.llm_model == "deepseek-v3.1:671b-cloud"
     assert saved.typed_enrichment["attack_category"] == "ransomware_encryption"
-    assert saved.raw_response == {"extraction": "{\"ok\":true}"}
+    assert saved.raw_response == {"extraction": '{"ok":true}'}
     pipeline_task_repo.enqueue.assert_called_once()
 
 
@@ -286,8 +318,12 @@ def test_enrichment_service_repairs_compound_generic_identity_with_source_anchor
 
     incident = _source_incident()
     incident.raw_title = "Cyber attack on a university institute in Germany"
-    incident.raw_subtitle = "Universität Bremen, Institut für Didaktik der Naturwissenschaften - Bremen, Germany"
-    incident.raw_institution_name = "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    incident.raw_subtitle = (
+        "Universität Bremen, Institut für Didaktik der Naturwissenschaften - Bremen, Germany"
+    )
+    incident.raw_institution_name = (
+        "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    )
     incident.raw_victim_name = "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
     document = _article_document(incident)
     document.title = "Hackerangriff auf unseren Server und Zugang zu Unterrichtsmaterial"
@@ -304,8 +340,14 @@ def test_enrichment_service_repairs_compound_generic_identity_with_source_anchor
 
     assert outcome["enriched"] is True
     saved = source_enrichment_repo.add.call_args.args[1]
-    assert saved.typed_enrichment["institution_name"] == "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
-    assert saved.raw_extraction["institution_name"] == "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    assert (
+        saved.typed_enrichment["institution_name"]
+        == "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    )
+    assert (
+        saved.raw_extraction["institution_name"]
+        == "Universität Bremen, Institut für Didaktik der Naturwissenschaften"
+    )
     assert saved.raw_extraction["institution_name_basis"] == "source_anchor_fallback"
 
 
@@ -616,7 +658,9 @@ def test_enrichment_service_accepts_victim_evidenced_in_main_article_body():
 
     incident = _source_incident()
     incident.source_name = "googlenews_rss"
-    incident.raw_title = "Cyber Attack Shutters Seattle-Area School District for 2nd Day - NEWStalk 870"
+    incident.raw_title = (
+        "Cyber Attack Shutters Seattle-Area School District for 2nd Day - NEWStalk 870"
+    )
     incident.raw_subtitle = "Seattle-Area School District"
     incident.raw_institution_name = None
     incident.raw_victim_name = None
@@ -664,7 +708,9 @@ def test_enrichment_service_rejects_related_link_contamination():
 
     incident = _source_incident()
     incident.source_name = "securityweek"
-    incident.raw_title = "Hacker Claims Theft of 40 Million Conde Nast Records After Wired Data Leak"
+    incident.raw_title = (
+        "Hacker Claims Theft of 40 Million Conde Nast Records After Wired Data Leak"
+    )
     incident.raw_subtitle = "Related: 3.5 Million Affected by University of Phoenix Data Breach"
     incident.raw_institution_name = ""
     incident.raw_victim_name = ""
@@ -875,7 +921,9 @@ def test_enrichment_service_skips_duplicate_roundup_secondary_stub():
         {
             "is_edu_cyber_incident": True,
             "institution_name": "Penn State University",
-            "other_edu_incidents": [{"victim_name": "Secondary College", "incident_date": "2026-05-07"}],
+            "other_edu_incidents": [
+                {"victim_name": "Secondary College", "incident_date": "2026-05-07"}
+            ],
             "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
         },
     )
@@ -917,7 +965,9 @@ def test_enrichment_service_skips_primary_victim_in_roundup_secondaries():
         {
             "is_edu_cyber_incident": True,
             "institution_name": "Penn State University",
-            "other_edu_incidents": [{"victim_name": "Penn State University", "incident_date": "2026-05-08"}],
+            "other_edu_incidents": [
+                {"victim_name": "Penn State University", "incident_date": "2026-05-08"}
+            ],
             "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
         },
     )
