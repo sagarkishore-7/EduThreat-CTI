@@ -158,6 +158,35 @@ _DISCLOSURE_FIELD_LABELS = {
     "public_disclosure_date": "Public Disclosure Date",
     "recovery_duration_days": "Recovery Duration",
 }
+_COMPLETENESS_SCORE_FIELDS = (
+    "institution_name",
+    "institution_type",
+    "country",
+    "region",
+    "city",
+    "incident_date",
+    "date_precision",
+    "attack_category",
+    "attack_vector",
+    "severity",
+    "canonical_summary",
+    "threat_actor_name",
+    "ransomware_family",
+    "records_affected_exact",
+    "records_affected_min",
+    "records_affected_max",
+    "data_categories",
+    "data_exfiltrated",
+    "systems_affected",
+    "critical_systems_affected",
+    "third_party_vendor_impact",
+    "vendor_name",
+    "public_disclosure_date",
+    "recovery_duration_days",
+    "mitre_attack_techniques",
+    "diamond_model",
+    "timeline",
+)
 
 
 def _first_present(*values: Any) -> Any:
@@ -220,6 +249,24 @@ def _count_present_fields(payload: Any) -> int:
     if isinstance(payload, str):
         return 1 if payload.strip() else 0
     return 1
+
+
+def _canonical_completeness_score(payload: Any) -> float:
+    """Return a bounded 0-100 completeness percentage for DB storage.
+
+    The legacy implementation stored a recursive present-field count. Merged
+    canonicals can contain large source/provenance arrays, so that count can
+    exceed the NUMERIC(5,2) column limit. A fixed denominator keeps the metric
+    comparable across incidents and safe for PostgreSQL.
+    """
+
+    if not isinstance(payload, dict) or not payload:
+        return 0.0
+    present = sum(1 for field in _COMPLETENESS_SCORE_FIELDS if _value_present(payload.get(field)))
+    if present <= 0:
+        return 0.0
+    score = (present / len(_COMPLETENESS_SCORE_FIELDS)) * 100
+    return round(min(100.0, max(0.0, score)), 2)
 
 
 def _value_present(value: Any) -> bool:
@@ -1619,7 +1666,7 @@ class V2CanonicalizationService:
             "severity": merged_projection.get("severity"),
         }
         existing.field_provenance = field_provenance
-        existing.completeness_score = _count_present_fields(typed)
+        existing.completeness_score = _canonical_completeness_score(typed)
         session.add(existing)
 
         session.execute(

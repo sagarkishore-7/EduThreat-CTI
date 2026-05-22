@@ -593,6 +593,202 @@ def test_enrichment_service_accepts_acronym_variant_with_canonical_name():
     assert saved.typed_enrichment["institution_name"] == "Kansas State University"
 
 
+def test_enrichment_service_accepts_victim_evidenced_in_main_article_body():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Highline School District",
+        "attack_category": "unauthorized_access",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Highline School District",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "googlenews_rss"
+    incident.raw_title = "Cyber Attack Shutters Seattle-Area School District for 2nd Day - NEWStalk 870"
+    incident.raw_subtitle = "Seattle-Area School District"
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    document = _article_document(incident)
+    document.title = "Cyber Attack Shutters Seattle-Area School District for 2nd Day"
+    document.content_text = (
+        "Highline School District's 17,500 students will be out of class again "
+        "after a cyber attack disrupted district technology systems."
+    )
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is True
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.manual_review_required is False
+    assert saved.typed_enrichment["institution_name"] == "Highline School District"
+
+
+def test_enrichment_service_rejects_related_link_contamination():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "University of Phoenix",
+        "attack_category": "data_breach_external",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "University of Phoenix",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "securityweek"
+    incident.raw_title = "Hacker Claims Theft of 40 Million Conde Nast Records After Wired Data Leak"
+    incident.raw_subtitle = "Related: 3.5 Million Affected by University of Phoenix Data Breach"
+    incident.raw_institution_name = ""
+    incident.raw_victim_name = ""
+    document = _article_document(incident)
+    document.title = incident.raw_title
+    document.content_text = (
+        "A hacker claimed to have stolen records from Conde Nast after a Wired data leak. "
+        "The company investigated the breach and said the attacker tried to profit from the hack. "
+        + ("Additional main article context. " * 60)
+        + "Related: Nissan Confirms Impact From Red Hat Data Breach. "
+        "Related: 3.5 Million Affected by University of Phoenix Data Breach. "
+        "Written ByEduard Kovacs"
+    )
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is False
+    assert outcome["is_education_related"] is False
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.typed_enrichment is None
+    assert saved.manual_review_required is False
+    assert "related-story" in saved.failed_reason
+
+
+def test_enrichment_service_keeps_structured_source_multi_victim_drift_in_review():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Butler County Community College",
+        "attack_category": "ransomware_encryption",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Butler County Community College",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "comparitech"
+    incident.raw_title = "Ransomware attack on Lewis and Clark Community College (2021)"
+    incident.raw_institution_name = "Lewis and Clark Community College"
+    incident.raw_victim_name = "Lewis and Clark Community College"
+    document = _article_document(incident)
+    document.title = "2 More Community Colleges Targeted by Ransomware"
+    document.content_text = (
+        "Two community colleges were victims of ransomware attacks. "
+        "Butler County Community College in Pennsylvania and Lewis and Clark "
+        "Community College in Illinois remain closed as officials respond."
+    )
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is False
+    assert outcome["is_education_related"] is None
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.typed_enrichment is None
+    assert saved.manual_review_required is True
+    assert "structured source target" in saved.manual_review_reason
+
+
+def test_enrichment_service_trims_related_tail_before_llm():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {"institution_name": "Saint Xavier University"}
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Saint Xavier University",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    document = _article_document(incident)
+    document.title = "210,000 Impacted by Saint Xavier University Data Breach"
+    document.content_text = (
+        "Saint Xavier University notified individuals that their personal information "
+        "was compromised in a data breach. "
+        + ("The investigation is ongoing. " * 60)
+        + "Related: University of Phoenix Data Breach. Written ByReporter"
+    )
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    service.enrich_source_incident(Mock(), incident)
+
+    article_map = enricher._enrich_article.call_args.args[1]
+    article = next(iter(article_map.values()))
+    assert "Saint Xavier University" in article.content
+    assert "University of Phoenix" not in article.content
+
+
 def test_enrichment_service_creates_roundup_secondary_stubs():
     article_repo = Mock()
     source_enrichment_repo = Mock()

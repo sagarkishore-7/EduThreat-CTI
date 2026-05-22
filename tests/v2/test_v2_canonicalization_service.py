@@ -5,7 +5,12 @@ from uuid import uuid4
 
 from src.edu_cti_v2.models import CanonicalIncident, CanonicalMembership, SourceEnrichment, SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.services import V2CanonicalizationService, build_source_projection
-from src.edu_cti_v2.services.canonicalization import _build_merged_projection, _identity_match_quality, _member_score
+from src.edu_cti_v2.services.canonicalization import (
+    _build_merged_projection,
+    _canonical_completeness_score,
+    _identity_match_quality,
+    _member_score,
+)
 
 
 def _source_incident(*, event_key: str = "story-1", url: str = "https://example.com/article") -> SourceIncident:
@@ -107,6 +112,49 @@ def test_build_source_projection_maps_typed_enrichment_into_canonical_fields():
     assert projection["ransomware_family"] == "LockBit"
     assert projection["incident_date"].isoformat() == "2026-05-08"
     assert projection["date_precision"] == "day"
+
+
+def test_canonical_completeness_score_is_bounded_for_large_merged_projection():
+    projection = {
+        "institution_name": "Instructure",
+        "institution_type": "edtech_platform",
+        "country": "United States",
+        "region": "California",
+        "city": "San Francisco",
+        "incident_date": "2026-05-05",
+        "date_precision": "day",
+        "attack_category": "third_party_compromise",
+        "attack_vector": "unauthorized_access",
+        "severity": "high",
+        "canonical_summary": "A vendor incident affected many schools.",
+        "threat_actor_name": "Unknown",
+        "ransomware_family": "Unknown",
+        "records_affected_exact": None,
+        "records_affected_min": None,
+        "records_affected_max": 275_000_000,
+        "data_categories": ["student data", "contact information"],
+        "data_exfiltrated": True,
+        "systems_affected": ["Canvas"],
+        "critical_systems_affected": ["learning management system"],
+        "third_party_vendor_impact": True,
+        "vendor_name": "Instructure",
+        "public_disclosure_date": "2026-05-10",
+        "recovery_duration_days": 5,
+        "mitre_attack_techniques": [
+            {"tactic": "Initial Access", "technique": "Valid Accounts"}
+            for _ in range(500)
+        ],
+        "diamond_model": {"victim": {"primary": "schools"}},
+        "timeline": [
+            {"date": "2026-05-05", "event_description": f"Event {index}"}
+            for index in range(500)
+        ],
+    }
+
+    score = _canonical_completeness_score(projection)
+
+    assert score == 92.59
+    assert 0 <= score <= 100
 
 
 def test_build_source_projection_normalizes_threat_actor_and_ransomware_aliases():

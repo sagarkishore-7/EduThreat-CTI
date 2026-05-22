@@ -30,6 +30,12 @@ _NON_ASCII_RE = re.compile(r"[^\x00-\x7F]")
 _UNKNOWN_VALUES = {"", "unknown", "unnamed", "undisclosed", "n/a", "none", "null"}
 _PARENTHETICAL_ALIAS_RE = re.compile(r"\s+\(([A-Za-z0-9&.\- /]{2,24})\)\s*$")
 _TRAILING_CAMPUS_RE = re.compile(r"\b(?:[a-z0-9-]+\s+)?campus$", re.IGNORECASE)
+_INCIDENT_HEADLINE_RE = re.compile(
+    r"\b(?:breach|breached|cyber|cyberattack|hack|hacked|ransomware|attack|"
+    r"outage|outages|disrupt|disrupts|disrupted|stolen|leak|leaked|phishing|"
+    r"malware|data|impact|impacted|affected|exposed|confirms|confirmed)\b",
+    re.IGNORECASE,
+)
 _IDENTITY_TOKEN_STOP_WORDS = {
     "the",
     "of",
@@ -95,6 +101,11 @@ _IDENTITY_TERM_REPLACEMENTS: tuple[tuple[str, str], ...] = (
     ("universitaria", "university"),
     ("hochschule", "university"),
 )
+_IDENTITY_TOKEN_REPLACEMENTS: dict[str, tuple[str, ...]] = {
+    # Common source shorthand seen in school and university reporting. Keep this
+    # list deliberately small so normal initials are not over-expanded.
+    "nc": ("north", "carolina"),
+}
 
 
 def looks_geographic_only_identity(value: Optional[str]) -> bool:
@@ -168,6 +179,51 @@ def _normalize_source_identity_candidate(value: Optional[str]) -> Optional[str]:
     return cleaned
 
 
+def _normalized_token_set(value: Optional[str]) -> set[str]:
+    normalized = _normalize_identity_for_match(value)
+    if not normalized:
+        return set()
+    return {
+        token
+        for token in normalized.split()
+        if token and token not in _IDENTITY_TOKEN_STOP_WORDS and len(token) > 1
+    }
+
+
+def _looks_like_title_publisher(candidate: str, raw_title: Optional[str]) -> bool:
+    title = str(raw_title or "")
+    if " - " not in title:
+        return False
+    suffix = title.rsplit(" - ", 1)[1].strip()
+    if not suffix:
+        return False
+    candidate_norm = _normalize_identity_for_match(candidate)
+    suffix_norm = _normalize_identity_for_match(suffix)
+    if not candidate_norm or not suffix_norm:
+        return False
+    if candidate_norm == suffix_norm:
+        return True
+    return institution_names_match(candidate_norm, suffix_norm, threshold=92)
+
+
+def _looks_like_repeated_headline(candidate: str, raw_title: Optional[str]) -> bool:
+    title_tokens = _normalized_token_set(raw_title)
+    candidate_tokens = _normalized_token_set(candidate)
+    if not title_tokens or not candidate_tokens:
+        return False
+    overlap = candidate_tokens & title_tokens
+    if len(candidate_tokens) <= 2:
+        return overlap == candidate_tokens and _looks_like_title_publisher(candidate, raw_title)
+    return len(overlap) / len(candidate_tokens) >= 0.75 and _INCIDENT_HEADLINE_RE.search(candidate)
+
+
+def _looks_like_incident_headline_fragment(candidate: str) -> bool:
+    words = candidate.split()
+    if len(words) >= 5 and _INCIDENT_HEADLINE_RE.search(candidate):
+        return True
+    return False
+
+
 def _ascii_fold(value: str) -> str:
     folded = unicodedata.normalize("NFKD", value)
     return "".join(char for char in folded if not unicodedata.combining(char))
@@ -186,6 +242,14 @@ def _normalize_identity_for_match(value: Optional[str]) -> Optional[str]:
     normalized = _TRAILING_CAMPUS_RE.sub("", normalized).strip()
     for source, target in _IDENTITY_TERM_REPLACEMENTS:
         normalized = re.sub(rf"\b{re.escape(source)}\b", target, normalized)
+    tokens: list[str] = []
+    for token in normalized.split():
+        replacement = _IDENTITY_TOKEN_REPLACEMENTS.get(token)
+        if replacement:
+            tokens.extend(replacement)
+        else:
+            tokens.append(token)
+    normalized = " ".join(tokens)
     normalized = re.sub(r"\s+", " ", normalized).strip()
     return normalized or None
 
@@ -215,6 +279,23 @@ def _identity_match_variants(value: Optional[str]) -> set[str]:
     if campus_trimmed:
         variants.add(campus_trimmed)
     return {variant for variant in variants if variant}
+
+
+def _identity_acronym(value: Optional[str]) -> Optional[str]:
+    normalized = _normalize_identity_for_match(value)
+    if not normalized:
+        return None
+    tokens = [
+        token
+        for token in normalized.split()
+        if token and token not in _IDENTITY_TOKEN_STOP_WORDS and len(token) > 1
+    ]
+    if len(tokens) < 3:
+        return None
+    acronym = "".join(token[0] for token in tokens)
+    if len(acronym) < 3 or len(acronym) > 10:
+        return None
+    return acronym
 
 
 def identity_matches_source_anchor(
@@ -276,6 +357,14 @@ def identity_matches_source_anchor(
                             and len(next(iter(distinct_smaller))) >= 6
                         ):
                             return True
+                    left_acronym = _identity_acronym(left)
+                    right_acronym = _identity_acronym(right)
+                    if left_acronym and left_acronym in right_tokens:
+                        return True
+                    if right_acronym and right_acronym in left_tokens:
+                        return True
+                    if left_acronym and right_acronym and left_acronym == right_acronym:
+                        return True
                     if institution_names_match(left_variant, right_variant, threshold=threshold):
                         return True
 
@@ -301,6 +390,16 @@ def recover_source_identity(
         normalized = _normalize_source_identity_candidate(raw)
         if not normalized:
             continue
+        if origin == "subtitle":
+            # Google/Bing RSS descriptions often duplicate the headline with the
+            # publisher suffix stripped or transformed. Those strings are useful
+            # search evidence, but they are not victim anchors.
+            if _looks_like_title_publisher(normalized, raw_title):
+                continue
+            if _looks_like_repeated_headline(normalized, raw_title):
+                continue
+            if _looks_like_incident_headline_fragment(normalized):
+                continue
         # Titles are useful when they collapse cleanly to a short educational
         # victim name, but broad incident headlines should not become labels.
         if origin == "title":

@@ -64,6 +64,72 @@ _INVALID_SECONDARY_VICTIM_NAMES = {
     "redacted",
     "unidentified",
 }
+_ARTICLE_BOILERPLATE_RE = re.compile(
+    r"\b(?:Related(?:\s+Reading)?\s*:|More\s+from[A-Z]|Written\s+By[A-Z]|"
+    r"Promoted\s+Content\b|Partner\s+Content\b)",
+    re.IGNORECASE,
+)
+_ARTICLE_TRIM_MIN_CHARS = 500
+_ARTICLE_EVIDENCE_WINDOW_CHARS = 3500
+_INCIDENT_LANGUAGE_RE = re.compile(
+    r"\b(?:cyber(?:security)?|ransomware|breach|hack(?:ed|ers?)?|attack|leak(?:ed)?|stolen|"
+    r"compromis(?:e|ed|es|ing)|unauthori[sz]ed|phish(?:ing)?|deface(?:d|ment)?|"
+    r"extort(?:ion|ed)?)\b",
+    re.IGNORECASE,
+)
+_ONLINE_COURSE_SCOPE_RE = re.compile(
+    r"\b(?:andrew\s+tate|the\s+real\s+world|hustler'?s\s+university)\b",
+    re.IGNORECASE,
+)
+_IDENTITY_TOKEN_STOP_WORDS = {
+    "the",
+    "of",
+    "at",
+    "for",
+    "and",
+    "de",
+    "del",
+    "des",
+    "der",
+    "den",
+    "da",
+    "do",
+    "dos",
+    "das",
+    "du",
+    "di",
+    "la",
+    "le",
+    "los",
+    "las",
+    "el",
+    "y",
+    "und",
+    "et",
+}
+_GENERIC_IDENTITY_TOKENS = {
+    "academy",
+    "board",
+    "centre",
+    "center",
+    "college",
+    "colleges",
+    "community",
+    "department",
+    "district",
+    "education",
+    "health",
+    "institute",
+    "institution",
+    "public",
+    "school",
+    "schools",
+    "system",
+    "systems",
+    "township",
+    "unified",
+    "university",
+}
 
 
 def _coerce_string_list(value: Any) -> list[str]:
@@ -79,6 +145,130 @@ def _coerce_optional_text(value: Any) -> Optional[str]:
         value = " ".join(str(item).strip() for item in value if str(item).strip())
     text = str(value).strip()
     return text or None
+
+
+def _compact_text(value: Optional[str]) -> str:
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _trim_article_boilerplate_tail(content: Optional[str]) -> str:
+    """Trim related-link and author-card tails before LLM extraction/evidence checks."""
+    text = _compact_text(content)
+    if not text:
+        return ""
+    for match in _ARTICLE_BOILERPLATE_RE.finditer(text):
+        if match.start() < _ARTICLE_TRIM_MIN_CHARS:
+            continue
+        prefix = text[: match.start()].strip()
+        if _INCIDENT_LANGUAGE_RE.search(prefix):
+            return prefix
+    return text
+
+
+def _identity_search_terms(identity: Optional[str], aliases: Optional[list[str]] = None) -> list[str]:
+    terms: list[str] = []
+    for value in [identity, *(aliases or [])]:
+        cleaned = clean_institution_name(value).strip()
+        if cleaned and cleaned.lower() not in {term.lower() for term in terms}:
+            terms.append(cleaned)
+    cleaned_identity = clean_institution_name(identity).strip()
+    tokens = [
+        token
+        for token in re.findall(r"[A-Za-z0-9]+", cleaned_identity)
+        if token.lower() not in _IDENTITY_TOKEN_STOP_WORDS and len(token) > 1
+    ]
+    if len(tokens) >= 3:
+        acronym = "".join(token[0] for token in tokens).upper()
+        if 3 <= len(acronym) <= 10 and acronym.lower() not in {term.lower() for term in terms}:
+            terms.append(acronym)
+    return terms
+
+
+def _identity_term_position(text: str, terms: list[str]) -> int:
+    haystack = _compact_text(text).lower()
+    positions: list[int] = []
+    for term in terms:
+        needle = _compact_text(term).lower()
+        if not needle or (len(needle) < 3 and not term.isupper()):
+            continue
+        position = haystack.find(needle)
+        if position >= 0:
+            positions.append(position)
+    return min(positions) if positions else -1
+
+
+def _distinct_identity_tokens(value: Optional[str]) -> set[str]:
+    return {
+        token
+        for token in re.findall(r"[a-z0-9]+", _normalized_identity_text(value))
+        if token not in _IDENTITY_TOKEN_STOP_WORDS
+        and token not in _GENERIC_IDENTITY_TOKENS
+        and len(token) > 1
+    }
+
+
+def _identity_token_supports_article(identity: Optional[str], text: str) -> bool:
+    tokens = _distinct_identity_tokens(identity)
+    if not tokens:
+        return False
+    article_tokens = set(re.findall(r"[a-z0-9]+", _compact_text(text).lower()))
+    overlap = tokens & article_tokens
+    if len(tokens) <= 2:
+        return len(overlap) == len(tokens)
+    return len(overlap) >= 2 and len(overlap) / len(tokens) >= 0.66
+
+
+def _article_main_text_supports_identity(
+    *,
+    extracted_identity: Optional[str],
+    extracted_aliases: Optional[list[str]],
+    article_title: Optional[str],
+    article_content: Optional[str],
+) -> bool:
+    terms = _identity_search_terms(extracted_identity, extracted_aliases)
+    main_text = _trim_article_boilerplate_tail(article_content)
+    title_text = _compact_text(article_title)
+    evidence_text = f"{title_text} {main_text[:_ARTICLE_EVIDENCE_WINDOW_CHARS]}"
+    if not _INCIDENT_LANGUAGE_RE.search(evidence_text):
+        return False
+    if _identity_term_position(title_text, terms) >= 0:
+        return True
+    if _identity_term_position(main_text[:_ARTICLE_EVIDENCE_WINDOW_CHARS], terms) >= 0:
+        return True
+    return _identity_token_supports_article(extracted_identity, evidence_text)
+
+
+def _identity_appears_only_in_boilerplate(
+    *,
+    extracted_identity: Optional[str],
+    extracted_aliases: Optional[list[str]],
+    article_title: Optional[str],
+    article_content: Optional[str],
+) -> bool:
+    terms = _identity_search_terms(extracted_identity, extracted_aliases)
+    full_text = _compact_text(article_content)
+    if not full_text:
+        return False
+    main_text = _trim_article_boilerplate_tail(full_text)
+    if main_text == full_text:
+        return False
+    if _identity_term_position(_compact_text(article_title), terms) >= 0:
+        return False
+    return _identity_term_position(full_text, terms) >= 0 and _identity_term_position(main_text, terms) < 0
+
+
+def _source_has_strong_structured_identity(source_incident) -> bool:
+    for candidate in (source_incident.raw_institution_name, source_incident.raw_victim_name):
+        cleaned = _clean_identity(candidate)
+        if not cleaned:
+            continue
+        if not _looks_invalid_primary_identity(
+            candidate,
+            title=source_incident.raw_title,
+            cleaned_value=cleaned,
+        ):
+            return True
+    return False
 
 
 def _coerce_attack_hint(value: Any) -> Optional[str]:
@@ -204,7 +394,6 @@ def _source_metadata_supports_extracted_identity(source_incident, cleaned_extrac
         source_incident.raw_institution_name,
         source_incident.raw_victim_name,
         source_incident.raw_title,
-        source_incident.raw_subtitle,
     ):
         candidate_norm = _normalized_identity_text(candidate)
         if not candidate_norm:
@@ -212,6 +401,13 @@ def _source_metadata_supports_extracted_identity(source_incident, cleaned_extrac
         if extracted_norm == candidate_norm or extracted_norm in candidate_norm:
             return True
         if identity_matches_source_anchor(cleaned_extracted, candidate, threshold=75):
+            return True
+    subtitle = _compact_text(source_incident.raw_subtitle)
+    if subtitle and not _ARTICLE_BOILERPLATE_RE.search(subtitle):
+        subtitle_norm = _normalized_identity_text(subtitle)
+        if extracted_norm == subtitle_norm or extracted_norm in subtitle_norm:
+            return True
+        if identity_matches_source_anchor(cleaned_extracted, subtitle, threshold=75):
             return True
     return False
 
@@ -289,6 +485,8 @@ def _repair_or_reject_primary_identity(
     *,
     raw_json_data: Dict[str, Any],
     typed_enrichment: Optional[Dict[str, Any]],
+    article_title: Optional[str] = None,
+    article_content: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Literal["ok", "reject", "review"]]:
     source_identity = recover_source_identity(
         raw_institution_name=source_incident.raw_institution_name,
@@ -308,6 +506,35 @@ def _repair_or_reject_primary_identity(
     )
     cleaned_extracted = _clean_identity(extracted_identity)
     title = source_incident.raw_title
+    evidence_title = " ".join(
+        _compact_text(value)
+        for value in (source_incident.raw_title, article_title)
+        if value
+    )
+    extracted_aliases = _coerce_string_list(raw_json_data.get("institution_aliases"))
+
+    if cleaned_extracted and _ONLINE_COURSE_SCOPE_RE.search(
+        " ".join(
+            _compact_text(value)
+            for value in (
+                cleaned_extracted,
+                source_incident.raw_title,
+                article_title,
+            )
+            if value
+        )
+    ):
+        reason = "Online course platform is outside the education-sector institution scope."
+        return _mark_non_specific_victim(raw_json_data, reason=reason), None, "reject"
+
+    if cleaned_extracted and _identity_appears_only_in_boilerplate(
+        extracted_identity=cleaned_extracted,
+        extracted_aliases=extracted_aliases,
+        article_title=evidence_title,
+        article_content=article_content,
+    ):
+        reason = "Extracted victim appears only in related-story or boilerplate text, not the main article."
+        return _mark_non_specific_victim(raw_json_data, reason=reason), None, "reject"
 
     if _looks_invalid_primary_identity(extracted_identity, title=title, cleaned_value=cleaned_extracted):
         if source_identity:
@@ -321,7 +548,6 @@ def _repair_or_reject_primary_identity(
         reason = "Article does not identify a specific victim institution or vendor."
         return _mark_non_specific_victim(raw_json_data, reason=reason), None, "reject"
 
-    extracted_aliases = _coerce_string_list(raw_json_data.get("institution_aliases"))
     source_aliases = [
         candidate
         for candidate in (
@@ -339,6 +565,19 @@ def _repair_or_reject_primary_identity(
         threshold=80,
     ):
         if _source_metadata_supports_extracted_identity(source_incident, cleaned_extracted):
+            return raw_json_data, typed_enrichment, "ok"
+        if _source_has_strong_structured_identity(source_incident):
+            reason = (
+                f"Extracted victim '{cleaned_extracted}' drifted from structured source target "
+                f"'{source_identity}'."
+            )
+            return _mark_victim_review_required(raw_json_data, reason=reason), None, "review"
+        if _article_main_text_supports_identity(
+            extracted_identity=cleaned_extracted,
+            extracted_aliases=extracted_aliases,
+            article_title=evidence_title,
+            article_content=article_content,
+        ):
             return raw_json_data, typed_enrichment, "ok"
         reason = (
             f"Extracted victim '{cleaned_extracted}' drifted from source anchor "
@@ -507,7 +746,7 @@ class V2EnrichmentService:
         article = ArticleContent(
             url=url,
             title=document.title or "",
-            content=document.content_text or "",
+            content=_trim_article_boilerplate_tail(document.content_text or ""),
             author=document.author,
             publish_date=document.publish_date.isoformat() if document.publish_date else None,
             fetch_successful=True,
@@ -587,6 +826,8 @@ class V2EnrichmentService:
                 source_incident,
                 raw_json_data=raw_json_data,
                 typed_enrichment=typed_enrichment,
+                article_title=document.title,
+                article_content=document.content_text,
             )
             if disposition == "reject":
                 result = None
