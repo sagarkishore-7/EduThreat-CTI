@@ -12,7 +12,10 @@ from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.pipeline.phase2.enrichment import IncidentEnricher
 from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
 from src.edu_cti.pipeline.phase2.storage import ArticleContent
-from src.edu_cti.pipeline.phase2.utils.deduplication import clean_institution_name, institution_names_match
+from src.edu_cti.pipeline.phase2.utils.deduplication import (
+    clean_institution_name,
+    institution_names_match,
+)
 from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
 from src.edu_cti_v2.models import PipelineTask, SourceEnrichment, SourceIncident
 from src.edu_cti_v2.repositories import (
@@ -72,7 +75,7 @@ _ARTICLE_BOILERPLATE_RE = re.compile(
 _ARTICLE_TRIM_MIN_CHARS = 500
 _ARTICLE_EVIDENCE_WINDOW_CHARS = 3500
 _INCIDENT_LANGUAGE_RE = re.compile(
-    r"\b(?:cyber(?:security)?|ransomware|breach|hack(?:ed|ers?)?|attack|leak(?:ed)?|stolen|"
+    r"\b(?:cyber(?:security|attack)?|ransomware|breach|hack(?:ed|ers?)?|attack|leak(?:ed)?|stolen|"
     r"compromis(?:e|ed|es|ing)|unauthori[sz]ed|phish(?:ing)?|deface(?:d|ment)?|"
     r"extort(?:ion|ed)?)\b",
     re.IGNORECASE,
@@ -165,7 +168,9 @@ def _trim_article_boilerplate_tail(content: Optional[str]) -> str:
     return text
 
 
-def _identity_search_terms(identity: Optional[str], aliases: Optional[list[str]] = None) -> list[str]:
+def _identity_search_terms(
+    identity: Optional[str], aliases: Optional[list[str]] = None
+) -> list[str]:
     terms: list[str] = []
     for value in [identity, *(aliases or [])]:
         cleaned = clean_institution_name(value).strip()
@@ -238,6 +243,30 @@ def _article_main_text_supports_identity(
     return _identity_token_supports_article(extracted_identity, evidence_text)
 
 
+def _article_text_names_identity(
+    *,
+    extracted_identity: Optional[str],
+    extracted_aliases: Optional[list[str]],
+    article_title: Optional[str],
+    article_content: Optional[str],
+) -> bool:
+    """Return True when source title/body names the extracted identity.
+
+    This is intentionally weaker than `_article_main_text_supports_identity`:
+    it does not require incident-language cues, so translated and short local
+    stories can still pass when the victim name or alias is present.
+    """
+    terms = _identity_search_terms(extracted_identity, extracted_aliases)
+    main_text = _trim_article_boilerplate_tail(article_content)
+    title_text = _compact_text(article_title)
+    evidence_text = f"{title_text} {main_text[:_ARTICLE_EVIDENCE_WINDOW_CHARS]}"
+    if _identity_term_position(title_text, terms) >= 0:
+        return True
+    if _identity_term_position(main_text[:_ARTICLE_EVIDENCE_WINDOW_CHARS], terms) >= 0:
+        return True
+    return _identity_token_supports_article(extracted_identity, evidence_text)
+
+
 def _identity_appears_only_in_boilerplate(
     *,
     extracted_identity: Optional[str],
@@ -254,7 +283,10 @@ def _identity_appears_only_in_boilerplate(
         return False
     if _identity_term_position(_compact_text(article_title), terms) >= 0:
         return False
-    return _identity_term_position(full_text, terms) >= 0 and _identity_term_position(main_text, terms) < 0
+    return (
+        _identity_term_position(full_text, terms) >= 0
+        and _identity_term_position(main_text, terms) < 0
+    )
 
 
 def _source_has_strong_structured_identity(source_incident) -> bool:
@@ -269,6 +301,19 @@ def _source_has_strong_structured_identity(source_incident) -> bool:
         ):
             return True
     return False
+
+
+def _has_other_edu_incidents(raw_json_data: Dict[str, Any]) -> bool:
+    incidents = raw_json_data.get("other_edu_incidents")
+    return isinstance(incidents, list) and any(isinstance(item, dict) for item in incidents)
+
+
+def _source_requires_article_identity_support(source_incident) -> bool:
+    source_name = str(getattr(source_incident, "source_name", "") or "").lower()
+    source_group = str(getattr(source_incident, "source_group", "") or "").lower()
+    if source_name in {"googlenews_rss", "bing_news_rss", "yahoo_news_rss"}:
+        return True
+    return source_group in {"rss", "news"}
 
 
 def _coerce_attack_hint(value: Any) -> Optional[str]:
@@ -349,9 +394,15 @@ def source_incident_to_base_incident(
         subtitle=source_incident.raw_subtitle,
         primary_url=None,
         all_urls=all_urls,
-        leak_site_url=next((row.url for row in (source_incident.urls or []) if row.url_kind == "leak_site"), None),
-        source_detail_url=next((row.url for row in (source_incident.urls or []) if row.url_kind == "detail"), None),
-        screenshot_url=next((row.url for row in (source_incident.urls or []) if row.url_kind == "screenshot"), None),
+        leak_site_url=next(
+            (row.url for row in (source_incident.urls or []) if row.url_kind == "leak_site"), None
+        ),
+        source_detail_url=next(
+            (row.url for row in (source_incident.urls or []) if row.url_kind == "detail"), None
+        ),
+        screenshot_url=next(
+            (row.url for row in (source_incident.urls or []) if row.url_kind == "screenshot"), None
+        ),
         attack_type_hint=source_incident.raw_attack_hint,
         status=source_incident.raw_status or "suspected",
         source_confidence=source_incident.source_confidence or "medium",
@@ -378,7 +429,9 @@ def _normalized_identity_text(value: Optional[str]) -> str:
     return re.sub(r"\s+", " ", cleaned).strip().lower()
 
 
-def _source_metadata_supports_extracted_identity(source_incident, cleaned_extracted: Optional[str]) -> bool:
+def _source_metadata_supports_extracted_identity(
+    source_incident, cleaned_extracted: Optional[str]
+) -> bool:
     """Return True when source metadata itself clearly names the extracted victim.
 
     Some news collectors have noisy subtitle/anchor text from related links. If
@@ -435,9 +488,17 @@ def _looks_invalid_primary_identity(
     if _COMMENTARY_IDENTITY_RE.match(text):
         return True
     lowered = text.lower()
-    if any(marker in lowered for marker in ("websites of", "website of", "multiple universities", "many universities")):
+    if any(
+        marker in lowered
+        for marker in ("websites of", "website of", "multiple universities", "many universities")
+    ):
         return True
-    if _GENERIC_INDUSTRY_RE.search(text) and "university" not in lowered and "college" not in lowered and "school" not in lowered:
+    if (
+        _GENERIC_INDUSTRY_RE.search(text)
+        and "university" not in lowered
+        and "college" not in lowered
+        and "school" not in lowered
+    ):
         return True
     words = text.split()
     if len(words) >= 10:
@@ -507,11 +568,10 @@ def _repair_or_reject_primary_identity(
     cleaned_extracted = _clean_identity(extracted_identity)
     title = source_incident.raw_title
     evidence_title = " ".join(
-        _compact_text(value)
-        for value in (source_incident.raw_title, article_title)
-        if value
+        _compact_text(value) for value in (source_incident.raw_title, article_title) if value
     )
     extracted_aliases = _coerce_string_list(raw_json_data.get("institution_aliases"))
+    has_other_edu_incidents = _has_other_edu_incidents(raw_json_data)
 
     if cleaned_extracted and _ONLINE_COURSE_SCOPE_RE.search(
         " ".join(
@@ -533,10 +593,18 @@ def _repair_or_reject_primary_identity(
         article_title=evidence_title,
         article_content=article_content,
     ):
+        if has_other_edu_incidents:
+            reason = (
+                "Article names multiple education victims, but the selected primary victim "
+                "appears outside the main article evidence window."
+            )
+            return _mark_victim_review_required(raw_json_data, reason=reason), None, "review"
         reason = "Extracted victim appears only in related-story or boilerplate text, not the main article."
         return _mark_non_specific_victim(raw_json_data, reason=reason), None, "reject"
 
-    if _looks_invalid_primary_identity(extracted_identity, title=title, cleaned_value=cleaned_extracted):
+    if _looks_invalid_primary_identity(
+        extracted_identity, title=title, cleaned_value=cleaned_extracted
+    ):
         if source_identity:
             raw_json_data = dict(raw_json_data)
             raw_json_data["institution_name"] = source_identity
@@ -557,12 +625,30 @@ def _repair_or_reject_primary_identity(
         )
         if candidate
     ]
-    if source_identity and cleaned_extracted and not identity_matches_source_anchor(
-        cleaned_extracted,
-        source_identity,
-        extracted_aliases=extracted_aliases,
-        source_aliases=source_aliases,
-        threshold=80,
+    if (
+        not source_identity
+        and cleaned_extracted
+        and _source_requires_article_identity_support(source_incident)
+        and not _article_text_names_identity(
+            extracted_identity=cleaned_extracted,
+            extracted_aliases=extracted_aliases,
+            article_title=evidence_title,
+            article_content=article_content,
+        )
+    ):
+        reason = "Extracted victim is not supported by the source title or main article text."
+        return _mark_victim_review_required(raw_json_data, reason=reason), None, "review"
+
+    if (
+        source_identity
+        and cleaned_extracted
+        and not identity_matches_source_anchor(
+            cleaned_extracted,
+            source_identity,
+            extracted_aliases=extracted_aliases,
+            source_aliases=source_aliases,
+            threshold=80,
+        )
     ):
         if _source_metadata_supports_extracted_identity(source_incident, cleaned_extracted):
             return raw_json_data, typed_enrichment, "ok"
@@ -603,7 +689,9 @@ class V2EnrichmentService:
         llm_client: Optional[OllamaLLMClient] = None,
     ) -> None:
         self.article_repository = article_repository or ArticleRepository()
-        self.source_enrichment_repository = source_enrichment_repository or SourceEnrichmentRepository()
+        self.source_enrichment_repository = (
+            source_enrichment_repository or SourceEnrichmentRepository()
+        )
         self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
         self.intake_service = intake_service or V2IntakeService(
@@ -726,7 +814,9 @@ class V2EnrichmentService:
 
         return created
 
-    def _select_article(self, session, source_incident) -> Tuple[Optional[ArticleContent], Optional[object], Optional[str]]:
+    def _select_article(
+        self, session, source_incident
+    ) -> Tuple[Optional[ArticleContent], Optional[object], Optional[str]]:
         document = self.article_repository.get_selected_document(session, source_incident.id)
         if document is None:
             return None, None, None
@@ -766,7 +856,9 @@ class V2EnrichmentService:
     ) -> Dict[str, object]:
         article_content, document, article_url = self._select_article(session, source_incident)
         if article_content is None or document is None or not article_url:
-            enrichment = self.source_enrichment_repository.get_by_source_incident(session, source_incident.id)
+            enrichment = self.source_enrichment_repository.get_by_source_incident(
+                session, source_incident.id
+            )
             if enrichment is None:
                 enrichment = SourceEnrichment(
                     source_incident_id=source_incident.id,
@@ -788,11 +880,17 @@ class V2EnrichmentService:
                 "secondary_source_incidents_created": 0,
             }
 
-        existing_enrichment = self.source_enrichment_repository.get_by_source_incident(session, source_incident.id)
+        existing_enrichment = self.source_enrichment_repository.get_by_source_incident(
+            session, source_incident.id
+        )
         effective_attempts = (
             int(re_enrich_attempts)
             if re_enrich_attempts is not None
-            else int(existing_enrichment.re_enrich_attempts or 0) if existing_enrichment is not None else None
+            else (
+                int(existing_enrichment.re_enrich_attempts or 0)
+                if existing_enrichment is not None
+                else None
+            )
         )
         effective_reason = (
             re_enrich_reason
@@ -811,17 +909,27 @@ class V2EnrichmentService:
             {article_url: article_content},
         )
 
-        storage_debug = (raw_json_data or {}).get("_storage_debug", {}) if isinstance(raw_json_data, dict) else {}
+        storage_debug = (
+            (raw_json_data or {}).get("_storage_debug", {})
+            if isinstance(raw_json_data, dict)
+            else {}
+        )
         llm_metadata = storage_debug.get("llm_metadata", {})
         raw_llm_responses = storage_debug.get("raw_llm_responses", {})
-        typed_enrichment = result.model_dump(mode="json", exclude_none=False) if result is not None else None
+        typed_enrichment = (
+            result.model_dump(mode="json", exclude_none=False) if result is not None else None
+        )
         is_education_related = None
         if isinstance(raw_json_data, dict):
             is_education_related = raw_json_data.get("is_edu_cyber_incident")
             if is_education_related is None and raw_json_data.get("_not_education_related"):
                 is_education_related = False
 
-        if result is not None and isinstance(raw_json_data, dict) and is_education_related is not False:
+        if (
+            result is not None
+            and isinstance(raw_json_data, dict)
+            and is_education_related is not False
+        ):
             raw_json_data, typed_enrichment, disposition = _repair_or_reject_primary_identity(
                 source_incident,
                 raw_json_data=raw_json_data,
@@ -845,17 +953,22 @@ class V2EnrichmentService:
 
         enrichment.article_document_id = document.id
         enrichment.llm_provider = llm_metadata.get("provider", "ollama")
-        enrichment.llm_model = llm_metadata.get("model") or getattr(self.enricher.llm_client, "model", None)
+        enrichment.llm_model = llm_metadata.get("model") or getattr(
+            self.enricher.llm_client, "model", None
+        )
         enrichment.prompt_version = llm_metadata.get("prompt_version")
         enrichment.schema_version = llm_metadata.get("schema_version")
         enrichment.mapper_version = llm_metadata.get("mapper_version")
         enrichment.post_processing_version = llm_metadata.get("post_processing_version")
         enrichment.raw_response = raw_llm_responses or None
-        enrichment.raw_extraction = _strip_storage_debug(raw_json_data) if isinstance(raw_json_data, dict) else None
+        enrichment.raw_extraction = (
+            _strip_storage_debug(raw_json_data) if isinstance(raw_json_data, dict) else None
+        )
         enrichment.typed_enrichment = typed_enrichment
         enrichment.enrichment_confidence = (
             raw_json_data.get("confidence_score")
-            if isinstance(raw_json_data, dict) and isinstance(raw_json_data.get("confidence_score"), (int, float))
+            if isinstance(raw_json_data, dict)
+            and isinstance(raw_json_data.get("confidence_score"), (int, float))
             else None
         )
         enrichment.is_education_related = is_education_related
@@ -872,7 +985,9 @@ class V2EnrichmentService:
         enrichment.failed_reason = None
         if result is None:
             if isinstance(raw_json_data, dict):
-                enrichment.failed_reason = raw_json_data.get("_reason") or "Enrichment returned no typed result"
+                enrichment.failed_reason = (
+                    raw_json_data.get("_reason") or "Enrichment returned no typed result"
+                )
             else:
                 enrichment.failed_reason = "Enrichment returned no typed result"
 

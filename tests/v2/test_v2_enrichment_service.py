@@ -686,6 +686,57 @@ def test_enrichment_service_accepts_victim_evidenced_in_main_article_body():
     assert saved.typed_enrichment["institution_name"] == "Highline School District"
 
 
+def test_enrichment_service_reviews_discovery_victim_not_evidenced_in_article():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Ohio State University",
+        "attack_category": "supply_chain_software",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Ohio State University",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "googlenews_rss"
+    incident.source_group = "rss"
+    incident.raw_title = "Canvas cyberattack impacts schools nationwide - Example News"
+    incident.raw_subtitle = None
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    document = _article_document(incident)
+    document.title = "Canvas cyberattack impacts schools nationwide"
+    document.content_text = (
+        "Instructure said it was investigating a cyberattack against Canvas. "
+        "Several school districts reported outages, but this story does not name the affected university."
+    )
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is False
+    assert outcome["is_education_related"] is None
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.typed_enrichment is None
+    assert saved.manual_review_required is True
+    assert "not supported" in saved.manual_review_reason
+
+
 def test_enrichment_service_rejects_related_link_contamination():
     article_repo = Mock()
     source_enrichment_repo = Mock()
@@ -740,6 +791,71 @@ def test_enrichment_service_rejects_related_link_contamination():
     assert saved.typed_enrichment is None
     assert saved.manual_review_required is False
     assert "related-story" in saved.failed_reason
+
+
+def test_enrichment_service_reviews_multi_victim_list_instead_of_rejecting():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    source_incident_repo = Mock()
+    source_incident_repo.get_by_source_event_key.return_value = None
+    pipeline_task_repo = Mock()
+    intake_service = Mock()
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Virginia Beach City Public Schools",
+        "attack_category": "supply_chain_software",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Virginia Beach City Public Schools",
+            "other_edu_incidents": [
+                {
+                    "victim_name": "Chesapeake Public Schools",
+                    "attack_type": "supply_chain_software",
+                    "country": "United States",
+                }
+            ],
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "googlenews_rss"
+    incident.source_group = "rss"
+    incident.raw_title = "Hackers claim Virginia schools are impacted by Canvas cyberattack"
+    incident.raw_subtitle = None
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    document = _article_document(incident)
+    document.title = incident.raw_title
+    document.content_text = (
+        "A Canvas cyberattack affected several Virginia education institutions. "
+        + ("The investigation is ongoing. " * 60)
+        + "Related: Virginia Beach City Public Schools, Chesapeake Public Schools, "
+        "and Old Dominion University were named in an attached list."
+    )
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        source_incident_repository=source_incident_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        intake_service=intake_service,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is False
+    assert outcome["is_education_related"] is None
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.typed_enrichment is None
+    assert saved.manual_review_required is True
+    assert "multiple education victims" in saved.manual_review_reason
 
 
 def test_enrichment_service_keeps_structured_source_multi_victim_drift_in_review():
