@@ -1421,6 +1421,96 @@ def test_canonicalization_service_excludes_manual_review_member():
     assert task_repo.enqueue.call_count == 2
 
 
+def test_canonicalization_service_refreshes_from_valid_member_after_manual_review_member():
+    canonical_repo = Mock()
+    canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="manual-review-refresh",
+        status="open",
+        institution_name="Penn State University",
+        country="United States",
+        country_code="US",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    invalid_incident = _source_incident(event_key="manual-review-invalid")
+    valid_incident = _source_incident(event_key="manual-review-valid")
+    invalid_membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=canonical.id,
+        source_incident_id=invalid_incident.id,
+        match_type="seed",
+        match_score=100.0,
+        survivor_score=95.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+    valid_membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=canonical.id,
+        source_incident_id=valid_incident.id,
+        match_type="exact_identity",
+        match_score=96.0,
+        survivor_score=90.0,
+        is_primary_member=False,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+    canonical_repo.get_membership_for_source_incident.return_value = invalid_membership
+    canonical_repo.get_by_id.return_value = canonical
+    canonical_repo.list_memberships.return_value = [invalid_membership, valid_membership]
+
+    invalid_enrichment = _source_enrichment(invalid_incident)
+    invalid_enrichment.manual_review_required = True
+    invalid_enrichment.manual_review_reason = "Selected article drifted from source date."
+    valid_enrichment = _source_enrichment(valid_incident)
+
+    source_repo = Mock()
+    source_repo.get_by_id.side_effect = lambda _session, source_id: (
+        valid_incident if source_id == valid_incident.id else invalid_incident
+    )
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.side_effect = lambda _session, source_id: (
+        valid_enrichment if source_id == valid_incident.id else invalid_enrichment
+    )
+    task_repo = Mock()
+    task_repo.get_active_for_target.side_effect = [None, None]
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    upsert_calls = []
+
+    def record_upsert(session_arg, canonical_arg, source_incident_arg, source_enrichment_arg, projection_arg):
+        upsert_calls.append(
+            (session_arg, canonical_arg, source_incident_arg, source_enrichment_arg, projection_arg)
+        )
+
+    service._upsert_canonical_enrichment = record_upsert
+    session = Mock()
+
+    outcome = service.canonicalize_source_incident(session, invalid_incident.id)
+
+    assert outcome["canonicalized"] is False
+    assert outcome["reason"] == "manual_review_required"
+    assert outcome["canonical_status"] == "open"
+    assert canonical.status == "open"
+    assert canonical.primary_source_incident_id == valid_incident.id
+    assert invalid_membership.survivor_score == -1
+    assert valid_membership.is_primary_member is True
+    assert len(upsert_calls) == 1
+    assert upsert_calls[0][2] == valid_incident
+    assert upsert_calls[0][3] == valid_enrichment
+
+
 def test_canonicalization_service_updates_existing_canonical_with_better_projection():
     canonical_repo = Mock()
     existing_canonical = CanonicalIncident(

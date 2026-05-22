@@ -2049,12 +2049,18 @@ class V2CanonicalizationService:
             and primary_projection is not None
         ):
             _apply_projection_to_canonical(canonical, primary_projection, authoritative=True)
-            self._upsert_canonical_enrichment(
+            primary_source_incident = self.source_incident_repository.get_by_id(
                 session,
-                canonical,
-                primary_source_enrichment,
-                primary_projection,
+                primary_source_enrichment.source_incident_id,
             )
+            if primary_source_incident is not None:
+                self._upsert_canonical_enrichment(
+                    session,
+                    canonical,
+                    primary_source_incident,
+                    primary_source_enrichment,
+                    primary_projection,
+                )
         canonical.resolution_metadata = {
             **(canonical.resolution_metadata or {}),
             "last_match_type": existing_membership.match_type,
