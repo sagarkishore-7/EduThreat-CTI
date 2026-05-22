@@ -858,6 +858,54 @@ def test_enrichment_service_reviews_multi_victim_list_instead_of_rejecting():
     assert "multiple education victims" in saved.manual_review_reason
 
 
+def test_enrichment_service_reviews_curated_target_when_selected_article_is_unrelated():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "enriched_summary": "This article is not an education-sector cyber incident.",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": False,
+            "education_relevance_reasoning": "The selected article is about a school construction budget.",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "comparitech"
+    incident.source_group = "curated"
+    incident.raw_title = "Ransomware attack on Neenah School District (2022)"
+    incident.raw_institution_name = "Neenah School District"
+    incident.raw_victim_name = "Neenah School District"
+    incident.raw_attack_hint = "ransomware"
+    document = _article_document(incident)
+    document.title = "Higher labor, material costs push Neenah High School project over budget"
+    document.content_text = "The article discusses school construction inflation and budgets."
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is False
+    assert outcome["is_education_related"] is None
+    assert outcome["canonicalize_tasks_enqueued"] == 0
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.typed_enrichment is None
+    assert saved.manual_review_required is True
+    assert "supporting article" in saved.manual_review_reason
+
+
 def test_enrichment_service_keeps_structured_source_multi_victim_drift_in_review():
     article_repo = Mock()
     source_enrichment_repo = Mock()

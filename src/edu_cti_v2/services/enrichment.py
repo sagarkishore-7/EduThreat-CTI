@@ -316,6 +316,15 @@ def _source_requires_article_identity_support(source_incident) -> bool:
     return source_group in {"rss", "news"}
 
 
+def _structured_curated_source_should_review_non_edu_article(source_incident) -> bool:
+    source_group = str(getattr(source_incident, "source_group", "") or "").lower()
+    if source_group != "curated":
+        return False
+    if not _source_has_strong_structured_identity(source_incident):
+        return False
+    return bool(_coerce_attack_hint(getattr(source_incident, "raw_attack_hint", None)))
+
+
 def _coerce_attack_hint(value: Any) -> Optional[str]:
     if isinstance(value, list):
         value = next((item for item in value if str(item).strip()), None)
@@ -924,6 +933,21 @@ class V2EnrichmentService:
             is_education_related = raw_json_data.get("is_edu_cyber_incident")
             if is_education_related is None and raw_json_data.get("_not_education_related"):
                 is_education_related = False
+
+        if (
+            result is not None
+            and isinstance(raw_json_data, dict)
+            and is_education_related is False
+            and _structured_curated_source_should_review_non_edu_article(source_incident)
+        ):
+            reason = (
+                "Structured curated source names an education incident, but the selected "
+                "supporting article was assessed as unrelated or non-incident evidence."
+            )
+            raw_json_data = _mark_victim_review_required(raw_json_data, reason=reason)
+            result = None
+            typed_enrichment = None
+            is_education_related = None
 
         if (
             result is not None
