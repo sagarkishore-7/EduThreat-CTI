@@ -16,6 +16,7 @@ from src.edu_cti_v2.source_identity import looks_geographic_only_identity
 MIN_DATE = date(1990, 1, 1)
 FUTURE_TOLERANCE_DAYS = 3
 MAX_REENRICH_ATTEMPTS = 3
+SOURCE_DATE_RELATIVE_GUARD_GROUPS = {"news", "rss"}
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]|$)")
 _GENERIC_EDU_ENTITY_RE = (
@@ -130,7 +131,11 @@ def _diagnose_source_enrichment(enrichment: SourceEnrichment, source_incident) -
     )
     if not _is_safe_date(source_published):
         reasons.append(f"source_published_date={source_published!r}")
-    elif not _is_safe_incident_date_for_source(incident_date, source_published):
+    elif (
+        str(source_incident.source_group or "").strip().lower()
+        in SOURCE_DATE_RELATIVE_GUARD_GROUPS
+        and not _is_safe_incident_date_for_source(incident_date, source_published)
+    ):
         reasons.append(
             f"incident_date_after_source_published_date={incident_date!r}>{source_published!r}"
         )
@@ -143,7 +148,11 @@ def _diagnose_source_enrichment(enrichment: SourceEnrichment, source_incident) -
         value
         for value in (_iter_timeline_dates(typed) + _iter_timeline_dates(raw))
         if not _is_safe_date(value)
-        or not _is_safe_incident_date_for_source(value, source_published)
+        or (
+            str(source_incident.source_group or "").strip().lower()
+            in SOURCE_DATE_RELATIVE_GUARD_GROUPS
+            and not _is_safe_incident_date_for_source(value, source_published)
+        )
     ]
     if timeline_dates:
         reasons.append(f"timeline_dates={timeline_dates[:3]!r}")

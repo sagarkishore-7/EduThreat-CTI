@@ -125,6 +125,46 @@ def test_data_quality_service_requeues_dates_after_source_publication_window():
     task_repo.enqueue.assert_called_once()
 
 
+def test_data_quality_service_allows_curated_dates_after_listing_date():
+    source_incident = _source_incident()
+    source_incident.source_name = "comparitech"
+    source_incident.source_group = "curated"
+    source_incident.source_published_at = datetime(2020, 9, 9, 8, 0, tzinfo=timezone.utc)
+    source_incident.raw_incident_date = "2023-10-05"
+
+    enrichment = _source_enrichment(source_incident)
+    enrichment.raw_extraction = {
+        "institution_name": "Clark County School District",
+        "incident_date": "2023-10-05",
+        "source_published_date": "2020-09-09",
+        "timeline": [{"date": "2023-10-05"}],
+    }
+    enrichment.typed_enrichment = {
+        "institution_name": "Clark County School District",
+        "incident_date": "2023-10-05",
+        "source_published_date": "2020-09-09",
+        "timeline": [{"date": "2023-10-05"}],
+    }
+    enrichment_repo = Mock()
+    enrichment_repo.list_for_quality_sweep.return_value = [enrichment]
+    source_repo = Mock()
+    source_repo.get_by_id.return_value = source_incident
+    task_repo = Mock()
+    session = Mock()
+
+    service = V2DataQualityService(
+        source_enrichment_repository=enrichment_repo,
+        source_incident_repository=source_repo,
+        pipeline_task_repository=task_repo,
+    )
+
+    result = service.sweep_invalid_source_enrichments(session)
+
+    assert result["requeued_for_reenrichment"] == 0
+    assert enrichment.re_enrich_reason is None
+    task_repo.enqueue.assert_not_called()
+
+
 def test_data_quality_service_flags_manual_review_after_max_attempts():
     source_incident = _source_incident()
     enrichment = _source_enrichment(source_incident)

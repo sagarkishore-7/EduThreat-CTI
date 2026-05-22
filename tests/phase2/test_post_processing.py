@@ -1093,6 +1093,26 @@ class TestExtractionDateFallbacks:
         assert payload["timeline"][0]["date"] is None
         assert payload["timeline"][1]["date"] == "2020-06-17"
 
+    def test_curated_source_date_does_not_act_as_publication_anchor(self):
+        payload = {
+            "publication_date": None,
+            "incident_date": "2023-10-05",
+            "incident_date_precision": "day",
+            "timeline": [],
+        }
+
+        apply_extraction_date_fallbacks(
+            payload,
+            article_text="Ransomware attack on a school district in 2023.",
+            article_publish_date=None,
+            source_published_date="2020-09-09",
+            source_name="comparitech",
+        )
+
+        assert payload["incident_date"] == "2023-10-05"
+        assert payload["incident_date_basis"] == "llm_extracted"
+        assert payload["publication_date"] is None
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 8. fetching_strategy: SERP bypass for headline institution_name

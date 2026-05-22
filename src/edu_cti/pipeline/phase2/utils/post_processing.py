@@ -133,6 +133,10 @@ _IMPRECISE_DATE_PRECISIONS = {
     "year_only",
     "unknown",
 }
+_UNRELIABLE_SOURCE_PUBLICATION_DATE_SOURCES = {
+    "comparitech",
+    "konbriefing",
+}
 
 _OCCURRENCE_EVENT_TYPES = {
     "initial_access", "reconnaissance", "exploitation",
@@ -1298,6 +1302,13 @@ def _publication_date_after_source_window(
     return (publication_dt - source_dt).days > _MAX_EVENT_DAYS_AFTER_PUBLICATION
 
 
+def _source_publication_date_is_reliable(source_name: Optional[str]) -> bool:
+    if not source_name:
+        return True
+    normalized = str(source_name).strip().lower()
+    return normalized not in _UNRELIABLE_SOURCE_PUBLICATION_DATE_SOURCES
+
+
 def _fill_timeline_list_dates(payload: Dict[str, Any]) -> None:
     timeline = payload.get("timeline")
     if not isinstance(timeline, list):
@@ -1340,6 +1351,7 @@ def apply_extraction_date_fallbacks(
     article_text: Optional[str],
     article_publish_date: Optional[str],
     source_published_date: Optional[str],
+    source_name: Optional[str] = None,
 ) -> None:
     """
     Deterministically repair date fields after LLM extraction.
@@ -1351,7 +1363,11 @@ def apply_extraction_date_fallbacks(
     """
     existing_publication_date = _coerce_iso_date(payload.get("publication_date"))
     article_publication_date = _coerce_iso_date(article_publish_date)
-    source_publication_date = _coerce_iso_date(source_published_date)
+    source_publication_date = (
+        _coerce_iso_date(source_published_date)
+        if _source_publication_date_is_reliable(source_name)
+        else None
+    )
 
     if _publication_date_after_source_window(existing_publication_date, source_publication_date):
         existing_publication_date = None

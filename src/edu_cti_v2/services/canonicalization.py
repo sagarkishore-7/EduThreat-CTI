@@ -92,6 +92,7 @@ _KNOWN_EDTECH_VENDOR_ALIASES = {
     "instructure inc": "instructure",
     "instructure incorporated": "instructure",
 }
+_SOURCE_DATE_RELATIVE_GUARD_GROUPS = {"news", "rss"}
 _VENDOR_CONTEXT_CUES = (
     "education tech provider",
     "education technology provider",
@@ -873,7 +874,11 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
         )
     )
     source_published_at = source_incident.source_published_at
-    incident_date = _safe_projection_incident_date(incident_date, source_published_at)
+    incident_date = _safe_projection_incident_date(
+        incident_date,
+        source_published_at,
+        source_incident.source_group,
+    )
     if incident_date is None:
         date_precision = None
     attack_category = _first_present(typed.get("attack_category"), raw.get("attack_category"))
@@ -963,12 +968,16 @@ def _safe_canonical_date(value: Optional[date]) -> bool:
 def _safe_projection_incident_date(
     value: Optional[date],
     source_published_at: Optional[datetime],
+    source_group: Optional[str],
 ) -> Optional[date]:
     if value is None:
         return None
     if not _safe_canonical_date(value):
         return None
-    if source_published_at is not None:
+    if (
+        source_published_at is not None
+        and str(source_group or "").strip().lower() in _SOURCE_DATE_RELATIVE_GUARD_GROUPS
+    ):
         source_date = source_published_at.date()
         if (value - source_date).days > 90:
             return None

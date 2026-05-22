@@ -149,6 +149,21 @@ def test_build_source_projection_rejects_dates_after_publication_window():
     assert projection["date_precision"] is None
 
 
+def test_build_source_projection_keeps_curated_dates_after_source_listing_date():
+    incident = _source_incident()
+    incident.source_name = "comparitech"
+    incident.source_group = "curated"
+    incident.source_published_at = datetime(2020, 9, 9, 8, 0, tzinfo=timezone.utc)
+    enrichment = _source_enrichment(incident)
+    enrichment.typed_enrichment["incident_date"] = "2023-10-05"
+    enrichment.typed_enrichment["incident_date_precision"] = "day"
+
+    projection = build_source_projection(incident, enrichment)
+
+    assert projection["incident_date"].isoformat() == "2023-10-05"
+    assert projection["date_precision"] == "day"
+
+
 def test_canonical_completeness_score_is_bounded_for_large_merged_projection():
     projection = {
         "institution_name": "Instructure",

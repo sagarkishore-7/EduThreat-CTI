@@ -815,6 +815,7 @@ class IncidentEnricher:
                 article_text=combined_text,
                 article_publish_date=primary_article.publish_date,
                 source_published_date=getattr(incident, "source_published_date", None),
+                source_name=getattr(incident, "source", None),
             )
 
             json_data = _attach_storage_debug(
@@ -1331,6 +1332,7 @@ class IncidentEnricher:
             article_text=combined_text,
             article_publish_date=primary_article.publish_date,
             source_published_date=getattr(incident, "source_published_date", None),
+            source_name=getattr(incident, "source", None),
         )
 
         merged = _attach_storage_debug(
