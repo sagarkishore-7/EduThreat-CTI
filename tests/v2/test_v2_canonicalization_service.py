@@ -328,6 +328,44 @@ def test_existing_membership_only_moves_to_better_vendor_campaign_cluster():
     )
 
 
+def test_existing_vendor_membership_moves_to_larger_same_family_campaign_cluster():
+    projection = {
+        "institution_name": "Instructure",
+        "vendor_name": "Instructure",
+        "country_code": "US",
+        "incident_date": "2026-05-06",
+        "attack_category": "third_party_compromise",
+    }
+    smaller_current = SimpleNamespace(
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country_code="US",
+        incident_date=datetime(2026, 5, 1).date(),
+        attack_category="third_party_compromise",
+        ransomware_family=None,
+        threat_actor_name=None,
+        memberships=[object() for _ in range(30)],
+    )
+    larger_same_family_replacement = SimpleNamespace(
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country_code="US",
+        incident_date=datetime(2026, 5, 1).date(),
+        attack_category="supply_chain_software",
+        ransomware_family=None,
+        threat_actor_name=None,
+        memberships=[object() for _ in range(80)],
+    )
+    replacement_score, _ = _score_candidate_match(projection, larger_same_family_replacement)
+
+    assert _replacement_outscores_current_canonical(
+        projection,
+        smaller_current,
+        replacement_score,
+        "vendor_date",
+    )
+
+
 def test_build_source_projection_promotes_education_technology_provider_as_vendor_name():
     incident = _source_incident(event_key="powerschool-story")
     incident.raw_institution_name = "PowerSchool"

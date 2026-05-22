@@ -706,6 +706,12 @@ def _score_candidate_match(
         projection_attack_family = _attack_category_family(projection.get("attack_category"))
         candidate_attack_family = _attack_category_family(candidate.attack_category)
         if (
+            exact_vendor_identity
+            and projection_attack_family
+            and projection_attack_family == candidate_attack_family
+        ):
+            score += 4.0
+        elif (
             relaxed_vendor_followup
             and projection_attack_family
             and projection_attack_family == candidate_attack_family
@@ -1558,7 +1564,14 @@ class V2CanonicalizationService:
         for candidate in candidates:
             score, candidate_match_type = _score_candidate_match(projection, candidate)
             if str(candidate.id) in url_candidate_ids and score > 0:
-                score += 10.0
+                url_bonus = (
+                    2.0
+                    if _is_known_edtech_vendor_name(
+                        projection.get("vendor_name") or projection.get("institution_name")
+                    )
+                    else 10.0
+                )
+                score += url_bonus
                 candidate_match_type = "url_exact"
             if score <= best_score or candidate_match_type is None:
                 continue
