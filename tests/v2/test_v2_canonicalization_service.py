@@ -16,6 +16,7 @@ from src.edu_cti_v2.services.canonicalization import (
     _canonical_completeness_score,
     _identity_match_quality,
     _member_score,
+    _score_candidate_match,
 )
 
 
@@ -203,6 +204,41 @@ def test_identity_match_quality_accepts_common_school_district_name_variants():
 def test_identity_match_quality_treats_canvas_as_instructure_vendor_alias():
     assert _identity_match_quality("Canvas", "Instructure") == 100
     assert _identity_match_quality("Canvas LMS", "Instructure Inc.") == 100
+
+
+def test_score_prefers_larger_known_edtech_vendor_campaign_cluster():
+    projection = {
+        "institution_name": "Instructure",
+        "vendor_name": "Instructure",
+        "country_code": "US",
+        "incident_date": "2026-04-29",
+        "attack_category": "ransomware_double_extortion",
+    }
+    small_near_candidate = SimpleNamespace(
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country_code="US",
+        incident_date=datetime(2026, 5, 1).date(),
+        attack_category="supply_chain_software",
+        ransomware_family=None,
+        threat_actor_name="ShinyHunters",
+        memberships=[object() for _ in range(3)],
+    )
+    larger_campaign_candidate = SimpleNamespace(
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country_code="US",
+        incident_date=datetime(2026, 5, 7).date(),
+        attack_category="supply_chain_software",
+        ransomware_family=None,
+        threat_actor_name="ShinyHunters",
+        memberships=[object() for _ in range(35)],
+    )
+
+    small_score, _ = _score_candidate_match(projection, small_near_candidate)
+    large_score, _ = _score_candidate_match(projection, larger_campaign_candidate)
+
+    assert large_score > small_score
 
 
 def test_build_source_projection_promotes_education_technology_provider_as_vendor_name():

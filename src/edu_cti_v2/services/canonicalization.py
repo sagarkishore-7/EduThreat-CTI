@@ -649,7 +649,16 @@ def _score_candidate_match(
     )
     if projection_date and candidate_date:
         if dates_within_window(projection_date, candidate_date, 14):
-            date_score = 20.0 if dates_within_window(projection_date, candidate_date, 3) else 12.0
+            exact_known_vendor_campaign = exact_vendor_identity and (
+                _is_known_edtech_vendor_name(best_incoming_value)
+                or _is_known_edtech_vendor_name(best_candidate_value)
+            )
+            date_score = (
+                20.0
+                if exact_known_vendor_campaign
+                or dates_within_window(projection_date, candidate_date, 3)
+                else 12.0
+            )
         elif (
             relaxed_vendor_followup
             and exact_vendor_identity
@@ -732,6 +741,15 @@ def _score_candidate_match(
         best_candidate_value
     ):
         score -= 20.0
+    if exact_vendor_identity and (
+        _is_known_edtech_vendor_name(best_incoming_value)
+        or _is_known_edtech_vendor_name(best_candidate_value)
+    ):
+        # Vendor-wide incidents are often covered over several days with
+        # inconsistent incident dates. Prefer the larger existing campaign
+        # cluster so late and early source articles converge instead of
+        # fragmenting into date-nearest canonicals.
+        score += min(len(getattr(candidate, "memberships", []) or []), 50) / 5.0
 
     return score, best_match_type
 
