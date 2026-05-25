@@ -11,6 +11,7 @@ import time
 from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
+from src.edu_cti_v2.db import V2DatabaseSettings, create_session_factory
 from src.edu_cti_v2.services.scheduler import V2SchedulerService
 from src.edu_cti_v2.worker import V2WorkerRunSummary, run_worker_loop
 
@@ -133,6 +134,7 @@ class V2RuntimeService:
         worker_id = state.worker_id
         try:
             state.summary = run_worker_loop(
+                session_factory=self.session_factory,
                 worker_id=worker_id,
                 task_type=state.task_type,
                 exclude_task_types=state.exclude_task_types,
@@ -158,6 +160,8 @@ class V2RuntimeService:
         self._stop_event.clear()
         self._worker_states = []
         self._last_lease_recovery_monotonic = 0.0
+        if self.session_factory is None:
+            self.session_factory = create_session_factory(V2DatabaseSettings.from_env())
 
         if self.prewarm_models and (self.task_type is None or self.task_type in {"enrich_source", "reenrich"}):
             _prewarm_ml_models()
@@ -266,7 +270,6 @@ class V2RuntimeService:
 
     def _recover_expired_leases(self) -> int:
         try:
-            from src.edu_cti_v2.db import V2DatabaseSettings, create_session_factory
             from src.edu_cti_v2.repositories import PipelineTaskRepository
 
             session_factory = self.session_factory or create_session_factory(V2DatabaseSettings.from_env())

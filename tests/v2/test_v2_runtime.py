@@ -156,6 +156,36 @@ def test_v2_runtime_service_allows_explicit_canonicalize_worker_override(monkeyp
     assert all(worker["summary"]["stop_reason"] == "stopped" for worker in stopped["workers"])
 
 
+def test_v2_runtime_service_reuses_one_session_factory_for_all_workers(monkeypatch):
+    seen_factories = []
+    session_factory = object()
+
+    def _fake_run_worker_loop(*, worker_id, stop_event, session_factory=None, **_kwargs):
+        seen_factories.append((worker_id, session_factory))
+        stop_event.wait(0.01)
+        return V2WorkerRunSummary(
+            processed_tasks=0,
+            idle_polls=0,
+            stop_reason="stopped",
+            worker_id=worker_id,
+            task_type=None,
+        )
+
+    monkeypatch.setattr("src.edu_cti_v2.runtime.run_worker_loop", _fake_run_worker_loop)
+    monkeypatch.setattr("src.edu_cti_v2.runtime._prewarm_ml_models", lambda: None)
+
+    runtime = V2RuntimeService(
+        worker_count=2,
+        enable_scheduler=False,
+        session_factory=session_factory,
+    )
+    runtime.start()
+    runtime.stop()
+
+    assert seen_factories
+    assert {factory for _worker_id, factory in seen_factories} == {session_factory}
+
+
 def test_v2_runtime_service_restarts_dead_worker_threads(monkeypatch):
     call_counts = {}
 
