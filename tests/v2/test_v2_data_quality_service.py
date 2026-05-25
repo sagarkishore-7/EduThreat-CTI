@@ -276,6 +276,45 @@ def test_data_quality_service_flags_compound_generic_identity_for_reenrich():
     task_repo.enqueue.assert_called_once()
 
 
+def test_data_quality_service_flags_broad_collective_identity_for_reenrich():
+    source_incident = _source_incident()
+    source_incident.raw_title = "122 Aussie Schools & Unis Impacted In Data Breach Affecting Millions"
+    source_incident.raw_institution_name = "Aussie Schools"
+    source_incident.raw_victim_name = "Aussie Schools"
+    source_incident.raw_incident_date = "2026-05-13"
+
+    enrichment = _source_enrichment(source_incident)
+    enrichment.typed_enrichment = {
+        "institution_name": "Aussie Schools",
+        "incident_date": "2026-05-13",
+        "timeline": [{"date": "2026-05-13"}],
+    }
+    enrichment.raw_extraction = {
+        "institution_name": "Aussie Schools",
+        "incident_date": "2026-05-13",
+        "timeline": [{"date": "2026-05-13"}],
+    }
+    enrichment_repo = Mock()
+    enrichment_repo.list_for_quality_sweep.return_value = [enrichment]
+    source_repo = Mock()
+    source_repo.get_by_id.return_value = source_incident
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    session = Mock()
+
+    service = V2DataQualityService(
+        source_enrichment_repository=enrichment_repo,
+        source_incident_repository=source_repo,
+        pipeline_task_repository=task_repo,
+    )
+
+    result = service.sweep_invalid_source_enrichments(session)
+
+    assert result["requeued_for_reenrichment"] == 1
+    assert "institution_name_too_generic" in enrichment.re_enrich_reason
+    task_repo.enqueue.assert_called_once()
+
+
 def test_data_quality_service_flags_sentence_like_identity_for_reenrich():
     source_incident = _source_incident()
     source_incident.raw_title = "Ransomware: Refusing to Negotiate with Attackers"

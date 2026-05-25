@@ -24,6 +24,14 @@ _GENERIC_IDENTITY_RE = re.compile(
     re.IGNORECASE,
 )
 _VAGUE_PLURAL_RE = re.compile(r"^(?:several|multiple|various|few|many|some)\b", re.IGNORECASE)
+_BROAD_COLLECTIVE_IDENTITY_RE = re.compile(
+    r"^(?:aussie|australian|new\s+york|maryland|georgia|california|texas|florida|"
+    r"u\.?s\.?|american|canadian|british|uk|dutch|european|global|worldwide|"
+    r"international|state|local|regional)\s+"
+    r"(?:public\s+)?(?:schools?|school\s+systems?|school\s+districts?|colleges?|"
+    r"universities|unis|campuses)\b",
+    re.IGNORECASE,
+)
 _WEBSITE_OF_RE = re.compile(r"\bwebsites?\s+of\b", re.IGNORECASE)
 _EDU_KEYWORD_RE = re.compile(
     r"\b(university|college|school|academy|institute|polytechnic|district|campus)\b",
@@ -129,11 +137,22 @@ def looks_geographic_only_identity(value: Optional[str]) -> bool:
     return bool(get_country_code(normalized_country))
 
 
+def looks_broad_collective_identity(value: Optional[str]) -> bool:
+    """Return True for broad regional victim labels, not named institutions."""
+
+    text = str(value or "").strip()
+    if not text:
+        return False
+    return bool(_BROAD_COLLECTIVE_IDENTITY_RE.match(text))
+
+
 def _looks_generic_identity(value: Optional[str]) -> bool:
     text = str(value or "").strip()
     if not text:
         return False
     if looks_geographic_only_identity(text):
+        return True
+    if looks_broad_collective_identity(text):
         return True
     if _GENERIC_IDENTITY_RE.match(text):
         return True
@@ -482,6 +501,12 @@ def recover_source_identity(
         if not normalized:
             continue
         if _looks_like_location_label(normalized):
+            continue
+        if looks_broad_collective_identity(normalized):
+            continue
+        if _looks_like_title_publisher(normalized, raw_title):
+            continue
+        if _looks_like_incident_headline_fragment(normalized):
             continue
         if origin == "subtitle":
             # Google/Bing RSS descriptions often duplicate the headline with the

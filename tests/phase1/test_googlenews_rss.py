@@ -1,5 +1,6 @@
 """Unit tests for Google News RSS ingestion behavior."""
 
+from src.edu_cti.core.deduplication import is_google_news_wrapper_url
 from src.edu_cti.sources.rss import googlenews_rss
 
 
@@ -49,6 +50,38 @@ def test_google_news_relevance_filter_skips_common_noise():
         description="Prosecutors described a personal account-hacking case.",
         query="university hacked",
     )
+
+
+def test_google_news_wrapper_detector_handles_all_feed_paths():
+    assert is_google_news_wrapper_url("https://news.google.com/rss/articles/CBMi-test?oc=5")
+    assert is_google_news_wrapper_url("https://news.google.com/articles/CBMi-test?oc=5")
+    assert is_google_news_wrapper_url("https://news.google.com/read/CBMi-test?hl=en-US")
+    assert not is_google_news_wrapper_url("https://example.com/rss/articles/CBMi-test")
+
+
+def test_google_news_resolver_prefers_modern_decoder(monkeypatch):
+    calls = {"modern": 0, "legacy_fallback": 0}
+
+    def fake_new_decoderv1(_link):
+        calls["modern"] += 1
+        return {
+            "status": True,
+            "decoded_url": "https://example.edu/news/canvas-security-incident",
+        }
+
+    monkeypatch.setattr("googlenewsdecoder.new_decoderv1", fake_new_decoderv1)
+    monkeypatch.setattr(
+        googlenews_rss,
+        "_resolve_google_news_article_url_with_timeouts",
+        lambda _link: calls.__setitem__("legacy_fallback", calls["legacy_fallback"] + 1),
+    )
+
+    resolved = googlenews_rss._resolve_google_news_article_url(
+        "https://news.google.com/rss/articles/CBMi-test?oc=5"
+    )
+
+    assert resolved == "https://example.edu/news/canvas-security-incident"
+    assert calls == {"modern": 1, "legacy_fallback": 0}
 
 
 def test_build_googlenews_rss_incidents_serializes_pub_date(monkeypatch):

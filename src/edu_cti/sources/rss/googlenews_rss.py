@@ -267,6 +267,17 @@ def _resolve_google_news_article_url(link: str) -> Optional[str]:
         return link
 
     try:
+        from googlenewsdecoder import new_decoderv1
+
+        result = new_decoderv1(link)
+        if isinstance(result, dict) and result.get("status") and result.get("decoded_url"):
+            resolved = str(result["decoded_url"]).strip()
+            if resolved.startswith(("http://", "https://")) and "news.google.com" not in resolved:
+                return resolved
+    except Exception as exc:
+        logger.debug("Modern Google News RSS decode failed for %s: %s", link[:120], exc)
+
+    try:
         from googlenewsdecoder.decoderv1 import decode_google_news_url
 
         resolved = decode_google_news_url(link)

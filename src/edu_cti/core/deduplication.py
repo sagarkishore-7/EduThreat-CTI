@@ -87,7 +87,11 @@ def is_google_news_wrapper_url(url: str) -> bool:
         return False
     host = parsed.netloc.lower().lstrip("www.")
     path = parsed.path or ""
-    return host == "news.google.com" and path.startswith("/rss/articles/")
+    return host == "news.google.com" and (
+        path.startswith("/rss/articles/")
+        or path.startswith("/articles/")
+        or path.startswith("/read/")
+    )
 
 
 def _pick_better_date(

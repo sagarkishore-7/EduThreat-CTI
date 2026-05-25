@@ -78,6 +78,50 @@ def test_recover_source_identity_ignores_incident_fragment_subtitle():
     assert identity is None
 
 
+def test_recover_source_identity_ignores_sentence_fragment_in_structured_name():
+    identity = recover_source_identity(
+        raw_institution_name="by cyberattack on online classroom platform AJC.com",
+        raw_victim_name="by cyberattack on online classroom platform AJC.com",
+        raw_subtitle="Georgia schools, colleges affected by cyberattack on online classroom platform AJC.com",
+        raw_title="Georgia schools, colleges affected by cyberattack on online classroom platform - AJC.com",
+    )
+
+    assert identity is None
+
+
+def test_recover_source_identity_ignores_publisher_domain_structured_name():
+    identity = recover_source_identity(
+        raw_institution_name="reflector.com",
+        raw_victim_name="reflector.com",
+        raw_subtitle="Schools report data security breach reflector.com",
+        raw_title="Schools report data security breach - reflector.com",
+    )
+
+    assert identity is None
+
+
+def test_recover_source_identity_ignores_broad_regional_collective_name():
+    identity = recover_source_identity(
+        raw_institution_name="Aussie Schools",
+        raw_victim_name="Aussie Schools",
+        raw_subtitle="122 Aussie Schools & Unis Impacted In Data Breach Affecting Millions: Significant Failure",
+        raw_title="122 Aussie Schools & Unis Impacted In Data Breach Affecting Millions: Significant Failure - pedestrian.tv",
+    )
+
+    assert identity is None
+
+
+def test_recover_source_identity_keeps_named_school_system():
+    identity = recover_source_identity(
+        raw_institution_name="Charlotte-Mecklenburg Schools",
+        raw_victim_name="Charlotte-Mecklenburg Schools",
+        raw_subtitle="Charlotte-Mecklenburg Schools reports Canvas data exposure",
+        raw_title="Charlotte-Mecklenburg Schools reports Canvas data exposure",
+    )
+
+    assert identity == "Charlotte-Mecklenburg Schools"
+
+
 def test_recover_source_identity_keeps_long_specific_subtitle_anchor():
     identity = recover_source_identity(
         raw_institution_name=None,

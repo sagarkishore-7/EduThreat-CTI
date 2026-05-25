@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
 from src.edu_cti_v2.models import PipelineTask, SourceEnrichment
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceEnrichmentRepository, SourceIncidentRepository
-from src.edu_cti_v2.source_identity import looks_geographic_only_identity
+from src.edu_cti_v2.source_identity import looks_broad_collective_identity, looks_geographic_only_identity
 
 MIN_DATE = date(1990, 1, 1)
 FUTURE_TOLERANCE_DAYS = 3
@@ -85,6 +85,8 @@ def _looks_generic_institution(text: Any) -> bool:
     if not value:
         return False
     if looks_geographic_only_identity(value):
+        return True
+    if looks_broad_collective_identity(value):
         return True
     if _GENERIC_INSTITUTION_RE.match(value):
         return True

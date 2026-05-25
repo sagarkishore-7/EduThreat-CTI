@@ -42,6 +42,7 @@ from src.edu_cti_v2.repositories import (
 )
 from src.edu_cti_v2.source_identity import (
     identity_matches_source_anchor,
+    looks_broad_collective_identity,
     looks_geographic_only_identity,
     recover_source_identity,
 )
@@ -317,6 +318,8 @@ def _looks_generic_institution_label(value: Optional[str]) -> bool:
     if not text:
         return False
     if looks_geographic_only_identity(text):
+        return True
+    if looks_broad_collective_identity(text):
         return True
     if _GENERIC_INSTITUTION_RE.match(text):
         return True
