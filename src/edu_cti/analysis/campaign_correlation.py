@@ -1,0 +1,1336 @@
+"""Read-only campaign correlation workflow for EduThreat-CTI.
+
+This module builds candidate campaign groupings above canonical incidents. It
+does not mutate the production database: canonical incidents remain
+victim/event-level records and campaign membership is exported as reviewable
+analysis artifacts.
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import hashlib
+import json
+import os
+import re
+from collections import Counter, defaultdict
+from dataclasses import asdict, dataclass, field
+from datetime import date, datetime, timezone
+from itertools import combinations
+from pathlib import Path
+from typing import Any, Iterable, Mapping, Sequence
+
+import psycopg
+from psycopg.rows import dict_row
+
+
+DEFAULT_OUTPUT_DIR = Path("paper/EDU_Attack/analysis/outputs/campaign")
+
+DATE_WINDOW_DEFAULT_DAYS = 120
+EDGE_THRESHOLD = 0.55
+
+
+@dataclass(frozen=True)
+class PlatformIndicator:
+    """A high-signal shared system, vendor, or exploitation surface."""
+
+    key: str
+    vendor: str
+    platform: str
+    aliases: tuple[str, ...]
+    campaign_type: str = "shared_vendor_incident"
+    date_window_days: int = DATE_WINDOW_DEFAULT_DAYS
+
+
+PLATFORM_INDICATORS: tuple[PlatformIndicator, ...] = (
+    PlatformIndicator(
+        key="instructure_canvas",
+        vendor="Instructure",
+        platform="Canvas",
+        aliases=(
+            "instructure",
+            "canvas learning management",
+            "canvas lms",
+            "canvas platform",
+            "canvas access",
+        ),
+        campaign_type="shared_vendor_incident",
+        date_window_days=75,
+    ),
+    PlatformIndicator(
+        key="powerschool",
+        vendor="PowerSchool",
+        platform="PowerSchool",
+        aliases=("powerschool",),
+        campaign_type="shared_vendor_incident",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="moveit",
+        vendor="Progress Software",
+        platform="MOVEit",
+        aliases=("moveit", "progress moveit", "moveit transfer"),
+        campaign_type="mass_exploitation",
+        date_window_days=420,
+    ),
+    PlatformIndicator(
+        key="snowflake",
+        vendor="Snowflake",
+        platform="Snowflake",
+        aliases=("snowflake",),
+        campaign_type="mass_exploitation",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="blackbaud",
+        vendor="Blackbaud",
+        platform="Blackbaud",
+        aliases=("blackbaud",),
+        campaign_type="shared_vendor_incident",
+        date_window_days=420,
+    ),
+    PlatformIndicator(
+        key="illuminate_education",
+        vendor="Illuminate Education",
+        platform="Illuminate Education",
+        aliases=("illuminate education",),
+        campaign_type="shared_vendor_incident",
+        date_window_days=420,
+    ),
+    PlatformIndicator(
+        key="finalsite",
+        vendor="Finalsite",
+        platform="Finalsite",
+        aliases=("finalsite",),
+        campaign_type="shared_vendor_incident",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="ellucian_banner",
+        vendor="Ellucian",
+        platform="Banner",
+        aliases=("ellucian", "banner student", "ellucian banner"),
+        campaign_type="shared_vendor_incident",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="microsoft_365",
+        vendor="Microsoft",
+        platform="Microsoft 365",
+        aliases=("microsoft 365", "office 365", "exchange online"),
+        campaign_type="actor_activity_wave",
+        date_window_days=90,
+    ),
+)
+
+PLATFORM_BY_KEY = {indicator.key: indicator for indicator in PLATFORM_INDICATORS}
+
+
+ACTOR_ALIASES: dict[str, tuple[str, ...]] = {
+    "ShinyHunters": ("shinyhunters", "shiny hunters"),
+    "Cl0p": ("cl0p", "clop"),
+    "LockBit": ("lockbit",),
+    "Akira": ("akira",),
+    "Vice Society": ("vice society",),
+    "Rhysida": ("rhysida",),
+    "Medusa": ("medusa",),
+    "BlackCat/ALPHV": ("blackcat", "alphv", "blackcat alphv"),
+    "BlackSuit": ("blacksuit", "black suit"),
+    "Hive": ("hive ransomware",),
+    "NetWalker": ("netwalker",),
+    "RansomHub": ("ransomhub",),
+    "Qilin": ("qilin",),
+    "BianLian": ("bianlian", "bian lian"),
+    "Play": ("play ransomware", "play group"),
+}
+
+GENERIC_ACTOR_VALUES = {
+    "hacking",
+    "unauthorized actor",
+    "unknown actor",
+    "unknown criminal actors",
+    "cybercriminals",
+    "cybercriminal",
+    "attackers",
+    "threat actors",
+    "threat actor",
+}
+
+
+GENERIC_NEGATIVE_TERMS = (
+    "best practice",
+    "best practices",
+    "state of cybersecurity",
+    "wake-up call",
+    "trend report",
+    "annual report",
+    "how to",
+    "tips for",
+)
+
+
+SUPPLY_CHAIN_CATEGORIES = {
+    "third_party_compromise",
+    "supply_chain_software",
+    "software_supply_chain",
+}
+
+GENERIC_FEATURE_VALUES = {
+    "other",
+    "unknown",
+    "email_system",
+    "student_portal",
+    "cloud_services",
+    "network_infrastructure",
+    "file_servers",
+    "backup_systems",
+    "payroll_system",
+    "financial_systems",
+    "hospital_systems",
+    "web_servers",
+    "learning_management_system",
+}
+
+
+@dataclass
+class CampaignEvidenceItem:
+    evidence_item_id: str
+    canonical_incident_id: str
+    canonical_status: str
+    source_incident_id: str | None
+    article_document_id: str | None
+    victim_name: str | None
+    institution_type: str | None
+    country: str | None
+    country_code: str | None
+    incident_date: str | None
+    publication_date: str | None
+    source_name: str | None
+    source_group: str | None
+    source_title: str | None
+    article_title: str | None
+    source_url: str | None
+    attack_category: str | None
+    attack_vector: str | None
+    threat_actor: str | None
+    ransomware_family: str | None
+    vendors: list[str] = field(default_factory=list)
+    platforms: list[str] = field(default_factory=list)
+    affected_systems: list[str] = field(default_factory=list)
+    platform_keys: list[str] = field(default_factory=list)
+    actors: list[str] = field(default_factory=list)
+    cves: list[str] = field(default_factory=list)
+    campaign_names: list[str] = field(default_factory=list)
+    mitre_tactics: list[str] = field(default_factory=list)
+    records_affected_exact: int | None = None
+    records_affected_min: int | None = None
+    records_affected_max: int | None = None
+    data_categories: list[str] = field(default_factory=list)
+    evidence_quotes: list[str] = field(default_factory=list)
+    negative_flags: list[str] = field(default_factory=list)
+    manual_review_required: bool = False
+    manual_review_reason: str | None = None
+    content_hash: str | None = None
+
+
+@dataclass
+class CampaignProfile:
+    canonical_incident_id: str
+    canonical_status: str
+    victim_name: str | None
+    institution_type: str | None
+    country: str | None
+    country_code: str | None
+    representative_date: str | None
+    attack_categories: set[str] = field(default_factory=set)
+    attack_vectors: set[str] = field(default_factory=set)
+    vendors: set[str] = field(default_factory=set)
+    platforms: set[str] = field(default_factory=set)
+    affected_systems: set[str] = field(default_factory=set)
+    platform_keys: set[str] = field(default_factory=set)
+    actors: set[str] = field(default_factory=set)
+    ransomware_families: set[str] = field(default_factory=set)
+    cves: set[str] = field(default_factory=set)
+    campaign_names: set[str] = field(default_factory=set)
+    mitre_tactics: set[str] = field(default_factory=set)
+    article_hashes: set[str] = field(default_factory=set)
+    article_titles: set[str] = field(default_factory=set)
+    source_incident_ids: set[str] = field(default_factory=set)
+    article_document_ids: set[str] = field(default_factory=set)
+    evidence_quotes: list[str] = field(default_factory=list)
+    manual_review_required: bool = False
+    manual_review_reasons: set[str] = field(default_factory=set)
+    evidence_items: list[CampaignEvidenceItem] = field(default_factory=list)
+
+
+@dataclass
+class CampaignEdge:
+    from_canonical_incident_id: str
+    to_canonical_incident_id: str
+    confidence: float
+    reasons: list[str]
+    shared_vendors: list[str]
+    shared_platforms: list[str]
+    shared_platform_keys: list[str]
+    shared_actors: list[str]
+    shared_cves: list[str]
+    shared_campaign_names: list[str]
+    shared_article_hashes: list[str]
+    date_gap_days: int | None
+
+
+@dataclass
+class CampaignCandidate:
+    campaign_id: str
+    campaign_name: str
+    campaign_type: str
+    first_seen_date: str | None
+    last_seen_date: str | None
+    actors: list[str]
+    vendors: list[str]
+    platforms: list[str]
+    cves: list[str]
+    campaign_names: list[str]
+    attack_categories: list[str]
+    member_count: int
+    confirmed_member_count: int
+    evidence_only_member_count: int
+    confidence: float
+    analyst_summary: str
+
+
+@dataclass
+class CampaignMembership:
+    campaign_id: str
+    canonical_incident_id: str
+    role: str
+    confidence: float
+    evidence_article_ids: list[str]
+    evidence_source_incident_ids: list[str]
+    evidence_quotes: list[str]
+    review_status: str
+    victim_name: str | None
+    canonical_status: str
+
+
+def _as_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        cleaned = value.strip()
+        return cleaned or None
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return str(value).strip() or None
+
+
+def _as_int(value: Any) -> int | None:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _as_list(value: Any) -> list[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, tuple):
+        return list(value)
+    if isinstance(value, str):
+        stripped = value.strip()
+        if not stripped:
+            return []
+        if stripped.startswith("["):
+            try:
+                parsed = json.loads(stripped)
+            except json.JSONDecodeError:
+                return [stripped]
+            return parsed if isinstance(parsed, list) else [parsed]
+        return [stripped]
+    return [value]
+
+
+def _dedupe(values: Iterable[Any]) -> list[str]:
+    seen: set[str] = set()
+    result: list[str] = []
+    for value in values:
+        text = _as_text(value)
+        if not text:
+            continue
+        key = text.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(text)
+    return result
+
+
+def _dedupe_non_generic(values: Iterable[Any]) -> list[str]:
+    return [
+        value
+        for value in _dedupe(values)
+        if _normalize_for_match(value) not in GENERIC_FEATURE_VALUES
+    ]
+
+
+def _json_get(payload: Mapping[str, Any] | None, *path: str) -> Any:
+    current: Any = payload or {}
+    for key in path:
+        if not isinstance(current, Mapping):
+            return None
+        current = current.get(key)
+    return current
+
+
+def _coalesce_json(payload: Mapping[str, Any] | None, *paths: tuple[str, ...]) -> Any:
+    for path in paths:
+        value = _json_get(payload, *path)
+        if value is not None:
+            return value
+    return None
+
+
+def _normalize_for_match(text: str | None) -> str:
+    if not text:
+        return ""
+    return re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
+
+
+def _parse_date(value: str | date | datetime | None) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _date_gap_days(left: str | None, right: str | None) -> int | None:
+    left_date = _parse_date(left)
+    right_date = _parse_date(right)
+    if left_date is None or right_date is None:
+        return None
+    return abs((left_date - right_date).days)
+
+
+def _date_score(gap_days: int | None) -> float:
+    if gap_days is None:
+        return 0.0
+    if gap_days <= 14:
+        return 0.25
+    if gap_days <= 45:
+        return 0.20
+    if gap_days <= 120:
+        return 0.15
+    if gap_days <= 365:
+        return 0.08
+    return 0.0
+
+
+def _extract_cves(text: str) -> list[str]:
+    return _dedupe(match.upper() for match in re.findall(r"\bCVE-\d{4}-\d{4,7}\b", text, re.I))
+
+
+def _extract_platform_indicators(text: str) -> tuple[list[str], list[str], list[str]]:
+    normalized = _normalize_for_match(text)
+    vendors: list[str] = []
+    platforms: list[str] = []
+    keys: list[str] = []
+    for indicator in PLATFORM_INDICATORS:
+        for alias in indicator.aliases:
+            if re.search(rf"\b{re.escape(_normalize_for_match(alias))}\b", normalized):
+                vendors.append(indicator.vendor)
+                platforms.append(indicator.platform)
+                keys.append(indicator.key)
+                break
+    return _dedupe(vendors), _dedupe(platforms), _dedupe(keys)
+
+
+def _extract_actors(text: str, explicit_values: Sequence[Any]) -> list[str]:
+    actors = list(explicit_values)
+    normalized = _normalize_for_match(text)
+    for actor, aliases in ACTOR_ALIASES.items():
+        for alias in aliases:
+            if re.search(rf"\b{re.escape(_normalize_for_match(alias))}\b", normalized):
+                actors.append(actor)
+                break
+    return [
+        actor
+        for actor in _dedupe(actors)
+        if _normalize_for_match(actor) not in GENERIC_ACTOR_VALUES
+    ]
+
+
+def _extract_negative_flags(text: str) -> list[str]:
+    normalized = _normalize_for_match(text)
+    return [
+        term
+        for term in GENERIC_NEGATIVE_TERMS
+        if re.search(rf"\b{re.escape(_normalize_for_match(term))}\b", normalized)
+    ]
+
+
+def _split_sentences(text: str) -> list[str]:
+    compact = re.sub(r"\s+", " ", text or "").strip()
+    if not compact:
+        return []
+    return [part.strip() for part in re.split(r"(?<=[.!?])\s+", compact) if part.strip()]
+
+
+def _evidence_quotes(text: str, terms: Sequence[str], *, limit: int = 3) -> list[str]:
+    if not text:
+        return []
+    normalized_terms = [_normalize_for_match(term) for term in terms if term]
+    quotes: list[str] = []
+    for sentence in _split_sentences(text):
+        sentence_norm = _normalize_for_match(sentence)
+        if any(term and term in sentence_norm for term in normalized_terms):
+            quotes.append(sentence[:360])
+        if len(quotes) >= limit:
+            break
+    return _dedupe(quotes)
+
+
+def _mitre_tactics_from_projection(projection: Mapping[str, Any] | None) -> list[str]:
+    tactics: list[str] = []
+    for technique in _as_list(_json_get(projection, "mitre_attack_techniques")):
+        if isinstance(technique, Mapping):
+            tactics.extend(_as_list(technique.get("tactic")))
+            tactics.extend(_as_list(technique.get("tactics")))
+    return _dedupe(tactics)
+
+
+def _data_categories_from_projection(projection: Mapping[str, Any] | None) -> list[str]:
+    return _dedupe(
+        _as_list(_coalesce_json(projection, ("data_impact", "data_categories"), ("data_categories",)))
+    )
+
+
+def _source_title_is_supported(row: Mapping[str, Any]) -> bool:
+    """Avoid stale search/RSS titles driving campaign edges by themselves."""
+
+    raw_title = _normalize_for_match(_as_text(row.get("raw_title")))
+    article_title = _normalize_for_match(_as_text(row.get("article_title")))
+    if not raw_title:
+        return False
+    if not article_title:
+        return not _as_text(row.get("content_text"))
+    if raw_title == article_title:
+        return True
+    return bool(raw_title and article_title and (raw_title in article_title or article_title in raw_title))
+
+
+def _row_text(row: Mapping[str, Any], *, include_content: bool = True) -> str:
+    parts = [
+        row.get("raw_title") if _source_title_is_supported(row) else None,
+        row.get("raw_notes"),
+        row.get("article_title"),
+    ]
+    if include_content:
+        parts.append(row.get("content_text"))
+    return " ".join(str(part) for part in parts if part)
+
+
+def build_evidence_items(rows: Iterable[Mapping[str, Any]]) -> list[CampaignEvidenceItem]:
+    """Build normalized evidence items from canonical/source/article rows."""
+
+    items: list[CampaignEvidenceItem] = []
+    for index, row in enumerate(rows, start=1):
+        canonical_id = _as_text(row.get("canonical_incident_id"))
+        if not canonical_id:
+            continue
+        projection = row.get("canonical_projection") or {}
+        text = _row_text(row)
+        explicit_vendor = _coalesce_json(
+            projection,
+            ("system_impact", "vendor_name"),
+            ("vendor_name",),
+        )
+        explicit_affected_systems = _coalesce_json(
+            projection,
+            ("system_impact", "systems_affected"),
+            ("systems_affected",),
+        )
+        vendors, platforms, platform_keys = _extract_platform_indicators(text)
+        vendors = _dedupe_non_generic([row.get("vendor_name"), explicit_vendor, *vendors])
+        platforms = _dedupe_non_generic(platforms)
+        affected_systems = _dedupe_non_generic(_as_list(explicit_affected_systems))
+
+        explicit_actors = [
+            row.get("threat_actor_name"),
+            _json_get(projection, "threat_actor"),
+            *_as_list(_json_get(projection, "threat_actor_aliases")),
+        ]
+        actors = _extract_actors(text, explicit_actors)
+        cves = _extract_cves(text)
+        quote_terms = [*vendors, *platforms, *actors, *cves]
+        quotes = _evidence_quotes(text, quote_terms)
+
+        article_id = _as_text(row.get("article_document_id"))
+        source_id = _as_text(row.get("source_incident_id"))
+        evidence_key = f"{canonical_id}:{source_id or 'source'}:{article_id or index}"
+        evidence_id = hashlib.sha1(evidence_key.encode("utf-8")).hexdigest()[:16]
+
+        item = CampaignEvidenceItem(
+            evidence_item_id=evidence_id,
+            canonical_incident_id=canonical_id,
+            canonical_status=_as_text(row.get("canonical_status")) or "unknown",
+            source_incident_id=source_id,
+            article_document_id=article_id,
+            victim_name=_as_text(row.get("institution_name") or row.get("vendor_name")),
+            institution_type=_as_text(row.get("institution_type")),
+            country=_as_text(row.get("country")),
+            country_code=_as_text(row.get("country_code")),
+            incident_date=_as_text(row.get("incident_date")),
+            publication_date=_as_text(row.get("article_publish_date") or row.get("source_published_at")),
+            source_name=_as_text(row.get("source_name")),
+            source_group=_as_text(row.get("source_group")),
+            source_title=_as_text(row.get("raw_title")),
+            article_title=_as_text(row.get("article_title")),
+            source_url=_as_text(row.get("article_url")),
+            attack_category=_as_text(row.get("attack_category")),
+            attack_vector=_as_text(row.get("attack_vector")),
+            threat_actor=_as_text(row.get("threat_actor_name")),
+            ransomware_family=_as_text(row.get("ransomware_family")),
+            vendors=vendors,
+            platforms=platforms,
+            affected_systems=affected_systems,
+            platform_keys=platform_keys,
+            actors=actors,
+            cves=cves,
+            campaign_names=_dedupe([_json_get(projection, "attack_campaign_name")]),
+            mitre_tactics=_mitre_tactics_from_projection(projection),
+            records_affected_exact=_as_int(
+                _coalesce_json(
+                    projection,
+                    ("data_impact", "records_affected_exact"),
+                    ("records_affected_exact",),
+                )
+            ),
+            records_affected_min=_as_int(
+                _coalesce_json(
+                    projection,
+                    ("data_impact", "records_affected_min"),
+                    ("records_affected_min",),
+                )
+            ),
+            records_affected_max=_as_int(
+                _coalesce_json(
+                    projection,
+                    ("data_impact", "records_affected_max"),
+                    ("records_affected_max",),
+                )
+            ),
+            data_categories=_data_categories_from_projection(projection),
+            evidence_quotes=quotes,
+            negative_flags=_extract_negative_flags(text),
+            manual_review_required=bool(row.get("manual_review_required")),
+            manual_review_reason=_as_text(row.get("manual_review_reason")),
+            content_hash=_as_text(row.get("content_hash")),
+        )
+        items.append(item)
+    return items
+
+
+def build_profiles(items: Iterable[CampaignEvidenceItem]) -> dict[str, CampaignProfile]:
+    profiles: dict[str, CampaignProfile] = {}
+    for item in items:
+        profile = profiles.get(item.canonical_incident_id)
+        if profile is None:
+            profile = CampaignProfile(
+                canonical_incident_id=item.canonical_incident_id,
+                canonical_status=item.canonical_status,
+                victim_name=item.victim_name,
+                institution_type=item.institution_type,
+                country=item.country,
+                country_code=item.country_code,
+                representative_date=item.incident_date or item.publication_date,
+            )
+            profiles[item.canonical_incident_id] = profile
+
+        profile.evidence_items.append(item)
+        profile.attack_categories.update(_dedupe([item.attack_category]))
+        profile.attack_vectors.update(_dedupe([item.attack_vector]))
+        profile.vendors.update(item.vendors)
+        profile.platforms.update(item.platforms)
+        profile.affected_systems.update(item.affected_systems)
+        profile.platform_keys.update(item.platform_keys)
+        profile.actors.update(item.actors)
+        profile.ransomware_families.update(_dedupe([item.ransomware_family]))
+        profile.cves.update(item.cves)
+        profile.campaign_names.update(item.campaign_names)
+        profile.mitre_tactics.update(item.mitre_tactics)
+        profile.article_hashes.update(_dedupe([item.content_hash]))
+        profile.article_titles.update(_dedupe([item.article_title]))
+        profile.source_incident_ids.update(_dedupe([item.source_incident_id]))
+        profile.article_document_ids.update(_dedupe([item.article_document_id]))
+        profile.evidence_quotes = _dedupe([*profile.evidence_quotes, *item.evidence_quotes])[:5]
+        profile.manual_review_required = profile.manual_review_required or item.manual_review_required
+        if item.manual_review_reason:
+            profile.manual_review_reasons.add(item.manual_review_reason)
+        if profile.representative_date is None:
+            profile.representative_date = item.incident_date or item.publication_date
+    return profiles
+
+
+def _indicator_window_days(platform_keys: Iterable[str]) -> int:
+    windows = [
+        indicator.date_window_days
+        for key in platform_keys
+        for indicator in PLATFORM_INDICATORS
+        if indicator.key == key
+    ]
+    return max(windows) if windows else DATE_WINDOW_DEFAULT_DAYS
+
+
+def build_candidate_edges(profiles: Mapping[str, CampaignProfile]) -> list[CampaignEdge]:
+    """Build deterministic candidate campaign edges between canonical incidents."""
+
+    edges: list[CampaignEdge] = []
+    for left, right in combinations(profiles.values(), 2):
+        shared_platform_keys = sorted(left.platform_keys & right.platform_keys)
+        shared_platforms = sorted(left.platforms & right.platforms)
+        shared_vendors = sorted(left.vendors & right.vendors)
+        shared_actors = sorted(left.actors & right.actors)
+        shared_cves = sorted(left.cves & right.cves)
+        shared_campaign_names = sorted(left.campaign_names & right.campaign_names)
+        shared_hashes = sorted(left.article_hashes & right.article_hashes)
+        date_gap = _date_gap_days(left.representative_date, right.representative_date)
+        date_component = _date_score(date_gap)
+
+        score = 0.0
+        reasons: list[str] = []
+
+        if shared_hashes:
+            score += 0.90
+            reasons.append("same_selected_article_content")
+
+        if shared_campaign_names:
+            score += 0.85
+            reasons.append("shared_campaign_name")
+
+        if shared_cves:
+            score += 0.55 + date_component
+            reasons.append("shared_cve")
+
+        if shared_platform_keys:
+            window_days = _indicator_window_days(shared_platform_keys)
+            if date_gap is None or date_gap <= window_days:
+                score += 0.45 + date_component
+                reasons.append("shared_vendor_or_platform")
+
+        if shared_actors and date_component >= 0.15:
+            score += 0.35 + date_component
+            reasons.append("shared_actor_time_window")
+
+        if left.ransomware_families & right.ransomware_families and date_component >= 0.15:
+            score += 0.25 + date_component
+            reasons.append("shared_ransomware_family_time_window")
+
+        if left.attack_categories & right.attack_categories:
+            shared_categories = left.attack_categories & right.attack_categories
+            if shared_categories & SUPPLY_CHAIN_CATEGORIES and shared_platform_keys:
+                score += 0.12
+                reasons.append("shared_supply_chain_category")
+            elif shared_actors or shared_cves:
+                score += 0.08
+                reasons.append("shared_attack_category")
+
+        if score < EDGE_THRESHOLD:
+            continue
+
+        edges.append(
+            CampaignEdge(
+                from_canonical_incident_id=left.canonical_incident_id,
+                to_canonical_incident_id=right.canonical_incident_id,
+                confidence=round(min(score, 1.0), 3),
+                reasons=_dedupe(reasons),
+                shared_vendors=shared_vendors,
+                shared_platforms=shared_platforms,
+                shared_platform_keys=shared_platform_keys,
+                shared_actors=shared_actors,
+                shared_cves=shared_cves,
+                shared_campaign_names=shared_campaign_names,
+                shared_article_hashes=shared_hashes,
+                date_gap_days=date_gap,
+            )
+        )
+    edges.sort(key=lambda edge: (-edge.confidence, edge.from_canonical_incident_id, edge.to_canonical_incident_id))
+    return edges
+
+
+def _connected_components(profile_ids: Iterable[str], edges: Iterable[CampaignEdge]) -> list[set[str]]:
+    parent = {profile_id: profile_id for profile_id in profile_ids}
+
+    def find(node: str) -> str:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    def union(left: str, right: str) -> None:
+        root_left = find(left)
+        root_right = find(right)
+        if root_left != root_right:
+            parent[root_right] = root_left
+
+    edge_count = 0
+    for edge in edges:
+        edge_count += 1
+        union(edge.from_canonical_incident_id, edge.to_canonical_incident_id)
+    if edge_count == 0:
+        return []
+
+    components: dict[str, set[str]] = defaultdict(set)
+    for profile_id in profile_ids:
+        components[find(profile_id)].add(profile_id)
+    return [component for component in components.values() if len(component) >= 2]
+
+
+def _edge_bucket_keys(edge: CampaignEdge) -> list[tuple[str, str]]:
+    keys: list[tuple[str, str]] = []
+    keys.extend(("cve", value) for value in edge.shared_cves)
+    keys.extend(("platform", value) for value in edge.shared_platform_keys)
+    if not keys:
+        keys.extend(("campaign_name", value) for value in edge.shared_campaign_names)
+    if not keys:
+        keys.extend(("actor", value) for value in edge.shared_actors)
+    return keys
+
+
+def _bucketed_components(
+    profiles: Mapping[str, CampaignProfile],
+    edges: Sequence[CampaignEdge],
+) -> list[tuple[str, str, set[str], list[CampaignEdge]]]:
+    buckets: dict[tuple[str, str], list[CampaignEdge]] = defaultdict(list)
+    for edge in edges:
+        for key in _edge_bucket_keys(edge):
+            buckets[key].append(edge)
+
+    components: list[tuple[str, str, set[str], list[CampaignEdge]]] = []
+    seen: set[tuple[str, str, tuple[str, ...]]] = set()
+    for (kind, value), bucket_edges in sorted(buckets.items()):
+        profile_ids: set[str] = set()
+        for edge in bucket_edges:
+            profile_ids.add(edge.from_canonical_incident_id)
+            profile_ids.add(edge.to_canonical_incident_id)
+        for component in _connected_components(profile_ids, bucket_edges):
+            signature = (kind, value, tuple(sorted(component)))
+            if signature in seen:
+                continue
+            seen.add(signature)
+            component_edges = [
+                edge
+                for edge in bucket_edges
+                if edge.from_canonical_incident_id in component
+                and edge.to_canonical_incident_id in component
+            ]
+            components.append((kind, value, component, component_edges))
+    components.sort(key=lambda item: (-len(item[2]), item[0], item[1]))
+    return components
+
+
+def _slug(value: str) -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", value.casefold()).strip("-")
+    return slug[:48] or "campaign"
+
+
+def _date_range(profiles: Iterable[CampaignProfile]) -> tuple[str | None, str | None]:
+    dates = sorted(_as_text(profile.representative_date) for profile in profiles if profile.representative_date)
+    if not dates:
+        return None, None
+    return dates[0], dates[-1]
+
+
+def _top_values(profiles: Iterable[CampaignProfile], attr: str) -> list[str]:
+    counter: Counter[str] = Counter()
+    for profile in profiles:
+        values = getattr(profile, attr)
+        counter.update(values)
+    return [value for value, _count in counter.most_common()]
+
+
+def _campaign_type(kind: str, value: str, platform_keys: list[str], cves: list[str], actors: list[str]) -> str:
+    if kind == "campaign_name":
+        return "same_campaign"
+    if kind == "cve":
+        return "mass_exploitation"
+    if kind == "actor":
+        return "actor_activity_wave"
+    if kind == "platform" and value in PLATFORM_BY_KEY:
+        return PLATFORM_BY_KEY[value].campaign_type
+    indicator_types = {
+        indicator.campaign_type
+        for indicator in PLATFORM_INDICATORS
+        if indicator.key in platform_keys
+    }
+    if cves or "mass_exploitation" in indicator_types:
+        return "mass_exploitation"
+    if "shared_vendor_incident" in indicator_types:
+        return "shared_vendor_incident"
+    if actors:
+        return "actor_activity_wave"
+    return "same_campaign"
+
+
+def _campaign_name(
+    kind: str,
+    value: str,
+    campaign_type: str,
+    platforms: list[str],
+    actors: list[str],
+    cves: list[str],
+    campaign_names: list[str],
+    first_seen: str | None,
+) -> str:
+    year = (first_seen or "")[:4]
+    suffix = f" {year}" if year else ""
+    if kind == "campaign_name":
+        return value
+    if kind == "platform" and value in PLATFORM_BY_KEY:
+        return f"{PLATFORM_BY_KEY[value].platform}{suffix} education impact"
+    if kind == "cve":
+        return f"{value}{suffix} education exposure"
+    if kind == "actor":
+        return f"{value}{suffix} education activity wave"
+    if campaign_names:
+        return campaign_names[0]
+    if platforms:
+        return f"{platforms[0]}{suffix} education impact"
+    if cves:
+        return f"{cves[0]}{suffix} education exposure"
+    if actors:
+        return f"{actors[0]}{suffix} education activity wave"
+    return f"{campaign_type.replace('_', ' ').title()}{suffix}"
+
+
+def _campaign_id(name: str, member_ids: Iterable[str]) -> str:
+    seed = "|".join(sorted(member_ids))
+    digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
+    return f"campaign_{_slug(name)}_{digest}"
+
+
+def build_campaign_outputs(
+    items: Sequence[CampaignEvidenceItem],
+    edges: Sequence[CampaignEdge],
+) -> tuple[list[CampaignCandidate], list[CampaignMembership]]:
+    profiles = build_profiles(items)
+    components = _bucketed_components(profiles, edges)
+    candidates: list[CampaignCandidate] = []
+    memberships: list[CampaignMembership] = []
+
+    for kind, value, component, component_edges in components:
+        component_profiles = [profiles[profile_id] for profile_id in sorted(component)]
+        first_seen, last_seen = _date_range(component_profiles)
+        platform_keys = _top_values(component_profiles, "platform_keys")
+        platforms = _top_values(component_profiles, "platforms")
+        vendors = _top_values(component_profiles, "vendors")
+        actors = _top_values(component_profiles, "actors")
+        cves = _top_values(component_profiles, "cves")
+        campaign_names = _top_values(component_profiles, "campaign_names")
+        attack_categories = _top_values(component_profiles, "attack_categories")
+        if kind == "platform" and value in PLATFORM_BY_KEY:
+            indicator = PLATFORM_BY_KEY[value]
+            platform_keys = [indicator.key]
+            platforms = [indicator.platform]
+            vendors = [indicator.vendor]
+        elif kind == "cve":
+            cves = [value]
+        elif kind == "actor":
+            actors = [value]
+        elif kind == "campaign_name":
+            campaign_names = [value]
+        campaign_type = _campaign_type(kind, value, platform_keys, cves, actors)
+        name = _campaign_name(kind, value, campaign_type, platforms, actors, cves, campaign_names, first_seen)
+        campaign_id = _campaign_id(name, component)
+        confidence = (
+            sum(edge.confidence for edge in component_edges) / len(component_edges)
+            if component_edges
+            else 0.0
+        )
+        confirmed = sum(
+            1
+            for profile in component_profiles
+            if profile.canonical_status == "open" and not profile.manual_review_required
+        )
+        evidence_only = len(component_profiles) - confirmed
+        summary_subject = platforms[0] if platforms else actors[0] if actors else cves[0] if cves else "shared evidence"
+        analyst_summary = (
+            f"Candidate {campaign_type.replace('_', ' ')} cluster around {summary_subject}; "
+            f"{len(component_profiles)} canonical records connected by deterministic CTI evidence."
+        )
+        candidates.append(
+            CampaignCandidate(
+                campaign_id=campaign_id,
+                campaign_name=name,
+                campaign_type=campaign_type,
+                first_seen_date=first_seen,
+                last_seen_date=last_seen,
+                actors=actors,
+                vendors=vendors,
+                platforms=platforms,
+                cves=cves,
+                campaign_names=campaign_names,
+                attack_categories=attack_categories,
+                member_count=len(component_profiles),
+                confirmed_member_count=confirmed,
+                evidence_only_member_count=evidence_only,
+                confidence=round(confidence, 3),
+                analyst_summary=analyst_summary,
+            )
+        )
+
+        for profile in component_profiles:
+            incident_edges = [
+                edge.confidence
+                for edge in component_edges
+                if profile.canonical_incident_id
+                in {edge.from_canonical_incident_id, edge.to_canonical_incident_id}
+            ]
+            membership_confidence = max(incident_edges) if incident_edges else confidence
+            if profile.canonical_status != "open":
+                role = "needs_review"
+                review_status = "excluded_evidence_only"
+            elif profile.manual_review_required:
+                role = "needs_review"
+                review_status = "manual_review_required"
+            elif profile.platform_keys and (
+                profile.attack_categories & SUPPLY_CHAIN_CATEGORIES or profile.vendors
+            ):
+                role = "affected_via_vendor"
+                review_status = "candidate_unreviewed"
+            else:
+                role = "direct_victim"
+                review_status = "candidate_unreviewed"
+
+            memberships.append(
+                CampaignMembership(
+                    campaign_id=campaign_id,
+                    canonical_incident_id=profile.canonical_incident_id,
+                    role=role,
+                    confidence=round(membership_confidence, 3),
+                    evidence_article_ids=sorted(profile.article_document_ids),
+                    evidence_source_incident_ids=sorted(profile.source_incident_ids),
+                    evidence_quotes=profile.evidence_quotes[:3],
+                    review_status=review_status,
+                    victim_name=profile.victim_name,
+                    canonical_status=profile.canonical_status,
+                )
+            )
+
+    candidates.sort(key=lambda candidate: (-candidate.member_count, -candidate.confidence, candidate.campaign_name))
+    memberships.sort(key=lambda membership: (membership.campaign_id, membership.victim_name or ""))
+    return candidates, memberships
+
+
+def build_signatures(candidates: Sequence[CampaignCandidate]) -> str:
+    """Render high-confidence candidate signatures as dependency-free YAML."""
+
+    lines = [
+        "# Generated candidate campaign signatures.",
+        "# Review before using in production heuristics.",
+        "campaign_signatures:",
+    ]
+    for candidate in candidates:
+        if candidate.member_count < 2 or candidate.confidence < 0.65:
+            continue
+        aliases = _dedupe([*candidate.vendors, *candidate.platforms, *candidate.actors, *candidate.cves])
+        aliases = _dedupe([*aliases, *candidate.campaign_names])
+        lines.extend(
+            [
+                f"  - campaign_id: {candidate.campaign_id}",
+                f"    campaign_name: {json.dumps(candidate.campaign_name)}",
+                f"    campaign_type: {candidate.campaign_type}",
+                f"    confidence: {candidate.confidence}",
+                f"    date_window:",
+                f"      start_date: {candidate.first_seen_date or 'null'}",
+                f"      end_date: {candidate.last_seen_date or 'null'}",
+                f"    required_any_terms: {json.dumps(aliases)}",
+                f"    vendors: {json.dumps(candidate.vendors)}",
+                f"    platforms: {json.dumps(candidate.platforms)}",
+                f"    actors: {json.dumps(candidate.actors)}",
+                f"    cves: {json.dumps(candidate.cves)}",
+                f"    campaign_names: {json.dumps(candidate.campaign_names)}",
+                "    negative_terms: [\"trend report\", \"best practices\", \"state of cybersecurity\", \"roundup\"]",
+            ]
+        )
+    if len(lines) == 3:
+        lines.append("  []")
+    return "\n".join(lines) + "\n"
+
+
+def build_llm_review_packets(
+    candidates: Sequence[CampaignCandidate],
+    memberships: Sequence[CampaignMembership],
+) -> list[dict[str, Any]]:
+    by_campaign: dict[str, list[CampaignMembership]] = defaultdict(list)
+    for membership in memberships:
+        by_campaign[membership.campaign_id].append(membership)
+    packets: list[dict[str, Any]] = []
+    for candidate in candidates:
+        packets.append(
+            {
+                "task": "campaign_adjudication",
+                "allowed_labels": [
+                    "same_campaign",
+                    "shared_vendor_incident",
+                    "mass_exploitation",
+                    "actor_activity_wave",
+                    "roundup_not_campaign",
+                    "unrelated",
+                ],
+                "candidate": asdict(candidate),
+                "members": [asdict(item) for item in by_campaign.get(candidate.campaign_id, [])],
+                "instruction": (
+                    "Adjudicate whether these victim-level incidents belong to the same "
+                    "campaign or shared upstream event. Use only the evidence quotes and "
+                    "structured fields. Do not merge victim identities."
+                ),
+            }
+        )
+    return packets
+
+
+def build_review_sample(
+    candidates: Sequence[CampaignCandidate],
+    memberships: Sequence[CampaignMembership],
+    *,
+    sample_size: int = 30,
+) -> list[dict[str, Any]]:
+    """Build a small deterministic manual-review sample across candidates."""
+
+    candidate_order = [candidate.campaign_id for candidate in candidates]
+    by_campaign: dict[str, list[CampaignMembership]] = defaultdict(list)
+    for membership in memberships:
+        by_campaign[membership.campaign_id].append(membership)
+
+    sample: list[dict[str, Any]] = []
+    while len(sample) < sample_size:
+        added = False
+        for campaign_id in candidate_order:
+            if not by_campaign[campaign_id]:
+                continue
+            membership = by_campaign[campaign_id].pop(0)
+            row = asdict(membership)
+            row["manual_label"] = ""
+            row["manual_notes"] = ""
+            sample.append(row)
+            added = True
+            if len(sample) >= sample_size:
+                break
+        if not added:
+            break
+    return sample
+
+
+def _serialize_row(row: Mapping[str, Any]) -> dict[str, Any]:
+    serialized: dict[str, Any] = {}
+    for key, value in row.items():
+        if isinstance(value, (list, dict)):
+            serialized[key] = json.dumps(value, ensure_ascii=False)
+        else:
+            serialized[key] = value
+    return serialized
+
+
+def _write_csv(path: Path, rows: Sequence[Mapping[str, Any]]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if not rows:
+        path.write_text("", encoding="utf-8")
+        return
+    fieldnames = list(rows[0].keys())
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow(_serialize_row(row))
+
+
+def write_outputs(
+    output_dir: Path,
+    *,
+    evidence_items: Sequence[CampaignEvidenceItem],
+    edges: Sequence[CampaignEdge],
+    candidates: Sequence[CampaignCandidate],
+    memberships: Sequence[CampaignMembership],
+) -> None:
+    output_dir.mkdir(parents=True, exist_ok=True)
+    _write_csv(output_dir / "campaign_evidence_items.csv", [asdict(item) for item in evidence_items])
+    _write_csv(output_dir / "campaign_edges.csv", [asdict(edge) for edge in edges])
+    _write_csv(output_dir / "campaign_candidates.csv", [asdict(candidate) for candidate in candidates])
+    _write_csv(output_dir / "campaign_memberships.csv", [asdict(membership) for membership in memberships])
+    _write_csv(output_dir / "campaign_review_sample.csv", build_review_sample(candidates, memberships))
+    (output_dir / "campaign_summaries.json").write_text(
+        json.dumps([asdict(candidate) for candidate in candidates], indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (output_dir / "campaign_signatures.yml").write_text(build_signatures(candidates), encoding="utf-8")
+    packets = build_llm_review_packets(candidates, memberships)
+    with (output_dir / "campaign_llm_review_packets.jsonl").open("w", encoding="utf-8") as handle:
+        for packet in packets:
+            handle.write(json.dumps(packet, ensure_ascii=False) + "\n")
+    manifest = {
+        "generated_at": datetime.now(timezone.utc).replace(microsecond=0).isoformat(),
+        "evidence_items": len(evidence_items),
+        "edges": len(edges),
+        "campaign_candidates": len(candidates),
+        "campaign_memberships": len(memberships),
+        "review_sample_size": min(30, len(memberships)),
+        "read_only": True,
+    }
+    (output_dir / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+def fetch_campaign_rows(database_url: str, *, include_excluded: bool = True, limit: int | None = None) -> list[dict[str, Any]]:
+    """Fetch source/article/canonical rows in a read-only transaction."""
+
+    status_filter = "" if include_excluded else "and ci.status = 'open'"
+    limit_clause = "limit %(limit)s" if limit else ""
+    query = f"""
+        select
+            ci.id::text as canonical_incident_id,
+            ci.status as canonical_status,
+            ci.institution_name,
+            ci.institution_type,
+            ci.vendor_name,
+            ci.country,
+            ci.country_code,
+            ci.incident_date,
+            ci.date_precision,
+            ci.source_published_at,
+            ci.attack_category,
+            ci.attack_vector,
+            ci.threat_actor_name,
+            ci.ransomware_family,
+            cm.source_incident_id::text as source_incident_id,
+            cm.match_type,
+            cm.is_primary_member,
+            si.source_name,
+            si.source_group,
+            si.raw_title,
+            si.raw_victim_name,
+            si.raw_notes,
+            si.source_published_at as source_row_published_at,
+            se.manual_review_required,
+            se.manual_review_reason,
+            ad.id::text as article_document_id,
+            ad.title as article_title,
+            ad.publish_date as article_publish_date,
+            left(ad.content_text, 8000) as content_text,
+            ad.content_hash,
+            ce.canonical_projection,
+            ce.analytics_projection,
+            (
+                select string_agg(distinct coalesce(nullif(siu.resolved_url, ''), siu.url), ' | ')
+                from source_incident_urls siu
+                where siu.source_incident_id = si.id
+            ) as article_url
+        from canonical_incidents ci
+        join canonical_memberships cm on cm.canonical_incident_id = ci.id
+        join source_incidents si on si.id = cm.source_incident_id
+        left join source_enrichments se on se.source_incident_id = si.id
+        left join article_documents ad on ad.id = se.article_document_id
+        left join canonical_enrichments ce on ce.canonical_incident_id = ci.id
+        where ci.status in ('open', 'excluded')
+          and coalesce(ci.is_education_related, true) is true
+          {status_filter}
+        order by ci.incident_date nulls last, ci.id, cm.is_primary_member desc
+        {limit_clause}
+    """
+    with psycopg.connect(
+        database_url,
+        row_factory=dict_row,
+        options="-c default_transaction_read_only=on -c statement_timeout=300000",
+    ) as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, {"limit": limit})
+            return list(cur.fetchall())
+
+
+def run_campaign_analysis(
+    database_url: str,
+    *,
+    output_dir: Path = DEFAULT_OUTPUT_DIR,
+    include_excluded: bool = True,
+    limit: int | None = None,
+) -> dict[str, int]:
+    rows = fetch_campaign_rows(database_url, include_excluded=include_excluded, limit=limit)
+    evidence_items = build_evidence_items(rows)
+    profiles = build_profiles(evidence_items)
+    edges = build_candidate_edges(profiles)
+    candidates, memberships = build_campaign_outputs(evidence_items, edges)
+    write_outputs(
+        output_dir,
+        evidence_items=evidence_items,
+        edges=edges,
+        candidates=candidates,
+        memberships=memberships,
+    )
+    return {
+        "rows": len(rows),
+        "evidence_items": len(evidence_items),
+        "profiles": len(profiles),
+        "edges": len(edges),
+        "campaign_candidates": len(candidates),
+        "campaign_memberships": len(memberships),
+    }
+
+
+def _database_url_from_env() -> str | None:
+    return (
+        os.getenv("EDU_CTI_V2_DATABASE_URL")
+        or os.getenv("DATABASE_PUBLIC_URL")
+        or os.getenv("DATABASE_URL")
+        or _component_database_url()
+    )
+
+
+def _component_database_url() -> str | None:
+    host = os.getenv("PGHOST")
+    user = os.getenv("PGUSER")
+    password = os.getenv("PGPASSWORD")
+    database = os.getenv("PGDATABASE")
+    port = os.getenv("PGPORT", "5432")
+    if not all((host, user, password, database)):
+        return None
+    return f"postgresql://{user}:{password}@{host}:{port}/{database}"
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Generate read-only campaign correlation outputs.")
+    parser.add_argument("--database-url", default=None, help="Postgres URL. Defaults to EDU_CTI_V2_DATABASE_URL/DATABASE_URL.")
+    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
+    parser.add_argument("--open-only", action="store_true", help="Exclude review/excluded canonical evidence rows.")
+    parser.add_argument("--limit", type=int, default=None, help="Optional row limit for smoke tests.")
+    args = parser.parse_args(argv)
+
+    database_url = args.database_url or _database_url_from_env()
+    if not database_url:
+        raise SystemExit(
+            "Missing database URL. Set EDU_CTI_V2_DATABASE_URL, DATABASE_URL, or pass --database-url."
+        )
+
+    result = run_campaign_analysis(
+        database_url,
+        output_dir=args.output_dir,
+        include_excluded=not args.open_only,
+        limit=args.limit,
+    )
+    print(json.dumps(result, indent=2))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

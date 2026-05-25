@@ -5,7 +5,7 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Body, Depends, HTTPException, Query
 
 from src.edu_cti.api.v2 import get_v2_session, get_v2_session_factory
 from src.edu_cti_v2.auth import (
@@ -24,6 +24,7 @@ from src.edu_cti_v2.services import (
     V2PreflightService,
     V2ResearchMetricsService,
 )
+from src.edu_cti_v2.services.campaigns import ADMIN_CAMPAIGN_STATUSES, V2CampaignService
 from src.edu_cti_v2.services.collection import V2CollectionService
 from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 from src.edu_cti_v2.services.scheduler import V2SchedulerService
@@ -64,6 +65,11 @@ def get_v2_data_quality_service() -> V2DataQualityService:
 @lru_cache
 def get_v2_research_metrics_service() -> V2ResearchMetricsService:
     return V2ResearchMetricsService()
+
+
+@lru_cache
+def get_v2_campaign_service() -> V2CampaignService:
+    return V2CampaignService()
 
 
 @router.post("/login", response_model=V2LoginResponse)
@@ -319,6 +325,162 @@ async def run_v2_data_quality_sweep(
 ):
     """Sweep v2 source enrichments for invalid dates and headline-style institutions."""
     return data_quality.run_sweep(limit=limit)
+
+
+@router.get("/campaigns")
+async def list_v2_admin_campaigns(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0, le=100000),
+    status: Optional[List[str]] = Query(None),
+    campaign_type: Optional[str] = Query(None),
+    vendor: Optional[str] = Query(None),
+    platform: Optional[str] = Query(None),
+    actor: Optional[str] = Query(None),
+    cve: Optional[str] = Query(None),
+    min_confidence: Optional[float] = Query(None, ge=0.0, le=1.0),
+    q: Optional[str] = Query(None, min_length=1, max_length=200),
+    session=Depends(get_v2_session),
+    campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
+    _: bool = Depends(authenticate),
+):
+    """List campaign hypotheses, including analyst-only candidates."""
+    statuses = tuple(status) if status else ADMIN_CAMPAIGN_STATUSES
+    return campaign_service.list_campaigns(
+        session,
+        statuses=statuses,
+        campaign_type=campaign_type,
+        vendor=vendor,
+        platform=platform,
+        actor=actor,
+        cve=cve,
+        min_confidence=min_confidence,
+        q=q,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/campaigns/{campaign_id}")
+async def get_v2_admin_campaign_detail(
+    campaign_id: str,
+    member_limit: int = Query(500, ge=1, le=5000),
+    evidence_limit: int = Query(1000, ge=1, le=10000),
+    session=Depends(get_v2_session),
+    campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
+    _: bool = Depends(authenticate),
+):
+    """Return one campaign hypothesis with full member and evidence detail."""
+    detail = campaign_service.get_campaign_detail(
+        session,
+        campaign_id,
+        statuses=ADMIN_CAMPAIGN_STATUSES,
+        member_limit=member_limit,
+        evidence_limit=evidence_limit,
+    )
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return detail
+
+
+@router.get("/campaigns/{campaign_id}/graph")
+async def get_v2_admin_campaign_graph(
+    campaign_id: str,
+    member_limit: int = Query(250, ge=1, le=2000),
+    session=Depends(get_v2_session),
+    campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
+    _: bool = Depends(authenticate),
+):
+    """Return graph-ready nodes and edges for one campaign hypothesis."""
+    graph = campaign_service.get_campaign_graph(
+        session,
+        campaign_id,
+        statuses=ADMIN_CAMPAIGN_STATUSES,
+        member_limit=member_limit,
+    )
+    if graph is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return graph
+
+
+@router.post("/campaigns/correlate")
+async def run_v2_campaign_correlation(
+    background: bool = Query(True),
+    include_excluded: bool = Query(True),
+    limit: Optional[int] = Query(None, ge=1, le=100000),
+    session=Depends(get_v2_session),
+    campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
+    _: bool = Depends(authenticate),
+):
+    """Run or enqueue deterministic production campaign correlation."""
+    if background:
+        result = campaign_service.enqueue_correlation(
+            session,
+            include_excluded=include_excluded,
+            limit=limit,
+        )
+    else:
+        result = campaign_service.run_correlation(
+            session,
+            include_excluded=include_excluded,
+            limit=limit,
+        )
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        commit()
+    return result
+
+
+@router.patch("/campaigns/{campaign_id}")
+async def update_v2_admin_campaign_review(
+    campaign_id: str,
+    payload: dict = Body(default_factory=dict),
+    session=Depends(get_v2_session),
+    campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
+    _: bool = Depends(authenticate),
+):
+    """Update analyst campaign status, pinned name, summary, or notes."""
+    result = campaign_service.update_campaign_review(
+        session,
+        campaign_id,
+        status=payload.get("status"),
+        campaign_name=payload.get("campaign_name"),
+        analyst_summary=payload.get("analyst_summary"),
+        analyst_notes=payload.get("analyst_notes"),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        commit()
+    return result
+
+
+@router.patch("/campaigns/{campaign_id}/members/{canonical_incident_id}")
+async def update_v2_admin_campaign_membership_review(
+    campaign_id: str,
+    canonical_incident_id: str,
+    payload: dict = Body(default_factory=dict),
+    session=Depends(get_v2_session),
+    campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
+    _: bool = Depends(authenticate),
+):
+    """Update analyst review status or role for one campaign membership."""
+    review_status = payload.get("review_status")
+    if not review_status:
+        raise HTTPException(status_code=400, detail="review_status is required")
+    result = campaign_service.update_membership_review(
+        session,
+        campaign_id,
+        canonical_incident_id,
+        review_status=review_status,
+        role=payload.get("role"),
+    )
+    if result is None:
+        raise HTTPException(status_code=404, detail="Campaign membership not found")
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        commit()
+    return result
 
 
 @router.post("/canonicalize/sweep-now")

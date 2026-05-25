@@ -27,6 +27,7 @@ def test_pipeline_task_repository_lease_stmt_uses_skip_locked():
     assert "pipeline_tasks.status = 'queued'" in compiled
     assert "pipeline_tasks.status = 'leased'" in compiled
     assert "pipeline_tasks.lease_expires_at <" in compiled
+    assert "pipeline_tasks.attempt_count < pipeline_tasks.max_attempts" in compiled
 
 
 def test_pipeline_task_repository_expired_lease_stmt_uses_skip_locked():

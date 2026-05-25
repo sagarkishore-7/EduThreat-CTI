@@ -26,7 +26,7 @@ class PipelineRun(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "run_type IN ('collect', 'fetch', 'enrich', 'canonicalize', 'analytics_refresh', 'reenrich', 'maintenance')",
+            "run_type IN ('collect', 'fetch', 'enrich', 'canonicalize', 'analytics_refresh', 'campaign_correlation', 'reenrich', 'maintenance')",
             name="pipeline_runs_run_type",
         ),
         CheckConstraint(
@@ -59,7 +59,7 @@ class PipelineTask(UUIDPrimaryKeyMixin, TimestampMixin, Base):
 
     __table_args__ = (
         CheckConstraint(
-            "task_type IN ('collect', 'resolve_url', 'fetch_article', 'enrich_source', 'canonicalize', 'refresh_analytics', 'reenrich', 'orchestrate_plan')",
+            "task_type IN ('collect', 'resolve_url', 'fetch_article', 'enrich_source', 'canonicalize', 'refresh_analytics', 'campaign_correlate', 'reenrich', 'orchestrate_plan')",
             name="pipeline_tasks_task_type",
         ),
         CheckConstraint(

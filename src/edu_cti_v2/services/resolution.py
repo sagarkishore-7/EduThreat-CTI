@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import hashlib
+import json
 import re
 from typing import Callable, Dict, List, Optional
 from urllib.parse import urlparse
@@ -13,8 +15,8 @@ from src.edu_cti.core.deduplication import is_google_news_wrapper_url, normalize
 from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
 from src.edu_cti.sources.rss.googlenews_rss import _resolve_google_news_article_url
 from src.edu_cti.pipeline.phase2.utils.fetching_strategy import discover_articles_via_serp
-from src.edu_cti_v2.models import PipelineTask, SourceIncident, SourceIncidentUrl
-from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceIncidentRepository
+from src.edu_cti_v2.models import ArticleDocument, PipelineTask, SourceIncident, SourceIncidentUrl
+from src.edu_cti_v2.repositories import ArticleRepository, PipelineTaskRepository, SourceIncidentRepository
 from src.edu_cti_v2.services.fetching import _score_url_candidate
 
 _INVALID_DISCOVERY_NAMES = {
@@ -116,6 +118,62 @@ def _build_discovered_article_row(
     )
 
 
+def _structured_source_url_row(source_incident: SourceIncident) -> Optional[SourceIncidentUrl]:
+    for kind in ("detail", "leak_site", "screenshot", "other"):
+        for row in source_incident.urls or []:
+            if row.url_kind == kind:
+                return row
+    return None
+
+
+def _should_use_structured_source_evidence(
+    source_incident: SourceIncident,
+    *,
+    has_fetchable_article: bool,
+) -> bool:
+    if has_fetchable_article:
+        return False
+    if source_incident.source_group != "api":
+        return False
+    if source_incident.source_name not in {"ransomwarelive", "ransomlook"}:
+        return False
+    return bool(source_incident.raw_payload or _structured_source_url_row(source_incident))
+
+
+def _structured_source_content(source_incident: SourceIncident) -> str:
+    raw_payload = source_incident.raw_payload if isinstance(source_incident.raw_payload, dict) else {}
+    nested_payload = raw_payload.get("raw_source_payload")
+    if not isinstance(nested_payload, dict):
+        nested_payload = {}
+
+    fields = [
+        ("Source", source_incident.source_name),
+        ("Title", source_incident.raw_title),
+        ("Institution", source_incident.raw_institution_name or source_incident.raw_victim_name),
+        ("Institution type", source_incident.raw_institution_type),
+        ("Country", source_incident.raw_country),
+        ("Region", source_incident.raw_region),
+        ("City", source_incident.raw_city),
+        ("Incident date", source_incident.raw_incident_date),
+        ("Date precision", source_incident.raw_date_precision),
+        ("Status", source_incident.raw_status),
+        ("Attack hint", source_incident.raw_attack_hint),
+        ("Threat actor", source_incident.raw_threat_actor),
+        ("Subtitle", source_incident.raw_subtitle),
+        ("Notes", source_incident.raw_notes),
+        ("Leak site URL", next((row.url for row in source_incident.urls or [] if row.url_kind == "leak_site"), None)),
+        ("Detail URL", next((row.url for row in source_incident.urls or [] if row.url_kind == "detail"), None)),
+        ("Victim website", nested_payload.get("website") or raw_payload.get("victim_website")),
+        ("Activity", nested_payload.get("activity") or raw_payload.get("activity")),
+        ("Description", nested_payload.get("description") or raw_payload.get("description")),
+    ]
+    lines = [f"{name}: {value}" for name, value in fields if value]
+    if raw_payload:
+        lines.append("Structured source payload:")
+        lines.append(json.dumps(raw_payload, ensure_ascii=False, sort_keys=True))
+    return "\n".join(lines)
+
+
 def _resolve_google_wrapper_urls(source_incident: SourceIncident) -> list[tuple[Optional[SourceIncidentUrl], str]]:
     candidates: list[tuple[Optional[SourceIncidentUrl], str]] = []
     seen_wrappers: set[str] = set()
@@ -162,10 +220,12 @@ class V2ResolveUrlService:
         *,
         source_incident_repository: Optional[SourceIncidentRepository] = None,
         pipeline_task_repository: Optional[PipelineTaskRepository] = None,
+        article_repository: Optional[ArticleRepository] = None,
         article_discovery: Optional[Callable[[Dict[str, object]], List[str]]] = None,
     ) -> None:
         self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
+        self.article_repository = article_repository or ArticleRepository()
         self.article_discovery = article_discovery or discover_articles_via_serp
 
     def resolve_source_incident_urls(
@@ -250,6 +310,8 @@ class V2ResolveUrlService:
             existing_fetchable.append(row)
 
         fetch_task_enqueued = 0
+        enrich_task_enqueued = 0
+        structured_document_created = 0
         should_enqueue_fetch = bool(existing_fetchable or added_count > 0)
         if force_discovery and had_existing_fetchable:
             # Forced discovery usually follows a fetch pass that found only stale/low-quality
@@ -284,8 +346,85 @@ class V2ResolveUrlService:
                 self.pipeline_task_repository.enqueue(session, task)
                 fetch_task_enqueued = 1
 
-        return {
+        if (
+            not should_enqueue_fetch
+            and _should_use_structured_source_evidence(
+                source_incident,
+                has_fetchable_article=bool(existing_fetchable),
+            )
+        ):
+            selected_document = self.article_repository.get_selected_document(
+                session,
+                source_incident.id,
+            )
+            source_url_row = _structured_source_url_row(source_incident)
+            source_url = (
+                (source_url_row.resolved_url or source_url_row.url)
+                if source_url_row is not None
+                else f"structured-source:{source_incident.source_name}:{source_incident.id}"
+            )
+            if selected_document is None:
+                content_text = _structured_source_content(source_incident)
+                document = ArticleDocument(
+                    source_incident_id=source_incident.id,
+                    source_incident_url_id=source_url_row.id if source_url_row is not None else None,
+                    title=source_incident.raw_title,
+                    author=source_incident.source_name,
+                    publish_date=(
+                        source_incident.source_published_at.date()
+                        if source_incident.source_published_at
+                        else None
+                    ),
+                    content_text=content_text,
+                    content_hash=hashlib.sha256(content_text.encode("utf-8")).hexdigest(),
+                    content_language=None,
+                    document_metadata={
+                        "fetch_tier": "structured_source",
+                        "structured_source": True,
+                        "source_url": source_url,
+                        "fetched_url": source_url,
+                    },
+                    is_selected_for_enrichment=True,
+                    fetched_at=now,
+                )
+                self.article_repository.add_document(session, document)
+                structured_document_created = 1
+
+            existing_enrich_task = self.pipeline_task_repository.get_active_for_target(
+                session,
+                task_type="enrich_source",
+                target_table="source_incidents",
+                target_id=source_incident.id,
+            )
+            if existing_enrich_task is None:
+                self.pipeline_task_repository.enqueue(
+                    session,
+                    PipelineTask(
+                        run_id=None,
+                        task_type="enrich_source",
+                        target_table="source_incidents",
+                        target_id=source_incident.id,
+                        status="queued",
+                        priority=85,
+                        payload={
+                            "source_incident_id": str(source_incident.id),
+                            "source_name": source_incident.source_name,
+                            "trigger": "structured_source_evidence",
+                        },
+                        result={},
+                        available_at=now,
+                        attempt_count=0,
+                        max_attempts=5,
+                    ),
+                )
+                enrich_task_enqueued = 1
+
+        result = {
             "urls_discovered": direct_urls_discovered + len(discovered_urls),
             "urls_added": added_count,
             "fetch_tasks_enqueued": fetch_task_enqueued,
         }
+        if structured_document_created or enrich_task_enqueued:
+            result["structured_documents_created"] = structured_document_created
+            result["enrich_tasks_enqueued"] = enrich_task_enqueued
+        return result

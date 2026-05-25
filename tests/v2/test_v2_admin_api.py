@@ -3,6 +3,7 @@ from fastapi.testclient import TestClient
 
 from src.edu_cti.api.v2 import get_v2_session
 from src.edu_cti.api.v2_admin import (
+    get_v2_campaign_service,
     get_v2_collection_service,
     get_v2_data_quality_service,
     get_v2_operations_service,
@@ -70,6 +71,22 @@ def _build_client(operations_service):
         def render_prometheus_text(self, *_args, **_kwargs):
             raise AssertionError("unexpected prometheus render call")
 
+    class _NullCampaignService:
+        def list_campaigns(self, *_args, **_kwargs):
+            raise AssertionError("unexpected campaign list call")
+
+        def get_campaign_detail(self, *_args, **_kwargs):
+            raise AssertionError("unexpected campaign detail call")
+
+        def get_campaign_graph(self, *_args, **_kwargs):
+            raise AssertionError("unexpected campaign graph call")
+
+        def enqueue_correlation(self, *_args, **_kwargs):
+            raise AssertionError("unexpected campaign correlation enqueue")
+
+        def run_correlation(self, *_args, **_kwargs):
+            raise AssertionError("unexpected campaign correlation run")
+
     app.dependency_overrides[authenticate] = lambda: True
     app.dependency_overrides[get_v2_session] = _override_session
     app.dependency_overrides[get_v2_operations_service] = lambda: operations_service
@@ -79,6 +96,7 @@ def _build_client(operations_service):
     app.dependency_overrides[get_v2_preflight_service] = lambda: _NullPreflightService()
     app.dependency_overrides[get_v2_data_quality_service] = lambda: _NullDataQualityService()
     app.dependency_overrides[get_v2_research_metrics_service] = lambda: _NullResearchMetricsService()
+    app.dependency_overrides[get_v2_campaign_service] = lambda: _NullCampaignService()
     return TestClient(app)
 
 
@@ -616,3 +634,116 @@ def test_v2_admin_data_quality_endpoints_proxy_service():
     assert queue.json()["items"][0]["source_incident_id"] == "abc"
     assert rejected.status_code == 200
     assert rejected.json()["items"][0]["source_incident_id"] == "rejected-1"
+
+
+def test_v2_admin_campaign_endpoints_return_candidate_payloads():
+    class _OperationsService:
+        def get_runtime_status(self, _session):
+            return {}
+
+    class _CampaignService:
+        def __init__(self):
+            self.calls = {}
+
+        def list_campaigns(self, _session, **kwargs):
+            self.calls["list"] = kwargs
+            return {"items": [{"campaign_id": "campaign_canvas"}], "meta": {"total": 1}}
+
+        def get_campaign_detail(self, _session, campaign_id, **kwargs):
+            self.calls["detail"] = {"campaign_id": campaign_id, **kwargs}
+            return {"campaign": {"campaign_id": campaign_id}, "memberships": [], "evidence_items": []}
+
+        def get_campaign_graph(self, _session, campaign_id, **kwargs):
+            self.calls["graph"] = {"campaign_id": campaign_id, **kwargs}
+            return {"campaign": {"campaign_id": campaign_id}, "nodes": [], "edges": [], "meta": {}}
+
+    campaign_service = _CampaignService()
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    def _override_session():
+        yield object()
+
+    app.dependency_overrides[authenticate] = lambda: True
+    app.dependency_overrides[get_v2_session] = _override_session
+    app.dependency_overrides[get_v2_operations_service] = lambda: _OperationsService()
+    app.dependency_overrides[get_v2_campaign_service] = lambda: campaign_service
+    client = TestClient(app)
+
+    listed = client.get("/api/admin/v2/campaigns", params={"status": ["candidate"], "limit": 5})
+    detail = client.get("/api/admin/v2/campaigns/campaign_canvas")
+    graph = client.get("/api/admin/v2/campaigns/campaign_canvas/graph", params={"member_limit": 10})
+
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["campaign_id"] == "campaign_canvas"
+    assert campaign_service.calls["list"]["statuses"] == ("candidate",)
+    assert detail.status_code == 200
+    assert detail.json()["campaign"]["campaign_id"] == "campaign_canvas"
+    assert graph.status_code == 200
+    assert campaign_service.calls["graph"]["member_limit"] == 10
+
+
+def test_v2_admin_campaign_correlation_and_review_updates_commit():
+    class _OperationsService:
+        def get_runtime_status(self, _session):
+            return {}
+
+    class _Session:
+        def __init__(self):
+            self.commits = 0
+
+        def commit(self):
+            self.commits += 1
+
+    class _CampaignService:
+        def __init__(self):
+            self.calls = {}
+
+        def enqueue_correlation(self, _session, **kwargs):
+            self.calls["enqueue"] = kwargs
+            return {"status": "queued", "task_type": "campaign_correlate"}
+
+        def update_campaign_review(self, _session, campaign_id, **kwargs):
+            self.calls["campaign_review"] = {"campaign_id": campaign_id, **kwargs}
+            return {"campaign_id": campaign_id, "status": kwargs["status"]}
+
+        def update_membership_review(self, _session, campaign_id, canonical_incident_id, **kwargs):
+            self.calls["membership_review"] = {
+                "campaign_id": campaign_id,
+                "canonical_incident_id": canonical_incident_id,
+                **kwargs,
+            }
+            return {"campaign_id": campaign_id, "canonical_incident_id": canonical_incident_id}
+
+    session = _Session()
+    campaign_service = _CampaignService()
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+
+    def _override_session():
+        yield session
+
+    app.dependency_overrides[authenticate] = lambda: True
+    app.dependency_overrides[get_v2_session] = _override_session
+    app.dependency_overrides[get_v2_operations_service] = lambda: _OperationsService()
+    app.dependency_overrides[get_v2_campaign_service] = lambda: campaign_service
+    client = TestClient(app)
+
+    queued = client.post("/api/admin/v2/campaigns/correlate")
+    reviewed = client.patch(
+        "/api/admin/v2/campaigns/campaign_canvas",
+        json={"status": "analyst_reviewed", "campaign_name": "Canvas reviewed"},
+    )
+    member = client.patch(
+        "/api/admin/v2/campaigns/campaign_canvas/members/11111111-1111-1111-1111-111111111111",
+        json={"review_status": "true_positive", "role": "affected_via_vendor"},
+    )
+
+    assert queued.status_code == 200
+    assert queued.json()["task_type"] == "campaign_correlate"
+    assert campaign_service.calls["enqueue"]["include_excluded"] is True
+    assert reviewed.status_code == 200
+    assert campaign_service.calls["campaign_review"]["campaign_name"] == "Canvas reviewed"
+    assert member.status_code == 200
+    assert campaign_service.calls["membership_review"]["review_status"] == "true_positive"
+    assert session.commits == 3

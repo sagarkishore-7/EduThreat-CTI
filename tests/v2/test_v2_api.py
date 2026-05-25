@@ -5,6 +5,7 @@ from fastapi.testclient import TestClient
 
 from src.edu_cti.api.cache import cache_invalidate
 from src.edu_cti.api.v2 import (
+    get_v2_campaign_service,
     get_v2_read_service,
     get_v2_research_metrics_service,
     get_v2_session,
@@ -22,6 +23,19 @@ def _build_client(read_service):
 
     app.dependency_overrides[get_v2_session] = _override_session
     app.dependency_overrides[get_v2_read_service] = lambda: read_service
+    return TestClient(app)
+
+
+def _build_campaign_client(campaign_service):
+    cache_invalidate("v2:")
+    app = FastAPI()
+    app.include_router(router)
+
+    def _override_session():
+        yield object()
+
+    app.dependency_overrides[get_v2_session] = _override_session
+    app.dependency_overrides[get_v2_campaign_service] = lambda: campaign_service
     return TestClient(app)
 
 
@@ -59,6 +73,99 @@ def test_v2_stats_endpoint_returns_dashboard_stats_payload():
 
     assert response.status_code == 200
     assert response.json()["total_incidents"] == 7
+
+
+def test_v2_campaigns_endpoint_returns_reviewed_campaigns_only():
+    class _CampaignService:
+        def __init__(self):
+            self.called = None
+
+        def list_campaigns(self, _session, **kwargs):
+            self.called = kwargs
+            return {
+                "items": [{"campaign_id": "campaign_canvas", "campaign_name": "Canvas 2026 education impact"}],
+                "meta": {"total": 1},
+            }
+
+    service = _CampaignService()
+    client = _build_campaign_client(service)
+
+    response = client.get(
+        "/api/v2/campaigns",
+        params={
+            "limit": 10,
+            "offset": 5,
+            "campaign_type": "shared_vendor_incident",
+            "vendor": "Instructure",
+            "platform": "Canvas",
+            "actor": "ShinyHunters",
+            "cve": "CVE-2026-0001",
+            "min_confidence": 0.7,
+            "q": "Canvas",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["items"][0]["campaign_id"] == "campaign_canvas"
+    assert service.called == {
+        "statuses": ("analyst_reviewed",),
+        "campaign_type": "shared_vendor_incident",
+        "vendor": "Instructure",
+        "platform": "Canvas",
+        "actor": "ShinyHunters",
+        "cve": "CVE-2026-0001",
+        "min_confidence": 0.7,
+        "q": "Canvas",
+        "limit": 10,
+        "offset": 5,
+    }
+
+
+def test_v2_campaign_detail_and_graph_endpoints_return_404_for_missing_campaign():
+    class _CampaignService:
+        def get_campaign_detail(self, _session, _campaign_id, **_kwargs):
+            return None
+
+        def get_campaign_graph(self, _session, _campaign_id, **_kwargs):
+            return None
+
+    client = _build_campaign_client(_CampaignService())
+
+    detail = client.get("/api/v2/campaigns/missing")
+    graph = client.get("/api/v2/campaigns/missing/graph")
+
+    assert detail.status_code == 404
+    assert detail.json()["detail"] == "Campaign not found"
+    assert graph.status_code == 404
+    assert graph.json()["detail"] == "Campaign not found"
+
+
+def test_v2_campaign_graph_endpoint_returns_graph_payload():
+    class _CampaignService:
+        def __init__(self):
+            self.called = None
+
+        def get_campaign_graph(self, _session, campaign_id, **kwargs):
+            self.called = {"campaign_id": campaign_id, **kwargs}
+            return {
+                "campaign": {"campaign_id": campaign_id},
+                "nodes": [{"id": "campaign:campaign_canvas", "type": "campaign"}],
+                "edges": [],
+                "meta": {"returned_members": 0},
+            }
+
+    service = _CampaignService()
+    client = _build_campaign_client(service)
+
+    response = client.get("/api/v2/campaigns/campaign_canvas/graph", params={"member_limit": 25})
+
+    assert response.status_code == 200
+    assert response.json()["nodes"][0]["type"] == "campaign"
+    assert service.called == {
+        "campaign_id": "campaign_canvas",
+        "statuses": ("analyst_reviewed",),
+        "member_limit": 25,
+    }
 
 
 def test_v2_incidents_endpoint_returns_items_and_meta():

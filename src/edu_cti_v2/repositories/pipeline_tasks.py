@@ -57,6 +57,7 @@ class PipelineTaskRepository:
                     ),
                 )
             )
+            .where(PipelineTask.attempt_count < PipelineTask.max_attempts)
             .order_by(PipelineTask.priority.desc(), PipelineTask.created_at.asc())
             .limit(limit)
             .with_for_update(skip_locked=True)
@@ -221,11 +222,15 @@ class PipelineTaskRepository:
         stmt = self.build_expired_leases_stmt(now=now, limit=limit)
         tasks = list(session.execute(stmt).scalars().all())
         for task in tasks:
-            task.status = "queued"
             task.lease_owner = None
             task.lease_token = None
             task.lease_expires_at = None
-            task.available_at = now
+            if task.attempt_count >= task.max_attempts:
+                task.status = "dead_letter"
+                task.error = task.error or "Task lease expired after max attempts."
+            else:
+                task.status = "queued"
+                task.available_at = now
             session.add(task)
         return len(tasks)
 

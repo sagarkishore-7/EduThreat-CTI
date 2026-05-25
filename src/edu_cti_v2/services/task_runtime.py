@@ -10,11 +10,14 @@ from sqlalchemy.orm import Session
 from src.edu_cti_v2.models import PipelineTask
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceIncidentRepository
 from src.edu_cti_v2.services.analytics import V2AnalyticsRefreshService
+from src.edu_cti_v2.services.campaigns import V2CampaignService
 from src.edu_cti_v2.services.canonicalization import V2CanonicalizationService
 from src.edu_cti_v2.services.enrichment import V2EnrichmentService
 from src.edu_cti_v2.services.fetching import V2FetchService
 from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 from src.edu_cti_v2.services.resolution import V2ResolveUrlService
+
+MEMORY_HEAVY_TASK_TYPES = ("enrich_source", "reenrich")
 
 DEFAULT_TASK_LEASE_ORDER = (
     "orchestrate_plan",
@@ -23,8 +26,30 @@ DEFAULT_TASK_LEASE_ORDER = (
     "canonicalize",
     "fetch_article",
     "refresh_analytics",
+    "campaign_correlate",
     "resolve_url",
 )
+
+
+def _env_int(name: str, default: int) -> int:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return default
+    try:
+        return int(value)
+    except ValueError:
+        return default
+
+
+def _default_max_active_enrich_tasks() -> int:
+    configured = os.environ.get("EDU_CTI_V2_MAX_ACTIVE_ENRICH_TASKS")
+    if configured is not None and configured.strip():
+        return _env_int("EDU_CTI_V2_MAX_ACTIVE_ENRICH_TASKS", 0)
+    # Railway hobby workers are memory-constrained; avoid five concurrent
+    # GLiNER/LLM enrichment jobs when a high generic worker count is configured.
+    if os.environ.get("RAILWAY_ENVIRONMENT"):
+        return 2
+    return 0
 
 
 class V2TaskRuntime:
@@ -40,8 +65,10 @@ class V2TaskRuntime:
         enrichment_service: Optional[V2EnrichmentService] = None,
         canonicalization_service: Optional[V2CanonicalizationService] = None,
         analytics_refresh_service: Optional[V2AnalyticsRefreshService] = None,
+        campaign_service: Optional[V2CampaignService] = None,
         orchestration_service: Optional[V2OrchestrationService] = None,
         max_fetch_backlog: Optional[int] = None,
+        max_active_enrich_tasks: Optional[int] = None,
     ) -> None:
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
         self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
@@ -52,10 +79,26 @@ class V2TaskRuntime:
         self.enrichment_service = enrichment_service
         self.canonicalization_service = canonicalization_service
         self.analytics_refresh_service = analytics_refresh_service
+        self.campaign_service = campaign_service
         self.orchestration_service = orchestration_service
         self.max_fetch_backlog = max_fetch_backlog if max_fetch_backlog is not None else int(
             os.environ.get("EDU_CTI_V2_MAX_FETCH_BACKLOG", "600")
         )
+        self.max_active_enrich_tasks = (
+            max_active_enrich_tasks
+            if max_active_enrich_tasks is not None
+            else _default_max_active_enrich_tasks()
+        )
+
+    def _enrich_concurrency_full(self, session: Session) -> bool:
+        if self.max_active_enrich_tasks <= 0:
+            return False
+        active = self.pipeline_task_repository.count_active(
+            session,
+            statuses=("leased",),
+            task_types=MEMORY_HEAVY_TASK_TYPES,
+        )
+        return active >= self.max_active_enrich_tasks
 
     def _lease_next_task(
         self,
@@ -67,6 +110,8 @@ class V2TaskRuntime:
         exclude_task_types: Optional[Sequence[str]] = None,
     ):
         if task_type:
+            if task_type in MEMORY_HEAVY_TASK_TYPES and self._enrich_concurrency_full(session):
+                return None
             if exclude_task_types and task_type in set(exclude_task_types):
                 return None
             if task_type == "resolve_url" and self.max_fetch_backlog > 0:
@@ -91,6 +136,8 @@ class V2TaskRuntime:
         # resolution during large historical runs.
         for candidate_type in DEFAULT_TASK_LEASE_ORDER:
             if exclude_task_types and candidate_type in set(exclude_task_types):
+                continue
+            if candidate_type in MEMORY_HEAVY_TASK_TYPES and self._enrich_concurrency_full(session):
                 continue
             leased = self.pipeline_task_repository.lease_batch(
                 session,
@@ -217,6 +264,21 @@ class V2TaskRuntime:
                     session,
                     canonical_incident_id,
                 )
+            self.pipeline_task_repository.mark_completed(session, task, result)
+            return task
+
+        if task.task_type == "campaign_correlate":
+            campaign_service = self.campaign_service or V2CampaignService(
+                pipeline_task_repository=self.pipeline_task_repository,
+            )
+            self.campaign_service = campaign_service
+            payload = task.payload if isinstance(task.payload, dict) else {}
+            result = campaign_service.run_correlation(
+                session,
+                include_excluded=bool(payload.get("include_excluded", True)),
+                limit=payload.get("limit"),
+                correlation_version=payload.get("correlation_version") or "campaign_corr_v1",
+            )
             self.pipeline_task_repository.mark_completed(session, task, result)
             return task
 

@@ -297,6 +297,68 @@ def test_resolve_url_service_skips_blocked_discovery_hosts():
     task_repo.enqueue.assert_called_once()
 
 
+def test_resolve_url_service_creates_structured_document_for_leak_site_api_source():
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    article_repo = Mock()
+    article_repo.get_selected_document.return_value = None
+    service = V2ResolveUrlService(
+        pipeline_task_repository=task_repo,
+        article_repository=article_repo,
+        article_discovery=lambda payload: [],
+    )
+    session = Mock()
+    incident = _source_incident(with_fetchable_url=False)
+    incident.source_name = "ransomwarelive"
+    incident.source_group = "api"
+    incident.raw_title = "Minneapolis Public Schools"
+    incident.raw_institution_name = "Minneapolis Public Schools"
+    incident.raw_institution_type = "School"
+    incident.raw_country = "US"
+    incident.raw_attack_hint = "ransomware"
+    incident.raw_threat_actor = "Medusa"
+    incident.raw_payload = {
+        "raw_source_payload": {
+            "activity": "Education",
+            "description": "Threat actor leak-site claim for Minneapolis Public Schools.",
+            "website": "mpls.k12.mn.us",
+        }
+    }
+    incident.urls = [
+        SourceIncidentUrl(
+            id=uuid4(),
+            source_incident_id=incident.id,
+            url="http://exampleonionabcd.onion/detail?id=abc",
+            normalized_url="http://exampleonionabcd.onion/detail?id=abc",
+            resolved_url="http://exampleonionabcd.onion/detail?id=abc",
+            url_kind="leak_site",
+            is_wrapper=False,
+            is_primary_from_source=False,
+            is_resolved_primary=False,
+            created_at=incident.collected_at,
+        )
+    ]
+
+    result = service.resolve_source_incident_urls(session, incident)
+
+    assert result == {
+        "urls_discovered": 0,
+        "urls_added": 0,
+        "fetch_tasks_enqueued": 0,
+        "structured_documents_created": 1,
+        "enrich_tasks_enqueued": 1,
+    }
+    article_repo.add_document.assert_called_once()
+    document = article_repo.add_document.call_args.args[1]
+    assert document.is_selected_for_enrichment is True
+    assert document.document_metadata["fetch_tier"] == "structured_source"
+    assert "Minneapolis Public Schools" in document.content_text
+    task_repo.enqueue.assert_called_once()
+    task = task_repo.enqueue.call_args.args[1]
+    assert task.task_type == "enrich_source"
+    assert task.payload["trigger"] == "structured_source_evidence"
+
+
 def test_discovery_payload_drops_placeholder_institution_name_and_uses_victim_name():
     incident = _source_incident(with_fetchable_url=False)
     incident.raw_institution_name = "?"

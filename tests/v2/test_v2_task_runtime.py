@@ -308,6 +308,75 @@ def test_task_runtime_still_leases_resolve_when_fetch_backlog_is_below_threshold
     resolve_service.resolve_source_incident_urls.assert_called_once_with(session, source_incident)
 
 
+def test_task_runtime_pauses_enrich_when_active_enrich_limit_is_reached():
+    task_repo = Mock()
+    source_repo = Mock()
+    enrich_service = Mock()
+
+    task_repo.count_active.return_value = 2
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        enrichment_service=enrich_service,
+        max_active_enrich_tasks=2,
+    )
+    session = Mock()
+
+    processed = runtime.process_next_task(
+        session,
+        worker_id="enrich-worker-1",
+        task_type="enrich_source",
+    )
+
+    assert processed is None
+    task_repo.count_active.assert_called_once_with(
+        session,
+        statuses=("leased",),
+        task_types=("enrich_source", "reenrich"),
+    )
+    task_repo.lease_batch.assert_not_called()
+    enrich_service.enrich_source_incident.assert_not_called()
+
+
+def test_task_runtime_skips_memory_heavy_tasks_when_unspecified_and_limit_is_reached():
+    task_repo = Mock()
+    source_repo = Mock()
+    canonicalization_service = Mock()
+
+    canonical_task = SimpleNamespace(id=uuid4(), task_type="canonicalize", target_id=uuid4())
+    source_incident = SimpleNamespace(id=canonical_task.target_id)
+    source_repo.get_by_id.return_value = source_incident
+    canonicalization_service.canonicalize_source_incident.return_value = {"canonicalized": True}
+    task_repo.count_active.return_value = 2
+
+    def _lease_batch(_session, *, worker_id, task_type, exclude_task_types=None, limit, lease_seconds):
+        if task_type in {"reenrich", "enrich_source"}:
+            raise AssertionError("memory-heavy task should not be leased when cap is full")
+        if task_type == "canonicalize":
+            return [canonical_task]
+        return []
+
+    task_repo.lease_batch.side_effect = _lease_batch
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        canonicalization_service=canonicalization_service,
+        max_active_enrich_tasks=2,
+    )
+    session = Mock()
+    session.get.return_value = canonical_task
+
+    processed = runtime.process_next_task(session, worker_id="worker-1")
+
+    assert processed is canonical_task
+    canonicalization_service.canonicalize_source_incident.assert_called_once_with(
+        session,
+        source_incident.id,
+    )
+
+
 def test_task_runtime_processes_enrich_source_task_and_marks_complete():
     task_repo = Mock()
     source_repo = Mock()

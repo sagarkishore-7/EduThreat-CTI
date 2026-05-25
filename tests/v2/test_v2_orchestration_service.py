@@ -138,6 +138,8 @@ def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan()
     }
     data_quality_service = Mock()
     data_quality_service.run_sweep.return_value = {"requeued_for_reenrichment": 2}
+    campaign_service = Mock()
+    campaign_service.run_correlation.return_value = {"campaign_candidates": 2}
     research_metrics_service = Mock()
     research_metrics_service.capture_snapshot.return_value = {"snapshot_key": "global"}
 
@@ -153,6 +155,7 @@ def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan()
         collection_service=collection_service,
         operations_service=operations_service,
         data_quality_service=data_quality_service,
+        campaign_service=campaign_service,
         research_metrics_service=research_metrics_service,
         pipeline_run_repository=run_repo,
     )
@@ -163,11 +166,13 @@ def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan()
     assert result["reenrich_worker_result"]["run_id"] == "reenrich-1"
     assert result["consistency_sweep_result"]["queued_tasks"] == 3
     assert result["consistency_worker_result"]["run_id"] == "consistency-1"
+    assert result["campaign_correlation_result"]["campaign_candidates"] == 2
     assert operations_service.run_worker_batch.call_count == 3
     second_call = operations_service.run_worker_batch.call_args_list[1]
     assert second_call.kwargs["task_type"] == "reenrich"
     third_call = operations_service.run_worker_batch.call_args_list[2]
     assert third_call.kwargs["task_type"] == "canonicalize"
+    campaign_service.run_correlation.assert_called_once()
     research_metrics_service.capture_snapshot.assert_called_once()
 
 

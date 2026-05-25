@@ -12,6 +12,7 @@ from src.edu_cti_v2.db import create_session_factory
 from src.edu_cti_v2.models import PipelineRun, PipelineTask
 from src.edu_cti_v2.repositories import PipelineRunRepository, PipelineTaskRepository
 from src.edu_cti_v2.services.collection import V2CollectionService
+from src.edu_cti_v2.services.campaigns import V2CampaignService
 from src.edu_cti_v2.services.data_quality import V2DataQualityService
 from src.edu_cti_v2.services.research_metrics import V2ResearchMetricsService
 
@@ -33,6 +34,7 @@ class V2PlanDefinition:
     run_canonical_consistency_sweep: bool = False
     canonical_consistency_limit: int = 100
     canonical_consistency_scan_limit: int = 1000
+    run_campaign_correlation: bool = False
     capture_research_metrics: bool = False
 
 
@@ -55,6 +57,7 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         run_canonical_consistency_sweep=True,
         canonical_consistency_limit=250,
         canonical_consistency_scan_limit=2000,
+        run_campaign_correlation=True,
         capture_research_metrics=True,
     ),
     "historical_max_coverage": V2PlanDefinition(
@@ -75,6 +78,7 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         run_canonical_consistency_sweep=True,
         canonical_consistency_limit=250,
         canonical_consistency_scan_limit=2000,
+        run_campaign_correlation=True,
         capture_research_metrics=True,
     ),
     "incremental_refresh": V2PlanDefinition(
@@ -137,6 +141,7 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         run_canonical_consistency_sweep=True,
         canonical_consistency_limit=150,
         canonical_consistency_scan_limit=1000,
+        run_campaign_correlation=True,
         capture_research_metrics=True,
     ),
 }
@@ -152,6 +157,7 @@ class V2OrchestrationService:
         collection_service: Optional[V2CollectionService] = None,
         operations_service: Optional["V2OperationsService"] = None,
         data_quality_service: Optional[V2DataQualityService] = None,
+        campaign_service: Optional[V2CampaignService] = None,
         research_metrics_service: Optional[V2ResearchMetricsService] = None,
         pipeline_run_repository: Optional[PipelineRunRepository] = None,
         pipeline_task_repository: Optional[PipelineTaskRepository] = None,
@@ -164,6 +170,7 @@ class V2OrchestrationService:
             operations_service = V2OperationsService(session_factory=self.session_factory)
         self.operations_service = operations_service
         self.data_quality_service = data_quality_service or V2DataQualityService(session_factory=self.session_factory)
+        self.campaign_service = campaign_service or V2CampaignService()
         self.research_metrics_service = research_metrics_service or V2ResearchMetricsService()
         self.pipeline_run_repository = pipeline_run_repository or PipelineRunRepository()
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
@@ -183,6 +190,7 @@ class V2OrchestrationService:
                 "run_canonical_consistency_sweep": plan.run_canonical_consistency_sweep,
                 "canonical_consistency_limit": plan.canonical_consistency_limit,
                 "canonical_consistency_scan_limit": plan.canonical_consistency_scan_limit,
+                "run_campaign_correlation": plan.run_campaign_correlation,
                 "capture_research_metrics": plan.capture_research_metrics,
             }
             for plan in _PLAN_DEFINITIONS.values()
@@ -235,6 +243,7 @@ class V2OrchestrationService:
                     "run_canonical_consistency_sweep": plan.run_canonical_consistency_sweep,
                     "canonical_consistency_limit": plan.canonical_consistency_limit,
                     "canonical_consistency_scan_limit": plan.canonical_consistency_scan_limit,
+                    "run_campaign_correlation": plan.run_campaign_correlation,
                     "capture_research_metrics": plan.capture_research_metrics,
                 },
                 result={},
@@ -260,6 +269,7 @@ class V2OrchestrationService:
                     "run_canonical_consistency_sweep": plan.run_canonical_consistency_sweep,
                     "canonical_consistency_limit": plan.canonical_consistency_limit,
                     "canonical_consistency_scan_limit": plan.canonical_consistency_scan_limit,
+                    "run_campaign_correlation": plan.run_campaign_correlation,
                     "capture_research_metrics": plan.capture_research_metrics,
                 },
                 result={},
@@ -335,6 +345,7 @@ class V2OrchestrationService:
             reenrich_worker_result = None
             consistency_sweep_result = None
             consistency_worker_result = None
+            campaign_correlation_result = None
             research_metrics_result = None
 
             if should_drain:
@@ -354,6 +365,8 @@ class V2OrchestrationService:
                 if consistency_sweep_result.get("queued_tasks") and should_drain:
                     consistency_worker_result = self._wait_for_queue_to_drain(exclude_task_id=task.id)
             with self.session_factory() as session:
+                if plan.run_campaign_correlation:
+                    campaign_correlation_result = self.campaign_service.run_correlation(session)
                 if plan.capture_research_metrics:
                     research_metrics_result = self.research_metrics_service.capture_snapshot(
                         session,
@@ -376,6 +389,7 @@ class V2OrchestrationService:
                     "reenrich_worker_result": reenrich_worker_result,
                     "consistency_sweep_result": consistency_sweep_result,
                     "consistency_worker_result": consistency_worker_result,
+                    "campaign_correlation_result": campaign_correlation_result,
                     "research_metrics_result": research_metrics_result,
                 }
                 persisted_run = self.pipeline_run_repository.get_by_id(session, run_id)
@@ -449,6 +463,7 @@ class V2OrchestrationService:
             reenrich_worker_result = None
             consistency_sweep_result = None
             consistency_worker_result = None
+            campaign_correlation_result = None
             research_metrics_result = None
             if should_drain:
                 worker_result = self.operations_service.run_worker_batch(
@@ -482,6 +497,8 @@ class V2OrchestrationService:
                         stop_when_idle=True,
                     )
             with self.session_factory() as session:
+                if plan.run_campaign_correlation:
+                    campaign_correlation_result = self.campaign_service.run_correlation(session)
                 if plan.capture_research_metrics:
                     research_metrics_result = self.research_metrics_service.capture_snapshot(
                         session,
@@ -502,6 +519,7 @@ class V2OrchestrationService:
                     "reenrich_worker_result": reenrich_worker_result,
                     "consistency_sweep_result": consistency_sweep_result,
                     "consistency_worker_result": consistency_worker_result,
+                    "campaign_correlation_result": campaign_correlation_result,
                     "research_metrics_result": research_metrics_result,
                 }
                 persisted_run = self.pipeline_run_repository.get_by_id(session, run_id)

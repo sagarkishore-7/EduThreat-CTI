@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session
 from src.edu_cti_v2.models import (
     AnalyticsRefreshState,
     ArticleDocument,
+    ArticleFetchAttempt,
     CanonicalEnrichment,
     CanonicalIncident,
     PipelineRun,
@@ -164,6 +165,21 @@ class V2OperationsService:
     def get_runtime_status(self, session: Session, *, recent_limit: int = 10) -> dict[str, Any]:
         source_incident_count = int(session.execute(select(func.count(SourceIncident.id))).scalar_one() or 0)
         article_document_count = int(session.execute(select(func.count(ArticleDocument.id))).scalar_one() or 0)
+        selected_article_source_count = int(
+            session.execute(
+                select(func.count(func.distinct(ArticleDocument.source_incident_id))).where(
+                    ArticleDocument.is_selected_for_enrichment.is_(True)
+                )
+            ).scalar_one()
+            or 0
+        )
+        article_fetch_attempt_count = int(session.execute(select(func.count(ArticleFetchAttempt.id))).scalar_one() or 0)
+        successful_article_fetch_attempt_count = int(
+            session.execute(
+                select(func.count(ArticleFetchAttempt.id)).where(ArticleFetchAttempt.success.is_(True))
+            ).scalar_one()
+            or 0
+        )
         source_enrichment_count = int(session.execute(select(func.count(SourceEnrichment.id))).scalar_one() or 0)
         canonical_incident_count = int(session.execute(select(func.count(CanonicalIncident.id))).scalar_one() or 0)
         dashboard_snapshot = self.analytics_refresh_repository.get_by_key(session, "dashboard:global")
@@ -179,6 +195,9 @@ class V2OperationsService:
             "counts": {
                 "source_incidents": source_incident_count,
                 "article_documents": article_document_count,
+                "selected_article_sources": selected_article_source_count,
+                "article_fetch_attempts": article_fetch_attempt_count,
+                "successful_article_fetch_attempts": successful_article_fetch_attempt_count,
                 "source_enrichments": source_enrichment_count,
                 "canonical_incidents": canonical_incident_count,
             },

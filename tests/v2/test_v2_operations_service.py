@@ -71,7 +71,7 @@ def test_operations_service_runtime_status_uses_repo_and_count_queries():
     analytics_repo = Mock()
     analytics_repo.get_by_key.return_value = SimpleNamespace(last_refreshed_at=None, needs_refresh=False)
 
-    session = _FakeSession(execute_values=[12, 7, 5, 4])
+    session = _FakeSession(execute_values=[12, 7, 6, 20, 15, 5, 4])
     service = V2OperationsService(
         pipeline_task_repository=task_repo,
         pipeline_run_repository=run_repo,
@@ -81,6 +81,10 @@ def test_operations_service_runtime_status_uses_repo_and_count_queries():
     payload = service.get_runtime_status(session)
 
     assert payload["counts"]["source_incidents"] == 12
+    assert payload["counts"]["article_documents"] == 7
+    assert payload["counts"]["selected_article_sources"] == 6
+    assert payload["counts"]["article_fetch_attempts"] == 20
+    assert payload["counts"]["successful_article_fetch_attempts"] == 15
     assert payload["counts"]["canonical_incidents"] == 4
     assert payload["queue_health"]["expired_leases"] == 2
     assert payload["task_summary"][0]["task_count"] == 3

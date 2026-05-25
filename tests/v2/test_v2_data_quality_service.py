@@ -150,6 +150,7 @@ def test_data_quality_service_allows_curated_dates_after_listing_date():
     source_repo = Mock()
     source_repo.get_by_id.return_value = source_incident
     task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
     session = Mock()
 
     service = V2DataQualityService(
@@ -174,6 +175,7 @@ def test_data_quality_service_flags_manual_review_after_max_attempts():
     source_repo = Mock()
     source_repo.get_by_id.return_value = source_incident
     task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
     session = Mock()
 
     service = V2DataQualityService(
@@ -185,9 +187,14 @@ def test_data_quality_service_flags_manual_review_after_max_attempts():
     result = service.sweep_invalid_source_enrichments(session)
 
     assert result["flagged_for_manual_review"] == 1
+    assert result["requeued_for_canonical_cleanup"] == 1
     assert enrichment.manual_review_required is True
     assert enrichment.manual_review_reason
-    task_repo.enqueue.assert_not_called()
+    task_repo.enqueue.assert_called_once()
+    queued_task = task_repo.enqueue.call_args.args[1]
+    assert queued_task.task_type == "canonicalize"
+    assert queued_task.payload["trigger"] == "manual_review_quality_sweep"
+    assert queued_task.payload["manual_review_reason"] == enrichment.manual_review_reason
 
 
 def test_data_quality_service_flags_generic_placeholder_identity_for_reenrich():

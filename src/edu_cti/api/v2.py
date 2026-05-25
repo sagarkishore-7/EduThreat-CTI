@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from src.edu_cti.api.cache import cache_get, cache_set
 from src.edu_cti.api.reports import generate_cti_report
 from src.edu_cti_v2.db import create_session_factory
-from src.edu_cti_v2.services import V2CanonicalReadService, V2ResearchMetricsService
+from src.edu_cti_v2.services import V2CampaignService, V2CanonicalReadService, V2ResearchMetricsService
 
 router = APIRouter(prefix="/api/v2", tags=["V2"])
 _PUBLIC_READ_TTL_SECONDS = 30
@@ -36,6 +36,10 @@ def get_v2_read_service() -> V2CanonicalReadService:
 
 def get_v2_research_metrics_service() -> V2ResearchMetricsService:
     return V2ResearchMetricsService()
+
+
+def get_v2_campaign_service() -> V2CampaignService:
+    return V2CampaignService()
 
 
 def _status_cache_fragment(statuses: tuple[str, ...]) -> str:
@@ -89,6 +93,76 @@ async def get_v2_stats(
             cache_set(cache_key, payload)
             return payload["stats"]
     return read_service.get_dashboard_stats(session)
+
+
+@router.get("/campaigns")
+async def list_v2_campaigns(
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0, le=100000),
+    campaign_type: Optional[str] = Query(None),
+    vendor: Optional[str] = Query(None),
+    platform: Optional[str] = Query(None),
+    actor: Optional[str] = Query(None),
+    cve: Optional[str] = Query(None),
+    min_confidence: Optional[float] = Query(None, ge=0.0, le=1.0),
+    q: Optional[str] = Query(None, min_length=1, max_length=200),
+    session: Session = Depends(get_v2_session),
+    campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
+):
+    """List analyst-reviewed campaign groupings for public/dashboard reads."""
+    return campaign_service.list_campaigns(
+        session,
+        statuses=("analyst_reviewed",),
+        campaign_type=campaign_type,
+        vendor=vendor,
+        platform=platform,
+        actor=actor,
+        cve=cve,
+        min_confidence=min_confidence,
+        q=q,
+        limit=limit,
+        offset=offset,
+    )
+
+
+@router.get("/campaigns/{campaign_id}")
+async def get_v2_campaign_detail(
+    campaign_id: str,
+    member_limit: int = Query(500, ge=1, le=2000),
+    evidence_limit: int = Query(1000, ge=1, le=5000),
+    session: Session = Depends(get_v2_session),
+    campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
+):
+    """Return one analyst-reviewed campaign with members and evidence."""
+    detail = campaign_service.get_campaign_detail(
+        session,
+        campaign_id,
+        statuses=("analyst_reviewed",),
+        member_limit=member_limit,
+        evidence_limit=evidence_limit,
+    )
+    if detail is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return detail
+
+
+@router.get("/campaigns/{campaign_id}/graph")
+async def get_v2_campaign_graph(
+    campaign_id: str,
+    member_limit: int = Query(250, ge=1, le=1000),
+    session: Session = Depends(get_v2_session),
+    campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
+):
+    """Return graph-ready nodes and edges for one analyst-reviewed campaign."""
+    graph = campaign_service.get_campaign_graph(
+        session,
+        campaign_id,
+        statuses=("analyst_reviewed",),
+        member_limit=member_limit,
+    )
+    if graph is None:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    return graph
 
 
 @router.get("/incidents")

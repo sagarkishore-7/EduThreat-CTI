@@ -192,6 +192,8 @@ class V2DataQualityService:
         candidates = self.source_enrichment_repository.list_for_quality_sweep(session, limit=limit)
         requeued = 0
         already_queued = 0
+        canonicalize_requeued = 0
+        canonicalize_already_queued = 0
         flagged = 0
         cleared = 0
         skipped_missing = 0
@@ -228,6 +230,37 @@ class V2DataQualityService:
                 enrichment.manual_review_reason = reason
                 self.source_enrichment_repository.add(session, enrichment)
                 flagged += 1
+                existing_canonicalize_task = self.pipeline_task_repository.get_active_for_target(
+                    session,
+                    task_type="canonicalize",
+                    target_table="source_incidents",
+                    target_id=source_incident.id,
+                )
+                if existing_canonicalize_task is not None:
+                    canonicalize_already_queued += 1
+                    continue
+                self.pipeline_task_repository.enqueue(
+                    session,
+                    PipelineTask(
+                        run_id=None,
+                        task_type="canonicalize",
+                        target_table="source_incidents",
+                        target_id=source_incident.id,
+                        status="queued",
+                        priority=115,
+                        payload={
+                            "source_incident_id": str(source_incident.id),
+                            "source_name": source_incident.source_name,
+                            "trigger": "manual_review_quality_sweep",
+                            "manual_review_reason": reason,
+                        },
+                        result={},
+                        available_at=now,
+                        attempt_count=0,
+                        max_attempts=5,
+                    ),
+                )
+                canonicalize_requeued += 1
                 continue
 
             enrichment.manual_review_required = False
@@ -271,6 +304,8 @@ class V2DataQualityService:
             "scanned": len(candidates),
             "requeued_for_reenrichment": requeued,
             "already_queued": already_queued,
+            "requeued_for_canonical_cleanup": canonicalize_requeued,
+            "canonical_cleanup_already_queued": canonicalize_already_queued,
             "flagged_for_manual_review": flagged,
             "cleared_clean_state": cleared,
             "skipped_missing_source_incidents": skipped_missing,

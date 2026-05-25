@@ -124,6 +124,86 @@ GOOGLE_NEWS_QUERIES = GOOGLE_NEWS_RSS_QUERIES
 # Delay between requests to be respectful
 REQUEST_DELAY = 2.0
 
+_EDUCATION_SIGNAL_RE = re.compile(
+    r"\b("
+    r"university|universities|college|school|district|campus|student|faculty|education|"
+    r"k-12|academy|academic|universidad|colegio|escuela|estudiante|"
+    r"universit[eé]|[eé]cole|[eé]tudiant|universit[aà]|scuola|"
+    r"universidade|faculdade|escola|universit[aä]t|hochschule|schule|"
+    r"okul|üniversite|uniwersytet|szkoła|"
+    r"大学|學校|学校|學生|学生|教育|대학교|학교|학생|교육|"
+    r"جامعة|مدرسة|طالب|تعليم|университет|школа|студент|образован"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_INCIDENT_SIGNAL_RE = re.compile(
+    r"\b("
+    r"ransomware|malware|phishing|breach|leak|leaked|exposed|stolen|"
+    r"hack|hacked|hacker|hacking|cyberattack|cyber attack|cyber-attack|"
+    r"data breach|data leak|data exposure|compromis(?:e|ed)|intrusion|"
+    r"unauthorized access|deface(?:d|ment)?|extortion|outage|disrupt(?:ed|ion)?|"
+    r"denial of service|ddos|breach notification|security incident|"
+    r"ciberataque|ataque cibern[eé]tico|hackean|hackeado|filtraci[oó]n|"
+    r"cyberattaque|pirat(?:age|é)|fuite de donn[ée]es|"
+    r"hacker-angriff|hackerangriff|cyberangriff|datenleck|"
+    r"violazione dati|ataque cibern[eé]tico|invas[aã]o hacker|"
+    r"サイバー攻撃|ランサムウェア|情報漏洩|勒索|攻擊|攻击|洩露|泄露|外洩|外泄|"
+    r"랜섬웨어|해킹|유출|공격|هجوم إلكتروني|اختراق|برامج فدية|تسريب|"
+    r"кибератак|взлом|утечк|шифровальщик"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_LOW_RELEVANCE_TOPIC_RE = re.compile(
+    r"\b("
+    r"course|courses|class|classes|certification|certificate|degree|major|minor|"
+    r"training|learners|masterclass|bootcamp|scholarship|admission|ranking|"
+    r"football|basketball|cricket|soccer|sports|coach|coaches|player|players|"
+    r"job|jobs|career|careers|salary|conference|webinar"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_STRONG_INSTITUTIONAL_INCIDENT_RE = re.compile(
+    r"\b("
+    r"ransomware|cyberattack|cyber attack|cyber-attack|data breach|breach notification|"
+    r"records? (?:exposed|stolen|leaked|affected)|unauthorized access|ddos|outage|"
+    r"security incident|compromised? (?:systems?|network|accounts?|data)"
+    r")\b",
+    re.IGNORECASE,
+)
+
+_PERSONAL_CRIME_NOISE_RE = re.compile(
+    r"\b("
+    r"coach|student|teacher|professor|man|woman|teen|suspect|former"
+    r")\b.{0,80}\b("
+    r"indicted|arrested|charged|jailed|sentenced|stalk(?:ed|ing)|harass(?:ed|ment)|"
+    r"hacking (?:accounts?|phones?|email)|telegram|intimate photos?"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def _looks_relevant_education_incident(*, title: str, description: str, query: str = "") -> bool:
+    """Filter broad Google News hits before they enter expensive fetch/enrich stages."""
+    item_text = " ".join(part.strip() for part in (title, description) if part).strip()
+    if not item_text:
+        return False
+
+    education_text = " ".join(part for part in (item_text, query) if part)
+    if not _EDUCATION_SIGNAL_RE.search(education_text):
+        return False
+    if not _INCIDENT_SIGNAL_RE.search(item_text):
+        return False
+
+    if _PERSONAL_CRIME_NOISE_RE.search(item_text) and not _STRONG_INSTITUTIONAL_INCIDENT_RE.search(item_text):
+        return False
+    if _LOW_RELEVANCE_TOPIC_RE.search(item_text) and not _STRONG_INSTITUTIONAL_INCIDENT_RE.search(item_text):
+        return False
+
+    return True
+
 
 def _build_google_news_url(
     query: str,
@@ -318,19 +398,29 @@ def build_googlenews_rss_incidents(
                 raw_link = item["link"]
 
                 link = raw_link
+                title = item["title"]
+                description = item.get("description", "")
+                source_name = item.get("source_name")
 
                 # Dedup by source-event id / Google wrapper, but do not persist the
                 # wrapper URL as an enrichment candidate. Phase 2 will discover a
                 # real article URL via SERP/title matching.
                 if link in seen_urls:
                     continue
+
+                if not _looks_relevant_education_incident(
+                    title=title,
+                    description=description,
+                    query=query,
+                ):
+                    logger.info(
+                        "Google News RSS: skipping low-relevance item title=%r query=%r",
+                        title[:120],
+                        query[:80],
+                    )
+                    continue
+
                 seen_urls.add(link)
-
-                title = item["title"]
-                description = item.get("description", "")
-                source_name = item.get("source_name")
-
-                total_matched += 1
 
                 # Parse date
                 pub_date = None
@@ -344,6 +434,8 @@ def build_googlenews_rss_incidents(
                             if parsed_pub_date.replace(tzinfo=None) < cutoff:
                                 continue
                         pub_date = parsed_pub_date.date().isoformat()
+
+                total_matched += 1
 
                 resolved_link = _resolve_google_news_article_url(link)
                 source_event_id = resolved_link or link
