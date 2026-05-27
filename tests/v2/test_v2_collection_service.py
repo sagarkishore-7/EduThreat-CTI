@@ -2,6 +2,10 @@ from types import SimpleNamespace
 from unittest.mock import Mock, patch
 from uuid import uuid4
 
+from src.edu_cti.core.discovery_policy import (
+    QUERY_SCOPED_HIGH_RECALL,
+    record_source_discovery_metrics,
+)
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti_v2.services.collection import V2CollectionService
 
@@ -90,6 +94,48 @@ def test_collection_service_collects_group_and_records_run():
     assert run_repo.add.called
     assert run_repo.mark_started.called
     assert run_repo.mark_finished.called
+
+
+def test_collection_service_exposes_source_discovery_policy_and_metrics():
+    dual_writer = Mock()
+    dual_writer.write_observation.side_effect = [uuid4()]
+    run_repo = Mock()
+    task_repo = Mock()
+    task_repo.count_active.return_value = 0
+    incidents = [_incident("googlenews_rss", "story-1")]
+
+    def _collector(*, sources, max_age_days, save_callback, incremental, include_paid):
+        record_source_discovery_metrics(
+            "googlenews_rss",
+            {
+                "rss_results_seen": 2,
+                "source_rows_created": 1,
+                "duplicates_skipped": 1,
+                "invalid_url_skipped": 0,
+                "out_of_window_skipped": 0,
+                "semantic_skipped": 0,
+            },
+        )
+        save_callback(incidents)
+        return {"googlenews_rss": incidents}
+
+    service = V2CollectionService(
+        session_factory=lambda: _FakeSessionContext(_FakeSession()),
+        dual_writer=dual_writer,
+        pipeline_run_repository=run_repo,
+        pipeline_task_repository=task_repo,
+    )
+
+    with patch.dict("src.edu_cti_v2.services.collection._COLLECTORS", {"rss": _collector}, clear=False):
+        result = service.collect_into_v2(
+            groups=["rss"],
+            sources=["googlenews_rss"],
+            persist_run=False,
+        )
+
+    assert result["source_discovery_policies"] == {"googlenews_rss": QUERY_SCOPED_HIGH_RECALL}
+    assert result["source_discovery_metrics"]["googlenews_rss"]["rss_results_seen"] == 2
+    assert result["source_discovery_metrics"]["googlenews_rss"]["semantic_skipped"] == 0
 
 
 def test_collection_service_uses_env_for_paid_rss_default(monkeypatch):

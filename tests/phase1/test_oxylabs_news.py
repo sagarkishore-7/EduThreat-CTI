@@ -1,4 +1,14 @@
+from src.edu_cti.core.discovery_policy import (
+    QUERY_SCOPED_HIGH_RECALL,
+    discovery_policy_for_source,
+    semantic_prefilter_allowed,
+)
 from src.edu_cti.sources.rss import oxylabs_news
+
+
+def test_oxylabs_news_policy_forbids_semantic_prefiltering():
+    assert discovery_policy_for_source("oxylabs_news") == QUERY_SCOPED_HIGH_RECALL
+    assert semantic_prefilter_allowed("oxylabs_news") is False
 
 
 def test_oxylabs_news_does_not_seed_institution_name_from_title(monkeypatch):
@@ -25,9 +35,10 @@ def test_oxylabs_news_does_not_seed_institution_name_from_title(monkeypatch):
     assert len(incidents) == 1
     assert incidents[0].institution_name == ""
     assert incidents[0].title == "Leiden University website down in cyberattack"
+    assert incidents[0].raw_source_payload["discovery_policy"] == QUERY_SCOPED_HIGH_RECALL
 
 
-def test_oxylabs_news_filters_generic_cyber_profile_results(monkeypatch):
+def test_oxylabs_news_keeps_broad_query_hits_for_llm_review(monkeypatch):
     class DummyOxylabsClient:
         def _is_configured(self):
             return True
@@ -51,4 +62,6 @@ def test_oxylabs_news_filters_generic_cyber_profile_results(monkeypatch):
 
     incidents = oxylabs_news.build_oxylabs_news_incidents(incremental=True, max_age_days=1)
 
-    assert incidents == []
+    assert len(incidents) == 1
+    assert incidents[0].title == "El guardián del ciberespacio"
+    assert incidents[0].all_urls == ["https://example.com/features/cyber-profile"]

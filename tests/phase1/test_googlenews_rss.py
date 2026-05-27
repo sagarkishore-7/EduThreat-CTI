@@ -4,7 +4,13 @@ from src.edu_cti.core.deduplication import is_google_news_wrapper_url
 from src.edu_cti.core.config import (
     GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG,
     GOOGLE_NEWS_RSS_QUERIES,
+    NEWS_SEARCH_SITE_RESTRICTED_QUERIES,
     NEWS_SEARCH_QUERIES_ALL,
+)
+from src.edu_cti.core.discovery_policy import (
+    QUERY_SCOPED_HIGH_RECALL,
+    discovery_policy_for_source,
+    semantic_prefilter_allowed,
 )
 from src.edu_cti.sources.rss import googlenews_rss
 
@@ -22,7 +28,15 @@ def test_google_news_rss_expands_all_discovery_queries_across_locales():
     assert ("universität cyberangriff", "de", "CH") in tuple_set
     assert ("大學 網路攻擊", "zh", "CN") in tuple_set
     assert ("جامعة هجوم إلكتروني", "ar", "EG") in tuple_set
+    assert NEWS_SEARCH_SITE_RESTRICTED_QUERIES
+    assert ("site:therecord.media school data breach", "en", "US") in tuple_set
+    assert ("site:therecord.media school data breach", "en", "GB") not in tuple_set
     assert all(country for countries in GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG.values() for country in countries)
+
+
+def test_google_news_policy_forbids_semantic_prefiltering():
+    assert discovery_policy_for_source("googlenews_rss") == QUERY_SCOPED_HIGH_RECALL
+    assert semantic_prefilter_allowed("googlenews_rss") is False
 
 
 def test_clean_google_news_description_strips_feed_html():
@@ -40,37 +54,6 @@ def test_clean_google_news_description_strips_feed_html():
     assert "news.google.com/rss/articles" not in cleaned
     assert "Georgia Tech Security Breach Exposes 1.3 Million Records" in cleaned
     assert "Security Magazine" in cleaned
-
-
-def test_google_news_relevance_filter_keeps_institutional_incidents():
-    assert googlenews_rss._looks_relevant_education_incident(
-        title="Canvas outage impacts universities after cyberattack",
-        description="Multiple schools reported disrupted access to student systems.",
-        query="university cyberattack",
-    )
-    assert googlenews_rss._looks_relevant_education_incident(
-        title="School district ransomware attack exposes student records",
-        description="Officials said the security incident affected staff and students.",
-        query="school district ransomware",
-    )
-
-
-def test_google_news_relevance_filter_skips_common_noise():
-    assert not googlenews_rss._looks_relevant_education_incident(
-        title="Top universities launch cybersecurity courses for online learners",
-        description="The program offers certificates and training for students.",
-        query="university cyberattack",
-    )
-    assert not googlenews_rss._looks_relevant_education_incident(
-        title="College football security plans announced before rivalry game",
-        description="Police discussed campus traffic and stadium safety.",
-        query="college cyberattack",
-    )
-    assert not googlenews_rss._looks_relevant_education_incident(
-        title="Former University of Michigan football coach indicted for hacking accounts",
-        description="Prosecutors described a personal account-hacking case.",
-        query="university hacked",
-    )
 
 
 def test_google_news_wrapper_detector_handles_all_feed_paths():
@@ -152,7 +135,7 @@ def test_build_googlenews_rss_incidents_serializes_pub_date(monkeypatch):
     assert isinstance(saved[0].incident_date, str)
 
 
-def test_build_googlenews_rss_incidents_filters_low_relevance_items(monkeypatch):
+def test_build_googlenews_rss_incidents_keeps_broad_query_hits_for_llm_review(monkeypatch):
     monkeypatch.setattr(
         googlenews_rss,
         "GOOGLE_NEWS_QUERIES",
@@ -176,6 +159,20 @@ def test_build_googlenews_rss_incidents_filters_low_relevance_items(monkeypatch)
                 "description": "Online learners can enroll in the training program.",
                 "source_name": "Example News",
             },
+            {
+                "title": "Hackers demanded nearly half-million dollars and University of Utah paid up",
+                "link": "https://news.google.com/articles/utah",
+                "pub_date": "Wed, 15 Apr 2026 16:23:06 +0000",
+                "description": "School says payment followed an incident.",
+                "source_name": "Example News",
+            },
+            {
+                "title": "UCSF pays hackers $1.1M to regain access to medical school servers",
+                "link": "https://news.google.com/articles/ucsf",
+                "pub_date": "Wed, 15 Apr 2026 16:23:06 +0000",
+                "description": "",
+                "source_name": "Example News",
+            },
         ],
     )
     monkeypatch.setattr(
@@ -192,10 +189,16 @@ def test_build_googlenews_rss_incidents_filters_low_relevance_items(monkeypatch)
         save_callback=saved.extend,
     )
 
-    assert len(incidents) == 1
-    assert len(saved) == 1
+    assert len(incidents) == 4
+    assert len(saved) == 4
     assert incidents[0].title == "University ransomware attack disrupts student services"
     assert incidents[0].all_urls == ["https://example.com/relevant"]
+    assert incidents[1].title == "University launches new cybersecurity certification course"
+    assert incidents[1].all_urls == ["https://example.com/course"]
+    assert incidents[2].all_urls == ["https://example.com/utah"]
+    assert incidents[3].all_urls == ["https://example.com/ucsf"]
+    assert all("discovery_policy=query_scoped_high_recall" in incident.notes for incident in incidents)
+    assert all(incident.raw_source_payload["discovery_policy"] == QUERY_SCOPED_HIGH_RECALL for incident in incidents)
 
 
 def test_build_googlenews_rss_incidents_keeps_item_when_wrapper_cannot_be_resolved(monkeypatch):

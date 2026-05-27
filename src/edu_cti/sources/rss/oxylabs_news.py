@@ -14,12 +14,18 @@ Cost: ~$1.00/1k Google SERP results. A full 22-query sweep returns ~220 results
 """
 
 import logging
-import re
 import time
 from datetime import datetime, timedelta
 from typing import Callable, List, Optional
+from urllib.parse import urlparse
 
 from src.edu_cti.core.config import HISTORICAL_START_YEAR, NEWS_SEARCH_QUERIES_ALL
+from src.edu_cti.core.discovery_policy import (
+    QUERY_SCOPED_HIGH_RECALL,
+    discovery_policy_for_source,
+    record_source_discovery_metrics,
+    semantic_prefilter_allowed,
+)
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.oxylabs import OxylabsClient
 
@@ -35,48 +41,13 @@ OXYLABS_QUERIES = NEWS_SEARCH_QUERIES_ALL
 # Delay between Oxylabs API calls (we're well under rate limit but polite)
 REQUEST_DELAY = 0.5
 
-_EDUCATION_SIGNAL_RE = re.compile(
-    r"\b("
-    r"university|college|school|district|campus|student|faculty|education|academic|"
-    r"universidad|colegio|escuela|estudiante|campus|educaci[oó]n|"
-    r"universit[eé]|[ée]cole|[eé]tudiant|enseignement|"
-    r"universit[aà]|scuola|studente|campus|"
-    r"universidade|faculdade|escola|estudante|"
-    r"universit[aä]t|hochschule|schule|student|"
-    r"大學|大学|學校|学校|學生|学生|教育|"
-    r"대학교|학교|학생|교육|"
-    r"جامعة|مدرسة|طالب|تعليم|"
-    r"университет|школа|студент|образован"
-    r")\b",
-    re.IGNORECASE,
-)
 
-_INCIDENT_SIGNAL_RE = re.compile(
-    r"\b("
-    r"ransomware|phishing|malware|breach|leak|leaked|hack|hacked|hacker|"
-    r"cyberattack|cyber attack|data breach|data leak|stolen|compromis(?:e|ed)|"
-    r"unauthorized access|deface(?:d|ment)?|extortion|outage|denial of service|ddos|"
-    r"ciberataque|ciberataques|ataque cibern[eé]tico|ataque|hackean|hackeado|filtraci[oó]n|"
-    r"cyberattaque|pirat(?:age|é)|fuite de donn[ée]es|attaque|"
-    r"hacker-angriff|cyberangriff|datenleck|angriff|"
-    r"勒索|攻擊|攻击|洩露|泄露|外洩|外泄|"
-    r"랜섬웨어|해킹|유출|공격|"
-    r"هجوم إلكتروني|اختراق|برامج فدية|تسريب|"
-    r"кибератак|взлом|утечк|шифровальщик"
-    r")\b",
-    re.IGNORECASE,
-)
-
-
-def _looks_relevant_education_incident(*, title: str, description: str) -> bool:
-    text = " ".join(part.strip() for part in (title, description) if part).strip()
-    if not text:
+def _is_http_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
         return False
-    if not _EDUCATION_SIGNAL_RE.search(text):
-        return False
-    if not _INCIDENT_SIGNAL_RE.search(text):
-        return False
-    return True
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _generate_yearly_windows(start_year: int) -> List[tuple]:
@@ -114,6 +85,17 @@ def build_oxylabs_news_incidents(
     """
     oxylabs = OxylabsClient()
     if not oxylabs._is_configured():
+        record_source_discovery_metrics(
+            SOURCE_NAME,
+            {
+                "rss_results_seen": 0,
+                "source_rows_created": 0,
+                "duplicates_skipped": 0,
+                "invalid_url_skipped": 0,
+                "out_of_window_skipped": 0,
+                "semantic_skipped": 0,
+            },
+        )
         logger.warning(
             "Oxylabs not configured (OXYLABS_USERNAME/OXYLABS_PASSWORD missing) — "
             "skipping oxylabs_news source"
@@ -123,6 +105,17 @@ def build_oxylabs_news_incidents(
     all_incidents: List[BaseIncident] = []
     seen_urls: set = set()
     now_iso = datetime.utcnow().isoformat()
+    discovery_metrics = {
+        "rss_results_seen": 0,
+        "source_rows_created": 0,
+        "duplicates_skipped": 0,
+        "invalid_url_skipped": 0,
+        "out_of_window_skipped": 0,
+        "semantic_skipped": 0,
+    }
+    policy = discovery_policy_for_source(SOURCE_NAME)
+    if policy == QUERY_SCOPED_HIGH_RECALL and semantic_prefilter_allowed(SOURCE_NAME):
+        raise RuntimeError(f"{SOURCE_NAME} must not use semantic pre-filters")
 
     if incremental:
         cutoff = datetime.utcnow() - timedelta(days=max_age_days)
@@ -154,23 +147,20 @@ def build_oxylabs_news_incidents(
                 date_to=win_to,
             )
             total_results += len(results)
+            discovery_metrics["rss_results_seen"] += len(results)
 
             for item in results:
                 url = item.get("url", "")
-                if not url or url in seen_urls:
+                if not _is_http_url(url):
+                    discovery_metrics["invalid_url_skipped"] += 1
+                    continue
+                if url in seen_urls:
+                    discovery_metrics["duplicates_skipped"] += 1
                     continue
 
                 title = item.get("title", "")
                 description = item.get("description", "")
                 source_name = item.get("source", "")
-
-                if not _looks_relevant_education_incident(title=title, description=description):
-                    logger.info(
-                        "Oxylabs News: skipping low-relevance result title=%r query=%r",
-                        title[:120],
-                        query[:80],
-                    )
-                    continue
 
                 seen_urls.add(url)
                 total_matched += 1
@@ -201,11 +191,21 @@ def build_oxylabs_news_incidents(
                     attack_type_hint=None,
                     status="suspected",
                     source_confidence="medium",
-                    notes=f"source={source_name};query={query[:60]};window={win_label}",
+                    notes=(
+                        f"source={source_name};query={query[:60]};window={win_label};"
+                        f"discovery_policy={policy}"
+                    ),
+                    raw_source_payload={
+                        "discovery_policy": policy,
+                        "query": query,
+                        "window": win_label,
+                        "search_source": source_name,
+                    },
                 )
 
                 window_incidents.append(incident)
                 all_incidents.append(incident)
+                discovery_metrics["source_rows_created"] += 1
 
                 if save_callback:
                     save_callback([incident])
@@ -218,8 +218,10 @@ def build_oxylabs_news_incidents(
                 f"({total_results} results scanned so far)"
             )
 
+    record_source_discovery_metrics(SOURCE_NAME, discovery_metrics)
     logger.info(
         f"Oxylabs News complete: {total_results} results scanned, "
-        f"{total_matched} passed filters, {len(all_incidents)} unique incidents"
+        f"{total_matched} candidates, {len(all_incidents)} unique incidents, "
+        f"discovery_metrics={discovery_metrics}"
     )
     return all_incidents

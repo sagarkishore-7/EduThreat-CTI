@@ -11,6 +11,10 @@ from uuid import uuid4
 from sqlalchemy.orm import sessionmaker
 
 from src.edu_cti.core.models import BaseIncident
+from src.edu_cti.core.discovery_policy import (
+    consume_source_discovery_metrics,
+    discovery_policy_for_source,
+)
 from src.edu_cti.core.sources import (
     API_SOURCE_REGISTRY,
     CURATED_SOURCE_REGISTRY,
@@ -278,6 +282,7 @@ class V2CollectionService:
 
         counters: dict[str, int] = defaultdict(int)
         per_source_counts: dict[str, int] = {}
+        source_discovery_metrics: dict[str, dict[str, int]] = {}
         try:
             for group in groups_to_run:
                 group_sources = _group_sources(
@@ -334,6 +339,9 @@ class V2CollectionService:
                     per_source_counts[source_name] = count
                     counters["sources_run"] += 1
                     counters["incidents_collected"] += count
+                source_discovery_metrics.update(
+                    consume_source_discovery_metrics(group_sources or results.keys())
+                )
 
             result = {
                 "run_id": str(run_id) if run_id else None,
@@ -357,6 +365,11 @@ class V2CollectionService:
                     "max_resolve_backlog_observed": counters["max_resolve_backlog_observed"],
                 },
                 "per_source_counts": per_source_counts,
+                "source_discovery_policies": {
+                    source_name: discovery_policy_for_source(source_name)
+                    for source_name in per_source_counts
+                },
+                "source_discovery_metrics": source_discovery_metrics,
             }
             if run_id is not None:
                 with self.session_factory() as session:

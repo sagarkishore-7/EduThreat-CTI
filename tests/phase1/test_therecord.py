@@ -32,6 +32,10 @@ def test_matches_keywords_handles_config_terms_with_punctuation():
         "School-board systems hit by cyber-attack after unauthorized access",
         keywords,
     )
+    assert not common.matches_keywords(
+        "New ransomware campaign hits manufacturing companies worldwide",
+        keywords,
+    )
 
 
 def test_extract_date_handles_ordinal_card_dates():

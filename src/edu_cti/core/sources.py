@@ -38,9 +38,8 @@ from src.edu_cti.sources.rss import (
     build_oxylabs_news_incidents,
 )
 # NOTE: build_oxylabs_news_incidents is imported above but NOT registered in RSS_SOURCE_REGISTRY.
-# It is kept as a named export so the Phase 2 SERP fallback (discover_articles_via_serp) can
-# import OxylabsClient independently. Scheduled ingestion uses googlenews_rss (free, 100
-# results/query) instead — oxylabs_news overlaps ~80% of the same queries at extra cost.
+# It remains an opt-in paid discovery source. Article-fetch fallback through
+# Oxylabs is configured independently from this source registry.
 
 # Import API-based source builders (free APIs, no scraping)
 from src.edu_cti.sources.api.ransomwatch import build_ransomlook_incidents
@@ -79,7 +78,8 @@ RSS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
 }
 
 # Paid RSS/search sources (not run in scheduled ingestion — used on-demand only)
-# oxylabs_news: overlaps ~80% of googlenews_rss queries; costs ~$0.94/run vs free.
+# oxylabs_news: optional high-recall paid discovery with the same query-scoped
+# semantics as Google News RSS; article fetching via Oxylabs is configured separately.
 # Use OxylabsClient.search_news() directly in Phase 2 SERP fallback instead.
 PAID_RSS_SOURCE_REGISTRY: Dict[str, Callable[..., List[BaseIncident]]] = {
     "oxylabs_news": build_oxylabs_news_incidents,

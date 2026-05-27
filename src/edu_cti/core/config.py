@@ -12,6 +12,8 @@ import os
 from pathlib import Path
 from typing import Dict, List, Tuple
 
+from src.edu_cti.core.discovery_policy import BROAD_CYBER_SOURCE_DOMAINS
+
 # Load .env file if present (must be before any os.getenv calls)
 try:
     from dotenv import load_dotenv
@@ -213,8 +215,30 @@ NEWS_SEARCH_QUERIES_MULTILINGUAL: List[str] = [
     for query in queries
 ]
 
-# Combined list used by Oxylabs News source (94 queries across 14 languages)
-NEWS_SEARCH_QUERIES_ALL: List[str] = NEWS_SEARCH_QUERIES_EN + NEWS_SEARCH_QUERIES_MULTILINGUAL
+# Site-restricted recovery queries let the high-recall Google/Oxylabs path pick
+# up relevant stories from broad cyber-news sources without loosening those
+# sources' own noisy site/feed scrapers.
+NEWS_SEARCH_SITE_RESTRICTED_TEMPLATES: List[str] = [
+    "university ransomware",
+    "university data breach",
+    "school district ransomware",
+    "school data breach",
+    "college cyberattack",
+    "student records breach",
+]
+
+NEWS_SEARCH_SITE_RESTRICTED_DOMAINS: List[str] = list(BROAD_CYBER_SOURCE_DOMAINS.values())
+
+NEWS_SEARCH_SITE_RESTRICTED_QUERIES: List[str] = [
+    f"site:{domain} {query}"
+    for domain in NEWS_SEARCH_SITE_RESTRICTED_DOMAINS
+    for query in NEWS_SEARCH_SITE_RESTRICTED_TEMPLATES
+]
+
+NEWS_SEARCH_QUERIES_EN_WITH_SITE: List[str] = NEWS_SEARCH_QUERIES_EN + NEWS_SEARCH_SITE_RESTRICTED_QUERIES
+
+# Combined list used by Oxylabs News source.
+NEWS_SEARCH_QUERIES_ALL: List[str] = NEWS_SEARCH_QUERIES_EN_WITH_SITE + NEWS_SEARCH_QUERIES_MULTILINGUAL
 
 # Legacy alias — kept so existing code that imports NEWS_SEARCH_QUERIES still works
 NEWS_SEARCH_QUERIES: List[str] = NEWS_SEARCH_QUERIES_EN
@@ -257,6 +281,12 @@ def _expand_google_news_rss_queries() -> List[Tuple[str, str, str]]:
                     continue
                 seen.add(key)
                 expanded.append(key)
+    for query in NEWS_SEARCH_SITE_RESTRICTED_QUERIES:
+        key = (query, "en", "US")
+        if key in seen:
+            continue
+        seen.add(key)
+        expanded.append(key)
     return expanded
 
 

@@ -35,10 +35,17 @@ from src.edu_cti.core.config import (
     GOOGLE_NEWS_RSS_QUERIES,
     GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS,
 )
+from src.edu_cti.core.discovery_policy import (
+    QUERY_SCOPED_HIGH_RECALL,
+    discovery_policy_for_source,
+    record_source_discovery_metrics,
+    semantic_prefilter_allowed,
+)
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.sources.rss.common import parse_rss_date
 
 logger = logging.getLogger(__name__)
+SOURCE_NAME = "googlenews_rss"
 
 # Queries are defined centrally in:
 #   src/edu_cti/core/config.py → GOOGLE_NEWS_RSS_QUERIES
@@ -126,85 +133,13 @@ GOOGLE_NEWS_QUERIES = GOOGLE_NEWS_RSS_QUERIES
 # Delay between requests to be respectful
 REQUEST_DELAY = GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS
 
-_EDUCATION_SIGNAL_RE = re.compile(
-    r"\b("
-    r"university|universities|college|school|district|campus|student|faculty|education|"
-    r"k-12|academy|academic|universidad|colegio|escuela|estudiante|"
-    r"universit[eé]|[eé]cole|[eé]tudiant|universit[aà]|scuola|"
-    r"universidade|faculdade|escola|universit[aä]t|hochschule|schule|"
-    r"okul|üniversite|uniwersytet|szkoła|"
-    r"大学|學校|学校|學生|学生|教育|대학교|학교|학생|교육|"
-    r"جامعة|مدرسة|طالب|تعليم|университет|школа|студент|образован"
-    r")\b",
-    re.IGNORECASE,
-)
 
-_INCIDENT_SIGNAL_RE = re.compile(
-    r"\b("
-    r"ransomware|malware|phishing|breach|leak|leaked|exposed|stolen|"
-    r"hack|hacked|hacker|hacking|cyberattack|cyber attack|cyber-attack|"
-    r"data breach|data leak|data exposure|compromis(?:e|ed)|intrusion|"
-    r"unauthorized access|deface(?:d|ment)?|extortion|outage|disrupt(?:ed|ion)?|"
-    r"denial of service|ddos|breach notification|security incident|"
-    r"ciberataque|ataque cibern[eé]tico|hackean|hackeado|filtraci[oó]n|"
-    r"cyberattaque|pirat(?:age|é)|fuite de donn[ée]es|"
-    r"hacker-angriff|hackerangriff|cyberangriff|datenleck|"
-    r"violazione dati|ataque cibern[eé]tico|invas[aã]o hacker|"
-    r"サイバー攻撃|ランサムウェア|情報漏洩|勒索|攻擊|攻击|洩露|泄露|外洩|外泄|"
-    r"랜섬웨어|해킹|유출|공격|هجوم إلكتروني|اختراق|برامج فدية|تسريب|"
-    r"кибератак|взлом|утечк|шифровальщик"
-    r")\b",
-    re.IGNORECASE,
-)
-
-_LOW_RELEVANCE_TOPIC_RE = re.compile(
-    r"\b("
-    r"course|courses|class|classes|certification|certificate|degree|major|minor|"
-    r"training|learners|masterclass|bootcamp|scholarship|admission|ranking|"
-    r"football|basketball|cricket|soccer|sports|coach|coaches|player|players|"
-    r"job|jobs|career|careers|salary|conference|webinar"
-    r")\b",
-    re.IGNORECASE,
-)
-
-_STRONG_INSTITUTIONAL_INCIDENT_RE = re.compile(
-    r"\b("
-    r"ransomware|cyberattack|cyber attack|cyber-attack|data breach|breach notification|"
-    r"records? (?:exposed|stolen|leaked|affected)|unauthorized access|ddos|outage|"
-    r"security incident|compromised? (?:systems?|network|accounts?|data)"
-    r")\b",
-    re.IGNORECASE,
-)
-
-_PERSONAL_CRIME_NOISE_RE = re.compile(
-    r"\b("
-    r"coach|student|teacher|professor|man|woman|teen|suspect|former"
-    r")\b.{0,80}\b("
-    r"indicted|arrested|charged|jailed|sentenced|stalk(?:ed|ing)|harass(?:ed|ment)|"
-    r"hacking (?:accounts?|phones?|email)|telegram|intimate photos?"
-    r")\b",
-    re.IGNORECASE,
-)
-
-
-def _looks_relevant_education_incident(*, title: str, description: str, query: str = "") -> bool:
-    """Filter broad Google News hits before they enter expensive fetch/enrich stages."""
-    item_text = " ".join(part.strip() for part in (title, description) if part).strip()
-    if not item_text:
+def _is_http_url(url: str) -> bool:
+    try:
+        parsed = urlparse(url)
+    except Exception:
         return False
-
-    education_text = " ".join(part for part in (item_text, query) if part)
-    if not _EDUCATION_SIGNAL_RE.search(education_text):
-        return False
-    if not _INCIDENT_SIGNAL_RE.search(item_text):
-        return False
-
-    if _PERSONAL_CRIME_NOISE_RE.search(item_text) and not _STRONG_INSTITUTIONAL_INCIDENT_RE.search(item_text):
-        return False
-    if _LOW_RELEVANCE_TOPIC_RE.search(item_text) and not _STRONG_INSTITUTIONAL_INCIDENT_RE.search(item_text):
-        return False
-
-    return True
+    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
 
 
 def _build_google_news_url(
@@ -374,6 +309,17 @@ def build_googlenews_rss_incidents(
     seen_urls: set = set()
     total_fetched = 0
     total_matched = 0
+    discovery_metrics = {
+        "rss_results_seen": 0,
+        "source_rows_created": 0,
+        "duplicates_skipped": 0,
+        "invalid_url_skipped": 0,
+        "out_of_window_skipped": 0,
+        "semantic_skipped": 0,
+    }
+    policy = discovery_policy_for_source(SOURCE_NAME)
+    if policy == QUERY_SCOPED_HIGH_RECALL and semantic_prefilter_allowed(SOURCE_NAME):
+        raise RuntimeError(f"{SOURCE_NAME} must not use semantic pre-filters")
 
     if incremental:
         # Daily mode: no date windows, fetch current feed
@@ -408,6 +354,7 @@ def build_googlenews_rss_incidents(
             url = _build_google_news_url(query, lang, country, after_date, before_date)
             items = _fetch_google_news_rss(url)
             total_fetched += len(items)
+            discovery_metrics["rss_results_seen"] += len(items)
 
             for item in items:
                 raw_link = item["link"]
@@ -420,19 +367,11 @@ def build_googlenews_rss_incidents(
                 # Dedup by source-event id / Google wrapper, but do not persist the
                 # wrapper URL as an enrichment candidate. Phase 2 will discover a
                 # real article URL via SERP/title matching.
-                if link in seen_urls:
+                if not _is_http_url(link):
+                    discovery_metrics["invalid_url_skipped"] += 1
                     continue
-
-                if not _looks_relevant_education_incident(
-                    title=title,
-                    description=description,
-                    query=query,
-                ):
-                    logger.info(
-                        "Google News RSS: skipping low-relevance item title=%r query=%r",
-                        title[:120],
-                        query[:80],
-                    )
+                if link in seen_urls:
+                    discovery_metrics["duplicates_skipped"] += 1
                     continue
 
                 seen_urls.add(link)
@@ -447,6 +386,7 @@ def build_googlenews_rss_incidents(
                         # In incremental mode, skip items older than cutoff
                         if cutoff:
                             if parsed_pub_date.replace(tzinfo=None) < cutoff:
+                                discovery_metrics["out_of_window_skipped"] += 1
                                 continue
                         pub_date = parsed_pub_date.date().isoformat()
 
@@ -454,11 +394,11 @@ def build_googlenews_rss_incidents(
 
                 resolved_link = _resolve_google_news_article_url(link)
                 source_event_id = resolved_link or link
-                incident_id = make_incident_id("googlenews_rss", source_event_id)
+                incident_id = make_incident_id(SOURCE_NAME, source_event_id)
 
                 incident = BaseIncident(
                     incident_id=incident_id,
-                    source="googlenews_rss",
+                    source=SOURCE_NAME,
                     source_event_id=source_event_id,
                     institution_name=None,
                     victim_raw_name=None,
@@ -479,11 +419,20 @@ def build_googlenews_rss_incidents(
                     source_confidence="medium",
                     notes=(
                         f"search_lang={lang};search_country={country};"
-                        f"source={source_name or 'unknown'};query={query[:50]}"
+                        f"source={source_name or 'unknown'};query={query[:50]};"
+                        f"discovery_policy={policy}"
                     ),
+                    raw_source_payload={
+                        "discovery_policy": policy,
+                        "query": query,
+                        "search_lang": lang,
+                        "search_country": country,
+                        "google_news_source": source_name or "unknown",
+                    },
                 )
 
                 all_incidents.append(incident)
+                discovery_metrics["source_rows_created"] += 1
 
                 if save_callback:
                     save_callback([incident])
@@ -494,12 +443,14 @@ def build_googlenews_rss_incidents(
         if not incremental and (window_idx + 1) % 3 == 0:
             logger.info(
                 f"Progress: {window_idx + 1}/{len(date_windows)} windows, "
-                f"{total_fetched} fetched, {total_matched} matched, "
+                f"{total_fetched} fetched, {total_matched} candidates, "
                 f"{len(all_incidents)} unique incidents"
             )
 
+    record_source_discovery_metrics(SOURCE_NAME, discovery_metrics)
     logger.info(
         f"Google News RSS complete: {total_fetched} items fetched, "
-        f"{total_matched} cyber-relevant, {len(all_incidents)} unique incidents"
+        f"{total_matched} candidates, {len(all_incidents)} unique incidents, "
+        f"discovery_metrics={discovery_metrics}"
     )
     return all_incidents
