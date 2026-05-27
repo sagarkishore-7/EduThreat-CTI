@@ -28,6 +28,7 @@ CSE_BASE_URL = "https://cse.google.com/cse"
 CSE_CX = "partner-pub-7983783048239650:3179771210"  # Fallback if not found on page
 SOURCE_NAME = "thehackernews"
 logger = logging.getLogger(__name__)
+_NATIVE_DATE_RE = re.compile(r"\b([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})\b")
 
 
 def _build_search_url(term: str, cx: Optional[str] = None, page: int = 1) -> str:
@@ -49,6 +50,16 @@ def _build_search_url(term: str, cx: Optional[str] = None, page: int = 1) -> str
     }
     url = f"{CSE_BASE_URL}?{urlencode(params)}#gsc.tab=0&gsc.q={quote_plus(term)}&gsc.page={page}"
     return url
+
+
+def _build_native_search_url(term: str) -> str:
+    """Build The Hacker News' native search URL.
+
+    The older collector used Google Programmable Search. That endpoint now
+    often returns a JavaScript-only shell to non-browser fetchers, which made
+    the source appear healthy while yielding zero real article links.
+    """
+    return f"{BASE_URL}/search?{urlencode({'q': term})}"
 
 
 def _detect_captcha(soup: BeautifulSoup, page_text: str = "") -> bool:
@@ -243,6 +254,77 @@ def _iter_pages(
             time.sleep(random.uniform(2, 4))
 
 
+def _extract_native_articles_from_page(soup: BeautifulSoup) -> List[BeautifulSoup]:
+    """Extract article cards from The Hacker News native search page."""
+    if _detect_captcha(soup):
+        logger.warning("The Hacker News native search returned a challenge page")
+        return []
+    return list(soup.select("a.story-link[href]"))
+
+
+def _native_article_fields(node: BeautifulSoup) -> Optional[dict[str, str]]:
+    """Normalize a native search card into article fields."""
+    article_url = (node.get("href") or "").strip()
+    if not article_url or "thehackernews.com/" not in article_url:
+        return None
+
+    title_tag = node.select_one(".home-title")
+    title = title_tag.get_text(" ", strip=True) if title_tag else ""
+    if not title:
+        image = node.select_one("img[alt]")
+        title = (image.get("alt") or "").strip() if image else ""
+    if not title:
+        return None
+
+    summary_tag = node.select_one(".home-desc")
+    summary = summary_tag.get_text(" ", strip=True) if summary_tag else ""
+
+    date_tag = node.select_one(".h-datetime")
+    date_text = date_tag.get_text(" ", strip=True) if date_tag else ""
+    date_match = _NATIVE_DATE_RE.search(date_text)
+    raw_date = date_match.group(1) if date_match else ""
+
+    tags_tag = node.select_one(".h-tags")
+    tags = tags_tag.get_text(" ", strip=True) if tags_tag else ""
+
+    return {
+        "url": article_url.rstrip("/"),
+        "title": title,
+        "summary": summary,
+        "raw_date": raw_date,
+        "tags": tags,
+    }
+
+
+def _iter_native_pages(
+    client: HttpClient,
+    term: str,
+    max_pages: Optional[int],
+) -> Iterable[tuple[int, Optional[BeautifulSoup]]]:
+    """Iterate The Hacker News native search pages.
+
+    Native search currently returns the relevant result set on one HTML page.
+    We intentionally fetch only page 1 because pagination/load-more is
+    JavaScript-driven and the old CSE path is kept only as a fallback helper.
+    """
+    if max_pages == 0:
+        return
+
+    search_url = _build_native_search_url(term)
+    logger.info("The Hacker News: native search for term %r", term)
+    soup = client.get_soup(search_url)
+    if soup is None:
+        logger.warning("The Hacker News: native search failed for term %r", term)
+        return
+
+    articles = _extract_native_articles_from_page(soup)
+    if not articles:
+        logger.warning("The Hacker News: native search returned no article cards for term %r", term)
+        return
+
+    yield 1, soup
+
+
 def build_thehackernews_incidents(
     *,
     search_terms: Optional[Sequence[str]] = None,
@@ -252,8 +334,9 @@ def build_thehackernews_incidents(
     save_callback: Optional[Callable[[List[BaseIncident]], None]] = None,
 ) -> List[BaseIncident]:
     """
-    Crawl The Hacker News Google Custom Search results for EDU-related incidents.
-    Uses Google CSE URL format: https://cse.google.com/cse?q={term}&cx={cx}#gsc.tab=0&gsc.q={term}&gsc.page={page}
+    Crawl The Hacker News native search results for EDU-related incidents.
+    The previous Google CSE path frequently returned a JavaScript-only shell,
+    so the collector now uses https://thehackernews.com/search?q=... directly.
     Supports incremental saving via save_callback - saves after each page is processed.
     
     Args:
@@ -272,15 +355,12 @@ def build_thehackernews_incidents(
             logger.info("Source scraping cancelled before term '%s'", term)
             break
         logger.info(f"The Hacker News: Starting search for term '{term}'")
-        # If max_pages is None, fetch all pages (None means no limit)
-        page_limit = max_pages  # None = fetch all pages
-        
-        for page_number, soup in _iter_pages(http_client, term, page_limit):
+        for page_number, soup in _iter_native_pages(http_client, term, max_pages):
             if soup is None:
                 break
 
             # Extract articles from the page
-            article_nodes = _extract_articles_from_page(soup)
+            article_nodes = _extract_native_articles_from_page(soup)
             
             if not article_nodes:
                 logger.warning(f"The Hacker News: No articles found on page {page_number} for term '{term}'")
@@ -288,58 +368,24 @@ def build_thehackernews_incidents(
 
             page_incidents: List[BaseIncident] = []
             for node in article_nodes:
-                # Extract article link from gs-title
-                title_link = node.select_one("a.gs-title[href]")
-                if not title_link:
-                    # Fallback: try data-ctorig attribute
-                    title_link = node.select_one("a.gs-title[data-ctorig]")
-                    if not title_link:
-                        continue
-                
-                # Prefer data-ctorig (original URL) over href (may be Google tracking URL)
-                article_url = title_link.get("data-ctorig", "").strip()
-                if not article_url:
-                    article_url = title_link.get("href", "").strip()
-                
+                fields = _native_article_fields(node)
+                if fields is None:
+                    continue
+                article_url = fields["url"]
                 if not article_url or article_url in seen_urls:
                     continue
 
-                # Extract title
-                title = title_link.get_text(" ", strip=True)
-                if not title:
-                    continue
-
-                # Extract summary/description from gs-snippet
-                summary = ""
-                snippet_tag = node.select_one("div.gs-bidi-start-align.gs-snippet")
-                if snippet_tag:
-                    snippet_text = snippet_tag.get_text(" ", strip=True)
-                    # Remove date prefix if present (e.g., "3 May 2025 ...")
-                    # Date pattern: "DD MMM YYYY ..."
-                    date_match = re.match(r"^(\d{1,2}\s+\w{3,9}\s+\d{4})\s+\.\.\.\s*", snippet_text)
-                    if date_match:
-                        summary = snippet_text[len(date_match.group(0)):].strip()
-                    else:
-                        summary = snippet_text
+                title = fields["title"]
+                summary = fields["summary"]
 
                 # Combine title and summary for keyword matching
-                text_blob = " ".join(filter(None, [title, summary]))
+                text_blob = " ".join(filter(None, [title, summary, fields.get("tags", "")]))
                 if not matches_keywords(text_blob, prepared_keywords):
                     continue
 
                 seen_urls.add(article_url)
 
-                # Extract date from snippet (format: "3 May 2025 ...")
-                raw_date = ""
-                snippet_tag = node.select_one("div.gs-bidi-start-align.gs-snippet")
-                if snippet_tag:
-                    snippet_text = snippet_tag.get_text(" ", strip=True)
-                    # Try to extract date from beginning of snippet
-                    date_match = re.match(r"^(\d{1,2}\s+\w{3,9}\s+\d{4})", snippet_text)
-                    if date_match:
-                        raw_date = date_match.group(1)
-
-                incident_date, date_precision = extract_date(raw_date)
+                incident_date, date_precision = extract_date(fields["raw_date"])
 
                 incident = BaseIncident(
                     incident_id=make_incident_id(SOURCE_NAME, article_url),
@@ -366,7 +412,7 @@ def build_thehackernews_incidents(
                     attack_type_hint=None,
                     status="suspected",
                     source_confidence="medium",
-                    notes=f"news_source={SOURCE_NAME};term={term};page={page_number}",
+                    notes=f"news_source={SOURCE_NAME};search=native;term={term};page={page_number}",
                 )
                 page_incidents.append(incident)
                 incidents.append(incident)
@@ -385,4 +431,3 @@ def build_thehackernews_incidents(
 
     logger.info(f"The Hacker News: Total incidents collected: {len(incidents)}")
     return incidents
-
