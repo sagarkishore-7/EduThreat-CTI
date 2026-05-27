@@ -10,7 +10,7 @@ from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run a named EduThreat-CTI v2 orchestration plan")
-    parser.add_argument("plan_name", help="Named v2 plan to execute")
+    parser.add_argument("plan_name", help="Named v2 plan to execute, for example historical")
     parser.add_argument("--worker-id", default="cli-v2-plan", help="Worker ID label for persisted run metadata")
     parser.add_argument(
         "--worker-max-tasks",
@@ -26,12 +26,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--include-paid-rss",
         action="store_true",
-        help="Force paid RSS/search coverage on regardless of the underlying plan default",
+        help="Force paid RSS/search coverage on regardless of env defaults",
     )
     parser.add_argument(
         "--exclude-paid-rss",
         action="store_true",
-        help="Force paid RSS/search coverage off regardless of the underlying plan default",
+        help="Force paid RSS/search coverage off regardless of env defaults",
     )
     return parser
 

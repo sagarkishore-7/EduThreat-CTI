@@ -42,7 +42,9 @@ def test_orchestration_service_lists_named_plans():
     plans = service.list_plans()
 
     names = {plan["name"] for plan in plans}
-    assert "historical_full" in names
+    assert "historical" in names
+    assert "historical_full" not in names
+    assert "historical_max_coverage" not in names
     assert "incremental_refresh" in names
     assert "collect_only" in names
     assert "daily_quality_refresh" in names
@@ -110,13 +112,36 @@ def test_orchestration_service_enqueue_plan_creates_pending_run_and_task():
         pipeline_task_repository=task_repo,
     )
 
-    result = service.enqueue_plan(plan_name="historical_full", worker_id="tester")
+    result = service.enqueue_plan(plan_name="historical", worker_id="tester")
 
-    assert result["plan_name"] == "historical_full"
+    assert result["plan_name"] == "historical"
     assert result["status"] == "queued"
     assert run_repo.add.called
     assert task_repo.enqueue.called
     assert session.commits == 1
+
+
+def test_orchestration_service_accepts_legacy_historical_aliases():
+    run_repo = Mock()
+    task_repo = Mock()
+    session = _FakeSession()
+
+    service = V2OrchestrationService(
+        session_factory=lambda: _FakeSessionContext(session),
+        collection_service=Mock(),
+        operations_service=Mock(),
+        data_quality_service=Mock(),
+        research_metrics_service=Mock(),
+        pipeline_run_repository=run_repo,
+        pipeline_task_repository=task_repo,
+    )
+
+    result = service.enqueue_plan(plan_name="historical_max_coverage", worker_id="tester")
+
+    assert result["plan_name"] == "historical_max_coverage"
+    task = task_repo.enqueue.call_args.args[1]
+    assert task.payload["plan_name"] == "historical_max_coverage"
+    assert "include_paid_rss" not in task.payload["collect_kwargs"]
 
 
 def test_orchestration_service_runs_data_quality_and_reenrich_for_quality_plan():
@@ -215,7 +240,6 @@ def test_orchestration_service_execute_enqueued_plan_waits_for_drain(monkeypatch
             "collect_kwargs": {
                 "groups": ["curated", "news", "rss", "api"],
                 "incremental": True,
-                "include_paid_rss": False,
                 "max_pages": 20,
                 "rss_max_age_days": 30,
             },

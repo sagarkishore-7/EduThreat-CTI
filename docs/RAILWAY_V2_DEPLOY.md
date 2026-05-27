@@ -275,13 +275,15 @@ curl -X POST "$API_BASE/api/admin/v2/login" \
 Run a plan:
 
 ```bash
-curl -X POST "$API_BASE/api/admin/v2/run-plan?plan_name=historical_full"
+curl -X POST "$API_BASE/api/admin/v2/run-plan?plan_name=historical"
 ```
 
-Or for maximum paid coverage:
+Oxylabs is optional and controlled by env flags instead of a separate plan:
 
 ```bash
-curl -X POST "$API_BASE/api/admin/v2/run-plan?plan_name=historical_max_coverage"
+EDU_CTI_OXYLABS_ENABLED=1              # article-fetch tier and default oxylabs_news source
+EDU_CTI_INCLUDE_OXYLABS_NEWS_SOURCE=1  # optional source-specific override
+EDU_CTI_ENABLE_OXYLABS_SERP=1          # optional paid SERP fallback
 ```
 
 ### 8. After historical backfill finishes
@@ -320,8 +322,8 @@ Watch the worker logs for:
 
 ## First Historical Run Tips
 
-- start with `historical_full`
-- use `historical_max_coverage` only when Oxylabs credentials and cost expectations are confirmed
+- start with `historical`
+- enable Oxylabs only after credentials and cost expectations are confirmed
 - keep scheduler disabled during initial backfill
 - do not cut the frontend over to `/api/v2` until the first end-to-end dataset looks healthy
 

@@ -10,7 +10,7 @@ Supports environment variables for configuration:
 
 import os
 from pathlib import Path
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 # Load .env file if present (must be before any os.getenv calls)
 try:
@@ -95,101 +95,122 @@ NEWS_SEARCH_QUERIES_EN: List[str] = [
 
 # ---- Multilingual queries ----
 # Same concepts as NEWS_SEARCH_QUERIES_EN translated into 13 additional languages.
-# Oxylabs Google News SERP handles multilingual queries natively — just pass the
-# query string in the target language and results come back in that language.
-NEWS_SEARCH_QUERIES_MULTILINGUAL: List[str] = [
+# Keep the language grouping explicit so Google News RSS can query every language
+# against every configured country/edition for that language.
+NEWS_SEARCH_QUERIES_MULTILINGUAL_BY_LANG: Dict[str, List[str]] = {
     # Spanish (Spain / Mexico / Argentina / Colombia)
-    "universidad ciberataque",
-    "universidad ransomware",
-    "escuela ataque cibernético",
-    "universidad hackeo",
-    "universidad brecha de datos",
-    "colegio ciberataque",
-    "datos estudiantes filtrados",
-
+    "es": [
+        "universidad ciberataque",
+        "universidad ransomware",
+        "escuela ataque cibernético",
+        "universidad hackeo",
+        "universidad brecha de datos",
+        "colegio ciberataque",
+        "datos estudiantes filtrados",
+    ],
     # French (France / Canada / Belgium)
-    "université cyberattaque",
-    "université ransomware",
-    "école piratage informatique",
-    "université fuite de données",
-    "lycée attaque informatique",
-    "données étudiants volées",
-
+    "fr": [
+        "université cyberattaque",
+        "université ransomware",
+        "école piratage informatique",
+        "université fuite de données",
+        "lycée attaque informatique",
+        "données étudiants volées",
+    ],
     # German (Germany / Austria / Switzerland)
-    "universität cyberangriff",
-    "hochschule ransomware",
-    "schule hackerangriff",
-    "universität datenleck",
-    "schule datenpanne",
-    "studenten daten gestohlen",
-
+    "de": [
+        "universität cyberangriff",
+        "hochschule ransomware",
+        "schule hackerangriff",
+        "universität datenleck",
+        "schule datenpanne",
+        "studenten daten gestohlen",
+    ],
     # Portuguese (Brazil / Portugal)
-    "universidade ataque cibernético",
-    "universidade ransomware",
-    "escola invasão hacker",
-    "faculdade vazamento dados",
-    "universidade dados estudantes",
-
+    "pt": [
+        "universidade ataque cibernético",
+        "universidade ransomware",
+        "escola invasão hacker",
+        "faculdade vazamento dados",
+        "universidade dados estudantes",
+    ],
     # Italian (Italy)
-    "università attacco informatico",
-    "università ransomware",
-    "scuola violazione dati",
-    "università hacker attacco",
-
+    "it": [
+        "università attacco informatico",
+        "università ransomware",
+        "scuola violazione dati",
+        "università hacker attacco",
+    ],
     # Dutch (Netherlands / Belgium)
-    "universiteit cyberaanval",
-    "school ransomware aanval",
-    "universiteit datalek",
-    "hogeschool hackaanval",
-
+    "nl": [
+        "universiteit cyberaanval",
+        "school ransomware aanval",
+        "universiteit datalek",
+        "hogeschool hackaanval",
+    ],
     # Japanese (Japan)
-    "大学 サイバー攻撃",
-    "大学 ランサムウェア",
-    "学校 情報漏洩",
-    "大学 不正アクセス",
-    "教育機関 サイバー攻撃",
-
+    "ja": [
+        "大学 サイバー攻撃",
+        "大学 ランサムウェア",
+        "学校 情報漏洩",
+        "大学 不正アクセス",
+        "教育機関 サイバー攻撃",
+    ],
     # Korean (South Korea)
-    "대학교 사이버공격",
-    "학교 랜섬웨어",
-    "대학 해킹",
-    "학생 정보 유출",
-
+    "ko": [
+        "대학교 사이버공격",
+        "학교 랜섬웨어",
+        "대학 해킹",
+        "학생 정보 유출",
+    ],
     # Chinese (Taiwan / mainland)
-    "大學 網路攻擊",
-    "學校 勒索軟體",
-    "大學 資料外洩",
-    "教育機構 駭客攻擊",
-
+    "zh": [
+        "大學 網路攻擊",
+        "學校 勒索軟體",
+        "大學 資料外洩",
+        "教育機構 駭客攻擊",
+    ],
     # Arabic (Saudi Arabia / UAE / Egypt)
-    "جامعة هجوم إلكتروني",
-    "مدرسة اختراق إلكتروني",
-    "جامعة برامج فدية",
-    "بيانات طلاب مسربة",
-
+    "ar": [
+        "جامعة هجوم إلكتروني",
+        "مدرسة اختراق إلكتروني",
+        "جامعة برامج فدية",
+        "بيانات طلاب مسربة",
+    ],
     # Turkish (Turkey)
-    "üniversite siber saldırı",
-    "okul ransomware saldırısı",
-    "üniversite veri ihlali",
-    "okul bilgisayar saldırısı",
-
+    "tr": [
+        "üniversite siber saldırı",
+        "okul ransomware saldırısı",
+        "üniversite veri ihlali",
+        "okul bilgisayar saldırısı",
+    ],
     # Polish (Poland)
-    "uniwersytet cyberatak",
-    "szkoła ransomware",
-    "uczelnia atak hakerski",
-    "dane studentów wyciek",
-
+    "pl": [
+        "uniwersytet cyberatak",
+        "szkoła ransomware",
+        "uczelnia atak hakerski",
+        "dane studentów wyciek",
+    ],
     # Russian (Russia)
-    "университет кибератака",
-    "школа хакерская атака",
-    "вуз ransomware атака",
-    "утечка данных студентов",
-
+    "ru": [
+        "университет кибератака",
+        "школа хакерская атака",
+        "вуз ransomware атака",
+        "утечка данных студентов",
+    ],
     # Hindi (India — romanised, works in Google Search)
-    "university cyber attack India",
-    "school ransomware attack India",
-    "college data breach India",
-    "vishwavidyalaya cyber hamla",
+    "hi": [
+        "university cyber attack India",
+        "school ransomware attack India",
+        "college data breach India",
+        "vishwavidyalaya cyber hamla",
+    ],
+}
+
+NEWS_SEARCH_QUERIES_MULTILINGUAL: List[str] = [
+    query
+    for queries in NEWS_SEARCH_QUERIES_MULTILINGUAL_BY_LANG.values()
+    for query in queries
 ]
 
 # Combined list used by Oxylabs News source (94 queries across 14 languages)
@@ -199,85 +220,58 @@ NEWS_SEARCH_QUERIES_ALL: List[str] = NEWS_SEARCH_QUERIES_EN + NEWS_SEARCH_QUERIE
 NEWS_SEARCH_QUERIES: List[str] = NEWS_SEARCH_QUERIES_EN
 
 # ---- Google News RSS queries ----
-# Each tuple: (query, language_code, country_code)
-# Used by the Google News RSS source which requires explicit lang/country params
-# in the RSS URL: ?hl={lang}&gl={country}&ceid={country}:{lang}
-GOOGLE_NEWS_RSS_QUERIES: List[Tuple[str, str, str]] = [
-    # English — US
-    ("university cyberattack", "en", "US"),
-    ("university ransomware", "en", "US"),
-    ("university data breach", "en", "US"),
-    ("college cyberattack", "en", "US"),
-    ("school district ransomware", "en", "US"),
-    ("school data breach", "en", "US"),
-    ("education sector cyberattack", "en", "US"),
-    ("student data breach", "en", "US"),
-    ("k-12 cyberattack", "en", "US"),
-    ("university hacked", "en", "US"),
-    # English — UK
-    ("university cyberattack", "en", "GB"),
-    ("school ransomware", "en", "GB"),
-    ("university data breach", "en", "GB"),
-    # English — Australia
-    ("university cyberattack", "en", "AU"),
-    ("school data breach", "en", "AU"),
-    # English — India
-    ("university cyberattack", "en", "IN"),
-    ("college hacked India", "en", "IN"),
-    ("IIT cyber attack", "en", "IN"),
-    # Spanish
-    ("universidad ciberataque", "es", "ES"),
-    ("universidad ransomware", "es", "ES"),
-    ("escuela ataque cibernético", "es", "ES"),
-    ("universidad hackeo", "es", "MX"),
-    ("universidad brecha datos", "es", "AR"),
-    # French
-    ("université cyberattaque", "fr", "FR"),
-    ("université ransomware", "fr", "FR"),
-    ("école piratage informatique", "fr", "FR"),
-    ("université fuite données", "fr", "CA"),
-    # German
-    ("universität cyberangriff", "de", "DE"),
-    ("hochschule ransomware", "de", "DE"),
-    ("schule hackerangriff", "de", "DE"),
-    ("universität datenleck", "de", "DE"),
-    # Portuguese
-    ("universidade ataque cibernético", "pt", "BR"),
-    ("universidade ransomware", "pt", "BR"),
-    ("escola invasão hacker", "pt", "BR"),
-    # Italian
-    ("università attacco informatico", "it", "IT"),
-    ("università ransomware", "it", "IT"),
-    ("scuola violazione dati", "it", "IT"),
-    # Dutch
-    ("universiteit cyberaanval", "nl", "NL"),
-    ("school ransomware", "nl", "NL"),
-    # Japanese
-    ("大学 サイバー攻撃", "ja", "JP"),
-    ("大学 ランサムウェア", "ja", "JP"),
-    ("学校 情報漏洩", "ja", "JP"),
-    # Korean
-    ("대학교 사이버공격", "ko", "KR"),
-    ("학교 랜섬웨어", "ko", "KR"),
-    ("대학 해킹", "ko", "KR"),
-    # Chinese
-    ("大学 网络攻击", "zh", "TW"),
-    ("学校 勒索软件", "zh", "TW"),
-    # Arabic
-    ("جامعة هجوم إلكتروني", "ar", "SA"),
-    ("مدرسة اختراق", "ar", "AE"),
-    # Turkish
-    ("üniversite siber saldırı", "tr", "TR"),
-    ("okul ransomware", "tr", "TR"),
-    # Polish
-    ("uniwersytet cyberatak", "pl", "PL"),
-    ("szkoła ransomware", "pl", "PL"),
-    # Russian
-    ("университет кибератака", "ru", "RU"),
-    ("школа хакерская атака", "ru", "RU"),
-    # Hindi
-    ("university cyber attack India", "hi", "IN"),
-]
+# Each tuple: (query, language_code, country_code). Google News RSS requires
+# explicit language/country params in the RSS URL:
+# ?hl={lang}&gl={country}&ceid={country}:{lang}
+GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG: Dict[str, List[str]] = {
+    "en": ["US", "GB", "CA", "AU", "IN", "NZ", "ZA", "IE"],
+    "es": ["ES", "MX", "AR", "CO"],
+    "fr": ["FR", "CA", "BE"],
+    "de": ["DE", "AT", "CH"],
+    "pt": ["BR", "PT"],
+    "it": ["IT"],
+    "nl": ["NL", "BE"],
+    "ja": ["JP"],
+    "ko": ["KR"],
+    "zh": ["TW", "CN"],
+    "ar": ["SA", "AE", "EG"],
+    "tr": ["TR"],
+    "pl": ["PL"],
+    "ru": ["RU"],
+    "hi": ["IN"],
+}
+
+
+def _expand_google_news_rss_queries() -> List[Tuple[str, str, str]]:
+    query_groups: Dict[str, List[str]] = {
+        "en": NEWS_SEARCH_QUERIES_EN,
+        **NEWS_SEARCH_QUERIES_MULTILINGUAL_BY_LANG,
+    }
+    expanded: List[Tuple[str, str, str]] = []
+    seen: set[Tuple[str, str, str]] = set()
+    for lang, queries in query_groups.items():
+        for query in queries:
+            for country in GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG.get(lang, []):
+                key = (query, lang, country)
+                if key in seen:
+                    continue
+                seen.add(key)
+                expanded.append(key)
+    return expanded
+
+
+GOOGLE_NEWS_RSS_QUERIES: List[Tuple[str, str, str]] = _expand_google_news_rss_queries()
+
+# Historical Google RSS coverage uses smaller windows to reduce per-feed result
+# truncation. Override only if we need to trade coverage for runtime.
+GOOGLE_NEWS_RSS_HISTORICAL_WINDOW_DAYS = max(
+    1,
+    int(os.getenv("EDU_CTI_GOOGLE_NEWS_RSS_HISTORICAL_WINDOW_DAYS", "31")),
+)
+GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS = max(
+    0.0,
+    float(os.getenv("EDU_CTI_GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS", "1.0")),
+)
 
 # Legacy keyword list — used for post-fetch filtering (matches_keywords)
 NEWS_KEYWORDS: List[str] = [

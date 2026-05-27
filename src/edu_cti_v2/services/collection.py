@@ -62,6 +62,30 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_flag(name: str, default: str = "0") -> bool:
+    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_optional_flag(name: str) -> Optional[bool]:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _default_include_paid_rss() -> bool:
+    """Use Oxylabs source discovery only when explicitly enabled by env."""
+    for env_name in (
+        "EDU_CTI_INCLUDE_PAID_RSS",
+        "EDU_CTI_INCLUDE_OXYLABS_NEWS_SOURCE",
+        "EDU_CTI_OXYLABS_NEWS_ENABLED",
+    ):
+        value = _env_optional_flag(env_name)
+        if value is not None:
+            return value
+    return _env_flag("EDU_CTI_OXYLABS_ENABLED", "0")
+
+
 def _normalize_groups(groups: Optional[Sequence[str]]) -> list[str]:
     if not groups:
         return list(_GROUP_ORDER)
@@ -187,7 +211,7 @@ class V2CollectionService:
         max_pages: Optional[int] = None,
         rss_max_age_days: int = 30,
         incremental: bool = True,
-        include_paid_rss: bool = False,
+        include_paid_rss: Optional[bool] = None,
         persist_run: bool = True,
         fetch_backlog_limit: Optional[int] = None,
         resolve_backlog_limit: Optional[int] = None,
@@ -195,6 +219,7 @@ class V2CollectionService:
         resolve_backlog_resume_ratio: float = 0.0,
         backlog_poll_seconds: float = 0.0,
     ) -> dict:
+        effective_include_paid_rss = _default_include_paid_rss() if include_paid_rss is None else include_paid_rss
         fetch_backlog_limit = _env_optional_int("EDU_CTI_V2_FETCH_BACKLOG_LIMIT", fetch_backlog_limit)
         resolve_backlog_limit = _env_optional_int("EDU_CTI_V2_RESOLVE_BACKLOG_LIMIT", resolve_backlog_limit)
         fetch_backlog_resume_ratio = _env_float(
@@ -222,7 +247,8 @@ class V2CollectionService:
             "max_pages": max_pages,
             "rss_max_age_days": rss_max_age_days,
             "incremental": incremental,
-            "include_paid_rss": include_paid_rss,
+            "include_paid_rss": effective_include_paid_rss,
+            "include_paid_rss_source": "env" if include_paid_rss is None else "override",
             "fetch_backlog_limit": fetch_backlog_limit,
             "resolve_backlog_limit": resolve_backlog_limit,
             "fetch_backlog_resume_ratio": fetch_backlog_resume_ratio,
@@ -257,7 +283,7 @@ class V2CollectionService:
                 group_sources = _group_sources(
                     group=group,
                     sources=source_filter,
-                    include_paid=include_paid_rss,
+                    include_paid=effective_include_paid_rss,
                 )
                 if source_filter and group_sources == []:
                     continue
@@ -293,7 +319,7 @@ class V2CollectionService:
                         max_age_days=rss_max_age_days,
                         save_callback=_save_callback,
                         incremental=incremental,
-                        include_paid=include_paid_rss,
+                        include_paid=effective_include_paid_rss,
                     )
                 else:
                     results = _COLLECTORS[group](
@@ -314,7 +340,8 @@ class V2CollectionService:
                 "groups": groups_to_run,
                 "sources": source_filter,
                 "incremental": incremental,
-                "include_paid_rss": include_paid_rss,
+                "include_paid_rss": effective_include_paid_rss,
+                "include_paid_rss_source": "env" if include_paid_rss is None else "override",
                 "max_pages": max_pages,
                 "rss_max_age_days": rss_max_age_days,
                 "counts": {

@@ -173,8 +173,9 @@ run_plan() {
   load_env
   ensure_python
   local plan="${1:-rss_fast_refresh}"
+  shift || true
   cd "$ROOT_DIR"
-  "$PYTHON_BIN" -m src.edu_cti_v2.orchestrator_cli "$plan" --no-drain --exclude-paid-rss
+  "$PYTHON_BIN" -m src.edu_cti_v2.orchestrator_cli "$plan" --no-drain "$@"
 }
 
 case "${1:-}" in

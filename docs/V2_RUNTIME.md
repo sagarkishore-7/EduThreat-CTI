@@ -87,7 +87,7 @@ eduthreat-v2-runtime --workers 2 --no-scheduler
 
 ### Fetch And Discovery Budget Controls
 
-- `EDU_CTI_FETCH_TIER_PROFILE=scrapling_first` is the default low-cost article chain: Scrapling -> newspaper3k rescue -> Oxylabs -> archive.org.
+- `EDU_CTI_FETCH_TIER_PROFILE=scrapling_first` is the default low-cost article chain: Scrapling -> newspaper3k rescue -> optional Oxylabs -> archive.org.
 - `EDU_CTI_FETCH_ENABLE_NEWSPAPER=0` or `EDU_CTI_FETCH_DISABLE_NEWSPAPER=1` disables newspaper3k rescue if it causes source-specific issues.
 - `EDU_CTI_FETCH_ENABLE_SCRAPLING_BROWSER=1` enables the optional browser-backed Scrapling rescue tier. It is disabled by default because it launches Chromium.
 - `EDU_CTI_SCRAPLING_BROWSER_MODE=dynamic|stealthy` selects the browser rescue posture. Start with `dynamic`; when set to `stealthy`, the normal early browser rescue still uses DynamicFetcher and StealthyFetcher is reserved as the last fallback after archive.org fails.
@@ -96,7 +96,8 @@ eduthreat-v2-runtime --workers 2 --no-scheduler
 - `EDU_CTI_SCRAPLING_BROWSER_MAX_CONCURRENCY=1` caps concurrent browser-backed Scrapling fetches per worker process.
 - `EDU_CTI_SCRAPLING_PROXY_URL` or `EDU_CTI_SCRAPLING_PROXY_POOL` can provide known-good proxies for browser Scrapling. The runtime does not auto-discover free proxies because they are noisy, unsafe, and often blocked.
 - `EDU_CTI_FETCH_ENABLE_LEGACY_TIERS=1` is the rollback switch that allows the heavier HttpClient/curl_cffi/Playwright article tier again.
-- `EDU_CTI_OXYLABS_ENABLED=0` disables all Oxylabs article fetch and paid SERP calls, even if credentials are present.
+- `EDU_CTI_OXYLABS_ENABLED=0` disables the Oxylabs article-fetch tier and, unless `EDU_CTI_INCLUDE_OXYLABS_NEWS_SOURCE` is set, keeps the `oxylabs_news` source out of collection.
+- `EDU_CTI_INCLUDE_OXYLABS_NEWS_SOURCE=1` explicitly enables the `oxylabs_news` source during collection without relying on the broader Oxylabs fetch-tier flag.
 - `EDU_CTI_ENABLE_OXYLABS_SERP=0` keeps paid SERP disabled. URL discovery still runs through free Google News RSS via Scrapling.
 - `EDU_CTI_ENABLE_YAHOO_NEWS_DISCOVERY=1` enables the optional Yahoo News HTML fallback; keep disabled unless consent pages are no longer observed.
 - `EDU_CTI_NEWS_DISCOVERY_MAX_RESULTS=5` caps discovered article URLs per URL-less incident.

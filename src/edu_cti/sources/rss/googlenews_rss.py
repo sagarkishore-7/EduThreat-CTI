@@ -31,7 +31,9 @@ from bs4 import BeautifulSoup
 from src.edu_cti.core.config import (
     HISTORICAL_START_YEAR,
     GOOGLE_NEWS_RSS_EFFECTIVE_START_YEAR,
+    GOOGLE_NEWS_RSS_HISTORICAL_WINDOW_DAYS,
     GOOGLE_NEWS_RSS_QUERIES,
+    GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS,
 )
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.sources.rss.common import parse_rss_date
@@ -122,7 +124,7 @@ def _resolve_google_news_article_url_with_timeouts(link: str) -> Optional[str]:
 GOOGLE_NEWS_QUERIES = GOOGLE_NEWS_RSS_QUERIES
 
 # Delay between requests to be respectful
-REQUEST_DELAY = 2.0
+REQUEST_DELAY = GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS
 
 _EDUCATION_SIGNAL_RE = re.compile(
     r"\b("
@@ -228,13 +230,13 @@ def _build_google_news_url(
 
 
 def _generate_date_windows(start_year: int) -> List[tuple]:
-    """Generate 6-month date windows from start_year to present."""
+    """Generate historical date windows from start_year to present."""
     windows = []
     current = datetime(start_year, 1, 1)
     now = datetime.utcnow()
 
     while current < now:
-        end = current + timedelta(days=182)  # ~6 months
+        end = current + timedelta(days=GOOGLE_NEWS_RSS_HISTORICAL_WINDOW_DAYS)
         if end > now:
             end = now
         windows.append((
@@ -390,7 +392,9 @@ def build_googlenews_rss_incidents(
         date_windows = _generate_date_windows(effective_start)
         logger.info(
             f"Google News RSS: Historical mode — {len(date_windows)} windows "
-            f"from {effective_start} to present"
+            f"from {effective_start} to present "
+            f"({GOOGLE_NEWS_RSS_HISTORICAL_WINDOW_DAYS}-day windows, "
+            f"{len(GOOGLE_NEWS_QUERIES)} query/country tuples)"
         )
 
     cutoff = datetime.utcnow() - timedelta(days=max_age_days) if incremental else None

@@ -92,6 +92,34 @@ def test_collection_service_collects_group_and_records_run():
     assert run_repo.mark_finished.called
 
 
+def test_collection_service_uses_env_for_paid_rss_default(monkeypatch):
+    monkeypatch.setenv("EDU_CTI_INCLUDE_OXYLABS_NEWS_SOURCE", "1")
+    dual_writer = Mock()
+    run_repo = Mock()
+    task_repo = Mock()
+    task_repo.count_active.return_value = 0
+
+    captured = {}
+
+    def _collector(*, sources, max_age_days, save_callback, incremental, include_paid):
+        captured["include_paid"] = include_paid
+        return {}
+
+    service = V2CollectionService(
+        session_factory=lambda: _FakeSessionContext(_FakeSession()),
+        dual_writer=dual_writer,
+        pipeline_run_repository=run_repo,
+        pipeline_task_repository=task_repo,
+    )
+
+    with patch.dict("src.edu_cti_v2.services.collection._COLLECTORS", {"rss": _collector}, clear=False):
+        result = service.collect_into_v2(groups=["rss"], persist_run=False)
+
+    assert captured["include_paid"] is True
+    assert result["include_paid_rss"] is True
+    assert result["include_paid_rss_source"] == "env"
+
+
 def test_collection_service_pauses_when_fetch_backlog_is_above_limit():
     dual_writer = Mock()
     dual_writer.write_observation.side_effect = [uuid4()]

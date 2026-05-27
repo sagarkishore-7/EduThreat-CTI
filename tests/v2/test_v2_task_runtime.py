@@ -566,7 +566,7 @@ def test_task_runtime_processes_orchestrate_plan_task_and_marks_complete():
         id=uuid4(),
         target_id=uuid4(),
         run_id=uuid4(),
-        payload={"plan_name": "historical_full"},
+        payload={"plan_name": "historical"},
     )
     task_repo.lease_batch.return_value = [task]
     orchestration_service.execute_enqueued_plan.return_value = {"run_id": str(task.run_id), "status": "completed"}

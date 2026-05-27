@@ -261,7 +261,7 @@ async def run_v2_collection(
     max_pages: Optional[int] = Query(None, ge=1),
     rss_max_age_days: int = Query(30, ge=1, le=3650),
     incremental: bool = Query(True),
-    include_paid_rss: bool = Query(False),
+    include_paid_rss: Optional[bool] = Query(None),
     collection: V2CollectionService = Depends(get_v2_collection_service),
     _: bool = Depends(authenticate),
 ):

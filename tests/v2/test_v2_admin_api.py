@@ -384,7 +384,7 @@ def test_v2_admin_plans_endpoint_returns_named_plan_list():
 
     class _OrchestrationService:
         def list_plans(self):
-            return [{"name": "historical_full"}]
+            return [{"name": "historical"}]
 
     app = FastAPI()
     app.include_router(router, prefix="/api")
@@ -405,7 +405,7 @@ def test_v2_admin_plans_endpoint_returns_named_plan_list():
     response = client.get("/api/admin/v2/plans")
 
     assert response.status_code == 200
-    assert response.json()["items"][0]["name"] == "historical_full"
+    assert response.json()["items"][0]["name"] == "historical"
 
 
 def test_v2_admin_run_plan_endpoint_queues_orchestrated_result_by_default():

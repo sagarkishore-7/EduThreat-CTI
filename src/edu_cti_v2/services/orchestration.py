@@ -39,34 +39,15 @@ class V2PlanDefinition:
 
 
 _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
-    "historical_full": V2PlanDefinition(
-        name="historical_full",
-        description="Collect all source groups in full-historical mode and drain the v2 task queue.",
+    "historical": V2PlanDefinition(
+        name="historical",
+        description=(
+            "Collect all source groups in full-historical mode and drain the v2 task queue. "
+            "Oxylabs source/fetch/SERP coverage is controlled by environment flags."
+        ),
         collect_kwargs={
             "groups": ["curated", "news", "rss", "api"],
             "incremental": False,
-            "include_paid_rss": False,
-            "max_pages": None,
-            "rss_max_age_days": 3650,
-        },
-        drain_tasks=True,
-        worker_task_type=None,
-        worker_max_tasks=5000,
-        run_data_quality_sweep=True,
-        reenrich_worker_max_tasks=1000,
-        run_canonical_consistency_sweep=True,
-        canonical_consistency_limit=250,
-        canonical_consistency_scan_limit=2000,
-        run_campaign_correlation=True,
-        capture_research_metrics=True,
-    ),
-    "historical_max_coverage": V2PlanDefinition(
-        name="historical_max_coverage",
-        description="Historical run with paid RSS/search sources enabled for maximum coverage.",
-        collect_kwargs={
-            "groups": ["curated", "news", "rss", "api"],
-            "incremental": False,
-            "include_paid_rss": True,
             "max_pages": None,
             "rss_max_age_days": 3650,
         },
@@ -87,7 +68,6 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         collect_kwargs={
             "groups": ["curated", "news", "rss", "api"],
             "incremental": True,
-            "include_paid_rss": False,
             "max_pages": 20,
             "rss_max_age_days": 30,
         },
@@ -102,7 +82,6 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         collect_kwargs={
             "groups": ["rss"],
             "incremental": True,
-            "include_paid_rss": False,
             "max_pages": None,
             "rss_max_age_days": 30,
         },
@@ -117,7 +96,6 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         collect_kwargs={
             "groups": ["curated", "news", "rss", "api"],
             "incremental": True,
-            "include_paid_rss": False,
             "max_pages": 20,
             "rss_max_age_days": 30,
         },
@@ -129,7 +107,6 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         collect_kwargs={
             "groups": ["curated", "news", "rss", "api"],
             "incremental": True,
-            "include_paid_rss": False,
             "max_pages": 20,
             "rss_max_age_days": 30,
         },
@@ -144,6 +121,12 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         run_campaign_correlation=True,
         capture_research_metrics=True,
     ),
+}
+
+_PLAN_ALIASES: dict[str, str] = {
+    # Backward-compatible aliases for older dashboard buttons, scripts, and run records.
+    "historical_full": "historical",
+    "historical_max_coverage": "historical",
 }
 
 
@@ -204,9 +187,10 @@ class V2OrchestrationService:
         worker_max_tasks: Optional[int] = None,
         drain_tasks: Optional[bool] = None,
     ) -> tuple[V2PlanDefinition, dict[str, Any], bool, int]:
-        if plan_name not in _PLAN_DEFINITIONS:
+        canonical_plan_name = _PLAN_ALIASES.get(plan_name, plan_name)
+        if canonical_plan_name not in _PLAN_DEFINITIONS:
             raise ValueError(f"Unknown v2 plan: {plan_name}")
-        plan = _PLAN_DEFINITIONS[plan_name]
+        plan = _PLAN_DEFINITIONS[canonical_plan_name]
         collect_kwargs = {**plan.collect_kwargs, **(collect_overrides or {})}
         should_drain = plan.drain_tasks if drain_tasks is None else drain_tasks
         effective_worker_max_tasks = worker_max_tasks or plan.worker_max_tasks

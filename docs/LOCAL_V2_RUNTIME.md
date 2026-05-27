@@ -48,7 +48,9 @@ For a larger local coverage run:
 scripts/local_v2_stack.sh run-plan incremental_refresh
 ```
 
-Only use `historical_full` when you intentionally want a long backfill.
+Only use `historical` when you intentionally want a long backfill. Oxylabs
+coverage is controlled by env flags such as `EDU_CTI_OXYLABS_ENABLED` and
+`EDU_CTI_ENABLE_OXYLABS_SERP`, not by a separate historical plan name.
 
 ## Dashboard
 
@@ -99,13 +101,13 @@ EDU_CTI_SCRAPLING_BROWSER_MAX_CONCURRENCY=1
 EDU_CTI_ARTICLE_MIN_CONTENT_CHARS=500
 ```
 
-Free URL discovery can use Google News RSS, but local EU runs often get blocked
-while decoding Google wrapper links. For local soak tests, keep Google disabled
-and use Bing News RSS first because it exposes direct article URLs. Oxylabs SERP
-stays off unless you explicitly enable it:
+Free URL discovery uses Google News RSS first and Bing News RSS as the direct-URL
+fallback. If a local network is blocked while decoding Google wrappers, disable
+Google locally and leave Bing enabled. Oxylabs SERP stays off unless you
+explicitly enable it:
 
 ```bash
-EDU_CTI_ENABLE_GOOGLE_NEWS_DISCOVERY=0
+EDU_CTI_ENABLE_GOOGLE_NEWS_DISCOVERY=1
 EDU_CTI_ENABLE_BING_NEWS_DISCOVERY=1
 EDU_CTI_ENABLE_OXYLABS_SERP=0
 EDU_CTI_GOOGLE_NEWS_DECODE_TIMEOUT_SECONDS=4

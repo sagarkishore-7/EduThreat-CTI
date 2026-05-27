@@ -216,7 +216,7 @@ def _fetch_httpclient_enabled() -> bool:
 
 
 def _fetch_oxylabs_enabled() -> bool:
-    return _env_flag("EDU_CTI_OXYLABS_ENABLED", "1") and _env_flag(
+    return _env_flag("EDU_CTI_OXYLABS_ENABLED", "0") and _env_flag(
         "EDU_CTI_FETCH_ENABLE_OXYLABS", "1"
     ) and not _env_flag(
         "EDU_CTI_FETCH_DISABLE_OXYLABS", "0"

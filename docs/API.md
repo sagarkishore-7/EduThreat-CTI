@@ -231,7 +231,7 @@ curl -X POST "https://<your-v2-api-domain>/api/admin/v2/login" \
 ```
 
 ```bash
-curl -X POST "https://<your-v2-api-domain>/api/admin/v2/run-plan?plan_name=historical_full" \
+curl -X POST "https://<your-v2-api-domain>/api/admin/v2/run-plan?plan_name=historical" \
   -H "X-Session-Token: <session_token>"
 ```
 

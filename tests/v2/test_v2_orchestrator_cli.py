@@ -18,7 +18,7 @@ def test_orchestrator_cli_runs_plan_and_prints_json(capsys, monkeypatch):
         "sys.argv",
         [
             "eduthreat-v2-run-plan",
-            "historical_max_coverage",
+            "historical",
             "--worker-id",
             "cli-test",
             "--worker-max-tasks",
@@ -33,7 +33,7 @@ def test_orchestrator_cli_runs_plan_and_prints_json(capsys, monkeypatch):
     output = json.loads(capsys.readouterr().out)
     assert output["ok"] is True
     assert captured == {
-        "plan_name": "historical_max_coverage",
+        "plan_name": "historical",
         "worker_id": "cli-test",
         "worker_max_tasks": 42,
         "drain_tasks": False,
@@ -46,7 +46,7 @@ def test_orchestrator_cli_rejects_conflicting_paid_flags(monkeypatch):
         "sys.argv",
         [
             "eduthreat-v2-run-plan",
-            "historical_max_coverage",
+            "historical",
             "--include-paid-rss",
             "--exclude-paid-rss",
         ],

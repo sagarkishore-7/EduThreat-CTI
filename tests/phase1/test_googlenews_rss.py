@@ -1,7 +1,28 @@
 """Unit tests for Google News RSS ingestion behavior."""
 
 from src.edu_cti.core.deduplication import is_google_news_wrapper_url
+from src.edu_cti.core.config import (
+    GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG,
+    GOOGLE_NEWS_RSS_QUERIES,
+    NEWS_SEARCH_QUERIES_ALL,
+)
 from src.edu_cti.sources.rss import googlenews_rss
+
+
+def test_google_news_rss_expands_all_discovery_queries_across_locales():
+    query_set = {query for query, _lang, _country in GOOGLE_NEWS_RSS_QUERIES}
+    tuple_set = set(GOOGLE_NEWS_RSS_QUERIES)
+
+    assert set(NEWS_SEARCH_QUERIES_ALL).issubset(query_set)
+    assert len(GOOGLE_NEWS_RSS_QUERIES) > len(NEWS_SEARCH_QUERIES_ALL)
+    assert ("university cyberattack", "en", "CA") in tuple_set
+    assert ("university cyberattack", "en", "ZA") in tuple_set
+    assert ("universidad ciberataque", "es", "CO") in tuple_set
+    assert ("université cyberattaque", "fr", "BE") in tuple_set
+    assert ("universität cyberangriff", "de", "CH") in tuple_set
+    assert ("大學 網路攻擊", "zh", "CN") in tuple_set
+    assert ("جامعة هجوم إلكتروني", "ar", "EG") in tuple_set
+    assert all(country for countries in GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG.values() for country in countries)
 
 
 def test_clean_google_news_description_strips_feed_html():
