@@ -737,6 +737,171 @@ def test_enrichment_service_reviews_discovery_victim_not_evidenced_in_article():
     assert "not supported" in saved.manual_review_reason
 
 
+def test_enrichment_service_does_not_accept_single_geo_token_institution_drift():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Texas University",
+        "attack_category": "espionage",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Texas University",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "securityweek"
+    incident.source_group = "news"
+    incident.raw_title = "Alleged Chinese State Hacker Extradited to US"
+    incident.raw_subtitle = None
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    document = _article_document(incident)
+    document.title = incident.raw_title
+    document.content_text = (
+        "The Justice Department announced charges in federal court in Texas. "
+        "The indictment says the suspect targeted US universities and virologists "
+        "conducting COVID-19 research, but it does not name a specific Texas campus."
+    )
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is False
+    assert outcome["is_education_related"] is None
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.typed_enrichment is None
+    assert saved.manual_review_required is True
+    assert "not supported" in saved.manual_review_reason
+
+
+def test_enrichment_service_repairs_yearless_dates_to_source_publish_year():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Columbia University",
+        "attack_category": "data_breach_external",
+        "timeline": [
+            {"date": "2024-05-16", "event_type": "initial_access"},
+            {"date": "2024-06-24", "event_type": "discovery"},
+        ],
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Columbia University",
+            "incident_date": "2024-05-16",
+            "source_published_date": "2025-08-08",
+            "timeline": [
+                {"date": "2024-05-16", "event_type": "initial_access"},
+                {"date": "2024-06-24", "event_type": "discovery"},
+            ],
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "therecord"
+    incident.source_group = "news"
+    incident.source_published_at = datetime(2025, 8, 8, 8, 0, tzinfo=timezone.utc)
+    incident.raw_title = "Columbia University says hacker stole SSNs and other data"
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    document = _article_document(incident)
+    document.publish_date = date(2025, 8, 8)
+    document.title = incident.raw_title
+    document.content_text = (
+        "Columbia University said the incident was discovered on June 24 when the "
+        "university had a tech outage. An investigation discovered that hackers "
+        "breached systems on May 16 and siphoned data from the school."
+    )
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is True
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.raw_extraction["incident_date"] == "2025-05-16"
+    assert saved.raw_extraction["timeline"][0]["date"] == "2025-05-16"
+    assert saved.raw_extraction["timeline"][1]["date"] == "2025-06-24"
+    assert saved.typed_enrichment["timeline"][0]["date"] == "2025-05-16"
+
+
+def test_enrichment_service_keeps_explicit_historical_year_dates():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
+    enricher = Mock()
+    result_model = Mock()
+    result_model.model_dump.return_value = {
+        "institution_name": "Columbia University",
+        "attack_category": "data_breach_external",
+    }
+    enricher._enrich_article.return_value = (
+        result_model,
+        {
+            "is_edu_cyber_incident": True,
+            "institution_name": "Columbia University",
+            "incident_date": "2024-05-16",
+            "source_published_date": "2025-08-08",
+            "_storage_debug": {"llm_metadata": {}, "raw_llm_responses": {}},
+        },
+    )
+
+    incident = _source_incident()
+    incident.source_name = "therecord"
+    incident.source_group = "news"
+    incident.source_published_at = datetime(2025, 8, 8, 8, 0, tzinfo=timezone.utc)
+    incident.raw_title = "Columbia University breach notification update"
+    incident.raw_institution_name = None
+    incident.raw_victim_name = None
+    document = _article_document(incident)
+    document.publish_date = date(2025, 8, 8)
+    document.title = incident.raw_title
+    document.content_text = "Columbia University said hackers breached systems on May 16, 2024."
+    article_repo.get_selected_document.return_value = document
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+
+    outcome = service.enrich_source_incident(Mock(), incident)
+
+    assert outcome["enriched"] is True
+    saved = source_enrichment_repo.add.call_args.args[1]
+    assert saved.raw_extraction["incident_date"] == "2024-05-16"
+
+
 def test_enrichment_service_rejects_related_link_contamination():
     article_repo = Mock()
     source_enrichment_repo = Mock()

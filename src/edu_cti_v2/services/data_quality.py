@@ -21,7 +21,8 @@ SOURCE_DATE_RELATIVE_GUARD_GROUPS = {"news", "rss"}
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]|$)")
 _GENERIC_EDU_ENTITY_RE = (
     r"(?:university|college|school|academy|institute|polytechnic|library|district|"
-    r"school district|community college|technical college|research university|research institute)"
+    r"school district|community college|technical college|research university|"
+    r"research institute|health center)"
 )
 _GENERIC_INSTITUTION_RE = re.compile(
     r"^(?:(?:a|an)\s+)?"

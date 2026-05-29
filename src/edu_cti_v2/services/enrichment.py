@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import hashlib
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 import re
 from typing import Any, Dict, Literal, Optional, Tuple
 from uuid import uuid4
@@ -37,7 +37,8 @@ _COLLECTIVE_IDENTITY_RE = re.compile(
 )
 _GENERIC_EDU_ENTITY_RE = (
     r"(?:university|college|school|academy|institute|polytechnic|district|"
-    r"school district|community college|technical college|research university|research institute)"
+    r"school district|community college|technical college|research university|"
+    r"research institute|health center)"
 )
 _GENERIC_SINGLE_IDENTITY_RE = re.compile(
     r"^(?:(?:the\s+website\s+of\s+)?(?:a|an|the)\s+)?"
@@ -144,6 +145,24 @@ _GENERIC_IDENTITY_TOKENS = {
     "unified",
     "university",
 }
+_MONTH_NAME_BY_NUMBER = {
+    1: "January",
+    2: "February",
+    3: "March",
+    4: "April",
+    5: "May",
+    6: "June",
+    7: "July",
+    8: "August",
+    9: "September",
+    10: "October",
+    11: "November",
+    12: "December",
+}
+_HISTORICAL_DATE_CONTEXT_RE = re.compile(
+    r"\b(?:last|previous|prior)\s+year\b|\ba\s+year\s+(?:earlier|before|prior)\b",
+    re.IGNORECASE,
+)
 
 
 def _coerce_string_list(value: Any) -> list[str]:
@@ -227,11 +246,136 @@ def _identity_token_supports_article(identity: Optional[str], text: str) -> bool
     tokens = _distinct_identity_tokens(identity)
     if not tokens:
         return False
+    # For names like "Texas University", a single geographic token plus a
+    # generic education suffix is too weak: any article mentioning Texas would
+    # otherwise support a hallucinated institution. Exact phrase/alias matching
+    # is still handled before this token-overlap fallback.
+    if len(tokens) == 1 and _EDUCATION_SCOPE_RE.search(str(identity or "")):
+        return False
     article_tokens = set(re.findall(r"[a-z0-9]+", _compact_text(text).lower()))
     overlap = tokens & article_tokens
     if len(tokens) <= 2:
         return len(overlap) == len(tokens)
     return len(overlap) >= 2 and len(overlap) / len(tokens) >= 0.66
+
+
+def _parse_iso_day(value: Any) -> Optional[date]:
+    text = str(value or "").strip()
+    if not _ISO_DATE_RE.match(text):
+        return None
+    try:
+        return date.fromisoformat(text[:10])
+    except ValueError:
+        return None
+
+
+def _source_or_document_publish_date(
+    source_incident: SourceIncident,
+    document: ArticleDocument,
+    raw_json_data: Dict[str, Any],
+) -> Optional[date]:
+    for candidate in (
+        raw_json_data.get("source_published_date"),
+        raw_json_data.get("publication_date"),
+        document.publish_date,
+        source_incident.source_published_at.date()
+        if source_incident.source_published_at
+        else None,
+    ):
+        if isinstance(candidate, date) and not isinstance(candidate, datetime):
+            return candidate
+        parsed = _parse_iso_day(candidate)
+        if parsed:
+            return parsed
+    return None
+
+
+def _date_phrase_contexts(article_content: Optional[str], parsed: date) -> list[str]:
+    text = _compact_text(article_content)
+    if not text:
+        return []
+    month = _MONTH_NAME_BY_NUMBER[parsed.month]
+    pattern = re.compile(
+        rf"\b{re.escape(month)}\.?\s+0?{parsed.day}\b",
+        re.IGNORECASE,
+    )
+    contexts: list[str] = []
+    for match in pattern.finditer(text):
+        start = max(0, match.start() - 80)
+        end = min(len(text), match.end() + 80)
+        contexts.append(text[start:end])
+    return contexts
+
+
+def _repair_yearless_date_if_needed(
+    value: Any,
+    *,
+    publish_date: Optional[date],
+    article_content: Optional[str],
+) -> Any:
+    parsed = _parse_iso_day(value)
+    if parsed is None or publish_date is None:
+        return value
+    if publish_date.year - parsed.year != 1:
+        return value
+    contexts = _date_phrase_contexts(article_content, parsed)
+    if not contexts:
+        return value
+    extracted_year = str(parsed.year)
+    for context in contexts:
+        if extracted_year in context or _HISTORICAL_DATE_CONTEXT_RE.search(context):
+            return value
+    return f"{publish_date.year:04d}-{parsed.month:02d}-{parsed.day:02d}"
+
+
+def _repair_yearless_dates_in_payload(
+    payload: Optional[Dict[str, Any]],
+    *,
+    publish_date: Optional[date],
+    article_content: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(payload, dict):
+        return payload
+    updated = dict(payload)
+    changed = False
+    for key in ("incident_date", "discovery_date", "public_disclosure_date", "notification_date"):
+        if key not in updated:
+            continue
+        repaired = _repair_yearless_date_if_needed(
+            updated.get(key),
+            publish_date=publish_date,
+            article_content=article_content,
+        )
+        if repaired != updated.get(key):
+            updated[key] = repaired
+            changed = True
+    timeline = updated.get("timeline")
+    if isinstance(timeline, list):
+        repaired_timeline: list[Any] = []
+        for item in timeline:
+            if isinstance(item, dict) and item.get("date"):
+                repaired_item = dict(item)
+                repaired = _repair_yearless_date_if_needed(
+                    repaired_item.get("date"),
+                    publish_date=publish_date,
+                    article_content=article_content,
+                )
+                if repaired != repaired_item.get("date"):
+                    repaired_item["date"] = repaired
+                    changed = True
+                repaired_timeline.append(repaired_item)
+            else:
+                repaired_timeline.append(item)
+        if changed:
+            updated["timeline"] = repaired_timeline
+    if changed:
+        notes = str(updated.get("extraction_notes") or "").strip()
+        repair_note = (
+            "Adjusted yearless article dates to the source publication year "
+            "when the article named only month/day and did not mention the extracted prior year."
+        )
+        updated["extraction_notes"] = f"{notes} {repair_note}".strip() if notes else repair_note
+    return updated
 
 
 def _article_main_text_supports_identity(
@@ -959,6 +1103,22 @@ class V2EnrichmentService:
         typed_enrichment = (
             result.model_dump(mode="json", exclude_none=False) if result is not None else None
         )
+        if isinstance(raw_json_data, dict):
+            source_publish_date = _source_or_document_publish_date(
+                source_incident,
+                document,
+                raw_json_data,
+            )
+            raw_json_data = _repair_yearless_dates_in_payload(
+                raw_json_data,
+                publish_date=source_publish_date,
+                article_content=document.content_text,
+            )
+            typed_enrichment = _repair_yearless_dates_in_payload(
+                typed_enrichment,
+                publish_date=source_publish_date,
+                article_content=document.content_text,
+            )
         is_education_related = None
         if isinstance(raw_json_data, dict):
             is_education_related = raw_json_data.get("is_edu_cyber_incident")
