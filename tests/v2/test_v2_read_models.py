@@ -674,6 +674,35 @@ def test_read_service_dashboard_summary_prefers_cached_snapshot():
     canonical_repo.get_dashboard_rollup.assert_not_called()
 
 
+def test_read_service_dashboard_summary_rebuilds_truncated_country_snapshot():
+    dashboard_snapshot = {
+        "totals": {"canonical_incident_count": 5, "countries_affected": 2},
+        "stats": {"total_incidents": 5, "countries_affected": 2},
+        "intelligence_summary": {"overview": {"total_incidents": 5}},
+        "incidents_by_country": [
+            {"category": "United States", "country_code": "US", "count": 4}
+        ],
+        "incidents_by_attack_type": [],
+        "incidents_by_ransomware": [],
+        "incidents_over_time": [],
+        "recent_incidents": [],
+    }
+    canonical_repo = Mock()
+    analytics_repo = Mock()
+    analytics_repo.get_by_key.return_value = SimpleNamespace(state_payload=dashboard_snapshot)
+
+    service = V2CanonicalReadService(
+        canonical_repository=canonical_repo,
+        analytics_refresh_repository=analytics_repo,
+    )
+    service.build_dashboard_payload = Mock(return_value={"rebuilt": True})
+
+    summary = service.get_dashboard_summary(Mock())
+
+    assert summary == {"rebuilt": True}
+    service.build_dashboard_payload.assert_called_once()
+
+
 def test_read_service_can_return_dashboard_stats_only():
     canonical_repo = Mock()
     analytics_repo = Mock()
@@ -846,7 +875,7 @@ def test_read_service_build_dashboard_payload_shapes_full_dashboard_response():
         "education_related_count": 7,
         "incidents_with_ransomware": 4,
         "incidents_with_data_breach": 3,
-        "countries_affected": 5,
+        "countries_affected": 12,
         "unique_threat_actors": 2,
         "unique_ransomware_families": 3,
     }
@@ -918,6 +947,7 @@ def test_read_service_build_dashboard_payload_shapes_full_dashboard_response():
     assert payload["intelligence_summary"]["tradecraft"]["attack_clusters"][0]["cluster"] == "Ransomware & Extortion"
     assert payload["diamond_summary"]["coverage"]["victim_vertex_count"] == 1
     assert payload["diamond_summary"]["vertices"]["top_adversaries"][0]["name"] == "SomeGroup"
+    assert canonical_repo.get_country_breakdown.call_args.kwargs["limit"] == 12
 
 
 def test_read_service_intelligence_summary_uses_dashboard_snapshot_for_open_statuses():

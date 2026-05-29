@@ -341,7 +341,7 @@ async def get_v2_analytics_breakdowns(
 
 @router.get("/analytics/countries")
 async def get_v2_country_analytics(
-    limit: int = Query(20, ge=1, le=500),
+    limit: int = Query(500, ge=1, le=500),
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),

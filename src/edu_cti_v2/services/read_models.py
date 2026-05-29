@@ -19,6 +19,8 @@ from src.edu_cti_v2.models import (
 )
 from src.edu_cti_v2.repositories import AnalyticsRefreshRepository, ArticleRepository, CanonicalIncidentRepository
 
+_DASHBOARD_COUNTRY_LIMIT = 500
+
 
 def _serialize_membership(
     membership: CanonicalMembership,
@@ -681,7 +683,22 @@ def _is_full_dashboard_snapshot(payload: dict[str, Any]) -> bool:
         "incidents_over_time",
         "recent_incidents",
     }
-    return required.issubset(payload.keys())
+    if not required.issubset(payload.keys()):
+        return False
+
+    # Map consumers need every country bucket, not just the historical top-10
+    # dashboard table. Treat older cached snapshots as stale if they report more
+    # affected countries than they include in incidents_by_country.
+    stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+    totals = payload.get("totals") if isinstance(payload.get("totals"), dict) else {}
+    expected_countries = stats.get("countries_affected") or totals.get("countries_affected") or 0
+    try:
+        expected_country_count = int(expected_countries or 0)
+    except (TypeError, ValueError):
+        expected_country_count = 0
+    country_rows = payload.get("incidents_by_country")
+    included_country_count = len(country_rows) if isinstance(country_rows, list) else 0
+    return expected_country_count == 0 or included_country_count >= expected_country_count
 
 
 def _is_diamond_dashboard_snapshot(payload: dict[str, Any]) -> bool:
@@ -1915,7 +1932,15 @@ class V2CanonicalReadService:
     ) -> dict[str, Any]:
         effective_refreshed_at = refreshed_at or datetime.now(timezone.utc).isoformat()
         rollup = self.canonical_repository.get_dashboard_rollup(session, statuses=statuses)
-        countries = self.canonical_repository.get_country_breakdown(session, statuses=statuses)
+        country_limit = min(
+            max(int(rollup.get("countries_affected") or 0), 10),
+            _DASHBOARD_COUNTRY_LIMIT,
+        )
+        countries = self.canonical_repository.get_country_breakdown(
+            session,
+            statuses=statuses,
+            limit=country_limit,
+        )
         attacks = self.canonical_repository.get_attack_breakdown(session, statuses=statuses)
         ransomware = self.canonical_repository.get_ransomware_breakdown(session, statuses=statuses)
         trend = self.canonical_repository.get_incident_trend(
@@ -2081,7 +2106,7 @@ class V2CanonicalReadService:
         session: Session,
         *,
         statuses: Sequence[str] = ("open",),
-        limit: int = 20,
+        limit: int = _DASHBOARD_COUNTRY_LIMIT,
     ) -> dict[str, Any]:
         data = _to_count_by_category(
             self.canonical_repository.get_country_breakdown(session, statuses=statuses, limit=limit),
