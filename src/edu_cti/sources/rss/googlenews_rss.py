@@ -47,6 +47,20 @@ from src.edu_cti.sources.rss.common import parse_rss_date
 logger = logging.getLogger(__name__)
 SOURCE_NAME = "googlenews_rss"
 
+_GOOGLE_NEWS_DECODE_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36"
+    ),
+}
+
+# Google News often serves the decoder page behind a consent interstitial in
+# headless/server environments. This non-personalized consent cookie lets us
+# reach the article decoder page without adding a browser dependency.
+_GOOGLE_NEWS_DECODE_COOKIES = {
+    "SOCS": "CAISHAgBEhJnd3NfMjAyNDA1MjAtMF9SQzIaAmVuIAEaBgiA_LyaBg",
+}
+
 # Queries are defined centrally in:
 #   src/edu_cti/core/config.py → GOOGLE_NEWS_RSS_QUERIES
 # Each entry is a (query, language_code, country_code) tuple.
@@ -82,11 +96,22 @@ def _resolve_google_news_article_url_with_timeouts(link: str) -> Optional[str]:
         try:
             response = requests.get(
                 f"https://news.google.com/{path_prefix}/{base64_str}",
+                headers=_GOOGLE_NEWS_DECODE_HEADERS,
+                cookies=_GOOGLE_NEWS_DECODE_COOKIES,
                 timeout=timeout,
             )
             response.raise_for_status()
         except requests.RequestException:
             continue
+
+        signature_match = re.search(r'data-n-a-sg="([^"]+)"', response.text)
+        timestamp_match = re.search(r'data-n-a-ts="([^"]+)"', response.text)
+        if signature_match and timestamp_match:
+            params = {
+                "signature": signature_match.group(1),
+                "timestamp": timestamp_match.group(1),
+            }
+            break
 
         element = BeautifulSoup(response.text, "html.parser").select_one("c-wiz > div[jscontroller]")
         if element:
@@ -112,14 +137,14 @@ def _resolve_google_news_article_url_with_timeouts(link: str) -> Optional[str]:
             "https://news.google.com/_/DotsSplashUi/data/batchexecute",
             headers={
                 "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                "(KHTML, like Gecko) Chrome/129.0.0.0 Safari/537.36",
+                **_GOOGLE_NEWS_DECODE_HEADERS,
             },
+            cookies=_GOOGLE_NEWS_DECODE_COOKIES,
             data=f"f.req={quote(json.dumps([[payload]]))}",
             timeout=timeout,
         )
         response.raise_for_status()
-        parsed_data = json.loads(response.text.split("\n\n")[1])[:-2]
+        parsed_data = json.loads(response.text.split("\n\n", 1)[1])[:-2]
         decoded_url = json.loads(parsed_data[0][2])[1]
     except (requests.RequestException, json.JSONDecodeError, IndexError, TypeError, KeyError):
         return None
@@ -364,9 +389,9 @@ def build_googlenews_rss_incidents(
                 description = item.get("description", "")
                 source_name = item.get("source_name")
 
-                # Dedup by source-event id / Google wrapper, but do not persist the
-                # wrapper URL as an enrichment candidate. Phase 2 will discover a
-                # real article URL via SERP/title matching.
+                # Dedup by source-event id / Google wrapper. If immediate decode
+                # fails, persist the wrapper so Phase 2 can retry wrapper
+                # resolution instead of falling back to title-only rediscovery.
                 if not _is_http_url(link):
                     discovery_metrics["invalid_url_skipped"] += 1
                     continue
@@ -395,6 +420,7 @@ def build_googlenews_rss_incidents(
                 resolved_link = _resolve_google_news_article_url(link)
                 source_event_id = resolved_link or link
                 incident_id = make_incident_id(SOURCE_NAME, source_event_id)
+                article_or_wrapper_url = resolved_link or link
 
                 incident = BaseIncident(
                     incident_id=incident_id,
@@ -413,7 +439,7 @@ def build_googlenews_rss_incidents(
                     title=title[:200],
                     subtitle=description[:300] if description else None,
                     primary_url=None,
-                    all_urls=[resolved_link] if resolved_link else [],
+                    all_urls=[article_or_wrapper_url],
                     attack_type_hint=None,
                     status="suspected",
                     source_confidence="medium",
@@ -428,6 +454,8 @@ def build_googlenews_rss_incidents(
                         "search_lang": lang,
                         "search_country": country,
                         "google_news_source": source_name or "unknown",
+                        "google_news_wrapper_url": link,
+                        "resolved_article_url": resolved_link,
                     },
                 )
 

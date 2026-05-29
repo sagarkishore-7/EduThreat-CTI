@@ -1,5 +1,7 @@
 """Unit tests for Google News RSS ingestion behavior."""
 
+import json
+
 from src.edu_cti.core.deduplication import is_google_news_wrapper_url
 from src.edu_cti.core.config import (
     GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG,
@@ -86,6 +88,36 @@ def test_google_news_resolver_prefers_modern_decoder(monkeypatch):
 
     assert resolved == "https://example.edu/news/canvas-security-incident"
     assert calls == {"modern": 1, "legacy_fallback": 0}
+
+
+def test_google_news_timeout_resolver_uses_consent_cookie(monkeypatch):
+    calls = []
+
+    class FakeResponse:
+        def __init__(self, text):
+            self.text = text
+
+        def raise_for_status(self):
+            return None
+
+    def fake_get(_url, **kwargs):
+        calls.append(("get", kwargs))
+        return FakeResponse('<div data-n-a-sg="signature" data-n-a-ts="12345"></div>')
+
+    def fake_post(_url, **kwargs):
+        calls.append(("post", kwargs))
+        decoded_payload = json.dumps(["garturlres", "https://example.edu/story"])
+        return FakeResponse(")]}'\n\n" + json.dumps([["wrb.fr", "Fbv4je", decoded_payload], None, None]))
+
+    monkeypatch.setattr(googlenews_rss.requests, "get", fake_get)
+    monkeypatch.setattr(googlenews_rss.requests, "post", fake_post)
+
+    resolved = googlenews_rss._resolve_google_news_article_url_with_timeouts(
+        "https://news.google.com/rss/articles/CBMi-test?oc=5"
+    )
+
+    assert resolved == "https://example.edu/story"
+    assert all(call[1]["cookies"]["SOCS"] for call in calls)
 
 
 def test_build_googlenews_rss_incidents_serializes_pub_date(monkeypatch):
@@ -231,4 +263,8 @@ def test_build_googlenews_rss_incidents_keeps_item_when_wrapper_cannot_be_resolv
 
     assert len(incidents) == 1
     assert incidents[0].source_event_id == "https://news.google.com/rss/articles/test-wrapper"
-    assert incidents[0].all_urls == []
+    assert incidents[0].all_urls == ["https://news.google.com/rss/articles/test-wrapper"]
+    assert incidents[0].raw_source_payload["google_news_wrapper_url"] == (
+        "https://news.google.com/rss/articles/test-wrapper"
+    )
+    assert incidents[0].raw_source_payload["resolved_article_url"] is None
