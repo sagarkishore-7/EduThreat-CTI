@@ -96,6 +96,17 @@ _HEALTHCARE_SCOPE_RE = re.compile(
     r"klinikum|universit[a\u00e4]tsklinikum|chu)\b",
     re.IGNORECASE,
 )
+_ACADEMIC_MEDICAL_CENTER_RE = re.compile(
+    r"\b(?:"
+    r"academic\s+medical\s+cent(?:er|re)|"
+    r"medical\s+school|school\s+of\s+medicine|"
+    r"health\s+sciences?\s+cent(?:er|re)|"
+    r"university\s+(?:hospital|hospitals|clinic|medical\s+cent(?:er|re)|health)|"
+    r"(?:hospital|clinic|medical\s+cent(?:er|re))\s+(?:of|at)\s+(?:the\s+)?university|"
+    r"universit[a\u00e4]tsklinikum|universit(?:y|ies)\s+health"
+    r")\b",
+    re.IGNORECASE,
+)
 _IDENTITY_TOKEN_STOP_WORDS = {
     "the",
     "of",
@@ -498,6 +509,119 @@ def _structured_curated_source_should_review_non_edu_article(source_incident) ->
         or _INCIDENT_LANGUAGE_RE.search(title_text)
     )
     return has_education_scope and has_attack_context
+
+
+def _academic_medical_context_text(
+    source_incident,
+    raw_json_data: Dict[str, Any],
+    typed_enrichment: Optional[Dict[str, Any]],
+    *,
+    article_title: Optional[str],
+    article_content: Optional[str],
+) -> str:
+    typed = typed_enrichment if isinstance(typed_enrichment, dict) else {}
+    values = [
+        getattr(source_incident, "raw_institution_name", None),
+        getattr(source_incident, "raw_victim_name", None),
+        getattr(source_incident, "raw_institution_type", None),
+        getattr(source_incident, "raw_title", None),
+        getattr(source_incident, "raw_subtitle", None),
+        raw_json_data.get("institution_name"),
+        raw_json_data.get("institution_name_en"),
+        raw_json_data.get("institution_type"),
+        raw_json_data.get("education_relevance_reasoning"),
+        typed.get("institution_name"),
+        typed.get("institution_type"),
+        article_title,
+        (article_content or "")[:2500],
+    ]
+    return " ".join(_compact_text(value) for value in values if value)
+
+
+def _is_university_branded_healthcare_context(
+    source_incident,
+    raw_json_data: Dict[str, Any],
+    typed_enrichment: Optional[Dict[str, Any]],
+    *,
+    article_title: Optional[str],
+    article_content: Optional[str],
+) -> bool:
+    text = _academic_medical_context_text(
+        source_incident,
+        raw_json_data,
+        typed_enrichment,
+        article_title=article_title,
+        article_content=article_content,
+    )
+    if not text:
+        return False
+    if _ACADEMIC_MEDICAL_CENTER_RE.search(text):
+        return True
+    return bool(_HEALTHCARE_SCOPE_RE.search(text) and _EDUCATION_SCOPE_RE.search(text))
+
+
+def _mark_academic_medical_center_in_scope(
+    source_incident,
+    raw_json_data: Dict[str, Any],
+    typed_enrichment: Optional[Dict[str, Any]],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Promote university-branded hospitals to education-adjacent incidents."""
+    updated_raw = dict(raw_json_data)
+    updated_raw["is_edu_cyber_incident"] = True
+    updated_raw["_education_adjacent_scope"] = "academic_medical_center"
+    reason = (
+        "University-branded hospital, medical center, or health sciences center "
+        "is treated as education-adjacent scope."
+    )
+    existing_reasoning = str(updated_raw.get("education_relevance_reasoning") or "").strip()
+    if reason not in existing_reasoning:
+        updated_raw["education_relevance_reasoning"] = (
+            f"{existing_reasoning} {reason}".strip() if existing_reasoning else reason
+        )
+
+    updated_typed = dict(typed_enrichment or {})
+    source_identity = recover_source_identity(
+        raw_institution_name=source_incident.raw_institution_name,
+        raw_victim_name=source_incident.raw_victim_name,
+        raw_subtitle=source_incident.raw_subtitle,
+        raw_title=source_incident.raw_title,
+    )
+    institution_name = _coerce_optional_text(
+        updated_typed.get("institution_name")
+        or updated_raw.get("institution_name")
+        or updated_raw.get("institution_name_en")
+        or source_identity
+    )
+    if institution_name:
+        updated_raw["institution_name"] = updated_raw.get("institution_name") or institution_name
+        updated_typed["institution_name"] = institution_name
+    updated_raw["institution_type"] = updated_raw.get("institution_type") or "university_hospital"
+    updated_typed["institution_type"] = updated_typed.get("institution_type") or "university_hospital"
+    updated_typed["attack_category"] = (
+        updated_typed.get("attack_category")
+        or updated_raw.get("attack_category")
+        or _coerce_attack_hint(getattr(source_incident, "raw_attack_hint", None))
+        or "cyber_incident"
+    )
+    updated_typed["incident_date"] = (
+        updated_typed.get("incident_date")
+        or updated_raw.get("incident_date")
+        or getattr(source_incident, "raw_incident_date", None)
+    )
+    updated_typed["incident_date_precision"] = (
+        updated_typed.get("incident_date_precision")
+        or updated_raw.get("incident_date_precision")
+        or getattr(source_incident, "raw_date_precision", None)
+        or _infer_date_precision(updated_typed.get("incident_date"))
+    )
+    updated_typed["enriched_summary"] = (
+        updated_typed.get("enriched_summary")
+        or updated_raw.get("enriched_summary")
+        or getattr(source_incident, "raw_title", None)
+    )
+    updated_typed["education_relevance_reasoning"] = updated_raw["education_relevance_reasoning"]
+    updated_typed["_education_adjacent_scope"] = "academic_medical_center"
+    return updated_raw, updated_typed
 
 
 def _coerce_attack_hint(value: Any) -> Optional[str]:
@@ -1124,6 +1248,25 @@ class V2EnrichmentService:
             is_education_related = raw_json_data.get("is_edu_cyber_incident")
             if is_education_related is None and raw_json_data.get("_not_education_related"):
                 is_education_related = False
+
+        if (
+            isinstance(raw_json_data, dict)
+            and is_education_related is False
+            and _is_university_branded_healthcare_context(
+                source_incident,
+                raw_json_data,
+                typed_enrichment,
+                article_title=document.title,
+                article_content=document.content_text,
+            )
+        ):
+            raw_json_data, typed_enrichment = _mark_academic_medical_center_in_scope(
+                source_incident,
+                raw_json_data,
+                typed_enrichment,
+            )
+            result = result or object()
+            is_education_related = True
 
         if (
             isinstance(raw_json_data, dict)

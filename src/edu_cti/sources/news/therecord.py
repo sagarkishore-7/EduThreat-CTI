@@ -11,13 +11,18 @@ from src.edu_cti.core.http import HttpClient
 from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.utils import now_utc_iso
 from .common import (
+    SearchQueryMetrics,
+    build_search_query_variants,
     is_cancelled,
     default_client,
     extract_date,
     fetch_html,
     matches_keywords,
+    page_limit_for_query_variant,
     prepare_keywords,
     prepare_search_queries,
+    record_news_query_metrics,
+    should_continue_to_next_query_variant,
 )
 
 SOURCE_NAME = config.SOURCE_THERECORD
@@ -41,35 +46,35 @@ def _find_next_page_link(soup: BeautifulSoup, current_url: str) -> Optional[str]
     """
     if not soup:
         return None
-    
+
     # Find the pagination container
     pagination = soup.select_one("ul.ais-Pagination-list")
     if not pagination:
         return None
-    
+
     # Find the next page button
     next_page_item = pagination.select_one("li.ais-Pagination-item--nextPage")
     if not next_page_item:
         return None
-    
+
     # Check if the next page button is disabled
     if "ais-Pagination-item--disabled" in next_page_item.get("class", []):
         return None
-    
+
     # Find the link inside the next page button
     next_link = next_page_item.find("a", class_="ais-Pagination-link", href=True)
     if not next_link:
         return None
-    
+
     href = next_link.get("href", "").strip()
-    
+
     # If href is "#" or empty, construct URL by incrementing page number
     if not href or href == "#":
         # Try to get current page from URL first
         parsed = urlparse(current_url)
         params = parse_qs(parsed.query)
         current_page = 1
-        
+
         # Extract page from URL if present
         if "page" in params and params["page"]:
             try:
@@ -87,16 +92,16 @@ def _find_next_page_link(soup: BeautifulSoup, current_url: str) -> Optional[str]
                     parts = [int(x) for x in aria_label.split() if x.isdigit()]
                     if parts:
                         current_page = parts[0]
-        
+
         # Increment to next page
         next_page_num = current_page + 1
-        
+
         # Construct URL with page parameter
         params["page"] = [str(next_page_num)]
         # Preserve term parameter
         new_query = urlencode(params, doseq=True)
         return f"{parsed.scheme}://{parsed.netloc}{parsed.path}?{new_query}"
-    
+
     # Make absolute URL if relative
     return urljoin(current_url, href)
 
@@ -148,7 +153,7 @@ def _iter_pages(
         if soup is None:
             logger.warning("The Record term '%s' failed to fetch page %s", term, page_number)
             break
-        
+
         # Verify we got results
         if nodes:
             logger.debug("The Record term '%s' page %s returned %s raw search hits", term, page_number, len(nodes))
@@ -158,9 +163,9 @@ def _iter_pages(
                 term,
                 page_number,
             )
-        
+
         yield page_number, soup
-        
+
         # Find the next page link
         next_url = _find_next_page_link(soup, current_url)
         if not next_url:
@@ -170,7 +175,7 @@ def _iter_pages(
                 page_number,
             )
             break
-        
+
         # Move to next page
         current_url = next_url
         page_number += 1
@@ -188,7 +193,7 @@ def build_therecord_incidents(
     Query The Record's on-site search using education keywords for EDU incidents.
     Uses keywords from config as search terms if search_terms not provided.
     Supports incremental saving via save_callback - saves after each page is processed.
-    
+
     Args:
         save_callback: Optional callback to save incidents incrementally.
                       Called after each page is processed with incidents from that page.
@@ -201,174 +206,201 @@ def build_therecord_incidents(
     seen_urls: set[str] = set()
     ingested_at = now_utc_iso()
 
-    for term in terms:
-        consecutive_empty_pages = 0
-        consecutive_stale_pages = 0
-        term_pages = 0
-        term_raw_hits = 0
-        term_matched = 0
-        term_saved = 0
-
+    for original_term in terms:
         if is_cancelled():
-            logger.info("The Record scraping cancelled before term '%s'", term)
+            logger.info("The Record scraping cancelled before term '%s'", original_term)
             break
-        # If max_pages is None, fetch all pages (None means no limit)
-        page_limit = max_pages if max_pages is not None else None
-        for page_number, soup in _iter_pages(http_client, term, page_limit):
-            if soup is None:
-                break
+        for variant in build_search_query_variants(SOURCE_NAME, original_term):
+            term = variant.search_query
+            metrics = SearchQueryMetrics(
+                source=SOURCE_NAME,
+                original_query=variant.original_query,
+                search_query=term,
+                variant_type=variant.variant_type,
+                generated_url=_search_url(term),
+            )
+            consecutive_empty_pages = 0
+            consecutive_stale_pages = 0
 
-            term_pages += 1
-            page_incidents: List[BaseIncident] = []
-            nodes = _select_nodes(soup)
-            raw_hits = len(nodes)
-            term_raw_hits += raw_hits
+            # If max_pages is None, fetch all pages (None means no limit)
+            page_limit = page_limit_for_query_variant(variant.variant_type, max_pages)
+            for page_number, soup in _iter_pages(http_client, term, page_limit):
+                if soup is None:
+                    metrics.fetch_errors += 1
+                    metrics.stop_reason = "fetch_failed"
+                    break
 
-            for node in nodes:
-                # Find the article link (a.article-tile, can be --brief or --primary variant)
-                link = node.find("a", class_=lambda x: x and "article-tile" in x, href=True)
-                if not link:
-                    continue
-                
-                # Get article URL (may be relative, need to make absolute)
-                href = link.get("href", "").strip()
-                if not href:
-                    continue
-                article_url = urljoin("https://therecord.media", href)
-                if article_url in seen_urls:
-                    continue
+                metrics.pages_fetched += 1
+                page_incidents: List[BaseIncident] = []
+                nodes = _select_nodes(soup)
+                raw_hits = len(nodes)
+                metrics.raw_hits += raw_hits
 
-                # Extract title from h2.article-tile__title
-                title = ""
-                title_elem = node.select_one("h2.article-tile__title")
-                if title_elem:
-                    # Get all text from title, including highlighted parts
-                    title = title_elem.get_text(" ", strip=True)
-                    # Remove "Brief" label if present
-                    title = title.replace("Brief", "").strip()
+                for node in nodes:
+                    # Find the article link (a.article-tile, can be --brief or --primary variant)
+                    link = node.find("a", class_=lambda x: x and "article-tile" in x, href=True)
+                    if not link:
+                        continue
 
-                # Extract summary/snippet from span.ais-Snippet
-                summary = ""
-                snippet_elem = node.select_one("span.ais-Snippet")
-                if snippet_elem:
-                    # Get all text from snippet, including highlighted parts
-                    summary = snippet_elem.get_text(" ", strip=True)
+                    # Get article URL (may be relative, need to make absolute)
+                    href = link.get("href", "").strip()
+                    if not href:
+                        continue
+                    article_url = urljoin("https://therecord.media", href)
+                    if article_url in seen_urls:
+                        metrics.duplicate_skips += 1
+                        continue
 
-                # Combine title and summary for keyword matching
-                text_blob = " ".join(filter(None, [title, summary]))
-                if not matches_keywords(text_blob, prepared_keywords):
-                    continue
+                    # Extract title from h2.article-tile__title
+                    title = ""
+                    title_elem = node.select_one("h2.article-tile__title")
+                    if title_elem:
+                        # Get all text from title, including highlighted parts
+                        title = title_elem.get_text(" ", strip=True)
+                        # Remove "Brief" label if present
+                        title = title.replace("Brief", "").strip()
 
-                seen_urls.add(article_url)
+                    # Extract summary/snippet from span.ais-Snippet
+                    summary = ""
+                    snippet_elem = node.select_one("span.ais-Snippet")
+                    if snippet_elem:
+                        # Get all text from snippet, including highlighted parts
+                        summary = snippet_elem.get_text(" ", strip=True)
 
-                # Extract date from span.article-tile__meta__date
-                raw_date = ""
-                date_elem = node.select_one("span.article-tile__meta__date")
-                if date_elem:
-                    raw_date = date_elem.get_text(strip=True)
-                # Also check for time tag as fallback
-                if not raw_date:
-                    time_tag = node.find("time")
-                    if time_tag:
-                        raw_date = time_tag.get("datetime") or time_tag.get_text(strip=True)
-                
-                incident_date, date_precision = extract_date(raw_date)
+                    # Combine title and summary for keyword matching
+                    text_blob = " ".join(filter(None, [title, summary]))
+                    if not matches_keywords(text_blob, prepared_keywords):
+                        continue
 
-                incident = BaseIncident(
-                    incident_id=make_incident_id(SOURCE_NAME, article_url),
-                    source=SOURCE_NAME,
-                    source_event_id=article_url.rstrip("/"),
-                    institution_name="",
-                    victim_raw_name="",
-                    institution_type=None,
-                    country=None,
-                    region=None,
-                    city=None,
-                    incident_date=incident_date,
-                    date_precision=date_precision,
-                    source_published_date=incident_date,
-                    ingested_at=ingested_at,
-                    title=title or None,
-                    subtitle=summary or None,
-                    # Phase 1: primary_url=None, all URLs in all_urls (Phase 2 will select best URL)
-                    primary_url=None,
-                    all_urls=[article_url],
-                    leak_site_url=None,
-                    source_detail_url=None,  # News articles don't have CTI detail pages
-                    screenshot_url=None,
-                    attack_type_hint=None,
-                    status="suspected",
-                    source_confidence="medium",
-                    notes=f"news_source={SOURCE_NAME};term={term};page={page_number}",
-                )
-                page_incidents.append(incident)
-                incidents.append(incident)
+                    seen_urls.add(article_url)
 
-            matched_count = len(page_incidents)
-            term_matched += matched_count
-            saved_new = None
+                    # Extract date from span.article-tile__meta__date
+                    raw_date = ""
+                    date_elem = node.select_one("span.article-tile__meta__date")
+                    if date_elem:
+                        raw_date = date_elem.get_text(strip=True)
+                    # Also check for time tag as fallback
+                    if not raw_date:
+                        time_tag = node.find("time")
+                        if time_tag:
+                            raw_date = time_tag.get("datetime") or time_tag.get_text(strip=True)
 
-            # Save incidents from this page incrementally if callback provided
-            if save_callback is not None and page_incidents:
-                try:
-                    callback_result = save_callback(page_incidents)
-                    if isinstance(callback_result, int):
-                        saved_new = max(callback_result, 0)
-                        term_saved += saved_new
-                except Exception as e:
-                    logger.error(f"The Record: Error saving page {page_number} for term '{term}': {e}", exc_info=True)
-                    # Continue processing even if save fails
+                    incident_date, date_precision = extract_date(raw_date)
 
-            if matched_count == 0:
-                consecutive_empty_pages += 1
-            else:
-                consecutive_empty_pages = 0
+                    incident = BaseIncident(
+                        incident_id=make_incident_id(SOURCE_NAME, article_url),
+                        source=SOURCE_NAME,
+                        source_event_id=article_url.rstrip("/"),
+                        institution_name="",
+                        victim_raw_name="",
+                        institution_type=None,
+                        country=None,
+                        region=None,
+                        city=None,
+                        incident_date=incident_date,
+                        date_precision=date_precision,
+                        source_published_date=incident_date,
+                        ingested_at=ingested_at,
+                        title=title or None,
+                        subtitle=summary or None,
+                        # Phase 1: primary_url=None, all URLs in all_urls (Phase 2 will select best URL)
+                        primary_url=None,
+                        all_urls=[article_url],
+                        leak_site_url=None,
+                        source_detail_url=None,  # News articles don't have CTI detail pages
+                        screenshot_url=None,
+                        attack_type_hint=None,
+                        status="suspected",
+                        source_confidence="medium",
+                        notes=(
+                            f"news_source={SOURCE_NAME};term={variant.original_query};"
+                            f"query_variant={variant.variant_type};page={page_number}"
+                        ),
+                    )
+                    page_incidents.append(incident)
+                    incidents.append(incident)
 
-            if saved_new is not None:
-                if saved_new == 0:
-                    consecutive_stale_pages += 1
+                matched_count = len(page_incidents)
+                metrics.keyword_matched += matched_count
+                saved_new = None
+
+                # Save incidents from this page incrementally if callback provided
+                if save_callback is not None and page_incidents:
+                    try:
+                        callback_result = save_callback(page_incidents)
+                        if isinstance(callback_result, int):
+                            saved_new = max(callback_result, 0)
+                            metrics.saved_rows += saved_new
+                            metrics.save_result_observed = True
+                    except Exception as e:
+                        logger.error(f"The Record: Error saving page {page_number} for term '{term}': {e}", exc_info=True)
+                        # Continue processing even if save fails
+
+                if matched_count == 0:
+                    consecutive_empty_pages += 1
                 else:
-                    consecutive_stale_pages = 0
-            else:
-                consecutive_stale_pages = consecutive_empty_pages
+                    consecutive_empty_pages = 0
 
-            saved_fragment = (
-                f", {saved_new} new saved"
-                if saved_new is not None
-                else ""
-            )
+                if saved_new is not None:
+                    if saved_new == 0:
+                        consecutive_stale_pages += 1
+                    else:
+                        consecutive_stale_pages = 0
+                else:
+                    consecutive_stale_pages = consecutive_empty_pages
+
+                saved_fragment = (
+                    f", {saved_new} new saved"
+                    if saved_new is not None
+                    else ""
+                )
+                logger.info(
+                    "The Record term '%s' (%s) page %s: %s raw hits, %s matched edu/cyber%s",
+                    variant.original_query,
+                    variant.variant_type,
+                    page_number,
+                    raw_hits,
+                    matched_count,
+                    saved_fragment,
+                )
+
+                if consecutive_empty_pages >= EMPTY_PAGE_STOP:
+                    logger.info(
+                        "The Record term '%s' stopping early after %s consecutive pages without edu/cyber matches",
+                        term,
+                        consecutive_empty_pages,
+                    )
+                    metrics.stop_reason = "empty_pages"
+                    break
+
+                if consecutive_stale_pages >= STALE_PAGE_STOP:
+                    logger.info(
+                        "The Record term '%s' stopping early after %s consecutive pages without new incidents",
+                        term,
+                        consecutive_stale_pages,
+                    )
+                    metrics.stop_reason = "stale_pages"
+                    break
+
+            if metrics.pages_fetched == 0 and metrics.stop_reason == "completed":
+                metrics.stop_reason = "no_pages"
+
             logger.info(
-                "The Record term '%s' page %s: %s raw hits, %s matched edu/cyber%s",
-                term,
-                page_number,
-                raw_hits,
-                matched_count,
-                saved_fragment,
+                "The Record term '%s' (%s) summary: %s pages, %s raw hits, %s matched edu/cyber, %s new saved",
+                variant.original_query,
+                variant.variant_type,
+                metrics.pages_fetched,
+                metrics.raw_hits,
+                metrics.keyword_matched,
+                metrics.saved_rows,
             )
-
-            if consecutive_empty_pages >= EMPTY_PAGE_STOP:
+            record_news_query_metrics(metrics)
+            if should_continue_to_next_query_variant(metrics):
                 logger.info(
-                    "The Record term '%s' stopping early after %s consecutive pages without edu/cyber matches",
-                    term,
-                    consecutive_empty_pages,
+                    "The Record term '%s' exact phrase probe complete; continuing to unquoted baseline",
+                    variant.original_query,
                 )
-                break
-
-            if consecutive_stale_pages >= STALE_PAGE_STOP:
-                logger.info(
-                    "The Record term '%s' stopping early after %s consecutive pages without new incidents",
-                    term,
-                    consecutive_stale_pages,
-                )
-                break
-
-        logger.info(
-            "The Record term '%s' summary: %s pages, %s raw hits, %s matched edu/cyber, %s new saved",
-            term,
-            term_pages,
-            term_raw_hits,
-            term_matched,
-            term_saved,
-        )
+                continue
+            break
 
     return incidents

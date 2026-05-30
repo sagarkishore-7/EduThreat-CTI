@@ -15,12 +15,17 @@ from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.utils import now_utc_iso
 from .common import (
     DEFAULT_MAX_PAGES,
+    SearchQueryMetrics,
+    build_search_query_variants,
     default_client,
     extract_date,
     is_cancelled,
     matches_keywords,
+    page_limit_for_query_variant,
     prepare_keywords,
     prepare_search_queries,
+    record_news_query_metrics,
+    should_continue_to_next_query_variant,
 )
 
 BASE_URL = "https://thehackernews.com"
@@ -34,7 +39,7 @@ _NATIVE_DATE_RE = re.compile(r"\b([A-Z][a-z]{2}\s+\d{1,2},\s+\d{4})\b")
 def _build_search_url(term: str, cx: Optional[str] = None, page: int = 1) -> str:
     """
     Build Google Custom Search URL for The Hacker News.
-    
+
     Args:
         term: Search term
         cx: Custom search engine ID (cx parameter). If None, uses fallback.
@@ -42,7 +47,7 @@ def _build_search_url(term: str, cx: Optional[str] = None, page: int = 1) -> str
     """
     # Use provided cx or fallback
     cx_value = cx or CSE_CX
-    
+
     # URL format: https://cse.google.com/cse?q={term}&cx={cx}#gsc.tab=0&gsc.q={term}&gsc.page={page}
     params = {
         "q": term,
@@ -69,7 +74,7 @@ def _detect_captcha(soup: BeautifulSoup, page_text: str = "") -> bool:
     """
     if not soup and not page_text:
         return False
-    
+
     # Common CAPTCHA indicators
     captcha_indicators = [
         # Google reCAPTCHA
@@ -92,19 +97,19 @@ def _detect_captcha(soup: BeautifulSoup, page_text: str = "") -> bool:
         "our systems have detected unusual traffic",
         "sorry, we have detected unusual traffic",
     ]
-    
+
     # Combine soup text and page_text for comprehensive checking
     combined_text = ""
     if soup:
         combined_text = soup.get_text(" ", strip=True).lower()
     if page_text:
         combined_text += " " + page_text.lower()
-    
+
     # Check for CAPTCHA in text
     for indicator in captcha_indicators:
         if indicator.lower() in combined_text:
             return True
-    
+
     # Check for specific CAPTCHA elements
     if soup:
         captcha_selectors = [
@@ -118,7 +123,7 @@ def _detect_captcha(soup: BeautifulSoup, page_text: str = "") -> bool:
         for selector in captcha_selectors:
             if soup.select_one(selector):
                 return True
-    
+
     return False
 
 
@@ -126,12 +131,12 @@ def _discover_last_page(soup: Optional[BeautifulSoup]) -> int:
     """Extract the last page number from Google CSE pagination."""
     if not soup:
         return 1
-    
+
     # Look for pagination in div.gsc-cursor-box
     pagination = soup.select_one("div.gsc-cursor-box")
     if not pagination:
         return 1
-    
+
     max_page = 1
     # Look for all page number divs
     page_divs = pagination.select("div.gsc-cursor-page")
@@ -140,7 +145,7 @@ def _discover_last_page(soup: Optional[BeautifulSoup]) -> int:
         page_text = page_div.get_text(strip=True)
         if page_text.isdigit():
             max_page = max(max_page, int(page_text))
-    
+
     logger.info(f"The Hacker News detected last page={max_page}")
     return max_page
 
@@ -151,31 +156,31 @@ def _extract_articles_from_page(soup: BeautifulSoup) -> List[BeautifulSoup]:
     Also checks for CAPTCHA before extracting.
     """
     articles = []
-    
+
     # Check for CAPTCHA first
     if _detect_captcha(soup):
         logger.warning("The Hacker News: CAPTCHA detected in page content, skipping article extraction")
         return articles
-    
+
     # Try multiple selectors for Google CSE results
     # Google may change selectors or structure
-    
+
     # First try: standard gsc-expansionArea
     expansion_area = soup.select_one("div.gsc-expansionArea")
     if expansion_area:
         results = expansion_area.select("div.gsc-webResult.gsc-result, div.gs-result")
         articles.extend(results)
-    
+
     # Second try: direct results if expansion area not found
     if not articles:
         results = soup.select("div.gsc-webResult.gsc-result, div.gs-result, div.gsc-result")
         articles.extend(results)
-    
+
     # Third try: any result-like div
     if not articles:
         results = soup.select("div[class*='gsc'], div[class*='gs-result']")
         articles.extend(results)
-    
+
     logger.debug(f"The Hacker News extracted {len(articles)} articles from page")
     return articles
 
@@ -338,7 +343,7 @@ def build_thehackernews_incidents(
     The previous Google CSE path frequently returned a JavaScript-only shell,
     so the collector now uses https://thehackernews.com/search?q=... directly.
     Supports incremental saving via save_callback - saves after each page is processed.
-    
+
     Args:
         save_callback: Optional callback to save incidents incrementally.
                       Called after each page is processed with incidents from that page.
@@ -350,84 +355,131 @@ def build_thehackernews_incidents(
     seen_urls: set[str] = set()
     ingested_at = now_utc_iso()
 
-    for term in terms:
+    for original_term in terms:
         if is_cancelled():
-            logger.info("Source scraping cancelled before term '%s'", term)
+            logger.info("Source scraping cancelled before term '%s'", original_term)
             break
-        logger.info(f"The Hacker News: Starting search for term '{term}'")
-        for page_number, soup in _iter_native_pages(http_client, term, max_pages):
-            if soup is None:
-                break
+        for variant in build_search_query_variants(SOURCE_NAME, original_term):
+            term = variant.search_query
+            metrics = SearchQueryMetrics(
+                source=SOURCE_NAME,
+                original_query=variant.original_query,
+                search_query=term,
+                variant_type=variant.variant_type,
+                generated_url=_build_native_search_url(term),
+            )
+            logger.info(
+                "The Hacker News: Starting search for term '%s' (%s)",
+                variant.original_query,
+                variant.variant_type,
+            )
+            page_limit = page_limit_for_query_variant(variant.variant_type, max_pages)
+            for page_number, soup in _iter_native_pages(http_client, term, page_limit):
+                if soup is None:
+                    metrics.fetch_errors += 1
+                    metrics.stop_reason = "fetch_failed"
+                    break
 
-            # Extract articles from the page
-            article_nodes = _extract_native_articles_from_page(soup)
-            
-            if not article_nodes:
-                logger.warning(f"The Hacker News: No articles found on page {page_number} for term '{term}'")
-                continue
+                metrics.pages_fetched += 1
+                # Extract articles from the page
+                article_nodes = _extract_native_articles_from_page(soup)
+                metrics.raw_hits += len(article_nodes)
 
-            page_incidents: List[BaseIncident] = []
-            for node in article_nodes:
-                fields = _native_article_fields(node)
-                if fields is None:
+                if not article_nodes:
+                    logger.warning(f"The Hacker News: No articles found on page {page_number} for term '{term}'")
                     continue
-                article_url = fields["url"]
-                if not article_url or article_url in seen_urls:
-                    continue
 
-                title = fields["title"]
-                summary = fields["summary"]
+                page_incidents: List[BaseIncident] = []
+                for node in article_nodes:
+                    fields = _native_article_fields(node)
+                    if fields is None:
+                        continue
+                    article_url = fields["url"]
+                    if not article_url:
+                        continue
+                    if article_url in seen_urls:
+                        metrics.duplicate_skips += 1
+                        continue
 
-                # Combine title and summary for keyword matching
-                text_blob = " ".join(filter(None, [title, summary, fields.get("tags", "")]))
-                if not matches_keywords(text_blob, prepared_keywords):
-                    continue
+                    title = fields["title"]
+                    summary = fields["summary"]
 
-                seen_urls.add(article_url)
+                    # Combine title and summary for keyword matching
+                    text_blob = " ".join(filter(None, [title, summary, fields.get("tags", "")]))
+                    if not matches_keywords(text_blob, prepared_keywords):
+                        continue
 
-                incident_date, date_precision = extract_date(fields["raw_date"])
+                    seen_urls.add(article_url)
 
-                incident = BaseIncident(
-                    incident_id=make_incident_id(SOURCE_NAME, article_url),
-                    source=SOURCE_NAME,
-                    source_event_id=article_url.rstrip("/"),
-                    institution_name="",
-                    victim_raw_name="",
-                    institution_type=None,
-                    country=None,
-                    region=None,
-                    city=None,
-                    incident_date=incident_date,
-                    date_precision=date_precision,
-                    source_published_date=incident_date,
-                    ingested_at=ingested_at,
-                    title=title or None,
-                    subtitle=summary or None,
-                    # Phase 1: primary_url=None, all URLs in all_urls (Phase 2 will select best URL)
-                    primary_url=None,
-                    all_urls=[article_url],
-                    leak_site_url=None,
-                    source_detail_url=None,  # News articles don't have CTI detail pages
-                    screenshot_url=None,
-                    attack_type_hint=None,
-                    status="suspected",
-                    source_confidence="medium",
-                    notes=f"news_source={SOURCE_NAME};search=native;term={term};page={page_number}",
+                    incident_date, date_precision = extract_date(fields["raw_date"])
+
+                    incident = BaseIncident(
+                        incident_id=make_incident_id(SOURCE_NAME, article_url),
+                        source=SOURCE_NAME,
+                        source_event_id=article_url.rstrip("/"),
+                        institution_name="",
+                        victim_raw_name="",
+                        institution_type=None,
+                        country=None,
+                        region=None,
+                        city=None,
+                        incident_date=incident_date,
+                        date_precision=date_precision,
+                        source_published_date=incident_date,
+                        ingested_at=ingested_at,
+                        title=title or None,
+                        subtitle=summary or None,
+                        # Phase 1: primary_url=None, all URLs in all_urls (Phase 2 will select best URL)
+                        primary_url=None,
+                        all_urls=[article_url],
+                        leak_site_url=None,
+                        source_detail_url=None,  # News articles don't have CTI detail pages
+                        screenshot_url=None,
+                        attack_type_hint=None,
+                        status="suspected",
+                        source_confidence="medium",
+                        notes=(
+                            f"news_source={SOURCE_NAME};search=native;term={variant.original_query};"
+                            f"query_variant={variant.variant_type};page={page_number}"
+                        ),
+                    )
+                    page_incidents.append(incident)
+                    incidents.append(incident)
+                    logger.debug(f"The Hacker News: Extracted article '{title[:50]}...' from page {page_number}")
+
+                metrics.keyword_matched += len(page_incidents)
+                # Save incidents from this page incrementally if callback provided
+                if save_callback is not None and page_incidents:
+                    try:
+                        callback_result = save_callback(page_incidents)
+                        if isinstance(callback_result, int):
+                            metrics.saved_rows += max(callback_result, 0)
+                            metrics.save_result_observed = True
+                        logger.debug(f"The Hacker News: Saved {len(page_incidents)} incidents from page {page_number} for term '{term}'")
+                    except Exception as e:
+                        logger.error(f"The Hacker News: Error saving page {page_number} for term '{term}': {e}", exc_info=True)
+                        # Continue processing even if save fails
+
+            if metrics.pages_fetched == 0 and metrics.stop_reason == "completed":
+                metrics.stop_reason = "no_pages"
+
+            record_news_query_metrics(metrics)
+            logger.info(
+                "The Hacker News: term '%s' (%s) summary: %s pages, %s raw hits, %s matched, %s saved",
+                variant.original_query,
+                variant.variant_type,
+                metrics.pages_fetched,
+                metrics.raw_hits,
+                metrics.keyword_matched,
+                metrics.saved_rows,
+            )
+            if should_continue_to_next_query_variant(metrics):
+                logger.info(
+                    "The Hacker News term '%s' exact phrase probe complete; continuing to unquoted baseline",
+                    variant.original_query,
                 )
-                page_incidents.append(incident)
-                incidents.append(incident)
-                logger.debug(f"The Hacker News: Extracted article '{title[:50]}...' from page {page_number}")
-            
-            # Save incidents from this page incrementally if callback provided
-            if save_callback is not None and page_incidents:
-                try:
-                    save_callback(page_incidents)
-                    logger.debug(f"The Hacker News: Saved {len(page_incidents)} incidents from page {page_number} for term '{term}'")
-                except Exception as e:
-                    logger.error(f"The Hacker News: Error saving page {page_number} for term '{term}': {e}", exc_info=True)
-                    # Continue processing even if save fails
-
-        logger.info(f"The Hacker News: Found {len([i for i in incidents if i.source == SOURCE_NAME])} incidents for term '{term}'")
+                continue
+            break
 
     logger.info(f"The Hacker News: Total incidents collected: {len(incidents)}")
     return incidents

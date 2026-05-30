@@ -14,13 +14,18 @@ from src.edu_cti.core.models import BaseIncident, make_incident_id
 from src.edu_cti.core.oxylabs import OxylabsClient
 from src.edu_cti.core.utils import now_utc_iso
 from .common import (
+    SearchQueryMetrics,
+    build_search_query_variants,
     default_client,
     extract_date,
     fetch_html,
     is_cancelled,
     matches_keywords,
+    page_limit_for_query_variant,
     prepare_keywords,
     prepare_search_queries,
+    record_news_query_metrics,
+    should_continue_to_next_query_variant,
 )
 
 SOURCE_NAME = config.SOURCE_DARKREADING
@@ -47,11 +52,11 @@ def _discover_last_page(soup: Optional[BeautifulSoup]) -> int:
     """Extract the last page number from pagination navigation."""
     if not soup:
         return 1
-    
+
     pagination = soup.select_one("nav[aria-label='Pagination Navigation']")
     if not pagination:
         return 1
-    
+
     max_page = 1
     # Look for all page number links
     page_links = pagination.select("a.Pagination-PageNumber")
@@ -64,7 +69,7 @@ def _discover_last_page(soup: Optional[BeautifulSoup]) -> int:
                 max_page = max(max_page, page_val)
             except (ValueError, IndexError):
                 continue
-    
+
     # Also check the text content of the last visible page number
     try:
         last_visible = pagination.select("a.Pagination-PageNumber:not(.Pagination-PageNumber_current)")
@@ -74,7 +79,7 @@ def _discover_last_page(soup: Optional[BeautifulSoup]) -> int:
                 max_page = max(max_page, int(last_text))
     except Exception:
         pass
-    
+
     logger.info("Dark Reading detected last page=%s", max_page)
     return max_page
 
@@ -144,7 +149,7 @@ def _fetch_search_soup(client: HttpClient, url: str) -> Optional[BeautifulSoup]:
                 return soup
             logger.warning("Dark Reading: Oxylabs returned a challenge page for %s", url)
 
-    soup = client.get_soup(url, wait_selector="div.SearchResult-Content")
+    soup = client.get_soup(url, wait_selector="div.ContentPreview.SearchResult-ContentPreview")
     if _is_cloudflare_challenge_soup(soup):
         logger.warning("Dark Reading: Cloudflare challenge detected for %s", url)
     return soup
@@ -175,20 +180,20 @@ def _iter_pages(
     if not _has_search_results(first):
         logger.warning("Dark Reading: No search results found on first page for term '%s'", term)
         return
-    
+
     yield 1, first
-    
+
     # Discover total pages from pagination
     last_page = _discover_last_page(first)
-    
+
     # Determine how many pages to fetch
     if max_pages is not None:
         limit = min(max_pages, last_page)
     else:
         limit = last_page
-    
+
     logger.info(f"Dark Reading term '{term}': total pages={last_page}, fetching up to page {limit}")
-    
+
     for page in range(2, limit + 1):
         if is_cancelled():
             logger.info("Source term '%s' cancelled at page %s", term, page)
@@ -201,9 +206,9 @@ def _iter_pages(
         if soup is None or _is_cloudflare_challenge_soup(soup) or not _has_search_results(soup):
             logger.warning(f"Dark Reading: Failed to fetch or no results on page {page} for term '{term}'")
             break
-        
+
         yield page, soup
-        
+
         # Random delay between pages to avoid detection
         if page < limit:
             time.sleep(random.uniform(2, 4))
@@ -221,7 +226,7 @@ def build_darkreading_incidents(
     Crawl Dark Reading search results for EDU-related incidents.
     Uses search URL format: https://www.darkreading.com/search?q=university
     Supports incremental saving via save_callback - saves after each page is processed.
-    
+
     Args:
         save_callback: Optional callback to save incidents incrementally.
                       Called after each page is processed with incidents from that page.
@@ -233,116 +238,162 @@ def build_darkreading_incidents(
     seen_urls: set[str] = set()
     ingested_at = now_utc_iso()
 
-    for term in terms:
+    for original_term in terms:
         if is_cancelled():
-            logger.info("Source scraping cancelled before term '%s'", term)
+            logger.info("Source scraping cancelled before term '%s'", original_term)
             break
-        logger.info(f"Dark Reading: Starting search for term '{term}'")
-        # If max_pages is None, fetch all pages (None means no limit)
-        page_limit = max_pages if max_pages is not None else None
-        
-        for page_number, soup in _iter_pages(http_client, term, page_limit):
-            if soup is None:
-                break
+        for variant in build_search_query_variants(SOURCE_NAME, original_term):
+            term = variant.search_query
+            metrics = SearchQueryMetrics(
+                source=SOURCE_NAME,
+                original_query=variant.original_query,
+                search_query=term,
+                variant_type=variant.variant_type,
+                generated_url=_build_search_url(term, page=1),
+            )
+            logger.info(
+                "Dark Reading: Starting search for term '%s' (%s)",
+                variant.original_query,
+                variant.variant_type,
+            )
+            # If max_pages is None, fetch all pages (None means no limit)
+            page_limit = page_limit_for_query_variant(variant.variant_type, max_pages)
 
-            # Extract articles from the page
-            article_nodes = _extract_articles_from_page(soup)
-            
-            if not article_nodes:
-                logger.warning(f"Dark Reading: No articles found on page {page_number} for term '{term}'")
-                continue
+            for page_number, soup in _iter_pages(http_client, term, page_limit):
+                if soup is None:
+                    metrics.fetch_errors += 1
+                    metrics.stop_reason = "fetch_failed"
+                    break
 
-            page_incidents: List[BaseIncident] = []
-            for node in article_nodes:
-                # Extract article link from ListPreview-Title
-                title_link = node.select_one("a.ListPreview-Title[href]")
-                if not title_link:
-                    # Fallback: try any link in the preview
-                    title_link = node.find("a", href=True)
+                metrics.pages_fetched += 1
+                # Extract articles from the page
+                article_nodes = _extract_articles_from_page(soup)
+                metrics.raw_hits += len(article_nodes)
+
+                if not article_nodes:
+                    logger.warning(f"Dark Reading: No articles found on page {page_number} for term '{term}'")
+                    continue
+
+                page_incidents: List[BaseIncident] = []
+                for node in article_nodes:
+                    # Extract article link from ListPreview-Title
+                    title_link = node.select_one("a.ListPreview-Title[href]")
                     if not title_link:
+                        # Fallback: try any link in the preview
+                        title_link = node.find("a", href=True)
+                        if not title_link:
+                            continue
+
+                    href = title_link.get("href", "").strip()
+                    if not href:
                         continue
-                
-                href = title_link.get("href", "").strip()
-                if not href:
-                    continue
-                
-                article_url = urljoin(BASE_URL, href)
-                if not article_url or article_url in seen_urls:
-                    continue
 
-                # Extract title
-                title = title_link.get_text(" ", strip=True)
-                if not title:
-                    continue
+                    article_url = urljoin(BASE_URL, href)
+                    if not article_url:
+                        continue
+                    if article_url in seen_urls:
+                        metrics.duplicate_skips += 1
+                        continue
 
-                # Extract summary/description (usually not available in preview, but check)
-                summary = ""
-                summary_sel = node.select_one("div.ListPreview-Description, .p-description, p")
-                if summary_sel:
-                    summary = summary_sel.get_text(" ", strip=True)
+                    # Extract title
+                    title = title_link.get_text(" ", strip=True)
+                    if not title:
+                        continue
 
-                # Combine title and summary for keyword matching
-                text_blob = " ".join(filter(None, [title, summary]))
-                if not matches_keywords(text_blob, prepared_keywords):
-                    continue
+                    # Extract summary/description (usually not available in preview, but check)
+                    summary = ""
+                    summary_sel = node.select_one("div.ListPreview-Description, .p-description, p")
+                    if summary_sel:
+                        summary = summary_sel.get_text(" ", strip=True)
 
-                seen_urls.add(article_url)
+                    # Combine title and summary for keyword matching
+                    text_blob = " ".join(filter(None, [title, summary]))
+                    if not matches_keywords(text_blob, prepared_keywords):
+                        continue
 
-                # Extract date from ListPreview-Date
-                raw_date = ""
-                date_elem = node.select_one("span.ListPreview-Date[data-testid='list-preview-date']")
-                if date_elem:
-                    raw_date = date_elem.get_text(strip=True)
-                
-                # Fallback: check for time tag
-                if not raw_date:
-                    time_tag = node.find("time")
-                    if time_tag:
-                        raw_date = time_tag.get("datetime") or time_tag.get_text(strip=True)
-                
-                incident_date, date_precision = extract_date(raw_date)
+                    seen_urls.add(article_url)
 
-                incident = BaseIncident(
-                    incident_id=make_incident_id(SOURCE_NAME, article_url),
-                    source=SOURCE_NAME,
-                    source_event_id=article_url.rstrip("/"),
-                    institution_name="",
-                    victim_raw_name="",
-                    institution_type=None,
-                    country=None,
-                    region=None,
-                    city=None,
-                    incident_date=incident_date,
-                    date_precision=date_precision,
-                    source_published_date=incident_date,
-                    ingested_at=ingested_at,
-                    title=title or None,
-                    subtitle=summary or None,
-                    # Phase 1: primary_url=None, all URLs in all_urls (Phase 2 will select best URL)
-                    primary_url=None,
-                    all_urls=[article_url],
-                    leak_site_url=None,
-                    source_detail_url=None,  # News articles don't have CTI detail pages
-                    screenshot_url=None,
-                    attack_type_hint=None,
-                    status="suspected",
-                    source_confidence="medium",
-                    notes=f"news_source={SOURCE_NAME};term={term};page={page_number}",
+                    # Extract date from ListPreview-Date
+                    raw_date = ""
+                    date_elem = node.select_one("span.ListPreview-Date[data-testid='list-preview-date']")
+                    if date_elem:
+                        raw_date = date_elem.get_text(strip=True)
+
+                    # Fallback: check for time tag
+                    if not raw_date:
+                        time_tag = node.find("time")
+                        if time_tag:
+                            raw_date = time_tag.get("datetime") or time_tag.get_text(strip=True)
+
+                    incident_date, date_precision = extract_date(raw_date)
+
+                    incident = BaseIncident(
+                        incident_id=make_incident_id(SOURCE_NAME, article_url),
+                        source=SOURCE_NAME,
+                        source_event_id=article_url.rstrip("/"),
+                        institution_name="",
+                        victim_raw_name="",
+                        institution_type=None,
+                        country=None,
+                        region=None,
+                        city=None,
+                        incident_date=incident_date,
+                        date_precision=date_precision,
+                        source_published_date=incident_date,
+                        ingested_at=ingested_at,
+                        title=title or None,
+                        subtitle=summary or None,
+                        # Phase 1: primary_url=None, all URLs in all_urls (Phase 2 will select best URL)
+                        primary_url=None,
+                        all_urls=[article_url],
+                        leak_site_url=None,
+                        source_detail_url=None,  # News articles don't have CTI detail pages
+                        screenshot_url=None,
+                        attack_type_hint=None,
+                        status="suspected",
+                        source_confidence="medium",
+                        notes=(
+                            f"news_source={SOURCE_NAME};term={variant.original_query};"
+                            f"query_variant={variant.variant_type};page={page_number}"
+                        ),
+                    )
+                    page_incidents.append(incident)
+                    incidents.append(incident)
+                    logger.debug(f"Dark Reading: Extracted article '{title[:50]}...' from page {page_number}")
+
+                metrics.keyword_matched += len(page_incidents)
+                # Save incidents from this page incrementally if callback provided
+                if save_callback is not None and page_incidents:
+                    try:
+                        callback_result = save_callback(page_incidents)
+                        if isinstance(callback_result, int):
+                            metrics.saved_rows += max(callback_result, 0)
+                            metrics.save_result_observed = True
+                        logger.debug(f"Dark Reading: Saved {len(page_incidents)} incidents from page {page_number} for term '{term}'")
+                    except Exception as e:
+                        logger.error(f"Dark Reading: Error saving page {page_number} for term '{term}': {e}", exc_info=True)
+                        # Continue processing even if save fails
+
+            if metrics.pages_fetched == 0 and metrics.stop_reason == "completed":
+                metrics.stop_reason = "no_pages"
+
+            record_news_query_metrics(metrics)
+            logger.info(
+                "Dark Reading: term '%s' (%s) summary: %s pages, %s raw hits, %s matched, %s saved",
+                variant.original_query,
+                variant.variant_type,
+                metrics.pages_fetched,
+                metrics.raw_hits,
+                metrics.keyword_matched,
+                metrics.saved_rows,
+            )
+            if should_continue_to_next_query_variant(metrics):
+                logger.info(
+                    "Dark Reading term '%s' exact phrase probe complete; continuing to unquoted baseline",
+                    variant.original_query,
                 )
-                page_incidents.append(incident)
-                incidents.append(incident)
-                logger.debug(f"Dark Reading: Extracted article '{title[:50]}...' from page {page_number}")
-            
-            # Save incidents from this page incrementally if callback provided
-            if save_callback is not None and page_incidents:
-                try:
-                    save_callback(page_incidents)
-                    logger.debug(f"Dark Reading: Saved {len(page_incidents)} incidents from page {page_number} for term '{term}'")
-                except Exception as e:
-                    logger.error(f"Dark Reading: Error saving page {page_number} for term '{term}': {e}", exc_info=True)
-                    # Continue processing even if save fails
-
-        logger.info(f"Dark Reading: Found {len([i for i in incidents if i.source == SOURCE_NAME])} incidents for term '{term}'")
+                continue
+            break
 
     logger.info(f"Dark Reading: Total incidents collected: {len(incidents)}")
     return incidents

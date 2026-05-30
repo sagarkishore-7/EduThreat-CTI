@@ -450,6 +450,50 @@ def _should_retry_discovery_after_low_quality_selection(
     )
 
 
+def _should_retry_discovery_after_fetch_failures(
+    source_incident: SourceIncident,
+    *,
+    fetchable_url_count: int,
+    success_count: int,
+    failure_count: int,
+) -> bool:
+    """Ask discovery for alternatives when trusted source URLs are unreachable."""
+    if fetchable_url_count <= 0 or failure_count <= 0 or success_count > 0:
+        return False
+    if (source_incident.source_name or "").lower() not in _CURATED_SOURCE_NAMES:
+        return False
+    if not _source_requires_cyber_evidence(source_incident):
+        return False
+    return bool(
+        recover_source_identity(
+            raw_institution_name=source_incident.raw_institution_name,
+            raw_victim_name=source_incident.raw_victim_name,
+            raw_subtitle=source_incident.raw_subtitle,
+            raw_title=source_incident.raw_title,
+        )
+    )
+
+
+def _attempt_response_metadata(
+    *,
+    article: ArticleContent,
+    attempt_payload: dict[str, Any],
+    attempt_index: int,
+    selected_tier: Optional[str],
+    selected_for_enrichment: bool,
+) -> dict[str, Any]:
+    metadata = {
+        "fetched_url": article.url,
+        "selected_for_enrichment": selected_for_enrichment,
+        "attempt_index": attempt_index,
+        "selected_tier": selected_tier,
+    }
+    for key in ("raw_content_length", "extracted_content_length", "low_content_reason"):
+        if key in attempt_payload and attempt_payload.get(key) is not None:
+            metadata[key] = attempt_payload.get(key)
+    return metadata
+
+
 def _sanitize_db_text(value: Optional[str]) -> Optional[str]:
     if value is None:
         return None
@@ -564,16 +608,17 @@ class V2FetchService:
                         content_length=attempt_payload.get("content_length"),
                         error_code=attempt_payload.get("error_code"),
                         error_message=attempt_payload.get("error_message"),
-                        response_metadata={
-                            "fetched_url": article.url,
-                            "selected_for_enrichment": False,
-                            "attempt_index": attempt_index,
-                            "selected_tier": (
+                        response_metadata=_attempt_response_metadata(
+                            article=article,
+                            attempt_payload=attempt_payload,
+                            attempt_index=attempt_index,
+                            selected_tier=(
                                 article.fetch_metadata.get("selected_tier")
                                 if isinstance(article.fetch_metadata, dict)
                                 else None
                             ),
-                        },
+                            selected_for_enrichment=False,
+                        ),
                     )
                     self.article_repository.add_fetch_attempt(session, attempt)
                 failure_count += 1
@@ -603,12 +648,13 @@ class V2FetchService:
                     content_length=attempt_payload.get("content_length"),
                     error_code=attempt_payload.get("error_code"),
                     error_message=attempt_payload.get("error_message"),
-                    response_metadata={
-                        "fetched_url": article.url,
-                        "selected_for_enrichment": False,
-                        "attempt_index": attempt_index,
-                        "selected_tier": selected_tier,
-                    },
+                    response_metadata=_attempt_response_metadata(
+                        article=article,
+                        attempt_payload=attempt_payload,
+                        attempt_index=attempt_index,
+                        selected_tier=selected_tier,
+                        selected_for_enrichment=False,
+                    ),
                 )
                 self.article_repository.add_fetch_attempt(session, attempt)
                 attempt_records.append(attempt)
@@ -709,7 +755,20 @@ class V2FetchService:
                 )
                 self.pipeline_task_repository.enqueue(session, enrich_task)
                 enrich_task_enqueued = 1
-        elif _should_retry_discovery_after_low_quality_selection(source_incident, selected_candidates):
+        elif _should_retry_discovery_after_low_quality_selection(
+            source_incident,
+            selected_candidates,
+        ) or _should_retry_discovery_after_fetch_failures(
+            source_incident,
+            fetchable_url_count=len(fetchable_urls),
+            success_count=success_count,
+            failure_count=failure_count,
+        ):
+            reason = (
+                "no_relevant_article_selected"
+                if selected_candidates
+                else "all_fetch_tiers_failed"
+            )
             existing_resolve_task = self.pipeline_task_repository.get_active_for_target(
                 session,
                 task_type="resolve_url",
@@ -728,7 +787,7 @@ class V2FetchService:
                         "source_incident_id": str(source_incident.id),
                         "source_name": source_incident.source_name,
                         "force_discovery": True,
-                        "reason": "no_relevant_article_selected",
+                        "reason": reason,
                     },
                     result={},
                     available_at=now,

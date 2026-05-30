@@ -11,6 +11,7 @@ from src.edu_cti.api.v2_admin import (
     get_v2_preflight_service,
     get_v2_research_metrics_service,
     get_v2_scheduler_service,
+    get_v2_source_health_service,
     router,
 )
 from src.edu_cti_v2.auth import authenticate
@@ -71,6 +72,10 @@ def _build_client(operations_service):
         def render_prometheus_text(self, *_args, **_kwargs):
             raise AssertionError("unexpected prometheus render call")
 
+    class _NullSourceHealthService:
+        def get_source_health(self, *_args, **_kwargs):
+            raise AssertionError("unexpected source health call")
+
     class _NullCampaignService:
         def list_campaigns(self, *_args, **_kwargs):
             raise AssertionError("unexpected campaign list call")
@@ -96,6 +101,7 @@ def _build_client(operations_service):
     app.dependency_overrides[get_v2_preflight_service] = lambda: _NullPreflightService()
     app.dependency_overrides[get_v2_data_quality_service] = lambda: _NullDataQualityService()
     app.dependency_overrides[get_v2_research_metrics_service] = lambda: _NullResearchMetricsService()
+    app.dependency_overrides[get_v2_source_health_service] = lambda: _NullSourceHealthService()
     app.dependency_overrides[get_v2_campaign_service] = lambda: _NullCampaignService()
     return TestClient(app)
 
@@ -111,6 +117,34 @@ def test_v2_admin_status_endpoint_returns_operations_payload():
 
     assert response.status_code == 200
     assert response.json()["counts"]["source_incidents"] == 3
+
+
+def test_v2_admin_source_health_endpoint_returns_audit_payload():
+    class _OperationsService:
+        def get_runtime_status(self, _session):
+            return {}
+
+    class _SourceHealthService:
+        def __init__(self):
+            self.called = None
+
+        def get_source_health(self, _session, *, sample_limit):
+            self.called = sample_limit
+            return {
+                "totals": {"source_incidents": 10},
+                "source_rows": [{"source_name": "googlenews_rss", "rows_collected": 7}],
+            }
+
+    source_health = _SourceHealthService()
+    client = _build_client(_OperationsService())
+    client.app.dependency_overrides[get_v2_source_health_service] = lambda: source_health
+
+    response = client.get("/api/admin/v2/source-health", params={"sample_limit": 12})
+
+    assert response.status_code == 200
+    assert response.json()["totals"]["source_incidents"] == 10
+    assert response.json()["source_rows"][0]["source_name"] == "googlenews_rss"
+    assert source_health.called == 12
 
 
 def test_v2_admin_tasks_endpoint_passes_filters():

@@ -174,6 +174,76 @@ def test_fetch_service_records_failures_without_enqueuing_enrichment():
     assert result["enrich_tasks_enqueued"] == 0
 
 
+def test_fetch_service_retries_discovery_when_curated_urls_all_fail():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    pipeline_task_repository = Mock()
+    pipeline_task_repository.get_active_for_target.return_value = None
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.return_value = ArticleContent(
+        url="https://example.com/stale-story",
+        title="",
+        content="",
+        author=None,
+        publish_date=None,
+        fetch_successful=False,
+        error_message="All fetch methods failed",
+        content_length=0,
+        fetch_metadata={
+            "selected_tier": None,
+            "tier_attempts": [
+                {
+                    "tier": "scrapling",
+                    "success": False,
+                    "latency_ms": 25,
+                    "content_length": 0,
+                    "error_code": "timeout",
+                    "error_message": "timeout",
+                },
+                {
+                    "tier": "oxylabs",
+                    "success": False,
+                    "latency_ms": 410,
+                    "content_length": 42,
+                    "error_code": "empty_content",
+                    "error_message": "Oxylabs extracted content too short or empty",
+                    "raw_content_length": 51000,
+                    "extracted_content_length": 42,
+                    "low_content_reason": "insufficient_extracted_content",
+                },
+            ],
+        },
+    )
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident_with_urls(("https://example.com/stale-story", True))
+    incident.source_name = "comparitech"
+    incident.source_group = "curated"
+    incident.raw_title = "Ransomware attack on Example University (2021)"
+    incident.raw_institution_name = "Example University"
+    incident.raw_victim_name = "Example University"
+    incident.raw_attack_hint = "ransomware"
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert result["articles_saved"] == 0
+    assert result["articles_failed"] == 1
+    assert result["enrich_tasks_enqueued"] == 0
+    assert result["resolve_tasks_enqueued"] == 1
+    task = pipeline_task_repository.enqueue.call_args.args[1]
+    assert task.task_type == "resolve_url"
+    assert task.payload["force_discovery"] is True
+    assert task.payload["reason"] == "all_fetch_tiers_failed"
+    oxylabs_attempt = article_repository.add_fetch_attempt.call_args_list[1].args[1]
+    assert oxylabs_attempt.response_metadata["raw_content_length"] == 51000
+    assert oxylabs_attempt.response_metadata["extracted_content_length"] == 42
+    assert oxylabs_attempt.response_metadata["low_content_reason"] == "insufficient_extracted_content"
+
+
 def test_fetch_service_selects_best_matching_article_instead_of_first_success():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None

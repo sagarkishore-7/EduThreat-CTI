@@ -250,7 +250,7 @@ def _classify_fetch_failure(result) -> str:
         return "403"
     if "timeout" in msg or "timed out" in msg:
         return "timeout"
-    if "soft" in msg or "gate page" in msg or "blocked" in msg:
+    if "soft" in msg or "gate page" in msg or "gate/captcha" in msg or "captcha" in msg or "blocked" in msg:
         return "soft_404"
     if "content" in msg and ("short" in msg or "empty" in msg or "threshold" in msg):
         return "empty_content"
@@ -572,12 +572,13 @@ def _build_fetch_attempt_payload(
     error_code: Optional[str] = None,
 ) -> dict[str, object]:
     success = bool(result and result.fetch_successful)
+    result_metadata = result.fetch_metadata if result and isinstance(result.fetch_metadata, dict) else {}
     effective_error_code = error_code
     if effective_error_code is None and not success:
         classified = _classify_fetch_failure(result)
         effective_error_code = "unknown_failure" if classified == "none" else classified
 
-    return {
+    payload: dict[str, object] = {
         "tier": tier,
         "success": success,
         "latency_ms": int(max(duration_seconds, 0.0) * 1000),
@@ -585,6 +586,10 @@ def _build_fetch_attempt_payload(
         "error_code": effective_error_code,
         "error_message": (result.error_message if result else None),
     }
+    for key in ("raw_content_length", "extracted_content_length", "low_content_reason"):
+        if key in result_metadata and result_metadata.get(key) is not None:
+            payload[key] = result_metadata.get(key)
+    return payload
 
 
 class ArticleFetcher:
@@ -923,6 +928,7 @@ class ArticleFetcher:
         if not html:
             logger.info(f"Oxylabs: no content returned for {url}")
             return None
+        raw_content_length = len(html)
 
         soup = BeautifulSoup(html, "html.parser")
         title = self._extract_title(soup)
@@ -941,11 +947,40 @@ class ArticleFetcher:
         is_soft_404 = any(s in title_lower or s in text_lower for s in _404_signals)
         if is_soft_404:
             logger.info(f"Oxylabs detected soft-404 for {url}: title='{(title or '')[:60]}'")
-            return None
+            return ArticleContent(
+                url=url,
+                title=title or "",
+                content="",
+                author=author,
+                publish_date=publish_date,
+                fetch_successful=False,
+                error_message="Oxylabs soft-404 page detected",
+                content_length=0,
+                fetch_metadata={
+                    "raw_content_length": raw_content_length,
+                    "extracted_content_length": len(content or ""),
+                    "low_content_reason": "soft_404",
+                },
+            )
 
         if _is_gate_page(title, content):
             logger.info(f"Oxylabs: gate/CAPTCHA page detected for {url} — falling through to archive.org")
-            return None
+            content_stripped = (content or "").strip()
+            return ArticleContent(
+                url=url,
+                title=title or "",
+                content="",
+                author=author,
+                publish_date=publish_date,
+                fetch_successful=False,
+                error_message="Oxylabs gate/CAPTCHA page detected",
+                content_length=len(content_stripped),
+                fetch_metadata={
+                    "raw_content_length": raw_content_length,
+                    "extracted_content_length": len(content_stripped),
+                    "low_content_reason": "gate_page",
+                },
+            )
 
         min_length = _minimum_article_content_length(url)
         content_stripped = (content or "").strip()
@@ -959,13 +994,34 @@ class ArticleFetcher:
                 publish_date=publish_date,
                 fetch_successful=True,
                 content_length=len(content_stripped),
+                fetch_metadata={
+                    "raw_content_length": raw_content_length,
+                    "extracted_content_length": len(content_stripped),
+                },
             )
         else:
             logger.warning(
                 f"Oxylabs: insufficient content for {url}: "
                 f"{len(content_stripped)} chars (min={min_length})"
             )
-            return None
+            return ArticleContent(
+                url=url,
+                title=title or "",
+                content=content or "",
+                author=author,
+                publish_date=publish_date,
+                fetch_successful=False,
+                error_message=(
+                    f"Oxylabs extracted content too short or empty "
+                    f"(length: {len(content_stripped)}, min: {min_length})"
+                ),
+                content_length=len(content_stripped),
+                fetch_metadata={
+                    "raw_content_length": raw_content_length,
+                    "extracted_content_length": len(content_stripped),
+                    "low_content_reason": "insufficient_extracted_content",
+                },
+            )
 
     def _fetch_from_archive(self, original_url: str) -> Optional[ArticleContent]:
         """

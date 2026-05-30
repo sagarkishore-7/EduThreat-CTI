@@ -1,6 +1,7 @@
 from bs4 import BeautifulSoup
 
 from src.edu_cti.sources.news import thehackernews
+from src.edu_cti.sources.news.common import consume_news_query_metrics
 
 
 class DummyClient:
@@ -49,6 +50,7 @@ def test_thehackernews_native_search_url_uses_site_search():
 
 
 def test_thehackernews_builds_incidents_from_native_search():
+    consume_news_query_metrics()
     client = DummyClient(NATIVE_SEARCH_HTML)
 
     incidents = thehackernews.build_thehackernews_incidents(
@@ -66,4 +68,11 @@ def test_thehackernews_builds_incidents_from_native_search():
         "https://thehackernews.com/2022/10/why-ransomware-in-education-on-rise-and.html"
     ]
     assert "search=native" in (incident.notes or "")
-    assert client.urls == [thehackernews._build_native_search_url("school data breach")]
+    assert "query_variant=exact_phrase" in (incident.notes or "")
+    assert client.urls == [
+        thehackernews._build_native_search_url('"school data breach"'),
+        thehackernews._build_native_search_url("school data breach"),
+    ]
+
+    metrics = consume_news_query_metrics("thehackernews")
+    assert [record["variant_type"] for record in metrics] == ["exact_phrase", "unquoted"]

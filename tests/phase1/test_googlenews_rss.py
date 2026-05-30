@@ -25,13 +25,19 @@ def test_google_news_rss_expands_all_discovery_queries_across_locales():
     assert len(GOOGLE_NEWS_RSS_QUERIES) > len(NEWS_SEARCH_QUERIES_ALL)
     assert ("university cyberattack", "en", "CA") in tuple_set
     assert ("university cyberattack", "en", "ZA") in tuple_set
+    assert ("university cyberattack", "en", "NG") in tuple_set
+    assert ("university cyberattack", "en", "VN") in tuple_set
     assert ("universidad ciberataque", "es", "CO") in tuple_set
     assert ("université cyberattaque", "fr", "BE") in tuple_set
     assert ("universität cyberangriff", "de", "CH") in tuple_set
     assert ("大學 網路攻擊", "zh", "CN") in tuple_set
     assert ("جامعة هجوم إلكتروني", "ar", "EG") in tuple_set
+    assert ("universitet cyberattack", "sv", "SE") in tuple_set
+    assert ("universitas serangan siber", "id", "ID") in tuple_set
+    assert ("đại học tấn công mạng", "vi", "VN") in tuple_set
     assert NEWS_SEARCH_SITE_RESTRICTED_QUERIES
     assert ("site:therecord.media school data breach", "en", "US") in tuple_set
+    assert ("site:oag.ca.gov university data breach", "en", "US") in tuple_set
     assert ("site:therecord.media school data breach", "en", "GB") not in tuple_set
     assert all(country for countries in GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG.values() for country in countries)
 

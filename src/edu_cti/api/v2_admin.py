@@ -23,6 +23,7 @@ from src.edu_cti_v2.services import (
     V2OperationsService,
     V2PreflightService,
     V2ResearchMetricsService,
+    V2SourceHealthService,
 )
 from src.edu_cti_v2.services.campaigns import ADMIN_CAMPAIGN_STATUSES, V2CampaignService
 from src.edu_cti_v2.services.collection import V2CollectionService
@@ -65,6 +66,11 @@ def get_v2_data_quality_service() -> V2DataQualityService:
 @lru_cache
 def get_v2_research_metrics_service() -> V2ResearchMetricsService:
     return V2ResearchMetricsService()
+
+
+@lru_cache
+def get_v2_source_health_service() -> V2SourceHealthService:
+    return V2SourceHealthService()
 
 
 @lru_cache
@@ -234,6 +240,17 @@ async def get_v2_research_metrics_prometheus(
         content=research_service.render_prometheus_text(payload),
         media_type="text/plain; version=0.0.4; charset=utf-8",
     )
+
+
+@router.get("/source-health")
+async def get_v2_source_health(
+    sample_limit: int = Query(25, ge=1, le=200),
+    session=Depends(get_v2_session),
+    source_health: V2SourceHealthService = Depends(get_v2_source_health_service),
+    _: bool = Depends(authenticate),
+):
+    """Return a read-only source coverage, fetch, enrichment, and quality audit."""
+    return source_health.get_source_health(session, sample_limit=sample_limit)
 
 
 @router.post("/worker/run")

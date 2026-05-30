@@ -96,7 +96,7 @@ NEWS_SEARCH_QUERIES_EN: List[str] = [
 ]
 
 # ---- Multilingual queries ----
-# Same concepts as NEWS_SEARCH_QUERIES_EN translated into 13 additional languages.
+# Same concepts as NEWS_SEARCH_QUERIES_EN translated into additional languages.
 # Keep the language grouping explicit so Google News RSS can query every language
 # against every configured country/edition for that language.
 NEWS_SEARCH_QUERIES_MULTILINGUAL_BY_LANG: Dict[str, List[str]] = {
@@ -207,6 +207,75 @@ NEWS_SEARCH_QUERIES_MULTILINGUAL_BY_LANG: Dict[str, List[str]] = {
         "college data breach India",
         "vishwavidyalaya cyber hamla",
     ],
+    # Nordic countries
+    "sv": [
+        "universitet cyberattack",
+        "skola ransomware",
+        "studentdata läcka",
+        "universitet dataintrång",
+    ],
+    "no": [
+        "universitet dataangrep",
+        "skole løsepengevirus",
+        "studentdata lekkasje",
+    ],
+    "da": [
+        "universitet cyberangreb",
+        "skole ransomware",
+        "studentdata læk",
+    ],
+    "fi": [
+        "yliopisto kyberhyökkäys",
+        "koulu kiristyshaittaohjelma",
+        "opiskelijatiedot tietovuoto",
+    ],
+    # Eastern Europe
+    "cs": [
+        "univerzita kyberútok",
+        "škola ransomware",
+        "únik dat studentů",
+    ],
+    "ro": [
+        "universitate atac cibernetic",
+        "școală ransomware",
+        "date studenți scurse",
+    ],
+    "uk": [
+        "університет кібератака",
+        "школа ransomware",
+        "витік даних студентів",
+    ],
+    # Southeast and South Asia
+    "id": [
+        "universitas serangan siber",
+        "sekolah ransomware",
+        "data mahasiswa bocor",
+    ],
+    "ms": [
+        "universiti serangan siber",
+        "sekolah ransomware",
+        "data pelajar bocor",
+    ],
+    "th": [
+        "มหาวิทยาลัย โจมตีไซเบอร์",
+        "โรงเรียน แรนซัมแวร์",
+        "ข้อมูลนักเรียน รั่วไหล",
+    ],
+    "vi": [
+        "đại học tấn công mạng",
+        "trường học ransomware",
+        "dữ liệu sinh viên bị lộ",
+    ],
+    "bn": [
+        "বিশ্ববিদ্যালয় সাইবার হামলা",
+        "স্কুল র‍্যানসমওয়্যার",
+        "শিক্ষার্থী তথ্য ফাঁস",
+    ],
+    "ur": [
+        "یونیورسٹی سائبر حملہ",
+        "اسکول رینسم ویئر",
+        "طلبہ کا ڈیٹا لیک",
+    ],
 }
 
 NEWS_SEARCH_QUERIES_MULTILINGUAL: List[str] = [
@@ -229,10 +298,37 @@ NEWS_SEARCH_SITE_RESTRICTED_TEMPLATES: List[str] = [
 
 NEWS_SEARCH_SITE_RESTRICTED_DOMAINS: List[str] = list(BROAD_CYBER_SOURCE_DOMAINS.values())
 
+NEWS_SEARCH_OFFICIAL_SITE_RESTRICTED_TEMPLATES: List[str] = [
+    "university data breach",
+    "school district data breach",
+    "student records breach",
+    "cyber incident university",
+    "ransomware school",
+]
+
+NEWS_SEARCH_OFFICIAL_SITE_RESTRICTED_DOMAINS: List[str] = [
+    "oag.ca.gov",
+    "maine.gov",
+    "atg.wa.gov",
+    "mass.gov",
+    "ocrportal.hhs.gov",
+    "oaic.gov.au",
+    "ico.org.uk",
+    "cnil.fr",
+    "dataprotection.ie",
+    "ncsc.gov.uk",
+    "k12six.org",
+    "idtheftcenter.org",
+]
+
 NEWS_SEARCH_SITE_RESTRICTED_QUERIES: List[str] = [
     f"site:{domain} {query}"
     for domain in NEWS_SEARCH_SITE_RESTRICTED_DOMAINS
     for query in NEWS_SEARCH_SITE_RESTRICTED_TEMPLATES
+] + [
+    f"site:{domain} {query}"
+    for domain in NEWS_SEARCH_OFFICIAL_SITE_RESTRICTED_DOMAINS
+    for query in NEWS_SEARCH_OFFICIAL_SITE_RESTRICTED_TEMPLATES
 ]
 
 NEWS_SEARCH_QUERIES_EN_WITH_SITE: List[str] = NEWS_SEARCH_QUERIES_EN + NEWS_SEARCH_SITE_RESTRICTED_QUERIES
@@ -248,7 +344,33 @@ NEWS_SEARCH_QUERIES: List[str] = NEWS_SEARCH_QUERIES_EN
 # explicit language/country params in the RSS URL:
 # ?hl={lang}&gl={country}&ceid={country}:{lang}
 GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG: Dict[str, List[str]] = {
-    "en": ["US", "GB", "CA", "AU", "IN", "NZ", "ZA", "IE"],
+    "en": [
+        "US",
+        "GB",
+        "CA",
+        "AU",
+        "IN",
+        "NZ",
+        "ZA",
+        "IE",
+        "NG",
+        "KE",
+        "GH",
+        "SG",
+        "MY",
+        "ID",
+        "TH",
+        "VN",
+        "SE",
+        "NO",
+        "DK",
+        "FI",
+        "CZ",
+        "RO",
+        "UA",
+        "CL",
+        "PE",
+    ],
     "es": ["ES", "MX", "AR", "CO"],
     "fr": ["FR", "CA", "BE"],
     "de": ["DE", "AT", "CH"],
@@ -263,6 +385,19 @@ GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG: Dict[str, List[str]] = {
     "pl": ["PL"],
     "ru": ["RU"],
     "hi": ["IN"],
+    "sv": ["SE"],
+    "no": ["NO"],
+    "da": ["DK"],
+    "fi": ["FI"],
+    "cs": ["CZ"],
+    "ro": ["RO"],
+    "uk": ["UA"],
+    "id": ["ID"],
+    "ms": ["MY", "SG"],
+    "th": ["TH"],
+    "vi": ["VN"],
+    "bn": ["BD", "IN"],
+    "ur": ["PK", "IN"],
 }
 
 
@@ -433,6 +568,7 @@ EDUCATION_KEYWORDS: List[str] = [
 # Default page-walk limits (None = fetch all pages, can be overridden per source/CLI)
 # Set to None by default to fetch all available pages
 NEWS_MAX_PAGES = 50  # Safety cap: 50 pages × 20 articles = 1000 per term
+NEWS_EXACT_PHRASE_MAX_PAGES = int(os.getenv("EDU_CTI_NEWS_EXACT_PHRASE_MAX_PAGES", "2"))
 
 # The Record historical search can return long duplicate-heavy tails after the
 # first genuinely new pages. Stop early once we see a sustained stale streak.

@@ -78,5 +78,5 @@ def test_fetch_search_soup_falls_back_after_challenge(monkeypatch):
     assert soup is fallback_soup
     client.get_soup.assert_called_once_with(
         "https://www.darkreading.com/search?q=school+data+breach",
-        wait_selector="div.SearchResult-Content",
+        wait_selector="div.ContentPreview.SearchResult-ContentPreview",
     )
