@@ -33,6 +33,26 @@ def _env_int(name: str) -> Optional[int]:
         return None
 
 
+def _env_float_optional(name: str) -> Optional[float]:
+    value = os.environ.get(name)
+    if value is None or not value.strip():
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        logger.warning("Invalid float for %s=%r; ignoring override", name, value)
+        return None
+
+
+def _default_idle_resource_release_seconds() -> float:
+    configured = _env_float_optional("EDU_CTI_V2_IDLE_RESOURCE_RELEASE_SECONDS")
+    if configured is not None:
+        return max(configured, 0.0)
+    if os.environ.get("RAILWAY_ENVIRONMENT"):
+        return 300.0
+    return 0.0
+
+
 def _default_prewarm_models_enabled() -> bool:
     configured = os.environ.get("EDU_CTI_V2_PREWARM_MODELS")
     if configured is not None and configured.strip():
@@ -90,6 +110,7 @@ class V2RuntimeService:
         scheduler_poll_interval_seconds: float = 5.0,
         prewarm_models: bool = True,
         lease_recovery_interval_seconds: float = 15.0,
+        idle_resource_release_seconds: Optional[float] = None,
         session_factory: Optional[Callable] = None,
     ) -> None:
         self.worker_count = max(worker_count, 1)
@@ -108,6 +129,11 @@ class V2RuntimeService:
         self.enable_scheduler = enable_scheduler
         self.prewarm_models = prewarm_models
         self.lease_recovery_interval_seconds = max(float(lease_recovery_interval_seconds), 0.0)
+        self.idle_resource_release_seconds = (
+            _default_idle_resource_release_seconds()
+            if idle_resource_release_seconds is None
+            else max(float(idle_resource_release_seconds), 0.0)
+        )
         self.session_factory = session_factory
         self.scheduler_service = scheduler_service or V2SchedulerService(
             poll_interval_seconds=scheduler_poll_interval_seconds,
@@ -117,6 +143,8 @@ class V2RuntimeService:
         self._worker_states: list[_WorkerThreadState] = []
         self._running = False
         self._last_lease_recovery_monotonic = 0.0
+        self._last_active_tasks_monotonic = time.monotonic()
+        self._resources_released_for_idle = False
 
     def _start_worker_thread(self, state: _WorkerThreadState) -> None:
         state.summary = None
@@ -160,6 +188,8 @@ class V2RuntimeService:
         self._stop_event.clear()
         self._worker_states = []
         self._last_lease_recovery_monotonic = 0.0
+        self._last_active_tasks_monotonic = time.monotonic()
+        self._resources_released_for_idle = False
         if self.session_factory is None:
             self.session_factory = create_session_factory(V2DatabaseSettings.from_env())
 
@@ -264,6 +294,7 @@ class V2RuntimeService:
             if state.thread and state.thread.is_alive():
                 state.thread.join(timeout=max(self.poll_interval_seconds * 2, 0.1))
 
+        self._release_idle_resources(reason="stop")
         self._running = False
         logger.info("Stopped v2 runtime")
         return self.get_status()
@@ -284,6 +315,46 @@ class V2RuntimeService:
             logger.warning("v2 expired-lease recovery failed (non-fatal): %s", exc)
             return 0
 
+    def _count_active_tasks(self) -> int:
+        try:
+            from src.edu_cti_v2.repositories import PipelineTaskRepository
+
+            session_factory = self.session_factory or create_session_factory(V2DatabaseSettings.from_env())
+            task_repository = PipelineTaskRepository()
+            with session_factory() as session:
+                return task_repository.count_active(session)
+        except Exception as exc:
+            logger.debug("v2 active task count failed during idle cleanup check: %s", exc)
+            return 0
+
+    def _release_idle_resources(self, *, reason: str) -> None:
+        try:
+            from src.edu_cti_v2.services.resource_cleanup import release_idle_ml_resources
+
+            released = release_idle_ml_resources()
+            if any(bool(value) for value in released.values()):
+                logger.info("Released idle v2 ML resources: reason=%s released=%s", reason, released)
+        except Exception as exc:
+            logger.warning("v2 idle resource cleanup failed (non-fatal): %s", exc)
+
+    def _maybe_release_idle_resources(self) -> None:
+        if self.idle_resource_release_seconds <= 0:
+            return
+
+        active_tasks = self._count_active_tasks()
+        now = time.monotonic()
+        if active_tasks > 0:
+            self._last_active_tasks_monotonic = now
+            self._resources_released_for_idle = False
+            return
+
+        idle_for = now - self._last_active_tasks_monotonic
+        if self._resources_released_for_idle or idle_for < self.idle_resource_release_seconds:
+            return
+
+        self._release_idle_resources(reason=f"idle_for_{idle_for:.0f}s")
+        self._resources_released_for_idle = True
+
     def tick(self) -> None:
         """Restart any dead worker thread while the runtime is supposed to be running."""
         if not self._running or self._stop_event.is_set():
@@ -299,6 +370,8 @@ class V2RuntimeService:
         ):
             self._recover_expired_leases()
             self._last_lease_recovery_monotonic = now
+
+        self._maybe_release_idle_resources()
 
         for state in self._worker_states:
             if state.thread and state.thread.is_alive():
@@ -322,6 +395,7 @@ class V2RuntimeService:
             "canonicalize_worker_count": self.canonicalize_worker_count,
             "task_type": self.task_type,
             "scheduler_enabled": self.enable_scheduler,
+            "idle_resource_release_seconds": self.idle_resource_release_seconds,
             "scheduler": self.scheduler_service.get_status() if self.enable_scheduler else None,
             "workers": [
                 {
