@@ -54,9 +54,18 @@ _LABEL_TO_FIELD: Dict[str, str] = {
     "ransomware family": "ransomware_family",
 }
 
-# Set DISABLE_ML_FEATURES=true to skip GLiNER + sentence-transformer loading
-# on memory-constrained hosts (e.g. Railway 512 MB plan).
-_ML_DISABLED = os.environ.get("DISABLE_ML_FEATURES", "").lower() in ("1", "true", "yes")
+def _local_ml_disabled() -> bool:
+    """Disable local HF models by default on memory-constrained Railway workers."""
+    explicit_disable = os.environ.get("DISABLE_ML_FEATURES", "").strip().lower()
+    if explicit_disable in ("1", "true", "yes", "on"):
+        return True
+    if os.environ.get("RAILWAY_ENVIRONMENT"):
+        explicit_enable = os.environ.get("EDU_CTI_V2_ENABLE_LOCAL_ML", "").strip().lower()
+        return explicit_enable not in ("1", "true", "yes", "on")
+    return False
+
+
+_ML_DISABLED = _local_ml_disabled()
 
 # Runtime cache — protected by _model_lock to prevent concurrent loads
 _model_lock = threading.Lock()

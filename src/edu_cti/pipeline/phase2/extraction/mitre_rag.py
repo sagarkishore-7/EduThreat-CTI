@@ -39,8 +39,18 @@ _INDEX_CACHE_FILENAME = "mitre_embeddings_index.json"  # tid → array row
 _MAX_ARTICLE_CHARS = 2_000   # first ~400 words — where attack context is densest
 _TOP_K = 5                   # number of candidate techniques to surface per article
 
-# Set DISABLE_ML_FEATURES=true to skip model loading on memory-constrained hosts.
-_ML_DISABLED = os.environ.get("DISABLE_ML_FEATURES", "").lower() in ("1", "true", "yes")
+def _local_ml_disabled() -> bool:
+    """Disable local HF models by default on memory-constrained Railway workers."""
+    explicit_disable = os.environ.get("DISABLE_ML_FEATURES", "").strip().lower()
+    if explicit_disable in ("1", "true", "yes", "on"):
+        return True
+    if os.environ.get("RAILWAY_ENVIRONMENT"):
+        explicit_enable = os.environ.get("EDU_CTI_V2_ENABLE_LOCAL_ML", "").strip().lower()
+        return explicit_enable not in ("1", "true", "yes", "on")
+    return False
+
+
+_ML_DISABLED = _local_ml_disabled()
 
 # Runtime cache — protected by _model_lock to prevent concurrent loads
 _model_lock = threading.Lock()

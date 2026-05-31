@@ -51,5 +51,6 @@ ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV EDU_CTI_V2_ENABLE_SCHEDULER=1
 ENV EDU_CTI_V2_WORKER_COUNT=2
+ENV DISABLE_ML_FEATURES=true
 
 CMD ["sh", "-c", "if [ \"${EDU_CTI_V2_ENABLE_SCHEDULER:-1}\" = \"0\" ]; then exec eduthreat-v2-runtime --workers ${EDU_CTI_V2_WORKER_COUNT:-2} --no-scheduler; else exec eduthreat-v2-runtime --workers ${EDU_CTI_V2_WORKER_COUNT:-2}; fi"]
