@@ -2107,6 +2107,39 @@ class V2CanonicalizationService:
             metadata_field="last_non_education_source_incident_id",
         )
 
+    def _seed_or_reuse_canonical(
+        self,
+        session: Session,
+        *,
+        source_incident: SourceIncident,
+        projection: Dict[str, Any],
+        resolution_metadata: Optional[Dict[str, Any]] = None,
+    ) -> CanonicalIncident:
+        canonical_key = _canonical_key_for_projection(projection, source_incident.id)
+        get_by_key = getattr(self.canonical_repository, "get_by_canonical_key", None)
+        existing = get_by_key(session, canonical_key) if callable(get_by_key) else None
+        if isinstance(existing, CanonicalIncident):
+            if resolution_metadata:
+                existing.resolution_metadata = {
+                    **(existing.resolution_metadata or {}),
+                    **resolution_metadata,
+                    "reused_existing_seed_canonical": True,
+                }
+                session.add(existing)
+            return existing
+
+        canonical = CanonicalIncident(
+            canonical_key=canonical_key,
+            status="open",
+            first_seen_at=source_incident.collected_at,
+            last_seen_at=source_incident.collected_at,
+            resolution_version=self.MATCHER_VERSION,
+            resolution_metadata=resolution_metadata or {},
+        )
+        self.canonical_repository.add(session, canonical)
+        session.flush()
+        return canonical
+
     def canonicalize_source_incident(
         self, session: Session, source_incident_id
     ) -> Dict[str, object]:
@@ -2202,19 +2235,15 @@ class V2CanonicalizationService:
                         str(source_incident.id) in source_ids and len(source_ids) > 1
                     )
             if should_detach_stale_membership:
-                canonical = CanonicalIncident(
-                    canonical_key=_canonical_key_for_projection(projection, source_incident.id),
-                    status="open",
-                    first_seen_at=source_incident.collected_at,
-                    last_seen_at=source_incident.collected_at,
-                    resolution_version=self.MATCHER_VERSION,
+                canonical = self._seed_or_reuse_canonical(
+                    session,
+                    source_incident=source_incident,
+                    projection=projection,
                     resolution_metadata={
                         "seeded_from_stale_membership": str(existing_membership.id),
                         "previous_canonical_id": str(old_canonical.id),
                     },
                 )
-                self.canonical_repository.add(session, canonical)
-                session.flush()
                 existing_membership.canonical_incident_id = canonical.id
                 existing_membership.match_type = "seed"
                 existing_membership.match_score = 100.0
@@ -2231,16 +2260,11 @@ class V2CanonicalizationService:
                 session, source_incident, projection
             )
             if canonical is None:
-                canonical = CanonicalIncident(
-                    canonical_key=_canonical_key_for_projection(projection, source_incident.id),
-                    status="open",
-                    first_seen_at=source_incident.collected_at,
-                    last_seen_at=source_incident.collected_at,
-                    resolution_version=self.MATCHER_VERSION,
-                    resolution_metadata={},
+                canonical = self._seed_or_reuse_canonical(
+                    session,
+                    source_incident=source_incident,
+                    projection=projection,
                 )
-                self.canonical_repository.add(session, canonical)
-                session.flush()
                 match_type = "seed"
                 match_score = 100.0
             membership = CanonicalMembership(

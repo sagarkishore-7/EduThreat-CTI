@@ -2403,6 +2403,139 @@ def test_canonicalization_service_detaches_stale_existing_membership_to_new_cano
     assert old_canonical.status == "excluded"
 
 
+def test_canonicalization_service_reuses_seed_canonical_when_stale_detach_retries():
+    canonical_repo = Mock()
+    old_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="old-instructure",
+        status="open",
+        institution_name="Instructure",
+        vendor_name="Instructure",
+        country="United States",
+        country_code="US",
+        incident_date=datetime(2026, 5, 1, tzinfo=timezone.utc).date(),
+        date_precision="day",
+        attack_category="supply_chain_software",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    reused_canonical = CanonicalIncident(
+        id=uuid4(),
+        canonical_key="retry-seed",
+        status="open",
+        first_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        last_seen_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+        resolution_version="v2",
+        resolution_metadata={},
+    )
+    existing_membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=old_canonical.id,
+        source_incident_id=uuid4(),
+        match_type="seed",
+        match_score=100.0,
+        survivor_score=10.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+    other_membership = CanonicalMembership(
+        id=uuid4(),
+        canonical_incident_id=old_canonical.id,
+        source_incident_id=uuid4(),
+        match_type="vendor_date",
+        match_score=128.0,
+        survivor_score=20.0,
+        is_primary_member=True,
+        field_contribution={},
+        matcher_version="v2",
+        matched_at=datetime(2026, 5, 1, tzinfo=timezone.utc),
+    )
+
+    canonical_repo.get_membership_for_source_incident.return_value = existing_membership
+    canonical_repo.find_by_url_candidates.return_value = []
+    canonical_repo.find_name_date_candidates.return_value = []
+    canonical_repo.find_identity_candidates.return_value = []
+    canonical_repo.get_by_id.return_value = old_canonical
+    canonical_repo.get_by_canonical_key.return_value = reused_canonical
+    canonical_repo.list_memberships.side_effect = [
+        [existing_membership, other_membership],
+        [existing_membership],
+        [],
+    ]
+
+    source_repo = Mock()
+    incident = _source_incident(
+        event_key="wayne-state-canvas-retry",
+        url="https://example.com/wayne-state-canvas-retry",
+    )
+    incident.id = existing_membership.source_incident_id
+    incident.raw_institution_name = "Wayne State University"
+    incident.raw_victim_name = "Wayne State University"
+    incident.raw_institution_type = "university"
+    incident.raw_country = "United States"
+    incident.raw_region = "Michigan"
+    incident.raw_city = "Detroit"
+    incident.raw_title = "Canvas system is online after a cyberattack disrupted schools"
+    source_repo.get_by_id.return_value = incident
+
+    enrichment = SourceEnrichment(
+        id=uuid4(),
+        source_incident_id=incident.id,
+        article_document_id=uuid4(),
+        llm_provider="ollama",
+        llm_model="deepseek-v3.1:671b-cloud",
+        typed_enrichment={
+            "institution_name": "Wayne State University",
+            "institution_type": "university",
+            "country": "United States",
+            "country_code": "US",
+            "region": "Michigan",
+            "city": "Detroit",
+            "incident_date": "2026-05-10",
+            "incident_date_precision": "day",
+            "attack_category": "third_party_compromise",
+            "enriched_summary": "Canvas was restored after disruption at Wayne State University.",
+            "timeline": [],
+        },
+        raw_extraction={
+            "institution_name": "Wayne State University",
+            "institution_type": "university",
+            "country_code": "US",
+            "incident_date": "2026-05-10",
+            "attack_category": "third_party_compromise",
+        },
+        is_education_related=True,
+    )
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.return_value = enrichment
+
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+
+    service = V2CanonicalizationService(
+        canonical_repository=canonical_repo,
+        source_incident_repository=source_repo,
+        source_enrichment_repository=enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+    session.flush.return_value = None
+    session.execute.return_value.scalars.return_value.all.return_value = [enrichment]
+    session.query.return_value.filter_by.return_value.delete.return_value = None
+
+    outcome = service.canonicalize_source_incident(session, incident.id)
+
+    assert outcome["canonicalized"] is True
+    assert str(existing_membership.canonical_incident_id) == str(reused_canonical.id)
+    assert canonical_repo.add.call_count == 0
+    assert reused_canonical.resolution_metadata["reused_existing_seed_canonical"] is True
+    assert old_canonical.status == "excluded"
+
+
 def test_canonicalization_service_reopens_excluded_canonical_when_identity_is_repaired():
     canonical_repo = Mock()
     incident = _source_incident(event_key="reopen-excluded")

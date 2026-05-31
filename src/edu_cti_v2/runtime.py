@@ -33,6 +33,25 @@ def _env_int(name: str) -> Optional[int]:
         return None
 
 
+def _railway_safe_worker_count(worker_count: int) -> int:
+    worker_count = max(int(worker_count), 1)
+    if not os.environ.get("RAILWAY_ENVIRONMENT"):
+        return worker_count
+    if _env_flag("EDU_CTI_V2_ALLOW_HIGH_WORKER_COUNT"):
+        return worker_count
+
+    max_worker_count = 2
+    if worker_count > max_worker_count:
+        logger.warning(
+            "Capping Railway v2 worker count from %s to %s to avoid OOM; "
+            "set EDU_CTI_V2_ALLOW_HIGH_WORKER_COUNT=1 to override.",
+            worker_count,
+            max_worker_count,
+        )
+        return max_worker_count
+    return worker_count
+
+
 def _env_float_optional(name: str) -> Optional[float]:
     value = os.environ.get(name)
     if value is None or not value.strip():
@@ -113,7 +132,7 @@ class V2RuntimeService:
         idle_resource_release_seconds: Optional[float] = None,
         session_factory: Optional[Callable] = None,
     ) -> None:
-        self.worker_count = max(worker_count, 1)
+        self.worker_count = _railway_safe_worker_count(worker_count)
         if fetch_worker_count is None:
             fetch_worker_count = max(1, min(2, self.worker_count))
         if resolve_worker_count is None:

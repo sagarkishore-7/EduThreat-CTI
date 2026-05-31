@@ -44,11 +44,19 @@ def _env_int(name: str, default: int) -> int:
 def _default_max_active_enrich_tasks() -> int:
     configured = os.environ.get("EDU_CTI_V2_MAX_ACTIVE_ENRICH_TASKS")
     if configured is not None and configured.strip():
-        return _env_int("EDU_CTI_V2_MAX_ACTIVE_ENRICH_TASKS", 0)
-    # Railway hobby workers are memory-constrained; avoid five concurrent
-    # GLiNER/LLM enrichment jobs when a high generic worker count is configured.
+        requested = _env_int("EDU_CTI_V2_MAX_ACTIVE_ENRICH_TASKS", 0)
+        if (
+            os.environ.get("RAILWAY_ENVIRONMENT")
+            and requested > 1
+            and os.environ.get("EDU_CTI_V2_ALLOW_HIGH_ENRICH_CONCURRENCY", "").strip().lower()
+            not in {"1", "true", "yes", "on"}
+        ):
+            return 1
+        return requested
+    # Railway hobby workers are memory-constrained; keep only one GLiNER/LLM
+    # enrichment leased at a time unless an explicit override is configured.
     if os.environ.get("RAILWAY_ENVIRONMENT"):
-        return 2
+        return 1
     return 0
 
 

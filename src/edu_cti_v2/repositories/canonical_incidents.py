@@ -751,6 +751,10 @@ class CanonicalIncidentRepository:
     def get_by_id(self, session: Session, canonical_incident_id: str) -> CanonicalIncident | None:
         return session.execute(self.build_get_by_id_stmt(canonical_incident_id)).scalar_one_or_none()
 
+    def get_by_canonical_key(self, session: Session, canonical_key: str) -> CanonicalIncident | None:
+        stmt = select(CanonicalIncident).where(CanonicalIncident.canonical_key == canonical_key)
+        return session.execute(stmt).scalar_one_or_none()
+
     def get_membership_for_source_incident(
         self,
         session: Session,
