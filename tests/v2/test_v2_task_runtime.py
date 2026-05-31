@@ -339,6 +339,31 @@ def test_task_runtime_pauses_enrich_when_active_enrich_limit_is_reached():
     enrich_service.enrich_source_incident.assert_not_called()
 
 
+def test_task_runtime_does_not_lease_enrich_when_advisory_lock_is_busy():
+    task_repo = Mock()
+    source_repo = Mock()
+
+    runtime = V2TaskRuntime(
+        pipeline_task_repository=task_repo,
+        source_incident_repository=source_repo,
+        max_active_enrich_tasks=1,
+    )
+    session = Mock()
+    session.get_bind.return_value.dialect.name = "postgresql"
+    session.execute.return_value.scalar_one.return_value = False
+
+    processed = runtime.process_next_task(
+        session,
+        worker_id="enrich-worker-1",
+        task_type="enrich_source",
+    )
+
+    assert processed is None
+    session.execute.assert_called_once()
+    task_repo.count_active.assert_not_called()
+    task_repo.lease_batch.assert_not_called()
+
+
 def test_task_runtime_skips_memory_heavy_tasks_when_unspecified_and_limit_is_reached():
     task_repo = Mock()
     source_repo = Mock()

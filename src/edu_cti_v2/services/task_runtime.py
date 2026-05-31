@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from typing import Optional, Sequence
 
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from src.edu_cti_v2.models import PipelineTask
@@ -18,6 +19,7 @@ from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 from src.edu_cti_v2.services.resolution import V2ResolveUrlService
 
 MEMORY_HEAVY_TASK_TYPES = ("enrich_source", "reenrich")
+MEMORY_HEAVY_LEASE_LOCK_KEY = 0xEDC71002
 
 DEFAULT_TASK_LEASE_ORDER = (
     "orchestrate_plan",
@@ -108,6 +110,46 @@ class V2TaskRuntime:
         )
         return active >= self.max_active_enrich_tasks
 
+    def _try_acquire_memory_heavy_lease_lock(self, session: Session) -> bool:
+        """Serialize memory-heavy task leases on Postgres.
+
+        The active-count guard and row lease are separate statements. Without a
+        transaction-level lock, multiple worker threads can all observe zero
+        active enrich tasks and then lease different enrich tasks concurrently.
+        """
+        bind = session.get_bind()
+        if getattr(getattr(bind, "dialect", None), "name", None) != "postgresql":
+            return True
+        acquired = session.execute(
+            text("select pg_try_advisory_xact_lock(:lock_key)"),
+            {"lock_key": MEMORY_HEAVY_LEASE_LOCK_KEY},
+        ).scalar_one()
+        return bool(acquired)
+
+    def _lease_candidate_task(
+        self,
+        session: Session,
+        *,
+        worker_id: str,
+        candidate_type: str,
+        lease_seconds: int,
+        exclude_task_types: Optional[Sequence[str]] = None,
+    ):
+        if candidate_type in MEMORY_HEAVY_TASK_TYPES:
+            if not self._try_acquire_memory_heavy_lease_lock(session):
+                return None
+            if self._enrich_concurrency_full(session):
+                return None
+        leased = self.pipeline_task_repository.lease_batch(
+            session,
+            worker_id=worker_id,
+            task_type=candidate_type,
+            exclude_task_types=exclude_task_types,
+            limit=1,
+            lease_seconds=lease_seconds,
+        )
+        return leased[0] if leased else None
+
     def _lease_next_task(
         self,
         session: Session,
@@ -118,8 +160,6 @@ class V2TaskRuntime:
         exclude_task_types: Optional[Sequence[str]] = None,
     ):
         if task_type:
-            if task_type in MEMORY_HEAVY_TASK_TYPES and self._enrich_concurrency_full(session):
-                return None
             if exclude_task_types and task_type in set(exclude_task_types):
                 return None
             if task_type == "resolve_url" and self.max_fetch_backlog > 0:
@@ -129,15 +169,13 @@ class V2TaskRuntime:
                 )
                 if fetch_backlog >= self.max_fetch_backlog:
                     return None
-            leased = self.pipeline_task_repository.lease_batch(
+            return self._lease_candidate_task(
                 session,
                 worker_id=worker_id,
-                task_type=task_type,
+                candidate_type=task_type,
                 exclude_task_types=exclude_task_types,
-                limit=1,
                 lease_seconds=lease_seconds,
             )
-            return leased[0] if leased else None
 
         # Keep the expensive pipeline stages flowing before discovery keeps
         # expanding the queue, otherwise fetch/enrich work starves behind URL
@@ -145,18 +183,15 @@ class V2TaskRuntime:
         for candidate_type in DEFAULT_TASK_LEASE_ORDER:
             if exclude_task_types and candidate_type in set(exclude_task_types):
                 continue
-            if candidate_type in MEMORY_HEAVY_TASK_TYPES and self._enrich_concurrency_full(session):
-                continue
-            leased = self.pipeline_task_repository.lease_batch(
+            task = self._lease_candidate_task(
                 session,
                 worker_id=worker_id,
-                task_type=candidate_type,
+                candidate_type=candidate_type,
                 exclude_task_types=exclude_task_types,
-                limit=1,
                 lease_seconds=lease_seconds,
             )
-            if leased:
-                return leased[0]
+            if task is not None:
+                return task
         return None
 
     def lease_next_task(
