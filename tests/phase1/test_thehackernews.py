@@ -49,6 +49,23 @@ def test_thehackernews_native_search_url_uses_site_search():
     assert "q=school+data+breach" in url
 
 
+def test_thehackernews_challenge_word_does_not_trigger_captcha_false_positive():
+    html = """
+    <html>
+      <body>
+        <a class="story-link" href="https://thehackernews.com/example">
+          <h2 class="home-title">Cybersecurity Challenge Facing Schools</h2>
+          <div class="home-desc">A real article card, not an anti-bot challenge.</div>
+        </a>
+      </body>
+    </html>
+    """
+    soup = BeautifulSoup(html, "html.parser")
+
+    assert thehackernews._detect_captcha(soup) is False
+    assert len(thehackernews._extract_native_articles_from_page(soup)) == 1
+
+
 def test_thehackernews_builds_incidents_from_native_search():
     consume_news_query_metrics()
     client = DummyClient(NATIVE_SEARCH_HTML)

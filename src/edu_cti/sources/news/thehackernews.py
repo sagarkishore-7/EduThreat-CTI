@@ -89,8 +89,6 @@ def _detect_captcha(soup: BeautifulSoup, page_text: str = "") -> bool:
         "just a moment",
         # Generic
         "captcha",
-        "challenge",
-        "verification",
         "unusual traffic",
         "automated requests",
         # Google specific

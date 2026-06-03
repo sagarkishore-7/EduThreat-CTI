@@ -8,6 +8,7 @@ All sources are FREE RSS feeds.
 """
 
 import logging
+import re
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from typing import Callable, Dict, List, Optional
@@ -88,7 +89,7 @@ INTERNATIONAL_FEEDS = [
     # Finland — NCSC-FI
     (
         "ncsc_fi",
-        "https://www.kyberturvallisuuskeskus.fi/en/rss.xml",
+        "https://www.kyberturvallisuuskeskus.fi/feed/rss/en",
         "en",
         "Finland",
         ["university", "school", "education", "campus"],
@@ -155,7 +156,7 @@ INTERNATIONAL_FEEDS = [
     # Canada — Cyber Centre
     (
         "cccs_ca",
-        "https://www.cyber.gc.ca/api/cccs/rss",
+        "https://www.cyber.gc.ca/api/cccs/atom/v1/get?feed=alerts_advisories&lang=en",
         "en",
         "Canada",
         ["university", "school", "college", "education", "campus"],
@@ -172,6 +173,37 @@ INTERNATIONAL_FEEDS = [
         ["ransomware", "cyber attack", "data breach", "vulnerability", "malware"],
     ),
 ]
+
+_INVALID_XML_CHARS_RE = re.compile(
+    r"[\x00-\x08\x0b\x0c\x0e-\x1f]"
+)
+
+
+def _parse_feed_xml(content: bytes, text: str, encoding: Optional[str], feed_name: str):
+    """Parse RSS/Atom XML with conservative fallbacks for imperfect feeds."""
+    try:
+        return ET.fromstring(content)
+    except ET.ParseError as original_error:
+        cleaned_text = _INVALID_XML_CHARS_RE.sub("", text)
+        try:
+            return ET.fromstring(cleaned_text.encode(encoding or "utf-8"))
+        except ET.ParseError:
+            pass
+
+        try:
+            from lxml import etree
+
+            parser = etree.XMLParser(recover=True)
+            root = etree.fromstring(content, parser=parser)
+            if root is not None:
+                logger.warning(
+                    f"{feed_name} RSS XML was malformed; parsed with lxml recovery"
+                )
+                return root
+        except Exception:
+            pass
+
+        raise original_error
 
 
 def _matches_edu_and_cyber(text: str, edu_keywords: List[str], cyber_keywords: List[str]) -> bool:
@@ -237,7 +269,7 @@ def build_international_rss_incidents(
             continue
 
         try:
-            root = ET.fromstring(resp.content)
+            root = _parse_feed_xml(resp.content, resp.text, resp.encoding, feed_name)
         except ET.ParseError as e:
             logger.warning(f"Failed to parse {feed_name} RSS XML: {e}")
             continue
