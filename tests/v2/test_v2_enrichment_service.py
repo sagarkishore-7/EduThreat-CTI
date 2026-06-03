@@ -182,6 +182,40 @@ def test_enrichment_service_persists_typed_source_enrichment():
     pipeline_task_repo.enqueue.assert_called_once()
 
 
+def test_enrichment_service_skips_existing_enrichment_for_same_selected_article():
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    pipeline_task_repo = Mock()
+    enricher = Mock()
+
+    incident = _source_incident()
+    document = _article_document(incident)
+    existing_enrichment = SimpleNamespace(
+        article_document_id=document.id,
+        typed_enrichment={"institution_name": "Penn State University"},
+        is_education_related=True,
+        failed_reason=None,
+    )
+    article_repo.get_selected_document.return_value = document
+    source_enrichment_repo.get_by_source_incident.return_value = existing_enrichment
+    service = V2EnrichmentService(
+        article_repository=article_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=pipeline_task_repo,
+        enricher=enricher,
+    )
+    session = Mock()
+
+    outcome = service.enrich_source_incident(session, incident)
+
+    assert outcome["skipped_already_enriched"] == 1
+    assert outcome["enriched"] is True
+    assert outcome["canonicalize_tasks_enqueued"] == 0
+    enricher._enrich_article.assert_not_called()
+    source_enrichment_repo.add.assert_not_called()
+    pipeline_task_repo.enqueue.assert_not_called()
+
+
 def test_enrichment_service_records_missing_article_failure():
     article_repo = Mock()
     article_repo.get_selected_document.return_value = None

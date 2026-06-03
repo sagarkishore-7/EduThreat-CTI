@@ -1191,6 +1191,27 @@ class V2EnrichmentService:
         existing_enrichment = self.source_enrichment_repository.get_by_source_incident(
             session, source_incident.id
         )
+        is_explicit_reenrich = (
+            force_canonicalize
+            or re_enrich_attempts is not None
+            or re_enrich_reason is not None
+        )
+        if (
+            existing_enrichment is not None
+            and not is_explicit_reenrich
+            and existing_enrichment.article_document_id is not None
+            and str(existing_enrichment.article_document_id) == str(document.id)
+            and existing_enrichment.failed_reason != "No selected article available for enrichment"
+        ):
+            return {
+                "enriched": existing_enrichment.typed_enrichment is not None,
+                "is_education_related": existing_enrichment.is_education_related,
+                "has_typed_enrichment": existing_enrichment.typed_enrichment is not None,
+                "article_document_id": str(document.id),
+                "canonicalize_tasks_enqueued": 0,
+                "secondary_source_incidents_created": 0,
+                "skipped_already_enriched": 1,
+            }
         effective_attempts = (
             int(re_enrich_attempts)
             if re_enrich_attempts is not None

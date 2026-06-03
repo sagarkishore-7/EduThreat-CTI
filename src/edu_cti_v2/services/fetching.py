@@ -12,7 +12,11 @@ from sqlalchemy.orm import Session
 
 from src.edu_cti.pipeline.phase2.storage import ArticleContent, ArticleFetcher
 from src.edu_cti_v2.models import ArticleDocument, ArticleFetchAttempt, PipelineTask, SourceIncident
-from src.edu_cti_v2.repositories import ArticleRepository, PipelineTaskRepository
+from src.edu_cti_v2.repositories import (
+    ArticleRepository,
+    PipelineTaskRepository,
+    SourceEnrichmentRepository,
+)
 from src.edu_cti_v2.source_identity import recover_source_identity
 
 _TITLE_SOURCE_SUFFIX_RE = re.compile(r"\s+-\s+([^-\n]+)$")
@@ -564,10 +568,14 @@ class V2FetchService:
         *,
         article_fetcher: Optional[ArticleFetcher] = None,
         article_repository: Optional[ArticleRepository] = None,
+        source_enrichment_repository: Optional[SourceEnrichmentRepository] = None,
         pipeline_task_repository: Optional[PipelineTaskRepository] = None,
     ) -> None:
         self.article_fetcher = article_fetcher or ArticleFetcher()
         self.article_repository = article_repository or ArticleRepository()
+        self.source_enrichment_repository = (
+            source_enrichment_repository or SourceEnrichmentRepository()
+        )
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
 
     def fetch_articles_for_source_incident(
@@ -577,6 +585,63 @@ class V2FetchService:
         *,
         worker_id: str,
     ) -> Dict[str, int]:
+        existing_enrichment = self.source_enrichment_repository.get_by_source_incident(
+            session,
+            source_incident.id,
+        )
+        if existing_enrichment is not None:
+            return {
+                "urls_total": 0,
+                "articles_saved": 0,
+                "articles_failed": 0,
+                "enrich_tasks_enqueued": 0,
+                "resolve_tasks_enqueued": 0,
+                "skipped_already_enriched": 1,
+            }
+
+        existing_selected_document = self.article_repository.get_selected_document(
+            session,
+            source_incident.id,
+        )
+        if existing_selected_document is not None:
+            enrich_task_enqueued = 0
+            existing_enrich_task = self.pipeline_task_repository.get_active_for_target(
+                session,
+                task_type="enrich_source",
+                target_table="source_incidents",
+                target_id=source_incident.id,
+            )
+            if existing_enrich_task is None:
+                self.pipeline_task_repository.enqueue(
+                    session,
+                    PipelineTask(
+                        run_id=None,
+                        task_type="enrich_source",
+                        target_table="source_incidents",
+                        target_id=source_incident.id,
+                        status="queued",
+                        priority=80,
+                        payload={
+                            "source_incident_id": str(source_incident.id),
+                            "source_name": source_incident.source_name,
+                            "trigger": "existing_selected_article",
+                        },
+                        result={},
+                        available_at=datetime.now(timezone.utc),
+                        attempt_count=0,
+                        max_attempts=5,
+                    ),
+                )
+                enrich_task_enqueued = 1
+            return {
+                "urls_total": 0,
+                "articles_saved": 0,
+                "articles_failed": 0,
+                "enrich_tasks_enqueued": enrich_task_enqueued,
+                "resolve_tasks_enqueued": 0,
+                "skipped_existing_selected_article": 1,
+            }
+
         fetchable_urls = [
             url_row
             for url_row in (source_incident.urls or [])

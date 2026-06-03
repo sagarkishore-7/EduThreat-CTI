@@ -16,6 +16,7 @@ class ArticleRepository:
         return (
             select(ArticleDocument)
             .where(ArticleDocument.source_incident_id == source_incident_id)
+            .where(ArticleDocument.is_selected_for_enrichment.is_(True))
             .order_by(ArticleDocument.is_selected_for_enrichment.desc(), ArticleDocument.fetched_at.desc())
             .limit(1)
         )

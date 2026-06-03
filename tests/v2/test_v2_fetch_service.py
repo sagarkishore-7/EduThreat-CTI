@@ -58,9 +58,16 @@ def _source_incident_with_urls(*urls: tuple[str, bool]) -> SourceIncident:
     return incident
 
 
+def _source_enrichment_repository(enrichment=None):
+    repository = Mock()
+    repository.get_by_source_incident.return_value = enrichment
+    return repository
+
+
 def test_fetch_service_persists_successful_article_and_enqueues_enrichment():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     pipeline_task_repository.get_active_for_target.return_value = None
     article_fetcher = Mock()
@@ -98,6 +105,7 @@ def test_fetch_service_persists_successful_article_and_enqueues_enrichment():
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()
@@ -123,6 +131,7 @@ def test_fetch_service_persists_successful_article_and_enqueues_enrichment():
 def test_fetch_service_records_failures_without_enqueuing_enrichment():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     article_fetcher = Mock()
     article_fetcher.fetch_article.return_value = ArticleContent(
@@ -159,6 +168,7 @@ def test_fetch_service_records_failures_without_enqueuing_enrichment():
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()
@@ -174,9 +184,58 @@ def test_fetch_service_records_failures_without_enqueuing_enrichment():
     assert result["enrich_tasks_enqueued"] == 0
 
 
+def test_fetch_service_skips_source_that_is_already_enriched():
+    article_repository = Mock()
+    pipeline_task_repository = Mock()
+    article_fetcher = Mock()
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(enrichment=object()),
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident()
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert result["skipped_already_enriched"] == 1
+    assert result["enrich_tasks_enqueued"] == 0
+    article_fetcher.fetch_article.assert_not_called()
+    article_repository.add_document.assert_not_called()
+    pipeline_task_repository.enqueue.assert_not_called()
+
+
+def test_fetch_service_enqueues_enrichment_for_existing_selected_article_without_refetch():
+    article_repository = Mock()
+    article_repository.get_selected_document.return_value = object()
+    pipeline_task_repository = Mock()
+    pipeline_task_repository.get_active_for_target.return_value = None
+    article_fetcher = Mock()
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident()
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert result["skipped_existing_selected_article"] == 1
+    assert result["enrich_tasks_enqueued"] == 1
+    article_fetcher.fetch_article.assert_not_called()
+    pipeline_task_repository.enqueue.assert_called_once()
+    task = pipeline_task_repository.enqueue.call_args.args[1]
+    assert task.task_type == "enrich_source"
+    assert task.payload["trigger"] == "existing_selected_article"
+
+
 def test_fetch_service_retries_discovery_when_curated_urls_all_fail():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     pipeline_task_repository.get_active_for_target.return_value = None
     article_fetcher = Mock()
@@ -217,6 +276,7 @@ def test_fetch_service_retries_discovery_when_curated_urls_all_fail():
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()
@@ -247,6 +307,7 @@ def test_fetch_service_retries_discovery_when_curated_urls_all_fail():
 def test_fetch_service_selects_best_matching_article_instead_of_first_success():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     pipeline_task_repository.get_active_for_target.return_value = None
     article_fetcher = Mock()
@@ -279,6 +340,7 @@ def test_fetch_service_selects_best_matching_article_instead_of_first_success():
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()
@@ -307,6 +369,7 @@ def test_fetch_service_selects_best_matching_article_instead_of_first_success():
 def test_fetch_service_rejects_article_far_after_news_source_date():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     article_fetcher = Mock()
     article_fetcher.fetch_article.return_value = ArticleContent(
@@ -326,6 +389,7 @@ def test_fetch_service_rejects_article_far_after_news_source_date():
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()
@@ -354,6 +418,7 @@ def test_fetch_service_rejects_article_far_after_news_source_date():
 def test_fetch_service_keeps_exact_title_match_with_stale_article_metadata_date():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     pipeline_task_repository.get_active_for_target.return_value = None
     article_fetcher = Mock()
@@ -371,6 +436,7 @@ def test_fetch_service_keeps_exact_title_match_with_stale_article_metadata_date(
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()
@@ -394,6 +460,7 @@ def test_fetch_service_keeps_exact_title_match_with_stale_article_metadata_date(
 def test_fetch_service_skips_enrichment_when_no_article_is_relevant():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     article_fetcher = Mock()
     article_fetcher.fetch_article.side_effect = [
@@ -412,6 +479,7 @@ def test_fetch_service_skips_enrichment_when_no_article_is_relevant():
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()
@@ -434,6 +502,7 @@ def test_fetch_service_skips_enrichment_when_no_article_is_relevant():
 def test_fetch_service_retries_discovery_for_curated_stale_homepage():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     pipeline_task_repository.get_active_for_target.return_value = None
     article_fetcher = Mock()
@@ -454,6 +523,7 @@ def test_fetch_service_retries_discovery_for_curated_stale_homepage():
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()
@@ -481,6 +551,7 @@ def test_fetch_service_retries_discovery_for_curated_stale_homepage():
 def test_fetch_service_rejects_year_only_match_when_article_names_different_victim():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     article_fetcher = Mock()
     article_fetcher.fetch_article.return_value = ArticleContent(
@@ -497,6 +568,7 @@ def test_fetch_service_rejects_year_only_match_when_article_names_different_vict
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()
@@ -522,6 +594,7 @@ def test_fetch_service_rejects_year_only_match_when_article_names_different_vict
 def test_fetch_service_strips_nul_bytes_before_persisting():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     pipeline_task_repository.get_active_for_target.return_value = None
     article_fetcher = Mock()
@@ -539,6 +612,7 @@ def test_fetch_service_strips_nul_bytes_before_persisting():
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()
@@ -556,6 +630,7 @@ def test_fetch_service_strips_nul_bytes_before_persisting():
 def test_fetch_service_rejects_binary_pdf_payloads():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
     pipeline_task_repository = Mock()
     article_fetcher = Mock()
     article_fetcher.fetch_article.return_value = ArticleContent(
@@ -572,6 +647,7 @@ def test_fetch_service_rejects_binary_pdf_payloads():
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
         pipeline_task_repository=pipeline_task_repository,
     )
     session = Mock()

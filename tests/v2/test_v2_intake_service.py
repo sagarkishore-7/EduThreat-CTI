@@ -82,10 +82,16 @@ def test_record_incremental_state_upserts_latest_source_marker():
 
 def test_ensure_initial_processing_task_enqueues_fetch_task_once():
     state_repo = Mock()
+    article_repo = Mock()
+    article_repo.get_selected_document.return_value = None
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
     task_repo = Mock()
     task_repo.get_active_for_target.return_value = None
     service = V2IntakeService(
+        article_repository=article_repo,
         source_state_repository=state_repo,
+        source_enrichment_repository=source_enrichment_repo,
         pipeline_task_repository=task_repo,
     )
     session = Mock()
@@ -103,10 +109,16 @@ def test_ensure_initial_processing_task_enqueues_fetch_task_once():
 
 def test_ensure_initial_processing_task_enqueues_lower_priority_resolve_task():
     state_repo = Mock()
+    article_repo = Mock()
+    article_repo.get_selected_document.return_value = None
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
     task_repo = Mock()
     task_repo.get_active_for_target.return_value = None
     service = V2IntakeService(
+        article_repository=article_repo,
         source_state_repository=state_repo,
+        source_enrichment_repository=source_enrichment_repo,
         pipeline_task_repository=task_repo,
     )
     session = Mock()
@@ -120,11 +132,17 @@ def test_ensure_initial_processing_task_enqueues_lower_priority_resolve_task():
 
 def test_ensure_initial_processing_task_reuses_existing_active_task():
     state_repo = Mock()
+    article_repo = Mock()
+    article_repo.get_selected_document.return_value = None
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
     task_repo = Mock()
     existing = SimpleNamespace(task_type="resolve_url")
     task_repo.get_active_for_target.return_value = existing
     service = V2IntakeService(
+        article_repository=article_repo,
         source_state_repository=state_repo,
+        source_enrichment_repository=source_enrichment_repo,
         pipeline_task_repository=task_repo,
     )
     session = Mock()
@@ -134,3 +152,50 @@ def test_ensure_initial_processing_task_reuses_existing_active_task():
 
     assert task is existing
     task_repo.enqueue.assert_not_called()
+
+
+def test_ensure_initial_processing_task_skips_already_enriched_source():
+    state_repo = Mock()
+    article_repo = Mock()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = object()
+    task_repo = Mock()
+    service = V2IntakeService(
+        article_repository=article_repo,
+        source_state_repository=state_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+    incident = _source_incident(with_article_url=True)
+
+    task = service.ensure_initial_processing_task(session, incident)
+
+    assert task is None
+    article_repo.get_selected_document.assert_not_called()
+    task_repo.get_active_for_target.assert_not_called()
+    task_repo.enqueue.assert_not_called()
+
+
+def test_ensure_initial_processing_task_enqueues_enrichment_for_existing_selected_article():
+    state_repo = Mock()
+    article_repo = Mock()
+    article_repo.get_selected_document.return_value = object()
+    source_enrichment_repo = Mock()
+    source_enrichment_repo.get_by_source_incident.return_value = None
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+    service = V2IntakeService(
+        article_repository=article_repo,
+        source_state_repository=state_repo,
+        source_enrichment_repository=source_enrichment_repo,
+        pipeline_task_repository=task_repo,
+    )
+    session = Mock()
+    incident = _source_incident(with_article_url=True)
+
+    task = service.ensure_initial_processing_task(session, incident)
+
+    task_repo.enqueue.assert_called_once()
+    assert task.task_type == "enrich_source"
+    assert task.priority == 80

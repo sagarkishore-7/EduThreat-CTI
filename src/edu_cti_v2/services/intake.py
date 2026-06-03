@@ -8,7 +8,12 @@ from typing import Optional
 from sqlalchemy.orm import Session
 
 from src.edu_cti_v2.models import PipelineTask, SourceIncident
-from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceStateRepository
+from src.edu_cti_v2.repositories import (
+    ArticleRepository,
+    PipelineTaskRepository,
+    SourceEnrichmentRepository,
+    SourceStateRepository,
+)
 
 
 def determine_initial_task_type(source_incident: SourceIncident) -> str:
@@ -30,10 +35,16 @@ class V2IntakeService:
     def __init__(
         self,
         *,
+        article_repository: Optional[ArticleRepository] = None,
         source_state_repository: Optional[SourceStateRepository] = None,
+        source_enrichment_repository: Optional[SourceEnrichmentRepository] = None,
         pipeline_task_repository: Optional[PipelineTaskRepository] = None,
     ) -> None:
+        self.article_repository = article_repository or ArticleRepository()
         self.source_state_repository = source_state_repository or SourceStateRepository()
+        self.source_enrichment_repository = (
+            source_enrichment_repository or SourceEnrichmentRepository()
+        )
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
 
     def record_incremental_state(
@@ -66,8 +77,19 @@ class V2IntakeService:
         self,
         session: Session,
         source_incident: SourceIncident,
-    ) -> PipelineTask:
-        task_type = determine_initial_task_type(source_incident)
+    ) -> Optional[PipelineTask]:
+        if self.source_enrichment_repository.get_by_source_incident(session, source_incident.id):
+            return None
+
+        selected_document = self.article_repository.get_selected_document(
+            session,
+            source_incident.id,
+        )
+        task_type = (
+            "enrich_source"
+            if selected_document is not None
+            else determine_initial_task_type(source_incident)
+        )
         existing = self.pipeline_task_repository.get_active_for_target(
             session,
             task_type=task_type,
@@ -84,7 +106,11 @@ class V2IntakeService:
             target_table="source_incidents",
             target_id=source_incident.id,
             status="queued",
-            priority=60 if task_type == "fetch_article" else 20,
+            priority=(
+                80
+                if task_type == "enrich_source"
+                else 60 if task_type == "fetch_article" else 20
+            ),
             payload={
                 "source_incident_id": str(source_incident.id),
                 "source_name": source_incident.source_name,
