@@ -54,7 +54,6 @@ dependencies = [
     # Article extraction
     "newspaper3k>=0.2.8",
     "lxml_html_clean>=0.1.0",
-    "googlenewsdecoder>=0.1.7",
 
     # LLM enrichment
     "ollama>=0.3.0",

@@ -336,20 +336,17 @@ def _resolve_google_news_url(url: str) -> str:
 
     Google News RSS <link> elements are opaque encoded redirects like
     ``https://news.google.com/rss/articles/CBMi...`` that return 400 when
-    fetched directly.  Uses googlenewsdecoder to extract the real article URL.
-    Falls back to the original URL if decoding fails.
+    fetched directly. Falls back to the original URL if decoding fails.
     """
     if "news.google.com" not in url:
         return url
     try:
-        from googlenewsdecoder import new_decoderv1
-        result = new_decoderv1(url)
-        if result and result.get("status") and result.get("decoded_url"):
-            resolved = result["decoded_url"]
-            logger.debug(f"Resolved Google News URL → {resolved[:120]}")
+        from src.edu_cti.sources.rss.googlenews_rss import _resolve_google_news_article_url
+
+        resolved = _resolve_google_news_article_url(url)
+        if resolved and "news.google.com" not in resolved:
+            logger.debug("Resolved Google News URL -> %s", resolved[:120])
             return resolved
-    except ImportError:
-        logger.warning("googlenewsdecoder not installed — cannot resolve Google News URLs")
     except Exception as e:
         logger.debug(f"Failed to resolve Google News URL: {e}")
     return url

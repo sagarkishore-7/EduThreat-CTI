@@ -71,21 +71,13 @@ def test_google_news_wrapper_detector_handles_all_feed_paths():
     assert not is_google_news_wrapper_url("https://example.com/rss/articles/CBMi-test")
 
 
-def test_google_news_resolver_prefers_modern_decoder(monkeypatch):
-    calls = {"modern": 0, "legacy_fallback": 0}
-
-    def fake_new_decoderv1(_link):
-        calls["modern"] += 1
-        return {
-            "status": True,
-            "decoded_url": "https://example.edu/news/canvas-security-incident",
-        }
-
-    monkeypatch.setattr("googlenewsdecoder.new_decoderv1", fake_new_decoderv1)
+def test_google_news_resolver_prefers_bounded_decoder(monkeypatch):
+    calls = {"bounded": 0}
     monkeypatch.setattr(
         googlenews_rss,
         "_resolve_google_news_article_url_with_timeouts",
-        lambda _link: calls.__setitem__("legacy_fallback", calls["legacy_fallback"] + 1),
+        lambda _link: calls.__setitem__("bounded", calls["bounded"] + 1)
+        or "https://example.edu/news/canvas-security-incident",
     )
 
     resolved = googlenews_rss._resolve_google_news_article_url(
@@ -93,7 +85,7 @@ def test_google_news_resolver_prefers_modern_decoder(monkeypatch):
     )
 
     assert resolved == "https://example.edu/news/canvas-security-incident"
-    assert calls == {"modern": 1, "legacy_fallback": 0}
+    assert calls == {"bounded": 1}
 
 
 def test_google_news_timeout_resolver_uses_consent_cookie(monkeypatch):

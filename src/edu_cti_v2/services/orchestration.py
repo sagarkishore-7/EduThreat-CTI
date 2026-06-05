@@ -259,7 +259,9 @@ class V2OrchestrationService:
                 result={},
                 available_at=datetime.now(timezone.utc),
                 attempt_count=0,
-                max_attempts=3,
+                # Historical backfills can run for many hours and may survive
+                # redeploys or worker restarts while waiting for the queue to drain.
+                max_attempts=20,
             )
             self.pipeline_task_repository.enqueue(session, task)
             flush = getattr(session, "flush", None)

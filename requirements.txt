@@ -29,9 +29,6 @@ alembic>=1.14.0
 newspaper3k>=0.2.8
 lxml_html_clean>=0.1.0
 
-# Google News URL decoding
-googlenewsdecoder>=0.1.7
-
 # LLM enrichment
 ollama>=0.3.0
 instructor>=1.0.0; python_version >= "3.10"
