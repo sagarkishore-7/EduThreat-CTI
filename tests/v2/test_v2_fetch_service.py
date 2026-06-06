@@ -553,6 +553,7 @@ def test_fetch_service_promotes_unselected_drift_article_as_new_candidate():
     assert result["drift_candidates_created"] == 1
     source_incident_repository.add.assert_called_once()
     generated_source = source_incident_repository.add.call_args.args[1]
+    session.flush.assert_called_once()
     assert generated_source.source_name == "fallback_news_discovery"
     assert generated_source.source_group == "rss"
     assert generated_source.raw_title == "Deal reached with Canvas hackers to delete data stolen from the educational platform"

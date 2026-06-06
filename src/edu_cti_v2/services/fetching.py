@@ -789,6 +789,9 @@ class V2FetchService:
             },
         )
         self.source_incident_repository.add(session, generated_source)
+        # The fallback article/document rows are created with explicit FK ids
+        # instead of ORM relationships, so flush the generated parent first.
+        session.flush()
         self.article_repository.add_document(session, document)
         self.article_repository.add_fetch_attempt(session, attempt)
 
