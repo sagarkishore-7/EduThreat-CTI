@@ -471,6 +471,24 @@ async def get_v2_timeline_analytics(
     )
 
 
+@router.get("/analytics/kpi-trends")
+async def get_v2_kpi_trends(
+    status: Optional[List[str]] = Query(None),
+    months: int = Query(12, ge=2, le=36),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Monthly sparkline series + deltas for the dashboard KPI tiles."""
+    statuses = tuple(status) if status else ("open",)
+    cache_key = _public_cache_key("kpi-trends", _status_cache_fragment(statuses), months)
+    cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
+    if cached is not None:
+        return cached
+    payload = read_service.get_kpi_trends(session, statuses=statuses, months=months)
+    cache_set(cache_key, payload)
+    return payload
+
+
 @router.get("/analytics/threat-actors")
 async def get_v2_threat_actor_analytics(
     limit: int = Query(20, ge=1, le=500),
@@ -561,6 +579,22 @@ async def get_v2_pipeline_research_metrics_prometheus(
         content=research_service.render_prometheus_text(payload),
         media_type="text/plain; version=0.0.4; charset=utf-8",
     )
+
+
+@router.get("/analytics/feeds")
+async def get_v2_feed_health(
+    limit: int = Query(50, ge=1, le=200),
+    session: Session = Depends(get_v2_session),
+    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
+):
+    """Per-source ingestion health for the Intel Feeds page."""
+    cache_key = _public_cache_key("feeds", limit)
+    cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
+    if cached is not None:
+        return cached
+    payload = read_service.get_feed_health(session, limit=limit)
+    cache_set(cache_key, payload)
+    return payload
 
 
 @router.get("/filters")

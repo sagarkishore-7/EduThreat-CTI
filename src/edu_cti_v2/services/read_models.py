@@ -16,6 +16,7 @@ from src.edu_cti_v2.models import (
     CanonicalIncident,
     CanonicalMembership,
     CanonicalTimelineEvent,
+    SourceIncident,
 )
 from src.edu_cti_v2.repositories import AnalyticsRefreshRepository, ArticleRepository, CanonicalIncidentRepository
 
@@ -2278,6 +2279,55 @@ class V2CanonicalReadService:
             limit=limit,
         )
 
+    def get_kpi_trends(
+        self,
+        session: Session,
+        *,
+        statuses: Sequence[str] = ("open",),
+        months: int = 12,
+    ) -> dict[str, Any]:
+        """Per-KPI monthly sparkline series + current value and period-over-period delta.
+
+        Powers the dashboard KPI tiles whose headline number is accompanied by a
+        small trend line. Each series is oldest → newest so the sparkline reads
+        left-to-right.
+        """
+        metrics = ("incidents", "ransomware", "breaches", "actors")
+        result: dict[str, Any] = {}
+        for metric in metrics:
+            series = _to_time_series(
+                self.canonical_repository.get_kpi_trend(
+                    session,
+                    metric=metric,
+                    statuses=statuses,
+                    bucket="month",
+                    limit=months,
+                )
+            )
+            counts = [point["count"] for point in series]
+            total = sum(counts)
+            # Trend direction: compare the recent half of the window against the
+            # prior half. The final bucket is the current (partial) month, so it
+            # is excluded from the delta math to avoid an artificial drop — it
+            # still appears in the sparkline series.
+            stable = counts[:-1] if len(counts) >= 4 else counts
+            delta_pct: float | None = None
+            if len(stable) >= 2:
+                half = len(stable) // 2
+                prior = sum(stable[:half])
+                recent = sum(stable[half:])
+                if prior > 0:
+                    delta_pct = round((recent - prior) / prior * 100, 1)
+            result[metric] = {
+                "series": series,
+                "values": counts,
+                "total": total,
+                "current": counts[-1] if counts else 0,
+                "previous": counts[-2] if len(counts) >= 2 else 0,
+                "delta_pct": delta_pct,
+            }
+        return result
+
     def get_timeline_analytics(
         self,
         session: Session,
@@ -2318,3 +2368,83 @@ class V2CanonicalReadService:
             session,
             statuses=statuses,
         )
+
+    def get_feed_health(self, session: Session, *, limit: int = 50) -> dict[str, Any]:
+        """Per-source ingestion health for the Intel Feeds page.
+
+        Aggregates the raw ``source_incidents`` collection layer by feed:
+        lifetime + trailing-30d volume, the most recent collection/publish
+        timestamps, and a freshness status derived from how long it has been
+        since the feed last delivered an event.
+        """
+        from sqlalchemy import func as _func  # local import keeps module header tidy
+
+        now = datetime.now(timezone.utc)
+        cutoff_30d = now - timedelta(days=30)
+
+        rows = session.execute(
+            select(
+                SourceIncident.source_name,
+                SourceIncident.source_group,
+                _func.count(SourceIncident.id).label("events_total"),
+                _func.count(SourceIncident.id)
+                .filter(SourceIncident.collected_at >= cutoff_30d)
+                .label("events_30d"),
+                _func.max(SourceIncident.collected_at).label("last_collected_at"),
+                _func.max(SourceIncident.source_published_at).label("last_published_at"),
+            )
+            .where(SourceIncident.is_deleted.is_(False))
+            .group_by(SourceIncident.source_name, SourceIncident.source_group)
+            .order_by(_func.count(SourceIncident.id).desc())
+            .limit(limit)
+        ).all()
+
+        feeds: list[dict[str, Any]] = []
+        groups: Counter[str] = Counter()
+        healthy = stale = offline = 0
+        events_24h_total = 0
+        cutoff_24h = now - timedelta(hours=24)
+        for row in rows:
+            last_collected = row.last_collected_at
+            age_days = (now - last_collected).total_seconds() / 86400 if last_collected else None
+            if age_days is None or age_days > 30:
+                status = "offline"
+                offline += 1
+            elif age_days > 7:
+                status = "stale"
+                stale += 1
+            else:
+                status = "healthy"
+                healthy += 1
+            events_24h = (
+                int(row.events_30d) if last_collected and last_collected >= cutoff_24h and age_days and age_days < 1 else 0
+            )
+            events_24h_total += events_24h
+            group = row.source_group or "other"
+            groups[group] += int(row.events_total)
+            feeds.append(
+                {
+                    "source": row.source_name,
+                    "group": group,
+                    "events_total": int(row.events_total),
+                    "events_30d": int(row.events_30d or 0),
+                    "last_collected_at": last_collected.isoformat() if last_collected else None,
+                    "last_published_at": row.last_published_at.isoformat() if row.last_published_at else None,
+                    "age_days": round(age_days, 1) if age_days is not None else None,
+                    "status": status,
+                }
+            )
+
+        total_events = sum(f["events_total"] for f in feeds)
+        return {
+            "summary": {
+                "feed_count": len(feeds),
+                "healthy": healthy,
+                "stale": stale,
+                "offline": offline,
+                "events_total": total_events,
+                "events_30d": sum(f["events_30d"] for f in feeds),
+            },
+            "by_group": [{"group": g, "events": c} for g, c in groups.most_common()],
+            "feeds": feeds,
+        }

@@ -301,84 +301,73 @@ enriched_summary, llm_enriched, llm_enriched_at, primary_url, all_urls
 
 ---
 
-## REST API
+## REST API (v2)
 
-**Base URL (production):** `https://eduthreat-cti-production.up.railway.app`  
-**Base URL (local):** `http://localhost:8000`  
+The supported surface is the **Postgres-backed v2 API** served by
+`src/edu_cti_v2/api_app.py` (which mounts the routers in `src/edu_cti/api/v2.py`
+and `src/edu_cti/api/v2_admin.py`). It is what the
+[EduThreat-CTI Dashboard](../EduThreat-CTI-Dashboard) reads from.
+
+**Base URL (production):** the `v2-api` Railway service domain
+(e.g. `https://v2-api-production-e3d1.up.railway.app`)
+**Base URL (local):** `http://localhost:8000`
 **Swagger UI:** append `/docs`
 
-### Public Endpoints
+Start it locally with:
+
+```bash
+# EDU_CTI_V2_DATABASE_URL must point at the v2 Postgres database
+python -m src.edu_cti_v2.api_server --host 127.0.0.1 --port 8000
+```
+
+### Public read endpoints (`/api/v2`)
+
+Public reads are cached for ~30 seconds.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/health` | Health check |
-| `GET` | `/api/stats` | Summary statistics |
-| `GET` | `/api/dashboard` | Full dashboard data |
-| `GET` | `/api/incidents` | Paginated, filterable incident list |
-| `GET` | `/api/incidents/{id}` | Full incident detail with all enrichment |
-| `GET` | `/api/incidents/{id}/report` | Markdown CTI report download |
-| `GET` | `/api/filters` | Available filter options |
+| `GET` | `/api/v2/health` | Health check |
+| `GET` | `/api/v2/dashboard` | Full dashboard payload (stats, intelligence summary, country/attack/ransomware breakdowns, trend, recent incidents) |
+| `GET` | `/api/v2/stats` | Summary statistics subset |
+| `GET` | `/api/v2/incidents` | Paginated, filterable canonical incident list (`format=legacy` supported) |
+| `GET` | `/api/v2/incidents/facets` | Faceted counts for the incident workspace |
+| `GET` | `/api/v2/incidents/{id}` | Full canonical incident detail with all enrichment |
+| `GET` | `/api/v2/incidents/{id}/report` | Markdown CTI report download |
+| `GET` | `/api/v2/filters` | Available filter options |
+| `GET` | `/api/v2/campaigns` · `/campaigns/{id}` · `/campaigns/{id}/graph` | Analyst-reviewed campaign groupings + relationship graph |
 
-**Incident list query parameters:**
-
-| Parameter | Type | Description |
-|---|---|---|
-| `page` | int | Page number (default: 1) |
-| `page_size` | int | Results per page (default: 20, max: 100) |
-| `country` | string | Filter by country name or ISO code |
-| `attack_type` | string | Filter by attack category |
-| `year` | int | Filter by incident year |
-| `enriched_only` | bool | Only enriched incidents |
-| `sort_by` | string | Field to sort by (default: `incident_date`) |
-| `sort_order` | string | `asc` or `desc` |
-
-### Analytics Endpoints (20+)
-
-All analytics endpoints are cached for 300 seconds.
-
-```
-GET /api/analytics/attack-trends
-GET /api/analytics/attack-vectors
-GET /api/analytics/mitre-tactics
-GET /api/analytics/mitre-heatmap
-GET /api/analytics/mitre-sunburst
-GET /api/analytics/initial-access
-GET /api/analytics/ransomware-timeline
-GET /api/analytics/ransomware-families-detail
-GET /api/analytics/ransom-economics
-GET /api/analytics/ransom-payment-by-year
-GET /api/analytics/ransomware-family-trend
-GET /api/analytics/threat-actor-categories
-GET /api/analytics/actor-institution-targeting
-GET /api/analytics/actor-ttp-profile
-GET /api/analytics/actor-network
-GET /api/analytics/institution-risk-matrix
-GET /api/analytics/breach-severity-timeline
-GET /api/analytics/disclosure-timeline
-GET /api/analytics/recovery-by-attack-type
-GET /api/analytics/attack-flow
-GET /api/analytics/ransom-flow
-GET /api/analytics/country-attack-matrix
-```
-
-### Admin Endpoints (authentication required)
+### Analytics endpoints (`/api/v2/analytics`)
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/incidents/enriched` | Paginated enriched incidents |
-| `GET` | `/api/admin/incidents/unenriched` | Paginated unenriched incidents |
-| `GET` | `/api/admin/raw-incidents` | Raw DB inspection with filters |
-| `POST` | `/api/admin/incidents/delete` | Delete incidents by IDs |
-| `POST` | `/api/admin/incidents/clear-all` | Wipe entire database |
-| `GET` | `/api/admin/export/csv/full` | Full CSV export |
-| `GET` | `/api/admin/export/csv/enriched` | Enriched-only CSV export |
-| `POST` | `/api/admin/scheduler/start` | Start cron pipeline |
-| `POST` | `/api/admin/scheduler/stop` | Stop pipeline |
-| `GET` | `/api/admin/scheduler/status` | Pipeline status |
-| `POST` | `/api/admin/re-enrich` | Reset enrichment before date |
-| `POST` | `/api/admin/normalize-countries` | Normalize country names |
+| `GET` | `/breakdowns` | Country / attack-category / institution-type / severity breakdowns |
+| `GET` | `/countries` | Country incident counts |
+| `GET` | `/attack-types` | Attack-category counts |
+| `GET` | `/ransomware` | Ransomware-family counts |
+| `GET` | `/mitre` | ATT&CK tactic + technique coverage |
+| `GET` | `/trend` | Filtered incident trend series (`bucket=month/week/year`) |
+| `GET` | `/timeline` | Monthly timeline (compatibility shape) |
+| `GET` | `/threat-actors` | Threat-actor breakdown (targeting + families) |
+| `GET` | `/intelligence` | Analyst intelligence summary (victimology, tradecraft, attribution, exposure, coverage, priority findings) |
+| `GET` | `/diamond` | Diamond-model coverage summary |
+| `GET` | `/kpi-trends` | **(new)** Per-KPI monthly sparkline series + period-over-period deltas for the dashboard KPI tiles (`incidents`, `ransomware`, `breaches`, `actors`) |
+| `GET` | `/feeds` | **(new)** Per-source ingestion health (lifetime + 30d volume, last-seen, freshness status) for the Intel Feeds page |
+| `GET` | `/pipeline-research` · `/pipeline-research/prometheus` | Research/dataset-construction metrics (heavy; snapshot-backed) |
 
-**Authentication:** `Authorization: Bearer <token>` where token = `SHA-256(password)` or pre-generated API key.
+### Admin endpoints (`/api/admin/v2`, authentication required)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `POST` | `/api/admin/v2/login` · `/logout` | Session auth |
+| `GET` | `/api/admin/v2/status` · `/preflight` | Runtime + preflight status |
+| `GET` | `/api/admin/v2/tasks` · `/runs` | Pipeline task queue + run history |
+| `GET` | `/api/admin/v2/source-health` | Per-source collector health |
+| `GET` | `/api/admin/v2/metrics/research` · `/metrics/research/history` | Research metric snapshots |
+| `GET` | `/api/admin/v2/plans` · `POST /run-plan` | Collection plans |
+| `GET` | `/api/admin/v2/manual-review-queue` · `/rejected-enrichments` | Review queues |
+| `POST` | `/api/admin/v2/worker/run` · `/collect` · `/canonicalize/*` · `/scheduler/*` | Pipeline controls |
+
+**Authentication:** `Authorization: Bearer <session_token>` obtained from `POST /api/admin/v2/login`.
 
 ---
 

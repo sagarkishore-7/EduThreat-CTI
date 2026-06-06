@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.10.0] - 2026-06-06
+
+### Dashboard-supporting v2 analytics endpoints
+
+Two fast, public, cached read endpoints added to power the dashboard's
+"Operations Room" redesign (EduThreat-CTI-Dashboard v3.0.0). Both are derived
+live from the canonical/source tables — no new storage.
+
+#### Added
+- **`GET /api/v2/analytics/kpi-trends`** — per-KPI monthly sparkline series with a
+  period-over-period delta for the four dashboard KPI tiles (`incidents`,
+  `ransomware`, `breaches`, `actors`). The delta compares the recent half of the
+  window against the prior half, excluding the partial current month so the
+  trend direction isn't skewed.
+  - `CanonicalIncidentRepository.get_kpi_trend()` + `_kpi_metric_predicate()` —
+    metric-scoped monthly `date_trunc` aggregates over `canonical_incidents`.
+  - `V2CanonicalReadService.get_kpi_trends()` — assembles series, totals, and deltas.
+- **`GET /api/v2/analytics/feeds`** — per-source ingestion health for the Intel
+  Feeds page: lifetime + trailing-30d event volume, last-collected / last-published
+  timestamps, and a freshness status (`healthy` / `stale` / `offline`) per source,
+  plus a by-source-group rollup.
+  - `V2CanonicalReadService.get_feed_health()` — aggregates the raw
+    `source_incidents` collection layer grouped by `source_name` / `source_group`.
+
+Both endpoints use the standard 30-second public read cache.
+
 ## [2.9.0] - 2026-05-01
 
 ### Grounded Intelligence Extraction — STIX Lookup, GLiNER NER, IntelEX RAG

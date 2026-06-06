@@ -1396,6 +1396,54 @@ class CanonicalIncidentRepository:
             )
         return items
 
+    @staticmethod
+    def _kpi_metric_predicate(metric: str):
+        """Return the WHERE predicate that scopes a KPI sparkline to its segment."""
+        if metric == "ransomware":
+            return or_(
+                CanonicalIncident.ransomware_family.is_not(None),
+                CanonicalIncident.attack_category.ilike("ransomware%"),
+            )
+        if metric == "breaches":
+            return CanonicalIncident.attack_category.ilike("%breach%")
+        if metric == "actors":
+            return CanonicalIncident.threat_actor_name.is_not(None)
+        return None  # "incidents" — no extra scoping
+
+    def get_kpi_trend(
+        self,
+        session: Session,
+        *,
+        metric: str,
+        statuses: Sequence[str] = ("open",),
+        bucket: str = "month",
+        limit: int = 12,
+    ) -> list[dict[str, object]]:
+        """Monthly count series for a single dashboard KPI segment (oldest → newest)."""
+        bucket_expr = func.date_trunc(bucket, CanonicalIncident.incident_date).label("bucket_start")
+        stmt = (
+            select(bucket_expr, func.count(CanonicalIncident.id).label("incident_count"))
+            .where(CanonicalIncident.status.in_(list(statuses)))
+            .where(CanonicalIncident.incident_date.is_not(None))
+        )
+        predicate = self._kpi_metric_predicate(metric)
+        if predicate is not None:
+            stmt = stmt.where(predicate)
+        stmt = stmt.group_by(bucket_expr).order_by(bucket_expr.desc()).limit(limit)
+
+        rows = list(session.execute(stmt).all())
+        rows.reverse()
+        items: list[dict[str, object]] = []
+        for row in rows:
+            bucket_start = row.bucket_start
+            bucket_value = (
+                bucket_start.date().isoformat() if hasattr(bucket_start, "date") else str(bucket_start)
+            )
+            items.append(
+                {"bucket_start": bucket_value, "incident_count": int(row.incident_count or 0)}
+            )
+        return items
+
     def add(self, session: Session, canonical_incident: CanonicalIncident) -> CanonicalIncident:
         session.add(canonical_incident)
         return canonical_incident

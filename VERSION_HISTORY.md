@@ -2,6 +2,22 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.10.0 (2026-06-06)
+
+**Focus**: Dashboard-supporting v2 analytics endpoints
+
+Two fast, public, cached read endpoints added to power the EduThreat-CTI-Dashboard
+v3.0.0 "Operations Room" redesign. Both derive live from existing tables.
+
+### Key Features
+
+- **`GET /api/v2/analytics/kpi-trends`** — per-KPI monthly sparkline series + period-over-period delta for the dashboard's four KPI tiles (`incidents`, `ransomware`, `breaches`, `actors`). The delta compares the recent half of the window against the prior half and excludes the partial current month. Backed by `CanonicalIncidentRepository.get_kpi_trend()` and `V2CanonicalReadService.get_kpi_trends()`.
+- **`GET /api/v2/analytics/feeds`** — per-source ingestion health (lifetime + 30d volume, last-seen timestamps, `healthy`/`stale`/`offline` status) plus a by-source-group rollup, for the Intel Feeds page. Backed by `V2CanonicalReadService.get_feed_health()` aggregating the `source_incidents` collection layer.
+
+Both use the standard 30-second public read cache.
+
+---
+
 ## Version 2.9.0 (2026-05-01)
 
 **Focus**: Grounded Intelligence Extraction — STIX Lookup, GLiNER NER Pre-pass, IntelEX RAG
