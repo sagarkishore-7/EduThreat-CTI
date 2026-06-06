@@ -18,6 +18,11 @@ from src.edu_cti_v2.services import V2CampaignService, V2CanonicalReadService, V
 router = APIRouter(prefix="/api/v2", tags=["V2"])
 _PUBLIC_READ_TTL_SECONDS = 30
 
+# Public campaign reads surface both analyst-reviewed and auto-correlated
+# candidate campaigns (with their confidence + status so the UI can badge
+# them). Suppressed campaigns stay hidden.
+_PUBLIC_CAMPAIGN_STATUSES = ("analyst_reviewed", "candidate")
+
 
 @lru_cache
 def get_v2_session_factory() -> sessionmaker[Session]:
@@ -109,10 +114,10 @@ def list_v2_campaigns(
     session: Session = Depends(get_v2_session),
     campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
 ):
-    """List analyst-reviewed campaign groupings for public/dashboard reads."""
+    """List campaign groupings (reviewed + auto-correlated candidates) for public reads."""
     return campaign_service.list_campaigns(
         session,
-        statuses=("analyst_reviewed",),
+        statuses=_PUBLIC_CAMPAIGN_STATUSES,
         campaign_type=campaign_type,
         vendor=vendor,
         platform=platform,
@@ -133,11 +138,11 @@ def get_v2_campaign_detail(
     session: Session = Depends(get_v2_session),
     campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
 ):
-    """Return one analyst-reviewed campaign with members and evidence."""
+    """Return one campaign (reviewed or candidate) with members and evidence."""
     detail = campaign_service.get_campaign_detail(
         session,
         campaign_id,
-        statuses=("analyst_reviewed",),
+        statuses=_PUBLIC_CAMPAIGN_STATUSES,
         member_limit=member_limit,
         evidence_limit=evidence_limit,
     )
@@ -153,11 +158,11 @@ def get_v2_campaign_graph(
     session: Session = Depends(get_v2_session),
     campaign_service: V2CampaignService = Depends(get_v2_campaign_service),
 ):
-    """Return graph-ready nodes and edges for one analyst-reviewed campaign."""
+    """Return graph-ready nodes and edges for one campaign (reviewed or candidate)."""
     graph = campaign_service.get_campaign_graph(
         session,
         campaign_id,
-        statuses=("analyst_reviewed",),
+        statuses=_PUBLIC_CAMPAIGN_STATUSES,
         member_limit=member_limit,
     )
     if graph is None:

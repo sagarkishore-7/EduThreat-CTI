@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
 from src.edu_cti_v2.db import V2DatabaseSettings, create_session_factory
+from src.edu_cti_v2.resource_limits import resolve_enrichment_worker_count
 from src.edu_cti_v2.services.scheduler import V2SchedulerService
 from src.edu_cti_v2.worker import V2WorkerRunSummary, run_worker_loop
 
@@ -33,23 +34,18 @@ def _env_int(name: str) -> Optional[int]:
         return None
 
 
-def _railway_safe_worker_count(worker_count: int) -> int:
-    worker_count = max(int(worker_count), 1)
-    if not os.environ.get("RAILWAY_ENVIRONMENT"):
-        return worker_count
-    if _env_flag("EDU_CTI_V2_ALLOW_HIGH_WORKER_COUNT"):
-        return worker_count
+def _resolve_worker_count(worker_count: int) -> int:
+    """Resolve the enrichment worker-thread count.
 
-    max_worker_count = 2
-    if worker_count > max_worker_count:
-        logger.warning(
-            "Capping Railway v2 worker count from %s to %s to avoid OOM; "
-            "set EDU_CTI_V2_ALLOW_HIGH_WORKER_COUNT=1 to override.",
-            worker_count,
-            max_worker_count,
-        )
-        return max_worker_count
-    return worker_count
+    Replaces the old fixed Railway cap of 2 with a container-memory-aware
+    auto mechanism (see ``resource_limits.resolve_enrichment_worker_count``):
+    the shared ML model floor is reserved once, the remaining memory is divided
+    by per-thread overhead, and the result is capped at the LLM provider's
+    rate-limit cap. ``EDU_CTI_V2_WORKER_COUNT`` (int) still pins an explicit
+    value; ``auto``/``0``/unset derives it. ``--workers N`` on the CLI is passed
+    through as the request.
+    """
+    return resolve_enrichment_worker_count(worker_count)
 
 
 def _env_float_optional(name: str) -> Optional[float]:
@@ -132,7 +128,7 @@ class V2RuntimeService:
         idle_resource_release_seconds: Optional[float] = None,
         session_factory: Optional[Callable] = None,
     ) -> None:
-        self.worker_count = _railway_safe_worker_count(worker_count)
+        self.worker_count = _resolve_worker_count(worker_count)
         if fetch_worker_count is None:
             fetch_worker_count = max(1, min(2, self.worker_count))
         if resolve_worker_count is None:
@@ -434,8 +430,13 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--workers",
         type=int,
-        default=int(os.environ.get("EDU_CTI_V2_WORKER_COUNT", "2")),
-        help="Number of general long-running worker threads",
+        default=0,
+        help=(
+            "Number of enrichment worker threads (0 = auto, derived from the "
+            "container's memory limit minus the shared ML model floor, capped at "
+            "the LLM provider rate limit). Pin with EDU_CTI_V2_WORKER_COUNT or "
+            "an explicit positive value here."
+        ),
     )
     parser.add_argument(
         "--fetch-workers",

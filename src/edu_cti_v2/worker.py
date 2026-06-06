@@ -17,9 +17,27 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from src.edu_cti_v2.db import V2DatabaseSettings, create_session_factory
 from src.edu_cti_v2.repositories import PipelineTaskRepository
+from src.edu_cti_v2.resource_limits import current_rss_mb, memory_high_water_mb
 from src.edu_cti_v2.services.task_runtime import V2TaskRuntime
 
 logger = logging.getLogger(__name__)
+
+# Process-wide memory backstop: when resident memory crosses the high-water
+# mark, worker threads pause leasing new tasks until it recedes, so a burst of
+# large articles can't OOM the container mid-drain. Shared across all threads
+# (RSS is process-global). Logged at most once per cooldown to avoid spam.
+_MEMORY_GUARD_COOLDOWN_S = 30.0
+_last_memory_guard_log = 0.0
+
+
+def _memory_guard_should_pause(high_water_mb: Optional[float]) -> Optional[float]:
+    """Return current RSS (MB) if it exceeds the high-water mark, else None."""
+    if not high_water_mb:
+        return None
+    rss = current_rss_mb()
+    if rss is not None and rss >= high_water_mb:
+        return rss
+    return None
 
 
 @dataclass
@@ -196,6 +214,7 @@ def run_worker_loop(
 
     processed_tasks = 0
     idle_polls = 0
+    high_water_mb = memory_high_water_mb()
     heartbeat = _ReusableLeaseHeartbeat(
         session_factory=session_factory,
         worker_id=worker_id,
@@ -212,6 +231,27 @@ def run_worker_loop(
                     worker_id=worker_id,
                     task_type=task_type,
                 )
+
+            # Memory backstop: pause leasing new work while RSS is above the
+            # high-water mark so a spike can't OOM the container.
+            rss_over = _memory_guard_should_pause(high_water_mb)
+            if rss_over is not None:
+                global _last_memory_guard_log
+                now = time.monotonic()
+                if now - _last_memory_guard_log >= _MEMORY_GUARD_COOLDOWN_S:
+                    logger.warning(
+                        "v2 worker memory guard: RSS %.0fMB ≥ high-water %.0fMB — "
+                        "pausing new task leases until memory recedes (worker_id=%s)",
+                        rss_over,
+                        high_water_mb,
+                        worker_id,
+                    )
+                    _last_memory_guard_log = now
+                if stop_event:
+                    stop_event.wait(max(poll_interval, 1.0))
+                else:
+                    time.sleep(max(poll_interval, 1.0))
+                continue
 
             with session_factory() as session:
                 try:

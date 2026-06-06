@@ -15,51 +15,7 @@ import os
 
 import uvicorn
 
-
-def _read_int_file(path: str) -> int | None:
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            value = handle.read().strip()
-        if not value or value == "max":
-            return None
-        return int(value)
-    except (OSError, ValueError):
-        return None
-
-
-def cgroup_memory_limit_mb() -> int | None:
-    """Container memory limit in MB, or None if unbounded/unknown."""
-    # cgroup v2
-    limit = _read_int_file("/sys/fs/cgroup/memory.max")
-    # cgroup v1
-    if limit is None:
-        limit = _read_int_file("/sys/fs/cgroup/memory/memory.limit_in_bytes")
-    if limit is None:
-        return None
-    # A near-INT64 value means "unbounded".
-    if limit >= 1 << 62:
-        return None
-    return max(1, limit // (1024 * 1024))
-
-
-def cgroup_cpu_count() -> int:
-    """Effective CPU count for the container (honours cgroup CPU quota)."""
-    # cgroup v2: "<quota> <period>" in /sys/fs/cgroup/cpu.max
-    try:
-        with open("/sys/fs/cgroup/cpu.max", "r", encoding="utf-8") as handle:
-            quota_s, period_s = (handle.read().strip().split() + ["100000"])[:2]
-        if quota_s != "max":
-            quota, period = int(quota_s), int(period_s)
-            if quota > 0 and period > 0:
-                return max(1, round(quota / period))
-    except (OSError, ValueError):
-        pass
-    # cgroup v1
-    quota = _read_int_file("/sys/fs/cgroup/cpu/cpu.cfs_quota_us")
-    period = _read_int_file("/sys/fs/cgroup/cpu/cpu.cfs_period_us")
-    if quota and period and quota > 0:
-        return max(1, round(quota / period))
-    return os.cpu_count() or 1
+from src.edu_cti_v2.resource_limits import cgroup_cpu_count, cgroup_memory_limit_mb
 
 
 def resolve_worker_count(cli_workers: int | None) -> int:

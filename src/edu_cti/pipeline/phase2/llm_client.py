@@ -28,7 +28,10 @@ logger = logging.getLogger(__name__)
 # Model selection: DeepSeek v3.1 is the current best Ollama Cloud default for this
 # schema-heavy extraction workload. It is materially faster and more stable than
 # deepseek-v3.2:cloud in our benchmark harness while matching the top-line accuracy.
-DEFAULT_MODEL = "deepseek-v3.1:671b-cloud"
+# Override with OLLAMA_MODEL to A/B other Ollama Cloud models (see
+# scripts/llm_bakeoff.py); the chosen model is recorded per-enrichment in
+# source_enrichments.llm_model.
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud").strip() or "deepseek-v3.1:671b-cloud"
 
 
 class OllamaLLMClient:
