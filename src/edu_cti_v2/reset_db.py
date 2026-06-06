@@ -166,6 +166,52 @@ def reset_for_reprocess(*, confirm: bool = False) -> dict[str, int]:
         engine.dispose()
 
 
+def reseed_enrichment_tasks(*, batch_size: int = 1000) -> dict[str, int]:
+    """Re-enqueue enrichment for every retained source incident.
+
+    Run after ``reset_for_reprocess`` so the worker re-derives enrichments →
+    canonicals → campaigns over the kept raw collection. For sources whose
+    article is already fetched this enqueues ``enrich_source`` directly;
+    otherwise it falls back to fetch/resolve. Idempotent — sources that already
+    have an enrichment or an active task are skipped.
+    """
+    from sqlalchemy import select
+
+    from src.edu_cti_v2.db import create_session_factory
+    from src.edu_cti_v2.models import SourceIncident
+    from src.edu_cti_v2.services.intake import V2IntakeService
+
+    settings = V2DatabaseSettings.from_env()
+    session_factory = create_session_factory(settings)
+    intake = V2IntakeService()
+
+    seeded = 0
+    scanned = 0
+    last_id = None
+    while True:
+        with session_factory() as session:
+            stmt = (
+                select(SourceIncident)
+                .where(SourceIncident.is_deleted.is_(False))
+                .order_by(SourceIncident.id)
+                .limit(batch_size)
+            )
+            if last_id is not None:
+                stmt = stmt.where(SourceIncident.id > last_id)
+            rows = list(session.execute(stmt).scalars())
+            if not rows:
+                break
+            for si in rows:
+                last_id = si.id
+                scanned += 1
+                if intake.ensure_initial_processing_task(session, si) is not None:
+                    seeded += 1
+            session.commit()
+        if len(rows) < batch_size:
+            break
+    return {"scanned": scanned, "tasks_seeded": seeded}
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Reset the EduThreat-CTI v2 Postgres schema")
     parser.add_argument(
@@ -187,6 +233,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Required with --keep-collection to actually perform the deletion.",
     )
+    parser.add_argument(
+        "--reseed",
+        action="store_true",
+        help="After --keep-collection, re-enqueue enrichment tasks for all retained sources.",
+    )
     return parser
 
 
@@ -197,6 +248,10 @@ def main() -> None:
         print("Selective reprocess reset complete. Integrity report:")
         for key in sorted(report):
             print(f"  {key}: {report[key]}")
+        if args.reseed:
+            print("Re-seeding enrichment tasks for retained sources...")
+            seed_report = reseed_enrichment_tasks()
+            print(f"  scanned: {seed_report['scanned']}, tasks_seeded: {seed_report['tasks_seeded']}")
         return
     reset_database(upgrade_revision=args.revision)
 
