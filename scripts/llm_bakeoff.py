@@ -29,11 +29,15 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import functools
 import json
 import os
 import statistics
 import sys
 import time
+
+# Stream progress live even when run as a subprocess (railway run buffers stdout).
+print = functools.partial(print, flush=True)  # noqa: A001
 from dataclasses import dataclass, field
 from typing import Any, Optional
 

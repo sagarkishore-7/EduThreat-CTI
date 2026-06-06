@@ -88,7 +88,15 @@ _ONLINE_COURSE_SCOPE_RE = re.compile(
 _EDUCATION_SCOPE_RE = re.compile(
     r"\b(?:university|universit(?:y|ies)|universit[a\u00e4]t|universidad|universidade|"
     r"universit\u00e0|universiteit|college|school|academy|polytechnic|hochschule|"
-    r"school\s+district|community\s+college|technical\s+college)\b",
+    r"school\s+district|community\s+college|technical\s+college|"
+    # Education context terms \u2014 keep borderline higher-ed / K-12 cases in scope.
+    r"higher\s+education|k-?12|campus|faculty|student\s+(?:data|records|information)|"
+    r"education\s+(?:sector|department|provider|technology)|edtech|"
+    r"learning\s+management|student\s+information\s+system|"
+    # Known education-technology vendors \u2014 vendor breaches that impact schools
+    # must stay in scope so their named institutions get fanned out as victims.
+    r"instructure|canvas\s+lms|powerschool|blackboard|moodle|schoology|ellucian|"
+    r"anthology|illuminate\s+education|finalsite|brightspace|d2l)\b",
     re.IGNORECASE,
 )
 _HEALTHCARE_SCOPE_RE = re.compile(
@@ -1023,6 +1031,20 @@ class V2EnrichmentService:
         if not isinstance(secondary_entries, list) or not secondary_entries:
             return 0
 
+        # Vendor / supply-chain context from the parent extraction. When the
+        # primary subject is a breached vendor (Instructure, PowerSchool, MOVEit),
+        # the named institutions become per-victim incidents tagged
+        # affected-via-vendor — and the vendor's AGGREGATE record count is NOT
+        # propagated onto them (the stubs carry no records by construction).
+        parent_vendor = _coerce_optional_text(
+            raw_json_data.get("vendor_name") or raw_json_data.get("vendor_name_detail")
+        )
+        parent_attack_category = str(raw_json_data.get("attack_category") or "").lower()
+        parent_is_vendor_breach = bool(parent_vendor) or any(
+            token in parent_attack_category
+            for token in ("supply_chain", "third_party", "vendor")
+        )
+
         primary_identity = recover_source_identity(
             raw_institution_name=source_incident.raw_institution_name,
             raw_victim_name=source_incident.raw_victim_name,
@@ -1060,6 +1082,14 @@ class V2EnrichmentService:
             country = _coerce_optional_text(entry.get("country"))
             attack_hint = _coerce_attack_hint(entry.get("attack_type"))
             brief_description = _coerce_optional_text(entry.get("brief_description"))
+
+            # Treat this fanned-out institution as affected-via-vendor when the
+            # entry says so, or when the parent article is a vendor breach.
+            entry_via_vendor = bool(entry.get("is_via_vendor")) or parent_is_vendor_breach
+            stub_vendor = parent_vendor if entry_via_vendor else None
+            if entry_via_vendor and not attack_hint:
+                attack_hint = "supply_chain_compromise"
+
             event_key = _build_roundup_secondary_event_key(
                 source_incident,
                 cleaned_victim,
@@ -1079,14 +1109,25 @@ class V2EnrichmentService:
                 source_url=article_url,
                 brief_description=brief_description,
             )
+            if entry_via_vendor and stub_vendor:
+                # Guard against a later re-enrichment hallucinating the vendor's
+                # aggregate record count onto this single institution.
+                notes = (
+                    f"{notes} Affected via compromised vendor {stub_vendor}. "
+                    "Vendor-level aggregate totals (records/users) belong to the "
+                    "vendor/campaign, NOT to this institution — only attribute "
+                    "figures explicitly stated for this institution."
+                ).strip()
             raw_payload = {
-                "kind": "roundup_secondary_stub",
+                "kind": "vendor_victim_stub" if entry_via_vendor else "roundup_secondary_stub",
                 "roundup_parent_source_incident_id": str(source_incident.id),
                 "roundup_parent_source_name": source_incident.source_name,
                 "roundup_parent_source_event_key": source_incident.source_event_key,
                 "roundup_parent_article_url": article_url,
                 "secondary_entry": entry,
             }
+            if entry_via_vendor and stub_vendor:
+                raw_payload["affected_via_vendor"] = stub_vendor
 
             stub = SourceIncident(
                 id=uuid4(),

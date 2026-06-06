@@ -1398,18 +1398,25 @@ EXTRACTION_SCHEMA = {
         "other_edu_incidents": {
             "type": "array",
             "description": (
-                "OTHER education sector cyber incidents briefly mentioned in this article "
-                "that are NOT the primary incident being extracted. "
-                "Only populate when this is a roundup/digest/weekly-breach article "
-                "covering multiple separate victims. "
-                "Each entry becomes a separate incident record in the database."
+                "OTHER education-sector institutions affected, that are NOT the primary "
+                "victim being extracted. Populate in TWO cases: "
+                "(1) ROUNDUP/digest articles covering multiple separate victims; and "
+                "(2) VENDOR / SUPPLY-CHAIN breaches where the article names the vendor "
+                "(e.g. Instructure/Canvas, PowerSchool, MOVEit) as the primary subject "
+                "AND names the individual universities, colleges, or school districts "
+                "impacted through that vendor — list each NAMED institution here. "
+                "Each entry becomes a separate victim incident record. "
+                "ONLY list explicitly NAMED institutions — never vague counts like "
+                "'hundreds of schools' or 'thousands of students'. "
+                "For vendor breaches, set is_via_vendor=true and DO NOT copy the "
+                "vendor's aggregate record count onto these per-institution entries."
             ),
             "items": {
                 "type": "object",
                 "properties": {
                     "victim_name": {
                         "type": "string",
-                        "description": "Full name of the educational institution"
+                        "description": "Full name of the explicitly named educational institution"
                     },
                     "incident_date": {
                         "type": "string",
@@ -1417,7 +1424,7 @@ EXTRACTION_SCHEMA = {
                     },
                     "attack_type": {
                         "type": "string",
-                        "description": "e.g. ransomware, data_breach, phishing"
+                        "description": "e.g. ransomware, data_breach, phishing, supply_chain_compromise"
                     },
                     "country": {
                         "type": "string",
@@ -1426,6 +1433,14 @@ EXTRACTION_SCHEMA = {
                     "brief_description": {
                         "type": "string",
                         "description": "1-2 sentence summary of what happened"
+                    },
+                    "is_via_vendor": {
+                        "type": "boolean",
+                        "description": (
+                            "True if this institution was affected THROUGH a compromised "
+                            "vendor/supplier named in the article (supply-chain), rather "
+                            "than as a directly, independently targeted victim."
+                        )
                     }
                 },
                 "required": ["victim_name"]
@@ -1734,6 +1749,14 @@ EXTRACTION_SCHEMA_PART1 = {
         "extraction_notes": {"type": "string"},
         "other_edu_incidents": {
             "type": "array",
+            "description": (
+                "Other NAMED education institutions affected — either separate victims in a "
+                "roundup article, OR the individual universities/colleges/school districts "
+                "named as impacted through a compromised vendor (Instructure/Canvas, "
+                "PowerSchool, MOVEit, etc.). Each becomes its own victim incident. Only list "
+                "explicitly named institutions, never vague counts. For vendor breaches set "
+                "is_via_vendor=true and do NOT copy the vendor's aggregate record count here."
+            ),
             "items": {
                 "type": "object",
                 "properties": {
@@ -1742,6 +1765,7 @@ EXTRACTION_SCHEMA_PART1 = {
                     "attack_type": {"type": "string"},
                     "country": {"type": "string"},
                     "brief_description": {"type": "string"},
+                    "is_via_vendor": {"type": "boolean"},
                 },
                 "required": ["victim_name"],
             },
