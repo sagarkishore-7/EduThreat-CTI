@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.11.0] - 2026-06-07
+
+### v2 API performance, concurrency & memory hardening
+
+Tuned the v2 API for low-memory platforms (Railway, 7 GB) and high concurrency
+without touching any collection/enrichment/canonicalization logic — the data
+pipeline is byte-for-byte unchanged.
+
+#### Changed
+- **Non-blocking concurrency:** converted all 59 v2 + v2-admin route handlers
+  from `async def` to `def`. They perform synchronous SQLAlchemy I/O, so as
+  `async def` they blocked the event loop — a single slow query (e.g. the cold
+  MITRE aggregation) stalled *every* concurrent request on the worker. As plain
+  `def`, FastAPI runs them in its shared anyio threadpool, so requests now run
+  concurrently. (Measured: 6 parallel requests no longer serialize behind an
+  18 s query.)
+- **Container-aware worker auto-balancing** (`api_server.resolve_worker_count`):
+  worker count is derived from the container's cgroup **CPU and memory** limits
+  (not the physical host), with ~15% memory headroom and an `API_MAX_WORKERS`
+  cap. Per-worker RSS measured at ~200 MB. Override via
+  `API_WORKERS` / `WEB_CONCURRENCY` (integer or `auto`). Dockerfile now defaults
+  to `--workers 0` (auto).
+- **Connection-pool right-sizing:** per-worker pool defaults lowered to
+  `pool_size=5`, `max_overflow=5`, `pool_timeout=10` so
+  `workers × (pool + overflow)` stays well under Postgres `max_connections`
+  even when auto-scaled.
+- **Threadpool cap aligned to the pool:** on startup the request threadpool is
+  limited to `pool_size + max_overflow + 8` tokens so blocking work never
+  exceeds available DB connections.
+- **Slimmer API image:** `Dockerfile.v2-api` no longer downloads Playwright
+  Chromium or its GUI system libraries (the read-only API never launches a
+  browser) — smaller image and faster cold starts.
+
 ## [2.10.0] - 2026-06-06
 
 ### Dashboard-supporting v2 analytics endpoints

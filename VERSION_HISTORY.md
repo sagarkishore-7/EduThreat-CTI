@@ -2,6 +2,31 @@
 
 Complete version history and release notes for EduThreat-CTI.
 
+## Version 2.11.0 (2026-06-07)
+
+**Focus**: v2 API performance, concurrency & memory hardening
+
+Tuned the v2 API for low-memory hosting (Railway, 7 GB) and high concurrency.
+No collection/enrichment/canonicalization logic changed — the data pipeline is
+unchanged.
+
+### Key Features
+
+- **Non-blocking concurrency**: all 59 v2 + v2-admin routes converted from
+  `async def` (which blocked the event loop while doing synchronous SQLAlchemy
+  I/O) to `def`, so FastAPI runs them in its threadpool — one slow query no
+  longer stalls every concurrent request.
+- **Container-aware worker auto-balancing**: `resolve_worker_count()` derives
+  the worker count from cgroup CPU + memory limits with headroom and an
+  `API_MAX_WORKERS` cap; override with `API_WORKERS`/`WEB_CONCURRENCY`.
+- **Connection-pool right-sizing**: `pool_size=5`, `max_overflow=5`,
+  `pool_timeout=10` so auto-scaled workers stay under Postgres `max_connections`.
+- **Threadpool aligned to pool capacity** on startup.
+- **Slimmer `Dockerfile.v2-api`**: dropped the unused Playwright Chromium /
+  GUI-library install for a smaller image and faster cold starts.
+
+---
+
 ## Version 2.10.0 (2026-06-06)
 
 **Focus**: Dashboard-supporting v2 analytics endpoints

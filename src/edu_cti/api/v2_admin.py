@@ -79,7 +79,7 @@ def get_v2_campaign_service() -> V2CampaignService:
 
 
 @router.post("/login", response_model=V2LoginResponse)
-async def v2_admin_login(request: V2LoginRequest):
+def v2_admin_login(request: V2LoginRequest):
     """Login endpoint for the dedicated v2 admin surface."""
     from src.edu_cti_v2.auth import ADMIN_USERNAME
 
@@ -99,7 +99,7 @@ async def v2_admin_login(request: V2LoginRequest):
 
 
 @router.post("/logout")
-async def v2_admin_logout(
+def v2_admin_logout(
     x_session_token: Optional[str] = None,
     _: bool = Depends(authenticate),
 ):
@@ -108,7 +108,7 @@ async def v2_admin_logout(
 
 
 @router.get("/status")
-async def get_v2_runtime_status(
+def get_v2_runtime_status(
     session=Depends(get_v2_session),
     operations: V2OperationsService = Depends(get_v2_operations_service),
     _: bool = Depends(authenticate),
@@ -118,7 +118,7 @@ async def get_v2_runtime_status(
 
 
 @router.get("/preflight")
-async def get_v2_preflight_status(
+def get_v2_preflight_status(
     session=Depends(get_v2_session),
     preflight: V2PreflightService = Depends(get_v2_preflight_service),
     _: bool = Depends(authenticate),
@@ -128,7 +128,7 @@ async def get_v2_preflight_status(
 
 
 @router.get("/tasks")
-async def list_v2_tasks(
+def list_v2_tasks(
     limit: int = Query(25, ge=1, le=200),
     task_type: Optional[str] = Query(None),
     status: Optional[List[str]] = Query(None),
@@ -153,7 +153,7 @@ async def list_v2_tasks(
 
 
 @router.get("/runs")
-async def list_v2_runs(
+def list_v2_runs(
     limit: int = Query(20, ge=1, le=100),
     status: Optional[List[str]] = Query(None),
     session=Depends(get_v2_session),
@@ -175,7 +175,7 @@ async def list_v2_runs(
 
 
 @router.get("/metrics/research")
-async def get_v2_research_metrics(
+def get_v2_research_metrics(
     session=Depends(get_v2_session),
     research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
     _: bool = Depends(authenticate),
@@ -185,7 +185,7 @@ async def get_v2_research_metrics(
 
 
 @router.get("/metrics/research/history")
-async def list_v2_research_metric_history(
+def list_v2_research_metric_history(
     limit: int = Query(20, ge=1, le=200),
     snapshot_key: str = Query("global"),
     session=Depends(get_v2_session),
@@ -210,7 +210,7 @@ async def list_v2_research_metric_history(
 
 
 @router.post("/metrics/research/refresh")
-async def refresh_v2_research_metrics(
+def refresh_v2_research_metrics(
     session=Depends(get_v2_session),
     research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
     _: bool = Depends(authenticate),
@@ -229,7 +229,7 @@ async def refresh_v2_research_metrics(
 
 
 @router.get("/metrics/research/prometheus")
-async def get_v2_research_metrics_prometheus(
+def get_v2_research_metrics_prometheus(
     session=Depends(get_v2_session),
     research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
     _: bool = Depends(authenticate),
@@ -243,7 +243,7 @@ async def get_v2_research_metrics_prometheus(
 
 
 @router.get("/source-health")
-async def get_v2_source_health(
+def get_v2_source_health(
     sample_limit: int = Query(25, ge=1, le=200),
     session=Depends(get_v2_session),
     source_health: V2SourceHealthService = Depends(get_v2_source_health_service),
@@ -254,7 +254,7 @@ async def get_v2_source_health(
 
 
 @router.post("/worker/run")
-async def run_v2_worker_batch(
+def run_v2_worker_batch(
     max_tasks: int = Query(25, ge=1, le=500),
     task_type: Optional[str] = Query(None),
     stop_when_idle: bool = Query(True),
@@ -272,7 +272,7 @@ async def run_v2_worker_batch(
 
 
 @router.post("/collect")
-async def run_v2_collection(
+def run_v2_collection(
     groups: Optional[List[str]] = Query(None),
     sources: Optional[List[str]] = Query(None),
     max_pages: Optional[int] = Query(None, ge=1),
@@ -294,7 +294,7 @@ async def run_v2_collection(
 
 
 @router.get("/plans")
-async def list_v2_plans(
+def list_v2_plans(
     orchestration: V2OrchestrationService = Depends(get_v2_orchestration_service),
     _: bool = Depends(authenticate),
 ):
@@ -303,7 +303,7 @@ async def list_v2_plans(
 
 
 @router.post("/run-plan")
-async def run_v2_plan(
+def run_v2_plan(
     plan_name: str = Query(...),
     worker_id: str = Query("admin-v2-plan"),
     worker_max_tasks: Optional[int] = Query(None, ge=1, le=20000),
@@ -335,7 +335,7 @@ async def run_v2_plan(
 
 
 @router.post("/data-quality/sweep-now")
-async def run_v2_data_quality_sweep(
+def run_v2_data_quality_sweep(
     limit: Optional[int] = Query(None, ge=1, le=50000),
     data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
     _: bool = Depends(authenticate),
@@ -345,7 +345,7 @@ async def run_v2_data_quality_sweep(
 
 
 @router.post("/data-quality/promote-drift-candidates")
-async def promote_v2_drift_candidates(
+def promote_v2_drift_candidates(
     limit: int = Query(500, ge=1, le=10000),
     data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
     _: bool = Depends(authenticate),
@@ -355,7 +355,7 @@ async def promote_v2_drift_candidates(
 
 
 @router.get("/campaigns")
-async def list_v2_admin_campaigns(
+def list_v2_admin_campaigns(
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0, le=100000),
     status: Optional[List[str]] = Query(None),
@@ -388,7 +388,7 @@ async def list_v2_admin_campaigns(
 
 
 @router.get("/campaigns/{campaign_id}")
-async def get_v2_admin_campaign_detail(
+def get_v2_admin_campaign_detail(
     campaign_id: str,
     member_limit: int = Query(500, ge=1, le=5000),
     evidence_limit: int = Query(1000, ge=1, le=10000),
@@ -410,7 +410,7 @@ async def get_v2_admin_campaign_detail(
 
 
 @router.get("/campaigns/{campaign_id}/graph")
-async def get_v2_admin_campaign_graph(
+def get_v2_admin_campaign_graph(
     campaign_id: str,
     member_limit: int = Query(250, ge=1, le=2000),
     session=Depends(get_v2_session),
@@ -430,7 +430,7 @@ async def get_v2_admin_campaign_graph(
 
 
 @router.post("/campaigns/correlate")
-async def run_v2_campaign_correlation(
+def run_v2_campaign_correlation(
     background: bool = Query(True),
     include_excluded: bool = Query(True),
     limit: Optional[int] = Query(None, ge=1, le=100000),
@@ -458,7 +458,7 @@ async def run_v2_campaign_correlation(
 
 
 @router.patch("/campaigns/{campaign_id}")
-async def update_v2_admin_campaign_review(
+def update_v2_admin_campaign_review(
     campaign_id: str,
     payload: dict = Body(default_factory=dict),
     session=Depends(get_v2_session),
@@ -483,7 +483,7 @@ async def update_v2_admin_campaign_review(
 
 
 @router.patch("/campaigns/{campaign_id}/members/{canonical_incident_id}")
-async def update_v2_admin_campaign_membership_review(
+def update_v2_admin_campaign_membership_review(
     campaign_id: str,
     canonical_incident_id: str,
     payload: dict = Body(default_factory=dict),
@@ -511,7 +511,7 @@ async def update_v2_admin_campaign_membership_review(
 
 
 @router.post("/canonicalize/sweep-now")
-async def queue_v2_recanonicalization_sweep(
+def queue_v2_recanonicalization_sweep(
     limit: int = Query(500, ge=1, le=50000),
     session=Depends(get_v2_session),
     operations: V2OperationsService = Depends(get_v2_operations_service),
@@ -526,7 +526,7 @@ async def queue_v2_recanonicalization_sweep(
 
 
 @router.post("/canonicalize/by-canonical/{canonical_incident_id}")
-async def queue_v2_recanonicalization_for_canonical(
+def queue_v2_recanonicalization_for_canonical(
     canonical_incident_id: str,
     session=Depends(get_v2_session),
     operations: V2OperationsService = Depends(get_v2_operations_service),
@@ -544,7 +544,7 @@ async def queue_v2_recanonicalization_for_canonical(
 
 
 @router.get("/canonicalize/consistency-candidates")
-async def list_v2_canonical_consistency_candidates(
+def list_v2_canonical_consistency_candidates(
     limit: int = Query(100, ge=1, le=1000),
     scan_limit: int = Query(1000, ge=1, le=10000),
     session=Depends(get_v2_session),
@@ -568,7 +568,7 @@ async def list_v2_canonical_consistency_candidates(
 
 
 @router.post("/canonicalize/consistency-sweep-now")
-async def queue_v2_canonical_consistency_sweep(
+def queue_v2_canonical_consistency_sweep(
     limit: int = Query(100, ge=1, le=1000),
     scan_limit: int = Query(1000, ge=1, le=10000),
     session=Depends(get_v2_session),
@@ -588,7 +588,7 @@ async def queue_v2_canonical_consistency_sweep(
 
 
 @router.post("/tasks/requeue-dead-letter")
-async def requeue_v2_dead_letter_tasks(
+def requeue_v2_dead_letter_tasks(
     task_type: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=5000),
     session=Depends(get_v2_session),
@@ -608,7 +608,7 @@ async def requeue_v2_dead_letter_tasks(
 
 
 @router.get("/manual-review-queue")
-async def list_v2_manual_review_queue(
+def list_v2_manual_review_queue(
     limit: int = Query(100, ge=1, le=1000),
     session=Depends(get_v2_session),
     data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
@@ -626,7 +626,7 @@ async def list_v2_manual_review_queue(
 
 
 @router.get("/rejected-enrichments")
-async def list_v2_rejected_enrichments(
+def list_v2_rejected_enrichments(
     limit: int = Query(100, ge=1, le=1000),
     session=Depends(get_v2_session),
     data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
@@ -644,7 +644,7 @@ async def list_v2_rejected_enrichments(
 
 
 @router.get("/scheduler/status")
-async def get_v2_scheduler_status(
+def get_v2_scheduler_status(
     scheduler: V2SchedulerService = Depends(get_v2_scheduler_service),
     _: bool = Depends(authenticate),
 ):
@@ -653,7 +653,7 @@ async def get_v2_scheduler_status(
 
 
 @router.post("/scheduler/start")
-async def start_v2_scheduler(
+def start_v2_scheduler(
     scheduler: V2SchedulerService = Depends(get_v2_scheduler_service),
     _: bool = Depends(authenticate),
 ):
@@ -662,7 +662,7 @@ async def start_v2_scheduler(
 
 
 @router.post("/scheduler/stop")
-async def stop_v2_scheduler(
+def stop_v2_scheduler(
     scheduler: V2SchedulerService = Depends(get_v2_scheduler_service),
     _: bool = Depends(authenticate),
 ):
@@ -671,7 +671,7 @@ async def stop_v2_scheduler(
 
 
 @router.post("/scheduler/trigger/{job_name}")
-async def trigger_v2_scheduler_job(
+def trigger_v2_scheduler_job(
     job_name: str,
     background: bool = Query(True),
     scheduler: V2SchedulerService = Depends(get_v2_scheduler_service),

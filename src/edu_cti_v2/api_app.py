@@ -17,6 +17,22 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
     logger.info("Starting EduThreat-CTI v2 API...")
+    # The v2 read endpoints are sync `def` handlers, so FastAPI runs them in
+    # anyio's shared threadpool. Cap that threadpool so we never run more
+    # concurrent blocking DB calls than the connection pool can serve (plus a
+    # small buffer for cache hits / no-DB routes) — this avoids threads piling
+    # up waiting on connections under load.
+    try:
+        import anyio
+        from src.edu_cti_v2.db.config import V2DatabaseSettings
+
+        settings = V2DatabaseSettings.from_env()
+        tokens = settings.pool_size + settings.max_overflow + 8
+        limiter = anyio.to_thread.current_default_thread_limiter()
+        limiter.total_tokens = tokens
+        logger.info("Set request threadpool limit to %d tokens", tokens)
+    except Exception:  # pragma: no cover - never block startup on tuning
+        logger.warning("Could not tune request threadpool size", exc_info=True)
     yield
     logger.info("Stopping EduThreat-CTI v2 API...")
 

@@ -43,9 +43,11 @@ class V2DatabaseSettings:
     database_url: str
     alembic_database_url: str
     echo_sql: bool = False
-    pool_size: int = 10
-    max_overflow: int = 20
-    pool_timeout: int = 30
+    # Conservative per-worker pool so auto-scaled API workers stay well under
+    # Postgres max_connections: workers × (pool_size + max_overflow) is the cap.
+    pool_size: int = 5
+    max_overflow: int = 5
+    pool_timeout: int = 10
     pool_recycle: int = 1800
     statement_timeout_ms: int = 30000
     app_name: str = "eduthreat-cti-v2"
@@ -77,9 +79,9 @@ class V2DatabaseSettings:
             database_url=database_url,
             alembic_database_url=alembic_database_url,
             echo_sql=_env_flag("EDU_CTI_V2_DB_ECHO", "0"),
-            pool_size=int(os.environ.get("EDU_CTI_V2_DB_POOL_SIZE", "10")),
-            max_overflow=int(os.environ.get("EDU_CTI_V2_DB_MAX_OVERFLOW", "20")),
-            pool_timeout=int(os.environ.get("EDU_CTI_V2_DB_POOL_TIMEOUT", "30")),
+            pool_size=int(os.environ.get("EDU_CTI_V2_DB_POOL_SIZE", "5")),
+            max_overflow=int(os.environ.get("EDU_CTI_V2_DB_MAX_OVERFLOW", "5")),
+            pool_timeout=int(os.environ.get("EDU_CTI_V2_DB_POOL_TIMEOUT", "10")),
             pool_recycle=int(os.environ.get("EDU_CTI_V2_DB_POOL_RECYCLE", "1800")),
             statement_timeout_ms=int(os.environ.get("EDU_CTI_V2_DB_STATEMENT_TIMEOUT_MS", "30000")),
             app_name=os.environ.get("EDU_CTI_V2_DB_APP_NAME", "eduthreat-cti-v2"),

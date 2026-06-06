@@ -57,13 +57,13 @@ def _public_cache_key(prefix: str, *parts: object) -> str:
 
 
 @router.get("/health")
-async def v2_health() -> dict[str, str]:
+def v2_health() -> dict[str, str]:
     """Lightweight health check for the v2 Postgres read path."""
     return {"status": "healthy", "layer": "v2"}
 
 
 @router.get("/dashboard")
-async def get_v2_dashboard(
+def get_v2_dashboard(
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
 ):
@@ -78,7 +78,7 @@ async def get_v2_dashboard(
 
 
 @router.get("/stats")
-async def get_v2_stats(
+def get_v2_stats(
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
 ):
@@ -96,7 +96,7 @@ async def get_v2_stats(
 
 
 @router.get("/campaigns")
-async def list_v2_campaigns(
+def list_v2_campaigns(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0, le=100000),
     campaign_type: Optional[str] = Query(None),
@@ -126,7 +126,7 @@ async def list_v2_campaigns(
 
 
 @router.get("/campaigns/{campaign_id}")
-async def get_v2_campaign_detail(
+def get_v2_campaign_detail(
     campaign_id: str,
     member_limit: int = Query(500, ge=1, le=2000),
     evidence_limit: int = Query(1000, ge=1, le=5000),
@@ -147,7 +147,7 @@ async def get_v2_campaign_detail(
 
 
 @router.get("/campaigns/{campaign_id}/graph")
-async def get_v2_campaign_graph(
+def get_v2_campaign_graph(
     campaign_id: str,
     member_limit: int = Query(250, ge=1, le=1000),
     session: Session = Depends(get_v2_session),
@@ -166,7 +166,7 @@ async def get_v2_campaign_graph(
 
 
 @router.get("/incidents")
-async def list_v2_incidents(
+def list_v2_incidents(
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0, le=100000),
     status: Optional[List[str]] = Query(None),
@@ -246,7 +246,7 @@ async def list_v2_incidents(
 
 
 @router.get("/incidents/facets")
-async def get_v2_incident_facets(
+def get_v2_incident_facets(
     status: Optional[List[str]] = Query(None),
     search: Optional[str] = Query(None, min_length=1, max_length=200),
     country_code: Optional[str] = Query(None, min_length=2, max_length=2),
@@ -280,7 +280,7 @@ async def get_v2_incident_facets(
 
 
 @router.get("/analytics/breakdowns")
-async def get_v2_analytics_breakdowns(
+def get_v2_analytics_breakdowns(
     status: Optional[List[str]] = Query(None),
     search: Optional[str] = Query(None, min_length=1, max_length=200),
     country_code: Optional[str] = Query(None, min_length=2, max_length=2),
@@ -340,7 +340,7 @@ async def get_v2_analytics_breakdowns(
 
 
 @router.get("/analytics/countries")
-async def get_v2_country_analytics(
+def get_v2_country_analytics(
     limit: int = Query(500, ge=1, le=500),
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
@@ -356,7 +356,7 @@ async def get_v2_country_analytics(
 
 
 @router.get("/analytics/attack-types")
-async def get_v2_attack_type_analytics(
+def get_v2_attack_type_analytics(
     limit: int = Query(15, ge=1, le=50),
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
@@ -372,7 +372,7 @@ async def get_v2_attack_type_analytics(
 
 
 @router.get("/analytics/ransomware")
-async def get_v2_ransomware_analytics(
+def get_v2_ransomware_analytics(
     limit: int = Query(15, ge=1, le=50),
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
@@ -388,7 +388,7 @@ async def get_v2_ransomware_analytics(
 
 
 @router.get("/analytics/mitre")
-async def get_v2_mitre_analytics(
+def get_v2_mitre_analytics(
     status: Optional[List[str]] = Query(None),
     technique_limit: int = Query(20, ge=1, le=100),
     per_tactic_limit: int = Query(5, ge=1, le=20),
@@ -417,7 +417,7 @@ async def get_v2_mitre_analytics(
 
 
 @router.get("/analytics/trend")
-async def get_v2_analytics_trend(
+def get_v2_analytics_trend(
     status: Optional[List[str]] = Query(None),
     search: Optional[str] = Query(None, min_length=1, max_length=200),
     country_code: Optional[str] = Query(None, min_length=2, max_length=2),
@@ -456,7 +456,7 @@ async def get_v2_analytics_trend(
 
 
 @router.get("/analytics/timeline")
-async def get_v2_timeline_analytics(
+def get_v2_timeline_analytics(
     months: int = Query(24, ge=1, le=120),
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
@@ -472,7 +472,7 @@ async def get_v2_timeline_analytics(
 
 
 @router.get("/analytics/kpi-trends")
-async def get_v2_kpi_trends(
+def get_v2_kpi_trends(
     status: Optional[List[str]] = Query(None),
     months: int = Query(12, ge=2, le=36),
     session: Session = Depends(get_v2_session),
@@ -490,7 +490,7 @@ async def get_v2_kpi_trends(
 
 
 @router.get("/analytics/threat-actors")
-async def get_v2_threat_actor_analytics(
+def get_v2_threat_actor_analytics(
     limit: int = Query(20, ge=1, le=500),
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
@@ -506,7 +506,7 @@ async def get_v2_threat_actor_analytics(
 
 
 @router.get("/analytics/intelligence")
-async def get_v2_intelligence_analytics(
+def get_v2_intelligence_analytics(
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
@@ -526,7 +526,7 @@ async def get_v2_intelligence_analytics(
 
 
 @router.get("/analytics/diamond")
-async def get_v2_diamond_analytics(
+def get_v2_diamond_analytics(
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
@@ -546,7 +546,7 @@ async def get_v2_diamond_analytics(
 
 
 @router.get("/analytics/pipeline-research")
-async def get_v2_pipeline_research_metrics(
+def get_v2_pipeline_research_metrics(
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
     research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
@@ -562,7 +562,7 @@ async def get_v2_pipeline_research_metrics(
 
 
 @router.get("/analytics/pipeline-research/prometheus")
-async def get_v2_pipeline_research_metrics_prometheus(
+def get_v2_pipeline_research_metrics_prometheus(
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
     research_service: V2ResearchMetricsService = Depends(get_v2_research_metrics_service),
@@ -582,7 +582,7 @@ async def get_v2_pipeline_research_metrics_prometheus(
 
 
 @router.get("/analytics/feeds")
-async def get_v2_feed_health(
+def get_v2_feed_health(
     limit: int = Query(50, ge=1, le=200),
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
@@ -598,7 +598,7 @@ async def get_v2_feed_health(
 
 
 @router.get("/filters")
-async def get_v2_filter_options(
+def get_v2_filter_options(
     status: Optional[List[str]] = Query(None),
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
@@ -618,7 +618,7 @@ async def get_v2_filter_options(
 
 
 @router.get("/incidents/{canonical_incident_id}")
-async def get_v2_incident_detail(
+def get_v2_incident_detail(
     canonical_incident_id: str,
     format: Literal["default", "legacy"] = Query("default"),
     session: Session = Depends(get_v2_session),
@@ -636,7 +636,7 @@ async def get_v2_incident_detail(
 
 
 @router.get("/incidents/{canonical_incident_id}/report")
-async def get_v2_incident_report(
+def get_v2_incident_report(
     canonical_incident_id: str,
     session: Session = Depends(get_v2_session),
     read_service: V2CanonicalReadService = Depends(get_v2_read_service),
