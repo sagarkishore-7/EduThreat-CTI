@@ -64,6 +64,12 @@ def _source_enrichment_repository(enrichment=None):
     return repository
 
 
+def _source_incident_repository(existing=None):
+    repository = Mock()
+    repository.get_by_source_event_key.return_value = existing
+    return repository
+
+
 def test_fetch_service_persists_successful_article_and_enqueues_enrichment():
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
@@ -496,6 +502,109 @@ def test_fetch_service_skips_enrichment_when_no_article_is_relevant():
     assert result["enrich_tasks_enqueued"] == 0
     documents = [call.args[1] for call in article_repository.add_document.call_args_list]
     assert documents[0].is_selected_for_enrichment is False
+    pipeline_task_repository.enqueue.assert_not_called()
+
+
+def test_fetch_service_promotes_unselected_drift_article_as_new_candidate():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
+    source_incident_repository = _source_incident_repository()
+    pipeline_task_repository = Mock()
+    pipeline_task_repository.get_active_for_target.return_value = None
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.return_value = ArticleContent(
+        url="https://www.wmur.com/article/canvas-hackers-deal-reached/71280007",
+        title="Deal reached with Canvas hackers to delete data stolen from the educational platform",
+        content=(
+            "Hackers stole data from the Canvas learning management system used by "
+            "schools and universities. Instructure said the cyber incident affected "
+            "student portal data."
+        ),
+        author="Reporter",
+        publish_date="2026-05-08",
+        fetch_successful=True,
+        error_message=None,
+        content_length=154,
+        fetch_metadata={"selected_tier": "scrapling", "tier_attempts": [{"tier": "scrapling", "success": True}]},
+    )
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        source_incident_repository=source_incident_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident_with_urls(
+        ("https://www.wmur.com/article/canvas-hackers-deal-reached/71280007", True),
+    )
+    incident.source_name = "googlenews_rss"
+    incident.source_group = "rss"
+    incident.raw_title = "UC System Information Compromised in Accellion Data Breach - New University"
+    incident.raw_institution_name = "University of California"
+    incident.raw_incident_date = "2021-04-02"
+    incident.source_published_at = datetime(2021, 4, 2, 8, 0, tzinfo=timezone.utc)
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert result["articles_saved"] == 1
+    assert result["enrich_tasks_enqueued"] == 0
+    assert result["drift_candidates_created"] == 1
+    source_incident_repository.add.assert_called_once()
+    generated_source = source_incident_repository.add.call_args.args[1]
+    assert generated_source.source_name == "fallback_news_discovery"
+    assert generated_source.source_group == "rss"
+    assert generated_source.raw_title == "Deal reached with Canvas hackers to delete data stolen from the educational platform"
+    assert generated_source.raw_payload["origin_source_name"] == "googlenews_rss"
+    assert generated_source.raw_payload["origin_raw_title"] == "UC System Information Compromised in Accellion Data Breach - New University"
+    documents = [call.args[1] for call in article_repository.add_document.call_args_list]
+    assert documents[0].is_selected_for_enrichment is False
+    assert documents[1].source_incident_id == generated_source.id
+    assert documents[1].is_selected_for_enrichment is True
+    generated_task = pipeline_task_repository.enqueue.call_args.args[1]
+    assert generated_task.task_type == "enrich_source"
+    assert generated_task.payload["trigger"] == "fallback_article_drift_candidate"
+
+
+def test_fetch_service_does_not_promote_non_education_drift_article():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = None
+    source_incident_repository = _source_incident_repository()
+    pipeline_task_repository = Mock()
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.return_value = ArticleContent(
+        url="https://www.foxnews.com/tech/your-social-security-number-risk-signs-someone-might-stealing",
+        title="Is your Social Security number at risk? Signs someone might be stealing it",
+        content="A data breach may put consumers at risk of identity theft.",
+        author="Reporter",
+        publish_date="2026-05-08",
+        fetch_successful=True,
+        error_message=None,
+        content_length=59,
+        fetch_metadata={"selected_tier": "scrapling", "tier_attempts": [{"tier": "scrapling", "success": True}]},
+    )
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        source_incident_repository=source_incident_repository,
+        source_enrichment_repository=_source_enrichment_repository(),
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident_with_urls(
+        ("https://www.foxnews.com/tech/your-social-security-number-risk-signs-someone-might-stealing", True),
+    )
+    incident.source_name = "googlenews_rss"
+    incident.raw_title = "University of Colorado data breach - CBS News"
+    incident.raw_institution_name = "University of Colorado"
+    incident.source_published_at = datetime(2021, 4, 2, 8, 0, tzinfo=timezone.utc)
+
+    result = service.fetch_articles_for_source_incident(session, incident, worker_id="worker-1")
+
+    assert "drift_candidates_created" not in result
+    source_incident_repository.add.assert_not_called()
     pipeline_task_repository.enqueue.assert_not_called()
 
 

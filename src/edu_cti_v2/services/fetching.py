@@ -4,18 +4,27 @@ from __future__ import annotations
 
 import hashlib
 import re
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any, Dict, Optional
 from urllib.parse import unquote, urlparse
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
+from src.edu_cti.core.deduplication import normalize_url
 from src.edu_cti.pipeline.phase2.storage import ArticleContent, ArticleFetcher
-from src.edu_cti_v2.models import ArticleDocument, ArticleFetchAttempt, PipelineTask, SourceIncident
+from src.edu_cti_v2.models import (
+    ArticleDocument,
+    ArticleFetchAttempt,
+    PipelineTask,
+    SourceIncident,
+    SourceIncidentUrl,
+)
 from src.edu_cti_v2.repositories import (
     ArticleRepository,
     PipelineTaskRepository,
     SourceEnrichmentRepository,
+    SourceIncidentRepository,
 )
 from src.edu_cti_v2.source_identity import recover_source_identity
 
@@ -101,6 +110,17 @@ _HOMEPAGEISH_TITLE_RE = re.compile(
 _CURATED_SOURCE_NAMES = {"konbriefing", "comparitech"}
 _SOURCE_DATE_RELATIVE_GUARD_GROUPS = {"news", "rss"}
 _MAX_ARTICLE_DAYS_AFTER_SOURCE = 90
+_FALLBACK_DISCOVERY_SOURCE_NAME = "fallback_news_discovery"
+_FALLBACK_DISCOVERY_COLLECTOR_VERSION = "fallback-news-discovery-v1"
+_EDU_EVIDENCE_RE = re.compile(
+    r"\b("
+    r"school|schools|school district|district|k-?12|college|colleges|"
+    r"university|universities|campus|students?|faculty|academy|"
+    r"higher education|student portal|learning management|lms|canvas|"
+    r"instructure|powerschool|blackbaud|ellucian|moodle"
+    r")\b",
+    re.IGNORECASE,
+)
 
 
 def _parse_publish_date(value: Optional[str]) -> Optional[date]:
@@ -335,6 +355,19 @@ def _article_has_cyber_evidence(article: ArticleContent) -> bool:
     return bool(_CYBER_EVIDENCE_RE.search(candidate_text))
 
 
+def _article_has_education_evidence(article: ArticleContent) -> bool:
+    candidate_text = " ".join(
+        value
+        for value in (
+            article.title,
+            (article.content or "")[:3000],
+            article.url,
+        )
+        if value
+    )
+    return bool(_EDU_EVIDENCE_RE.search(candidate_text))
+
+
 def _looks_like_current_homepage(article: ArticleContent, source_url: str) -> bool:
     parsed = urlparse(source_url)
     path = (parsed.path or "/").strip().lower()
@@ -431,6 +464,41 @@ def _score_article_candidate(
         score += 10.0
 
     return score
+
+
+def _fallback_discovery_event_key(article_url: str) -> str:
+    normalized = normalize_url(article_url) or article_url.strip()
+    digest = hashlib.sha256(normalized.encode("utf-8")).hexdigest()
+    return f"article:{digest}"
+
+
+def _fallback_source_published_at(article: ArticleContent) -> Optional[datetime]:
+    parsed = _parse_publish_date(article.publish_date)
+    if parsed is None:
+        return None
+    return datetime.combine(parsed, time.min, tzinfo=timezone.utc)
+
+
+def _should_promote_drift_candidate(
+    *,
+    source_incident: SourceIncident,
+    article: ArticleContent,
+    source_url: str,
+) -> bool:
+    if (source_incident.source_name or "").lower() == _FALLBACK_DISCOVERY_SOURCE_NAME:
+        return False
+    if not article.fetch_successful or not article.content:
+        return False
+    if not _article_has_cyber_evidence(article):
+        return False
+    if not _article_has_education_evidence(article):
+        return False
+    if _looks_like_current_homepage(article, source_url):
+        return False
+    article_url = (article.url or source_url or "").strip()
+    if not article_url.startswith(("http://", "https://")):
+        return False
+    return bool(normalize_url(article_url))
 
 
 def _should_retry_discovery_after_low_quality_selection(
@@ -568,15 +636,231 @@ class V2FetchService:
         *,
         article_fetcher: Optional[ArticleFetcher] = None,
         article_repository: Optional[ArticleRepository] = None,
+        source_incident_repository: Optional[SourceIncidentRepository] = None,
         source_enrichment_repository: Optional[SourceEnrichmentRepository] = None,
         pipeline_task_repository: Optional[PipelineTaskRepository] = None,
     ) -> None:
-        self.article_fetcher = article_fetcher or ArticleFetcher()
+        self.article_fetcher = article_fetcher
         self.article_repository = article_repository or ArticleRepository()
+        self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
         self.source_enrichment_repository = (
             source_enrichment_repository or SourceEnrichmentRepository()
         )
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
+
+    def _article_fetcher(self) -> ArticleFetcher:
+        if self.article_fetcher is None:
+            self.article_fetcher = ArticleFetcher()
+        return self.article_fetcher
+
+    def _promote_drift_candidate(
+        self,
+        session: Session,
+        source_incident: SourceIncident,
+        *,
+        candidate: dict[str, Any],
+        worker_id: str,
+        now: datetime,
+    ) -> bool:
+        article = candidate["article"]
+        source_url = candidate["source_url"]
+        if not _should_promote_drift_candidate(
+            source_incident=source_incident,
+            article=article,
+            source_url=source_url,
+        ):
+            return False
+
+        article_url = (article.url or source_url).strip()
+        normalized_url = normalize_url(article_url)
+        if not normalized_url:
+            return False
+        event_key = _fallback_discovery_event_key(article_url)
+        existing = self.source_incident_repository.get_by_source_event_key(
+            session,
+            _FALLBACK_DISCOVERY_SOURCE_NAME,
+            event_key,
+        )
+        if existing is not None:
+            return False
+
+        source_published_at = _fallback_source_published_at(article)
+        source_id = uuid4()
+        url_id = uuid4()
+        document_id = uuid4()
+        source_title = _sanitize_db_text(article.title) or article_url
+        content_hash = hashlib.sha256(article.content.encode("utf-8")).hexdigest()
+        origin_payload = {
+            "generated_by": _FALLBACK_DISCOVERY_COLLECTOR_VERSION,
+            "origin_source_incident_id": str(source_incident.id),
+            "origin_source_name": source_incident.source_name,
+            "origin_source_event_key": source_incident.source_event_key,
+            "origin_raw_title": source_incident.raw_title,
+            "origin_source_url": source_url,
+            "discovered_article_url": article_url,
+            "selection_score_for_origin": float(candidate["score"]),
+            "reason": "fetched_article_did_not_match_origin_source_but_looks_like_education_cyber_incident",
+        }
+        generated_source = SourceIncident(
+            id=source_id,
+            source_name=_FALLBACK_DISCOVERY_SOURCE_NAME,
+            source_group="rss",
+            source_event_key=event_key,
+            collector_version=_FALLBACK_DISCOVERY_COLLECTOR_VERSION,
+            collected_at=now,
+            source_published_at=source_published_at,
+            raw_title=source_title,
+            raw_subtitle=None,
+            raw_victim_name=None,
+            raw_institution_name=None,
+            raw_institution_type=None,
+            raw_country=None,
+            raw_region=None,
+            raw_city=None,
+            raw_incident_date=source_published_at.date().isoformat() if source_published_at else None,
+            raw_date_precision="day" if source_published_at else "unknown",
+            raw_status="open",
+            raw_attack_hint="candidate education cyber incident",
+            raw_threat_actor=None,
+            raw_notes=(
+                "discovered_via=fallback_article_drift; "
+                f"origin_source={source_incident.source_name}; "
+                f"origin_source_incident_id={source_incident.id}"
+            ),
+            source_confidence="low",
+            ingest_hash=event_key,
+            raw_payload=origin_payload,
+            is_deleted=False,
+        )
+        url_row = SourceIncidentUrl(
+            id=url_id,
+            source_incident_id=source_id,
+            url=article_url,
+            normalized_url=normalized_url,
+            resolved_url=article_url,
+            url_kind="article",
+            is_wrapper=False,
+            is_primary_from_source=True,
+            is_resolved_primary=True,
+            created_at=now,
+        )
+        generated_source.urls = [url_row]
+        document = ArticleDocument(
+            id=document_id,
+            source_incident_id=source_id,
+            source_incident_url_id=url_id,
+            title=source_title,
+            author=article.author,
+            publish_date=_parse_publish_date(article.publish_date),
+            content_text=article.content,
+            content_hash=content_hash,
+            content_language=None,
+            document_metadata={
+                "source_url": article_url,
+                "fetched_url": article_url,
+                "selected_fetch_tier": "fallback_discovery_reuse",
+                "generated_from_drifted_article": True,
+                "origin_source_incident_id": str(source_incident.id),
+                "origin_source_name": source_incident.source_name,
+                "origin_source_url": source_url,
+            },
+            is_selected_for_enrichment=True,
+            fetched_at=now,
+        )
+        attempt = ArticleFetchAttempt(
+            source_incident_id=source_id,
+            source_incident_url_id=url_id,
+            fetch_tier="fallback_discovery_reuse",
+            attempted_at=now,
+            worker_id=worker_id,
+            success=True,
+            http_status=None,
+            latency_ms=None,
+            content_length=len(article.content),
+            error_code=None,
+            error_message=None,
+            response_metadata={
+                "fetched_url": article_url,
+                "selected_for_enrichment": True,
+                "attempt_index": 1,
+                "selected_tier": "fallback_discovery_reuse",
+                "origin_source_incident_id": str(source_incident.id),
+                "origin_article_document_id": str(candidate["document"].id),
+            },
+        )
+        self.source_incident_repository.add(session, generated_source)
+        self.article_repository.add_document(session, document)
+        self.article_repository.add_fetch_attempt(session, attempt)
+
+        if self.pipeline_task_repository.get_active_for_target(
+            session,
+            task_type="enrich_source",
+            target_table="source_incidents",
+            target_id=source_id,
+        ) is None:
+            self.pipeline_task_repository.enqueue(
+                session,
+                PipelineTask(
+                    run_id=None,
+                    task_type="enrich_source",
+                    target_table="source_incidents",
+                    target_id=source_id,
+                    status="queued",
+                    priority=75,
+                    payload={
+                        "source_incident_id": str(source_id),
+                        "source_name": _FALLBACK_DISCOVERY_SOURCE_NAME,
+                        "trigger": "fallback_article_drift_candidate",
+                        "origin_source_incident_id": str(source_incident.id),
+                    },
+                    result={},
+                    available_at=now,
+                    attempt_count=0,
+                    max_attempts=5,
+                ),
+            )
+        return True
+
+    def promote_existing_unselected_document_as_drift_candidate(
+        self,
+        session: Session,
+        source_incident: SourceIncident,
+        document: ArticleDocument,
+        *,
+        worker_id: str = "data-quality-drift-sweep",
+        now: Optional[datetime] = None,
+    ) -> bool:
+        metadata = document.document_metadata if isinstance(document.document_metadata, dict) else {}
+        source_url = str(metadata.get("source_url") or metadata.get("fetched_url") or "")
+        article_url = str(metadata.get("fetched_url") or metadata.get("source_url") or source_url)
+        article = ArticleContent(
+            url=article_url,
+            title=document.title or "",
+            content=document.content_text or "",
+            author=document.author,
+            publish_date=document.publish_date.isoformat() if document.publish_date else None,
+            fetch_successful=bool(document.content_text),
+            error_message=None,
+            content_length=len(document.content_text or ""),
+            fetch_metadata={
+                "selected_tier": metadata.get("selected_fetch_tier") or "existing_document",
+            },
+        )
+        candidate = {
+            "document": document,
+            "attempts": [],
+            "article": article,
+            "source_url": source_url or article_url,
+            "selected_tier": "existing_document",
+            "score": float(metadata.get("selection_score_for_origin") or -1.0),
+        }
+        return self._promote_drift_candidate(
+            session,
+            source_incident,
+            candidate=candidate,
+            worker_id=worker_id,
+            now=now or datetime.now(timezone.utc),
+        )
 
     def fetch_articles_for_source_incident(
         self,
@@ -655,7 +939,7 @@ class V2FetchService:
         selected_candidates: list[dict[str, Any]] = []
 
         for url_row in fetchable_urls:
-            article = self.article_fetcher.fetch_article(url_row.url)
+            article = self._article_fetcher().fetch_article(url_row.url)
             tier_attempts = _extract_tier_attempts(article)
             article, tier_attempts = _validate_article_content(article, tier_attempts)
             is_successful = bool(article.fetch_successful and article.content)
@@ -765,6 +1049,8 @@ class V2FetchService:
                 {
                     "document": existing_document,
                     "attempts": attempt_records,
+                    "article": article,
+                    "source_url": url_row.url,
                     "selected_tier": selected_tier,
                     "score": _score_article_candidate(
                         source_incident,
@@ -776,7 +1062,13 @@ class V2FetchService:
 
         enrich_task_enqueued = 0
         resolve_task_enqueued = 0
+        drift_candidates_created = 0
         if selected_candidates:
+            for candidate in selected_candidates:
+                document_metadata = dict(candidate["document"].document_metadata or {})
+                document_metadata["selection_score_for_origin"] = float(candidate["score"])
+                document_metadata["selection_threshold_for_origin"] = _MIN_SELECTED_ARTICLE_SCORE
+                candidate["document"].document_metadata = document_metadata
             best_candidate = max(selected_candidates, key=lambda candidate: float(candidate["score"]))
             best_score = float(best_candidate["score"])
             if best_score >= _MIN_SELECTED_ARTICLE_SCORE:
@@ -794,7 +1086,22 @@ class V2FetchService:
                 for candidate in selected_candidates:
                     candidate["document"].is_selected_for_enrichment = False
 
-        if any(candidate["document"].is_selected_for_enrichment for candidate in selected_candidates):
+        has_selected_candidate = any(
+            candidate["document"].is_selected_for_enrichment
+            for candidate in selected_candidates
+        )
+        if selected_candidates and not has_selected_candidate:
+            for candidate in selected_candidates:
+                if self._promote_drift_candidate(
+                    session,
+                    source_incident,
+                    candidate=candidate,
+                    worker_id=worker_id,
+                    now=now,
+                ):
+                    drift_candidates_created += 1
+
+        if has_selected_candidate:
             existing_enrich_task = self.pipeline_task_repository.get_active_for_target(
                 session,
                 task_type="enrich_source",
@@ -862,10 +1169,13 @@ class V2FetchService:
                 self.pipeline_task_repository.enqueue(session, resolve_task)
                 resolve_task_enqueued = 1
 
-        return {
+        result = {
             "urls_total": len(fetchable_urls),
             "articles_saved": success_count,
             "articles_failed": failure_count,
             "enrich_tasks_enqueued": enrich_task_enqueued,
             "resolve_tasks_enqueued": resolve_task_enqueued,
         }
+        if drift_candidates_created:
+            result["drift_candidates_created"] = drift_candidates_created
+        return result

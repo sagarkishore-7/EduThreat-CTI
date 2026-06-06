@@ -6,17 +6,20 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
-from src.edu_cti_v2.models import PipelineTask, SourceEnrichment
+from src.edu_cti_v2.models import ArticleDocument, PipelineTask, SourceEnrichment, SourceIncident
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceEnrichmentRepository, SourceIncidentRepository
+from src.edu_cti_v2.services.fetching import V2FetchService
 from src.edu_cti_v2.source_identity import looks_broad_collective_identity, looks_geographic_only_identity
 
 MIN_DATE = date(1990, 1, 1)
 FUTURE_TOLERANCE_DAYS = 3
 MAX_REENRICH_ATTEMPTS = 3
 SOURCE_DATE_RELATIVE_GUARD_GROUPS = {"news", "rss"}
+FALLBACK_NEWS_DISCOVERY_SOURCE_NAME = "fallback_news_discovery"
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}(?:[T ]|$)")
 _GENERIC_EDU_ENTITY_RE = (
@@ -180,11 +183,18 @@ class V2DataQualityService:
         source_enrichment_repository: Optional[SourceEnrichmentRepository] = None,
         source_incident_repository: Optional[SourceIncidentRepository] = None,
         pipeline_task_repository: Optional[PipelineTaskRepository] = None,
+        fetch_service: Optional[V2FetchService] = None,
     ) -> None:
         self.session_factory = session_factory
         self.source_enrichment_repository = source_enrichment_repository or SourceEnrichmentRepository()
         self.source_incident_repository = source_incident_repository or SourceIncidentRepository()
         self.pipeline_task_repository = pipeline_task_repository or PipelineTaskRepository()
+        self.fetch_service = fetch_service or V2FetchService(
+            article_fetcher=None,
+            source_incident_repository=self.source_incident_repository,
+            source_enrichment_repository=self.source_enrichment_repository,
+            pipeline_task_repository=self.pipeline_task_repository,
+        )
 
     def sweep_invalid_source_enrichments(
         self,
@@ -321,6 +331,70 @@ class V2DataQualityService:
             raise RuntimeError("session_factory is required for run_sweep")
         with self.session_factory() as session:
             result = self.sweep_invalid_source_enrichments(session, limit=limit)
+            session.commit()
+            return result
+
+    def promote_drifted_unselected_articles(
+        self,
+        session: Session,
+        *,
+        limit: int = 500,
+    ) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        stmt = (
+            select(ArticleDocument, SourceIncident)
+            .join(SourceIncident, SourceIncident.id == ArticleDocument.source_incident_id)
+            .where(ArticleDocument.is_selected_for_enrichment.is_(False))
+            .where(SourceIncident.source_name != FALLBACK_NEWS_DISCOVERY_SOURCE_NAME)
+            .order_by(ArticleDocument.fetched_at.desc())
+            .limit(limit)
+        )
+        scanned = 0
+        promoted = 0
+        skipped_source_already_has_selected_article = 0
+        skipped_not_candidate = 0
+        skipped_already_enriched = 0
+        for document, source_incident in session.execute(stmt).all():
+            scanned += 1
+            if self.source_enrichment_repository.get_by_source_incident(
+                session,
+                source_incident.id,
+            ) is not None:
+                skipped_already_enriched += 1
+                continue
+            selected_exists = session.execute(
+                select(ArticleDocument.id)
+                .where(ArticleDocument.source_incident_id == source_incident.id)
+                .where(ArticleDocument.is_selected_for_enrichment.is_(True))
+                .limit(1)
+            ).first()
+            if selected_exists is not None:
+                skipped_source_already_has_selected_article += 1
+                continue
+            if self.fetch_service.promote_existing_unselected_document_as_drift_candidate(
+                session,
+                source_incident,
+                document,
+                now=now,
+            ):
+                promoted += 1
+            else:
+                skipped_not_candidate += 1
+
+        return {
+            "scanned": scanned,
+            "promoted": promoted,
+            "skipped_already_enriched": skipped_already_enriched,
+            "skipped_source_already_has_selected_article": skipped_source_already_has_selected_article,
+            "skipped_not_candidate": skipped_not_candidate,
+            "checked_at": now.isoformat(),
+        }
+
+    def run_drift_promotion_sweep(self, *, limit: int = 500) -> dict[str, Any]:
+        if self.session_factory is None:
+            raise RuntimeError("session_factory is required for run_drift_promotion_sweep")
+        with self.session_factory() as session:
+            result = self.promote_drifted_unselected_articles(session, limit=limit)
             session.commit()
             return result
 

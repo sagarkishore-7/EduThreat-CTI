@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from unittest.mock import Mock
 from uuid import uuid4
 
-from src.edu_cti_v2.models import SourceEnrichment, SourceIncident
+from src.edu_cti_v2.models import ArticleDocument, SourceEnrichment, SourceIncident
 from src.edu_cti_v2.services.data_quality import MAX_REENRICH_ATTEMPTS, V2DataQualityService
 
 
@@ -432,3 +432,40 @@ def test_data_quality_service_clears_stale_reenrich_state_once_row_is_clean():
     assert enrichment.re_enrich_attempts == 0
     assert enrichment.re_enrich_reason is None
     task_repo.enqueue.assert_not_called()
+
+
+def test_data_quality_service_promotes_existing_unselected_drift_documents():
+    source_incident = _source_incident()
+    document = ArticleDocument(
+        id=uuid4(),
+        source_incident_id=source_incident.id,
+        source_incident_url_id=uuid4(),
+        title="Canvas breach affects schools",
+        content_text="Canvas cyberattack affected schools and student portal data.",
+        content_hash="hash",
+        document_metadata={"source_url": "https://example.com/canvas"},
+        is_selected_for_enrichment=False,
+        fetched_at=datetime(2026, 5, 8, 8, 0, tzinfo=timezone.utc),
+    )
+    session = Mock()
+    session.execute.side_effect = [
+        Mock(all=Mock(return_value=[(document, source_incident)])),
+        Mock(first=Mock(return_value=None)),
+    ]
+    enrichment_repo = Mock()
+    enrichment_repo.get_by_source_incident.return_value = None
+    fetch_service = Mock()
+    fetch_service.promote_existing_unselected_document_as_drift_candidate.return_value = True
+
+    service = V2DataQualityService(
+        source_enrichment_repository=enrichment_repo,
+        source_incident_repository=Mock(),
+        pipeline_task_repository=Mock(),
+        fetch_service=fetch_service,
+    )
+
+    result = service.promote_drifted_unselected_articles(session, limit=25)
+
+    assert result["scanned"] == 1
+    assert result["promoted"] == 1
+    fetch_service.promote_existing_unselected_document_as_drift_candidate.assert_called_once()

@@ -634,6 +634,9 @@ def test_v2_admin_data_quality_endpoints_proxy_service():
         def run_sweep(self, **kwargs):
             return {"requeued_for_reenrichment": 2, "limit": kwargs.get("limit")}
 
+        def run_drift_promotion_sweep(self, **kwargs):
+            return {"promoted": 3, "limit": kwargs.get("limit")}
+
         def list_manual_review_queue(self, _session, *, limit):
             return [{"source_incident_id": "abc", "limit": limit}]
 
@@ -658,12 +661,16 @@ def test_v2_admin_data_quality_endpoints_proxy_service():
     client = TestClient(app)
 
     sweep = client.post("/api/admin/v2/data-quality/sweep-now", params={"limit": 55})
+    drift = client.post("/api/admin/v2/data-quality/promote-drift-candidates", params={"limit": 44})
     queue = client.get("/api/admin/v2/manual-review-queue", params={"limit": 7})
     rejected = client.get("/api/admin/v2/rejected-enrichments", params={"limit": 9})
 
     assert sweep.status_code == 200
     assert sweep.json()["requeued_for_reenrichment"] == 2
     assert sweep.json()["limit"] == 55
+    assert drift.status_code == 200
+    assert drift.json()["promoted"] == 3
+    assert drift.json()["limit"] == 44
     assert queue.status_code == 200
     assert queue.json()["items"][0]["source_incident_id"] == "abc"
     assert rejected.status_code == 200

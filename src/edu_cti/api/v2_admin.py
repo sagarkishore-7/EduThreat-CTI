@@ -344,6 +344,16 @@ async def run_v2_data_quality_sweep(
     return data_quality.run_sweep(limit=limit)
 
 
+@router.post("/data-quality/promote-drift-candidates")
+async def promote_v2_drift_candidates(
+    limit: int = Query(500, ge=1, le=10000),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """Promote useful unselected fallback articles into independent source candidates."""
+    return data_quality.run_drift_promotion_sweep(limit=limit)
+
+
 @router.get("/campaigns")
 async def list_v2_admin_campaigns(
     limit: int = Query(50, ge=1, le=500),

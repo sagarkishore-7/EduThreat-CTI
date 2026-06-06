@@ -54,6 +54,7 @@ _SOURCE_TYPE: Dict[str, str] = {
     "international_rss": "rss",
     "googlenews_rss": "rss",
     "oxylabs_news": "rss",
+    "fallback_news_discovery": "rss",
 }
 
 # Fields where API sources are ground truth — data comes directly from the threat
@@ -74,6 +75,7 @@ _SOURCE_SURVIVOR_RANK: Dict[str, int] = {
     "databreach": 33,
     "oxylabs_news": 30,
     "googlenews_rss": 20,
+    "fallback_news_discovery": 18,
 }
 
 
