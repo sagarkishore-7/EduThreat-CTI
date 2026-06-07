@@ -79,6 +79,25 @@ def _default_prewarm_models_enabled() -> bool:
     return True
 
 
+def _pin_torch_single_threaded() -> None:
+    """Pin torch intra-op parallelism to one thread per inference.
+
+    With the default (all cores per inference) concurrent worker threads
+    oversubscribe the cores and the ML pre-pass serializes. One thread per
+    inference lets N worker threads run their NER/RAG on N different cores in
+    parallel. The OMP/MKL env vars in the Dockerfile cover the import-time
+    backends; this is the belt-and-suspenders runtime call.
+    """
+    try:
+        import torch
+
+        torch.set_num_threads(1)
+        torch.set_num_interop_threads(1)
+        logger.info("Pinned torch to 1 thread/inference for concurrent enrichment.")
+    except Exception:  # pragma: no cover - torch optional / already set
+        pass
+
+
 def _prewarm_ml_models() -> None:
     """Warm the shared process-wide ML helpers once before worker threads start."""
     try:
@@ -208,6 +227,7 @@ class V2RuntimeService:
         if self.session_factory is None:
             self.session_factory = create_session_factory(V2DatabaseSettings.from_env())
 
+        _pin_torch_single_threaded()
         if self.prewarm_models and (self.task_type is None or self.task_type in {"enrich_source", "reenrich"}):
             _prewarm_ml_models()
 

@@ -56,6 +56,16 @@ ENV EDU_CTI_V2_ENABLE_SCHEDULER=1
 # EDU_CTI_V2_MAX_WORKERS and the floor with EDU_CTI_V2_MODEL_FLOOR_MB.
 ENV EDU_CTI_V2_WORKER_COUNT=auto
 ENV DISABLE_ML_FEATURES=true
+# Concurrent CPU-bound inference serving: pin each article's NER/RAG (torch /
+# sentence-transformers / GLiNER) inference to ONE core so multiple worker
+# threads run their ML pre-pass on DIFFERENT cores in parallel, instead of every
+# inference grabbing all cores (intra-op parallelism) and oversubscribing. This
+# is what lets enrichment scale with vCPU while keeping the MITRE RAG/NER intact.
+# Must be set before torch/numpy import → bake into the image env.
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
+ENV TOKENIZERS_PARALLELISM=false
 # The worker runs more threads than the API (enrichment + fetch + resolve +
 # canonicalize + orchestrator + analytics), so give it a larger connection pool
 # than the API's lean default so short worker transactions never starve. Stays
