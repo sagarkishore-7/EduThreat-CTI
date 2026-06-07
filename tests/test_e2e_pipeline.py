@@ -558,6 +558,8 @@ class TestGoogleNewsRSSCleanup:
             save_callback=saved.extend,
         )
 
-        # Item must not be dropped even though URL is a google.com redirect
+        # Item must not be dropped even though the URL is a google.com redirect.
         assert len(incidents) == 1, "Google News item was dropped — check link handling"
-        assert incidents[0].all_urls == []
+        # When the wrapper cannot be resolved immediately, the wrapper URL is
+        # persisted (not dropped) so Phase 2 can retry resolution downstream.
+        assert incidents[0].all_urls == ["https://news.google.com/articles/CBMitest123"]

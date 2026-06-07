@@ -75,7 +75,7 @@ def test_v2_stats_endpoint_returns_dashboard_stats_payload():
     assert response.json()["total_incidents"] == 7
 
 
-def test_v2_campaigns_endpoint_returns_reviewed_campaigns_only():
+def test_v2_campaigns_endpoint_surfaces_reviewed_and_candidate_campaigns():
     class _CampaignService:
         def __init__(self):
             self.called = None
@@ -107,8 +107,10 @@ def test_v2_campaigns_endpoint_returns_reviewed_campaigns_only():
 
     assert response.status_code == 200
     assert response.json()["items"][0]["campaign_id"] == "campaign_canvas"
+    # Public campaign reads surface analyst-reviewed and auto-correlated
+    # candidate campaigns (suppressed stay hidden).
     assert service.called == {
-        "statuses": ("analyst_reviewed",),
+        "statuses": ("analyst_reviewed", "candidate"),
         "campaign_type": "shared_vendor_incident",
         "vendor": "Instructure",
         "platform": "Canvas",
@@ -163,7 +165,7 @@ def test_v2_campaign_graph_endpoint_returns_graph_payload():
     assert response.json()["nodes"][0]["type"] == "campaign"
     assert service.called == {
         "campaign_id": "campaign_canvas",
-        "statuses": ("analyst_reviewed",),
+        "statuses": ("analyst_reviewed", "candidate"),
         "member_limit": 25,
     }
 
