@@ -108,6 +108,7 @@ eduthreat-v2-reset-db = "src.edu_cti_v2.reset_db:main"
 eduthreat-v2-preflight = "src.edu_cti_v2.preflight_cli:main"
 eduthreat-v2-run-plan = "src.edu_cti_v2.orchestrator_cli:main"
 eduthreat-v2-source-health = "src.edu_cti_v2.source_health_cli:main"
+eduthreat-v2-build-star = "src.edu_cti_v2.services.star_projection:main"
 eduthreat-news-query-audit = "src.edu_cti.sources.news_query_audit_cli:main"
 
 [tool.setuptools.packages.find]

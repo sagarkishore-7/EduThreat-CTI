@@ -1072,7 +1072,20 @@ class V2FetchService:
                 document_metadata["selection_score_for_origin"] = float(candidate["score"])
                 document_metadata["selection_threshold_for_origin"] = _MIN_SELECTED_ARTICLE_SCORE
                 candidate["document"].document_metadata = document_metadata
-            best_candidate = max(selected_candidates, key=lambda candidate: float(candidate["score"]))
+            # Deterministic selection: highest score, then longer body (more
+            # complete extraction), then lexical URL. A bare max() on score alone
+            # returns the first maximal element, so equal-scoring candidates were
+            # selected by list order, making enrichment non-reproducible.
+            def _selection_key(candidate: dict) -> tuple:
+                document = candidate["document"]
+                content_length = len(document.content_text or "")
+                return (
+                    float(candidate["score"]),
+                    content_length,
+                    str(candidate.get("source_url") or ""),
+                )
+
+            best_candidate = max(selected_candidates, key=_selection_key)
             best_score = float(best_candidate["score"])
             if best_score >= _MIN_SELECTED_ARTICLE_SCORE:
                 for candidate in selected_candidates:
