@@ -325,6 +325,19 @@ def get_v2_analytics_breakdowns(
         cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
         if cached is not None:
             return cached
+        # Unfiltered dashboard path: serve normalized breakdowns from the star
+        # schema (clean GROUP BY over controlled-vocabulary dimensions) so the
+        # values arrive already deduped, with no read-time or client-side merge.
+        if statuses == ("open",):
+            from src.edu_cti_v2.services.star_analytics import (
+                get_star_breakdowns,
+                star_layer_ready,
+            )
+
+            if star_layer_ready(session):
+                star_payload = get_star_breakdowns(session, breakdown_limit=breakdown_limit)
+                cache_set(cache_key, star_payload)
+                return star_payload
     payload = read_service.get_analytics_breakdowns(
         session,
         statuses=statuses,
@@ -658,4 +671,26 @@ def get_v2_incident_report(
         headers={
             "Content-Disposition": f'attachment; filename="cti-report-{canonical_incident_id}.md"'
         },
+    )
+
+
+@router.get("/export/{dataset}.{fmt}")
+def export_v2_dataset(
+    dataset: Literal["incidents", "iocs", "mitre", "cves", "campaigns"],
+    fmt: Literal["csv", "json"],
+    session: Session = Depends(get_v2_session),
+):
+    """Export a normalized dataset straight from the star-schema analytical layer.
+
+    Output is already normalized (one canonical token per categorical value,
+    multi-valued CTI as long tables), so it needs no client-side preprocessing.
+    """
+    from src.edu_cti_v2.export import export_dataset
+
+    payload = export_dataset(session, dataset, fmt)
+    media_type = "text/csv" if fmt == "csv" else "application/json"
+    return Response(
+        content=payload,
+        media_type=media_type,
+        headers={"Content-Disposition": f'attachment; filename="eduthreat-{dataset}.{fmt}"'},
     )

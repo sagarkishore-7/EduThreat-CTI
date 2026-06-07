@@ -189,6 +189,14 @@ class _ReusableLeaseHeartbeat:
                     continue
 
             if not renewed:
+                # Lease was lost without raising (expired or reclaimed by another
+                # worker). Log it so expired-lease churn is debuggable rather than
+                # silently dropping the heartbeat for this task.
+                logger.warning(
+                    "v2 worker lease heartbeat could not renew (lease lost): worker_id=%s task_id=%s",
+                    self._worker_id,
+                    task_id,
+                )
                 self.clear(task_id)
 
 

@@ -29,6 +29,16 @@ These are safe to expose because the data is already stored in `v2` read models 
 
 ## Near-Term Backend Extensions
 
+> **Status update (June 2026).** Items 1 (IOC persistence) and 2 (MITRE
+> materialization) are now largely addressed by the star-schema analytical layer:
+> `incident_ioc` retains typed indicators, and `bridge_incident_mitre_technique`
+> plus `dim_mitre_technique` give per-incident MITRE relation rows queryable with
+> plain SQL. Both are built by `services/star_projection.py` and exported via
+> `eduthreat-v2-export`. The remaining work for item 1 is populating IOCs at the
+> extraction layer (indicator arrays are currently sparse), which lands at the
+> next reprocess. See [DATABASE.md](DATABASE.md) and
+> [DATA_DICTIONARY.md](DATA_DICTIONARY.md).
+
 ### 1. IOC persistence and aggregate IOC analytics
 
 #### Why it is future work now

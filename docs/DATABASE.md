@@ -1,5 +1,41 @@
 # Database Schema Documentation
 
+> **v2 (current, production): PostgreSQL.** The system runs on a PostgreSQL
+> data store with a two-layer model. The sections below this banner describe the
+> legacy v1 SQLite schema and are retained for historical reference only.
+>
+> **Operational layer (write model).** Raw and processed pipeline data:
+> `source_incidents`, `source_incident_urls`, `article_documents`,
+> `article_fetch_attempts`, `source_enrichments`, `canonical_incidents`,
+> `canonical_memberships`, `canonical_enrichments`, `canonical_timeline_events`,
+> `campaigns`, `campaign_memberships`, `campaign_evidence_items`,
+> `campaign_signatures`, `pipeline_runs`, `pipeline_tasks`,
+> `analytics_refresh_state`, `research_metric_snapshots`. Models live in
+> `src/edu_cti_v2/models/`; migrations in `alembic/versions/`.
+>
+> **Analytical layer (star schema, additive).** Built from the operational layer
+> by `services/star_projection.py` for clean export and SQL analytics:
+> controlled-vocabulary dimensions (`dim_institution_type`, `dim_attack_category`,
+> `dim_attack_vector`, `dim_severity`, `dim_threat_actor`, `dim_ransomware_family`,
+> `dim_data_category`, `dim_system_impact`, `dim_country`, `dim_mitre_tactic`,
+> `dim_mitre_technique`, `dim_cve`, `dim_cwe`, `dim_source`), the `fact_incident`
+> table (one row per open canonical incident), and bridge tables for multi-valued
+> CTI (`bridge_incident_data_category`, `bridge_incident_system_impact`,
+> `bridge_incident_mitre_technique`, `bridge_incident_cve`, `bridge_incident_cwe`,
+> `bridge_incident_actor`, `incident_ioc`). Categorical values are normalized once
+> on write via `controlled_vocab.py`, so exports and breakdowns need no read-time
+> cleanup. See [DATA_DICTIONARY.md](DATA_DICTIONARY.md) for the export column
+> contract and [PIPELINE_VERIFICATION.md](PIPELINE_VERIFICATION.md) for stage
+> verification.
+>
+> Rebuild the analytical layer with `eduthreat-v2-build-star --backfill`; export
+> with `eduthreat-v2-export {incidents,iocs,mitre,cves,campaigns} --format {csv,json}`
+> or `GET /api/v2/export/{dataset}.{csv,json}`.
+
+---
+
+# Legacy v1 (SQLite) Schema
+
 **Version**: 1.6.0  
 **Last Updated**: 2026-01-08
 

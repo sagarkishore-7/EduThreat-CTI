@@ -448,6 +448,7 @@ EXTRACTION_SCHEMA = {
                 "type": "object",
                 "properties": {
                     "cve_id": {"type": "string", "description": "CVE identifier, e.g. CVE-2024-12345"},
+                    "cwe_id": {"type": "string", "description": "CWE weakness identifier if stated or clearly implied, e.g. CWE-89 for SQL injection. Null if not determinable."},
                     "vulnerability_name": {"type": "string"},
                     "vulnerability_type": {
                         "type": "string",
@@ -585,7 +586,17 @@ EXTRACTION_SCHEMA = {
             "description": "Country of origin as explicitly stated in the article. Do NOT infer from the actor's known attribution — set to null unless the article says so."
         },
         "threat_actor_claim_url": {"type": "string", "description": "URL of the threat actor's post claiming responsibility (leak site, Telegram, forum). Null if not stated."},
-        
+        "attribution_confidence": {
+            "type": "string",
+            "enum": ["confirmed", "high", "moderate", "low", "speculative", "unknown"],
+            "description": "Confidence in the threat-actor attribution as supported by the article: confirmed — actor claimed responsibility or was confirmed by law enforcement/forensics; high — attributed by a named investigator or the victim; moderate — attributed by a single source with reasoning; low — attributed only by inference; speculative — named only as a suspicion; unknown — no actor named. Set to unknown when threat_actor_name is null."
+        },
+        "source_reliability": {
+            "type": "string",
+            "enum": ["A", "B", "C", "D", "E", "F"],
+            "description": "Admiralty-scale reliability of the reporting source for this incident: A — completely reliable (official statement, regulator, court filing); B — usually reliable (established security outlet, named investigator); C — fairly reliable (general news with attribution); D — not usually reliable (single unverified report); E — unreliable; F — cannot be judged. Grade the article reporting the incident, not the threat actor."
+        },
+
         # ========== RANSOMWARE/MALWARE (EXTENSIVE) ==========
         "ransomware_family": {
             "type": "string",
