@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
+import ctypes.util
+import gc
 import logging
 import os
 import socket
+import sys
 import threading
 import time
 from contextlib import AbstractContextManager
@@ -28,6 +32,39 @@ logger = logging.getLogger(__name__)
 # (RSS is process-global). Logged at most once per cooldown to avoid spam.
 _MEMORY_GUARD_COOLDOWN_S = 30.0
 _last_memory_guard_log = 0.0
+
+# glibc malloc handle for returning freed heap arenas to the OS. Loaded once.
+try:
+    _LIBC = ctypes.CDLL(ctypes.util.find_library("c") or "libc.so.6", use_errno=True)
+    if not hasattr(_LIBC, "malloc_trim"):
+        _LIBC = None
+except Exception:  # pragma: no cover - non-glibc platforms
+    _LIBC = None
+
+
+def _reclaim_memory() -> None:
+    """Return freed heap to the OS to counter RSS ratcheting from ML inference.
+
+    The NER/RAG pre-pass (torch / sentence-transformers / GLiNER) and large-article
+    buffers fragment the heap. ``gc.collect()`` frees Python cycles but glibc keeps
+    the freed arenas, so process RSS climbs across tasks until the container is
+    OOM-killed even at a safe worker count. ``malloc_trim(0)`` releases those
+    arenas back to the OS; the torch allocator cache is cleared if torch is loaded.
+    Called after each task and when the memory guard trips so RSS actually recedes.
+    """
+    gc.collect()
+    if _LIBC is not None:
+        try:
+            _LIBC.malloc_trim(0)
+        except Exception:
+            pass
+    torch = sys.modules.get("torch")
+    if torch is not None:
+        try:
+            if torch.cuda.is_available():  # type: ignore[attr-defined]
+                torch.cuda.empty_cache()  # type: ignore[attr-defined]
+        except Exception:
+            pass
 
 
 def _memory_guard_should_pause(high_water_mb: Optional[float]) -> Optional[float]:
@@ -255,6 +292,9 @@ def run_worker_loop(
                         worker_id,
                     )
                     _last_memory_guard_log = now
+                # Actively return freed heap to the OS so RSS recedes instead of
+                # merely waiting (the ratchet does not recede on its own).
+                _reclaim_memory()
                 if stop_event:
                     stop_event.wait(max(poll_interval, 1.0))
                 else:
@@ -305,6 +345,11 @@ def run_worker_loop(
                     raise
                 finally:
                     heartbeat.clear(leased_task_id)
+
+            # Reclaim after every task: enrichment runs take tens of seconds, so a
+            # few-ms gc + malloc_trim is negligible and keeps RSS flat across the
+            # drain instead of ratcheting up to an OOM kill.
+            _reclaim_memory()
 
             if processed is None:
                 continue
