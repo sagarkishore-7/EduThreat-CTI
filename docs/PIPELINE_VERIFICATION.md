@@ -80,6 +80,26 @@ now serves normalized breakdowns from the star schema via SQL `GROUP BY`, so
 split of 243 = 110 + 133). Parity with the legacy path was confirmed on the
 shared dimensions; the legacy path remains as a fallback.
 
+## Coverage status and increase plan
+
+Measured at the snapshot: 33,735 of 35,258 source incidents (95.7%) are not yet
+enriched, 16,146 of 27,402 article fetch attempts (59%) succeed, and of enriched
+sources the education relevance gate keeps 594 and drops 913 (about 60% dropped).
+
+The dominant coverage lever is therefore the reprocess backlog draining, which is
+bounded by LLM throughput rather than by collection or by the gate. The increase
+plan, in priority order:
+
+1. Let the reprocess drain the 33,735-source backlog; this is the single largest
+   source of additional canonicals and is already in progress.
+2. After the reprocess settles, run a false-negative eval on a labelled sample of
+   the 913 gate-dropped enrichments to decide whether to relax borderline
+   edtech-vendor and school-district cases. Do not change the gate mid-reprocess.
+3. Recover part of the 41% fetch-failure rate by tuning the retry tiers
+   (archive.org and browser rescue) for the failing domains.
+4. Keep `campaign_correlate` scheduled so new canonicals join campaigns as they
+   land (the manual run produced 35 campaigns / 149 memberships).
+
 ## Summary
 
 The pipeline is structurally sound. The verification produced three concrete
