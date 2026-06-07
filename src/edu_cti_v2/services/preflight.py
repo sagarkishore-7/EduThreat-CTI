@@ -47,7 +47,7 @@ class V2PreflightService:
             "ollama": {
                 "configured": bool(os.environ.get("OLLAMA_API_KEY")),
                 "host": os.environ.get("OLLAMA_HOST", "https://ollama.com"),
-                "model": os.environ.get("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud"),
+                "model": os.environ.get("OLLAMA_MODEL", "qwen3-coder:480b-cloud"),
             },
             "oxylabs": {
                 "configured": bool(
