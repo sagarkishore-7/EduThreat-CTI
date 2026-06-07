@@ -25,13 +25,14 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
-# Model selection: DeepSeek v3.1 is the current best Ollama Cloud default for this
-# schema-heavy extraction workload. It is materially faster and more stable than
-# deepseek-v3.2:cloud in our benchmark harness while matching the top-line accuracy.
+# Model selection: qwen3-coder:480b is the current production default for this
+# schema-heavy structured-extraction workload. In the benchmark harness it matched
+# the top-line field accuracy of the larger deepseek-v3.1:671b baseline while
+# offering higher throughput and lower cost on the structured-JSON task.
 # Override with OLLAMA_MODEL to A/B other Ollama Cloud models (see
 # scripts/llm_bakeoff.py); the chosen model is recorded per-enrichment in
 # source_enrichments.llm_model.
-DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "deepseek-v3.1:671b-cloud").strip() or "deepseek-v3.1:671b-cloud"
+DEFAULT_MODEL = os.environ.get("OLLAMA_MODEL", "qwen3-coder:480b-cloud").strip() or "qwen3-coder:480b-cloud"
 
 
 class OllamaLLMClient:
@@ -140,6 +141,16 @@ class OllamaLLMClient:
                 options={
                     'temperature': temperature,
                     'num_predict': 24576,  # Schema JSON output can reach 8-12K tokens; 24K leaves room for enriched_summary
+                    # Anti-degeneration: greedy decoding (temperature 0) can lock into
+                    # a token loop on some long articles, emitting tens of thousands
+                    # of repeated characters (e.g. "compliance_compliance_...") until
+                    # num_predict, producing unparseable JSON. Ollama's default
+                    # repeat window (64 tokens) is too short to catch these loops, so
+                    # we widen it and apply a mild penalty. Kept mild (1.15) so the
+                    # legitimately repetitive sparse-schema output (many null fields)
+                    # is not pushed off its correct tokens.
+                    'repeat_penalty': 1.15,
+                    'repeat_last_n': 384,
                 }
             )
             return response

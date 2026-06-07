@@ -51,6 +51,26 @@ _MAPPER_VERSION = "phase2_mapper_v1"
 _POST_PROCESSING_VERSION = "phase2_post_processing_v2"
 
 
+def _is_degenerate_repetition(text: str, *, min_len: int = 60000,
+                              compress_ratio: float = 30.0) -> bool:
+    """Detect greedy-decoding repetition loops in raw LLM output.
+
+    Valid schema JSON for this corpus tops out around 50K characters even with a
+    long narrative summary, and compresses at roughly 3-6x. A response well beyond
+    that length which also compresses far harder (a decoding loop such as
+    "compliance_compliance_..." is almost entirely redundant) is degenerate rather
+    than a real extraction. Requiring both signals (excess length AND extreme
+    compressibility) keeps long-but-legitimate outputs from ever being flagged.
+    """
+    if not text or len(text) < min_len:
+        return False
+    import zlib
+    raw = text.encode("utf-8", "ignore")
+    compressed = zlib.compress(raw, 6)
+    ratio = len(raw) / max(1, len(compressed))
+    return ratio >= compress_ratio
+
+
 def _build_target_institution_line(incident: BaseIncident, title: str) -> str:
     """Inject an explicit victim anchor for roundup or generic-title articles."""
     notes_text = (incident.notes or "").strip()
@@ -871,6 +891,19 @@ class IncidentEnricher:
                 raw_response = (
                     raw_response.replace("\\n", "\n").replace("\\r", "\r").replace("\\t", "\t")
                 )
+
+            # Degeneration guard: if greedy decoding looped (a short fragment
+            # repeated far beyond anything valid JSON contains), the Fix cascade
+            # below cannot repair it and would only waste cycles. Detect it up
+            # front and return None (the method's clean-failure contract) so the
+            # record is recorded as a failed enrichment rather than parsed; the
+            # garbage is never stored, so the dataset is not polluted.
+            if _is_degenerate_repetition(raw_response):
+                logger.warning(
+                    "Discarding degenerate LLM output (repetition loop, %d chars) — "
+                    "recording enrichment failure", len(raw_response)
+                )
+                return None
 
             # Parse JSON
             try:
