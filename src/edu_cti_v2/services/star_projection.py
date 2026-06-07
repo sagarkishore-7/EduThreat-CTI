@@ -271,7 +271,8 @@ def build_fact_for_canonical(
     # Dates and timing
     incident_d = canonical.incident_date
     disclosure_d = canonical.source_published_at.date() if canonical.source_published_at else None
-    detection_d = _to_date(proj.get("detection_date"))
+    # The extraction schema names the detection field discovery_date; accept either.
+    detection_d = _to_date(proj.get("detection_date") or proj.get("discovery_date"))
     disclosure_lag = (disclosure_d - incident_d).days if (incident_d and disclosure_d and disclosure_d >= incident_d) else None
     dwell = _to_int(proj.get("dwell_time_days"))
     recovery_days = _to_int(_d(proj, "recovery_metrics", "recovery_timeframe_days") or _d(proj, "attack_dynamics", "recovery_timeframe_days"))
@@ -316,8 +317,8 @@ def build_fact_for_canonical(
         is_vendor_breach=bool(canonical.vendor_name or _d(si, "vendor_name") or si.get("third_party_vendor_impact")),
         teaching_disrupted=_as_bool(oi.get("teaching_disrupted")),
         research_disrupted=_as_bool(oi.get("research_disrupted")),
-        attribution_confidence=proj.get("attribution_confidence"),
-        source_reliability=proj.get("source_reliability"),
+        attribution_confidence=proj.get("attribution_confidence") or _d(proj, "attack_dynamics", "attribution_confidence"),
+        source_reliability=proj.get("source_reliability") or _d(proj, "attack_dynamics", "source_reliability"),
         completeness_score=completeness_score,
         source_count=source_count,
         projection_version="star-v1",
@@ -453,6 +454,10 @@ def _build_cwe_rows(session: Session, cid, proj: dict) -> list[dict]:
         blobs.extend(str(x) for x in val)
     elif isinstance(val, str):
         blobs.append(val)
+    # CWE is most often carried per-vulnerability in vulnerabilities_exploited.
+    for vuln in proj.get("vulnerabilities_exploited") or []:
+        if isinstance(vuln, dict) and vuln.get("cwe_id"):
+            blobs.append(str(vuln["cwe_id"]))
     cwes = {m.group(0).upper() for blob in blobs for m in _CWE_RE.finditer(blob)}
     rows = []
     for cwe in sorted(cwes):
