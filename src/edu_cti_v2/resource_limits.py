@@ -77,12 +77,36 @@ def current_rss_mb() -> float | None:
 # sentence-transformers + MITRE embeddings + torch), measured ~1.56 GB. Shared
 # across all worker threads in the process.
 DEFAULT_MODEL_FLOOR_MB = 1600
-# Transient per-concurrent-enrichment overhead (article text + inference
-# buffers). Enrichment is I/O-bound on the LLM API, so this is small.
-DEFAULT_PER_WORKER_MB = 200
-# Cap that usually binds first: matched to the LLM provider's concurrency /
-# rate limit rather than the container. Override via EDU_CTI_V2_MAX_WORKERS.
+# Transient peak per concurrent enrichment. This depends heavily on whether the
+# local ML pre-pass runs: when it does (the intended config,
+# EDU_CTI_V2_ENABLE_LOCAL_ML=true), every concurrent enrichment runs a GLiNER +
+# sentence-transformer forward pass and buffers a large article (the split
+# schema fires at >25k chars), so the real transient peak is ~1.8 GB, NOT the
+# few hundred MB an I/O-bound LLM call would use. Sizing on the old 200 MB
+# estimate let the auto-sizer pick 6 workers on a 7.6 GB container, which
+# OOM-killed the worker in a ~5-minute restart loop. When local ML is disabled
+# the pre-pass is skipped and the per-worker cost really is small.
+DEFAULT_PER_WORKER_MB_WITH_ML = 1800
+DEFAULT_PER_WORKER_MB_NO_ML = 250
+# Cap that binds when memory is plentiful: matched to the LLM provider's
+# concurrency / rate limit. Override via EDU_CTI_V2_MAX_WORKERS.
 DEFAULT_MAX_ENRICH_WORKERS = 6
+
+
+def _local_ml_enabled() -> bool:
+    """Whether the local ML extraction pre-pass runs (drives per-worker memory)."""
+    enable = os.environ.get("EDU_CTI_V2_ENABLE_LOCAL_ML", "").strip().lower()
+    disable = os.environ.get("DISABLE_ML_FEATURES", "").strip().lower()
+    if enable in {"1", "true", "yes"}:
+        return True
+    if disable in {"1", "true", "yes"}:
+        return False
+    # Default matches the production worker: local ML on.
+    return enable not in {"0", "false", "no"}
+
+
+def _default_per_worker_mb() -> int:
+    return DEFAULT_PER_WORKER_MB_WITH_ML if _local_ml_enabled() else DEFAULT_PER_WORKER_MB_NO_ML
 
 
 def _env_int(name: str) -> int | None:
@@ -123,7 +147,7 @@ def resolve_enrichment_worker_count(requested: int | str | None = None) -> int:
             return explicit
 
     model_floor = _env_int("EDU_CTI_V2_MODEL_FLOOR_MB") or DEFAULT_MODEL_FLOOR_MB
-    per_worker = _env_int("EDU_CTI_V2_PER_WORKER_MB") or DEFAULT_PER_WORKER_MB
+    per_worker = _env_int("EDU_CTI_V2_PER_WORKER_MB") or _default_per_worker_mb()
     cap = _env_int("EDU_CTI_V2_MAX_WORKERS") or DEFAULT_MAX_ENRICH_WORKERS
 
     mem_mb = cgroup_memory_limit_mb()
@@ -151,14 +175,19 @@ def resolve_enrichment_worker_count(requested: int | str | None = None) -> int:
 def memory_high_water_mb() -> float | None:
     """RSS threshold above which the worker pauses leasing new tasks.
 
-    Defaults to 90% of the container memory limit; override with
+    Defaults to 82% of the container memory limit; override with
     ``EDU_CTI_V2_MAX_RSS_MB``. Returns None when no limit can be determined
     (the guard is then a no-op).
+
+    82% (not 90%) leaves headroom for a single large-article enrichment to spike
+    RSS between guard checks without crossing the container limit. At 90% on a
+    7.6 GB container the guard fires at ~6.9 GB, too late to absorb a burst, so
+    the container was OOM-killed before leasing paused.
     """
     explicit = _env_int("EDU_CTI_V2_MAX_RSS_MB")
     if explicit and explicit > 0:
         return float(explicit)
     mem_mb = cgroup_memory_limit_mb()
     if mem_mb:
-        return mem_mb * 0.90
+        return mem_mb * 0.82
     return None
