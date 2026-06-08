@@ -345,16 +345,20 @@ class CanonicalIncidentRepository:
         statuses: Sequence[str] = ("open",),
         limit: int = 10,
     ) -> Select:
+        # Group by the normalized ISO country_code ONLY. Grouping by the free-text
+        # ``country`` as well would split a single country across display-name
+        # variants (e.g. "United States" vs "America", both code "US") into
+        # separate map rows. The display name is derived authoritatively from the
+        # code in get_country_breakdown.
         return (
             select(
                 CanonicalIncident.country_code,
-                CanonicalIncident.country,
                 func.count(CanonicalIncident.id).label("incident_count"),
             )
             .where(CanonicalIncident.status.in_(list(statuses)))
             .where(CanonicalIncident.country_code.is_not(None))
-            .group_by(CanonicalIncident.country_code, CanonicalIncident.country)
-            .order_by(func.count(CanonicalIncident.id).desc(), CanonicalIncident.country.asc())
+            .group_by(CanonicalIncident.country_code)
+            .order_by(func.count(CanonicalIncident.id).desc(), CanonicalIncident.country_code.asc())
             .limit(limit)
         )
 
@@ -1011,14 +1015,27 @@ class CanonicalIncidentRepository:
         limit: int = 10,
     ) -> list[dict[str, object]]:
         stmt = self.build_country_breakdown_stmt(statuses=statuses, limit=limit)
-        return [
-            {
-                "country_code": row.country_code,
-                "country": row.country,
-                "incident_count": int(row.incident_count or 0),
-            }
-            for row in session.execute(stmt).all()
-        ]
+        from src.edu_cti.core.countries import (
+            COUNTRY_CODE_TO_NAME,
+            get_flag_emoji_for_code,
+            get_region_for_code,
+        )
+
+        rows = []
+        for row in session.execute(stmt).all():
+            code = (row.country_code or "").strip().upper() or None
+            rows.append(
+                {
+                    "country_code": code,
+                    # Authoritative display name derived from the normalized code,
+                    # so display-name variants never split a country on the map.
+                    "country": COUNTRY_CODE_TO_NAME.get(code, code),
+                    "region": get_region_for_code(code),
+                    "flag_emoji": get_flag_emoji_for_code(code),
+                    "incident_count": int(row.incident_count or 0),
+                }
+            )
+        return rows
 
     def get_country_facets(
         self,

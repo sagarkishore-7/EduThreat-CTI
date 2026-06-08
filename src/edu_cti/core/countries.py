@@ -122,6 +122,11 @@ COUNTRY_ALIASES = {
     "USA": "United States",
     "U.S.A.": "United States",
     "U.S.": "United States",
+    "U.S.A": "United States",
+    "US of America": "United States",
+    "America": "United States",
+    "The United States": "United States",
+    "United States Of America": "United States",
     "UK": "United Kingdom",
     "U.K.": "United Kingdom",
     "Great Britain": "United Kingdom",
@@ -321,3 +326,87 @@ def normalize_countries_in_database(conn) -> int:
     
     conn.commit()
     return updated_count
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Region + flag derivation (keyed by ISO alpha-2 code — the reliable, normalized
+# value we store). The frontend should consume these directly rather than guess
+# from free-text country names. Keep this in sync with COUNTRY_CODE_TO_NAME so a
+# new country never falls into an "Other" bucket or shows a missing flag.
+# ─────────────────────────────────────────────────────────────────────────────
+
+COUNTRY_CODE_TO_REGION = {
+    # North America
+    "US": "North America", "CA": "North America", "MX": "North America",
+    "BM": "North America", "PR": "North America",
+    # Latin America & Caribbean
+    "BR": "Latin America", "AR": "Latin America", "BO": "Latin America",
+    "CL": "Latin America", "CO": "Latin America", "EC": "Latin America",
+    "PE": "Latin America", "UY": "Latin America", "PY": "Latin America",
+    "CR": "Latin America", "SV": "Latin America", "JM": "Latin America",
+    "CU": "Latin America", "DO": "Latin America",
+    # Europe
+    "GB": "Europe", "DE": "Europe", "FR": "Europe", "IT": "Europe",
+    "ES": "Europe", "NL": "Europe", "BE": "Europe", "CH": "Europe",
+    "AT": "Europe", "SE": "Europe", "NO": "Europe", "DK": "Europe",
+    "FI": "Europe", "PL": "Europe", "CZ": "Europe", "IE": "Europe",
+    "PT": "Europe", "GR": "Europe", "HU": "Europe", "RO": "Europe",
+    "BG": "Europe", "HR": "Europe", "SK": "Europe", "SI": "Europe",
+    "LT": "Europe", "LV": "Europe", "EE": "Europe", "LU": "Europe",
+    "LI": "Europe", "MT": "Europe", "CY": "Europe", "IS": "Europe",
+    "BA": "Europe", "GG": "Europe", "BY": "Europe", "RU": "Europe",
+    "UA": "Europe",
+    # Asia Pacific
+    "AU": "Asia Pacific", "NZ": "Asia Pacific", "JP": "Asia Pacific",
+    "CN": "Asia Pacific", "KR": "Asia Pacific", "SG": "Asia Pacific",
+    "HK": "Asia Pacific", "TW": "Asia Pacific", "IN": "Asia Pacific",
+    "PH": "Asia Pacific", "MY": "Asia Pacific", "TH": "Asia Pacific",
+    "ID": "Asia Pacific", "VN": "Asia Pacific", "BD": "Asia Pacific",
+    "PK": "Asia Pacific", "LK": "Asia Pacific", "KZ": "Asia Pacific",
+    "KG": "Asia Pacific",
+    # Middle East
+    "IL": "Middle East", "AE": "Middle East", "SA": "Middle East",
+    "BH": "Middle East", "JO": "Middle East", "KW": "Middle East",
+    "LB": "Middle East", "OM": "Middle East", "PS": "Middle East",
+    "QA": "Middle East", "TR": "Middle East", "IR": "Middle East",
+    "SY": "Middle East",
+    # Africa
+    "ZA": "Africa", "EG": "Africa", "NG": "Africa", "KE": "Africa",
+    "GH": "Africa", "ET": "Africa", "TZ": "Africa", "UG": "Africa",
+    "ZW": "Africa", "DZ": "Africa", "LY": "Africa", "MA": "Africa",
+    "TN": "Africa", "SD": "Africa",
+}
+
+
+def get_region_for_code(country_code: Optional[str]) -> Optional[str]:
+    """Return the macro-region for an ISO alpha-2 country code, or None."""
+    if not country_code:
+        return None
+    return COUNTRY_CODE_TO_REGION.get(country_code.strip().upper())
+
+
+def get_region(country: Optional[str]) -> Optional[str]:
+    """Return the macro-region for a country name or code (best effort)."""
+    if not country:
+        return None
+    code = country.strip().upper()
+    if code in COUNTRY_CODE_TO_REGION:
+        return COUNTRY_CODE_TO_REGION[code]
+    derived_code = get_country_code(country)
+    return get_region_for_code(derived_code)
+
+
+def get_flag_emoji_for_code(country_code: Optional[str]) -> Optional[str]:
+    """Return the Unicode regional-indicator flag for an ISO alpha-2 code.
+
+    Pure function of the code (each letter -> regional indicator symbol), so it
+    works for *every* valid country code with no maintenance. Distinct from
+    :func:`get_flag_emoji`, which accepts a country *name*; the usual cause of a
+    missing flag is passing a name instead of the stored ``country_code``.
+    """
+    if not country_code:
+        return None
+    code = country_code.strip().upper()
+    if len(code) != 2 or not code.isalpha():
+        return None
+    return "".join(chr(0x1F1E6 + (ord(ch) - ord("A"))) for ch in code)

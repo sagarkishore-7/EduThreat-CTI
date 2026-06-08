@@ -277,6 +277,12 @@ def _to_count_by_category(
         }
         if country_code_key:
             payload["country_code"] = item.get(country_code_key)
+            # Pass region + flag through when present so the map/dashboard can use
+            # the authoritative, normalized values directly (no name guessing).
+            if "region" in item:
+                payload["region"] = item.get("region")
+            if "flag_emoji" in item:
+                payload["flag_emoji"] = item.get("flag_emoji")
         results.append(payload)
     return results
 
