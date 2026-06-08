@@ -229,6 +229,12 @@ class V2CampaignService:
             payload["metadata"] = {
                 "source": "deterministic_campaign_correlation",
                 "llm_adjudicated": False,
+                # Campaign-family grouping (link, don't merge): lets the dashboard
+                # present fragments of one real campaign as a single related
+                # family instead of duplicate rows.
+                "family_id": candidate.family_id,
+                "related_campaign_ids": candidate.related_campaign_ids,
+                "is_primary_in_family": candidate.is_primary_in_family,
             }
             self.campaign_repository.upsert_campaign(session, payload, correlated_at=correlated_at)
 

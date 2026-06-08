@@ -28,6 +28,7 @@ from psycopg.rows import dict_row
 DEFAULT_OUTPUT_DIR = Path("paper/EDU_Attack/analysis/outputs/campaign")
 
 DATE_WINDOW_DEFAULT_DAYS = 120
+VENDOR_NAME_WINDOW_DAYS = 180
 EDGE_THRESHOLD = 0.55
 
 
@@ -298,6 +299,13 @@ class CampaignCandidate:
     evidence_only_member_count: int
     confidence: float
     analyst_summary: str
+    # Campaign-family grouping: fragments of one real campaign (e.g. the actor
+    # "wave" view and the CVE "exposure" view of the same event, or two split
+    # platform components) share a family_id so the UI can present them as one
+    # related family instead of duplicates. Members are NOT merged.
+    family_id: str | None = None
+    related_campaign_ids: list[str] = field(default_factory=list)
+    is_primary_in_family: bool = False
 
 
 @dataclass
@@ -399,6 +407,26 @@ def _normalize_for_match(text: str | None) -> str:
     if not text:
         return ""
     return re.sub(r"[^a-z0-9]+", " ", text.casefold()).strip()
+
+
+def _build_vendor_name_to_indicator() -> dict[str, str]:
+    """Map a normalized ``vendor_name`` (the structured field, not free text) to a
+    platform indicator key. This lets a canonical incident that *carries*
+    ``vendor_name = Instructure`` fan out to the shared-vendor campaign even when
+    its article body never literally says "Instructure"/"Canvas" — the text-token
+    path (``_extract_platform_indicators``) alone misses those."""
+
+    mapping: dict[str, str] = {}
+    for indicator in PLATFORM_INDICATORS:
+        mapping[_normalize_for_match(indicator.vendor)] = indicator.key
+        mapping[_normalize_for_match(indicator.platform)] = indicator.key
+        for alias in indicator.aliases:
+            mapping[_normalize_for_match(alias)] = indicator.key
+    mapping.pop("", None)
+    return mapping
+
+
+VENDOR_NAME_TO_INDICATOR = _build_vendor_name_to_indicator()
 
 
 def _parse_date(value: str | date | datetime | None) -> date | None:
@@ -564,6 +592,17 @@ def build_evidence_items(rows: Iterable[Mapping[str, Any]]) -> list[CampaignEvid
             ("systems_affected",),
         )
         vendors, platforms, platform_keys = _extract_platform_indicators(text)
+        # Seed an indicator from the *structured* vendor_name field too, so an
+        # incident that carries vendor_name = Instructure (a known platform
+        # vendor) fans out to the shared-vendor campaign even if its article body
+        # never names the vendor. This is what links third-party victim records.
+        for vendor_value in (row.get("vendor_name"), explicit_vendor):
+            mapped_key = VENDOR_NAME_TO_INDICATOR.get(_normalize_for_match(_as_text(vendor_value)))
+            if mapped_key:
+                indicator = PLATFORM_BY_KEY[mapped_key]
+                platform_keys = _dedupe([*platform_keys, indicator.key])
+                platforms = _dedupe([*platforms, indicator.platform])
+                vendors = _dedupe([*vendors, indicator.vendor])
         vendors = _dedupe_non_generic([row.get("vendor_name"), explicit_vendor, *vendors])
         platforms = _dedupe_non_generic(platforms)
         affected_systems = _dedupe_non_generic(_as_list(explicit_affected_systems))
@@ -730,6 +769,14 @@ def build_candidate_edges(profiles: Mapping[str, CampaignProfile]) -> list[Campa
             if date_gap is None or date_gap <= window_days:
                 score += 0.45 + date_component
                 reasons.append("shared_vendor_or_platform")
+        elif shared_vendors:
+            # Generic shared-vendor fan-out for named vendors that don't have a
+            # predefined platform indicator: two incidents naming the same
+            # (non-generic) vendor within a vendor-sized window are very likely
+            # the same upstream supply-chain event.
+            if date_gap is None or date_gap <= VENDOR_NAME_WINDOW_DAYS:
+                score += 0.45 + date_component
+                reasons.append("shared_vendor_name")
 
         if shared_actors and date_component >= 0.15:
             score += 0.35 + date_component
@@ -806,6 +853,8 @@ def _edge_bucket_keys(edge: CampaignEdge) -> list[tuple[str, str]]:
     if not keys:
         keys.extend(("campaign_name", value) for value in edge.shared_campaign_names)
     if not keys:
+        keys.extend(("vendor", value) for value in edge.shared_vendors)
+    if not keys:
         keys.extend(("actor", value) for value in edge.shared_actors)
     return keys
 
@@ -869,6 +918,8 @@ def _campaign_type(kind: str, value: str, platform_keys: list[str], cves: list[s
         return "mass_exploitation"
     if kind == "actor":
         return "actor_activity_wave"
+    if kind == "vendor":
+        return "shared_vendor_incident"
     if kind == "platform" and value in PLATFORM_BY_KEY:
         return PLATFORM_BY_KEY[value].campaign_type
     indicator_types = {
@@ -905,6 +956,8 @@ def _campaign_name(
         return f"{value}{suffix} education exposure"
     if kind == "actor":
         return f"{value}{suffix} education activity wave"
+    if kind == "vendor":
+        return f"{value}{suffix} education impact"
     if campaign_names:
         return campaign_names[0]
     if platforms:
@@ -920,6 +973,86 @@ def _campaign_id(name: str, member_ids: Iterable[str]) -> str:
     seed = "|".join(sorted(member_ids))
     digest = hashlib.sha1(seed.encode("utf-8")).hexdigest()[:10]
     return f"campaign_{_slug(name)}_{digest}"
+
+
+def _assign_families(
+    candidates: Sequence[CampaignCandidate],
+    memberships: Sequence[CampaignMembership],
+) -> None:
+    """Group candidate campaigns that describe one real campaign into a family.
+
+    Two candidates join the same family when they either (a) share at least one
+    canonical incident member, or (b) share a primary signal token within the
+    same year — same actor+year, platform+year, cve+year, or vendor+year. This
+    links the actor "wave" and CVE "exposure" views of one event, and collapses
+    duplicate components that got the same name but different ids. Members are
+    NOT merged — this is a presentational grouping only. Mutates each candidate's
+    ``family_id`` / ``related_campaign_ids`` / ``is_primary_in_family`` in place.
+    """
+
+    if not candidates:
+        return
+
+    parent: dict[str, str] = {candidate.campaign_id: candidate.campaign_id for candidate in candidates}
+
+    def find(node: str) -> str:
+        while parent[node] != node:
+            parent[node] = parent[parent[node]]
+            node = parent[node]
+        return node
+
+    def union(left: str, right: str) -> None:
+        root_left, root_right = find(left), find(right)
+        if root_left != root_right:
+            # Deterministic merge direction so family roots are stable across runs.
+            lo, hi = sorted((root_left, root_right))
+            parent[hi] = lo
+
+    # (a) shared canonical incident member.
+    member_owner: dict[str, str] = {}
+    for membership in memberships:
+        owner = member_owner.get(membership.canonical_incident_id)
+        if owner is None:
+            member_owner[membership.canonical_incident_id] = membership.campaign_id
+        else:
+            union(owner, membership.campaign_id)
+
+    # (b) shared primary signal token within the same year.
+    token_owner: dict[tuple[str, str, str], str] = {}
+    for candidate in candidates:
+        year = (candidate.first_seen_date or "")[:4]
+        tokens: set[tuple[str, str, str]] = set()
+        for kind, values in (
+            ("actor", candidate.actors),
+            ("platform", candidate.platforms),
+            ("cve", candidate.cves),
+            ("vendor", candidate.vendors),
+        ):
+            for value in values:
+                norm = _normalize_for_match(value)
+                if norm:
+                    tokens.add((kind, norm, year))
+        for token in tokens:
+            owner = token_owner.get(token)
+            if owner is None:
+                token_owner[token] = candidate.campaign_id
+            else:
+                union(owner, candidate.campaign_id)
+
+    families: dict[str, list[CampaignCandidate]] = defaultdict(list)
+    for candidate in candidates:
+        families[find(candidate.campaign_id)].append(candidate)
+
+    by_id = {candidate.campaign_id: candidate for candidate in candidates}
+    for root, members in families.items():
+        member_ids = sorted(member.campaign_id for member in members)
+        family_id = "family_" + hashlib.sha1("|".join(member_ids).encode("utf-8")).hexdigest()[:10]
+        # Primary = largest membership, then highest confidence, then stable id.
+        primary = max(members, key=lambda c: (c.member_count, c.confidence, c.campaign_id))
+        for member in members:
+            member.family_id = family_id
+            member.related_campaign_ids = [cid for cid in member_ids if cid != member.campaign_id]
+            member.is_primary_in_family = member.campaign_id == primary.campaign_id
 
 
 def build_campaign_outputs(
@@ -1030,6 +1163,7 @@ def build_campaign_outputs(
                 )
             )
 
+    _assign_families(candidates, memberships)
     candidates.sort(key=lambda candidate: (-candidate.member_count, -candidate.confidence, candidate.campaign_name))
     memberships.sort(key=lambda membership: (membership.campaign_id, membership.victim_name or ""))
     return candidates, memberships
