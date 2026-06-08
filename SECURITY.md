@@ -32,6 +32,7 @@ What this means for security:
 |---|---|---|
 | `API_RATE_LIMIT` | Per-IP rate limit for public read endpoints | `60/minute` |
 | `CORS_ALLOW_ORIGINS` | Comma-separated allowed browser origins (`*` to allow any) | dashboard + localhost |
+| `CORS_ALLOW_ORIGIN_REGEX` | Regex for *additional* allowed origins — admits Vercel preview deployments whose subdomain carries a rotating build hash (set empty to disable) | matches this project's `*.vercel.app` production + preview/branch URLs |
 
 We recommend fronting the API with a CDN/proxy (e.g. Cloudflare) for caching,
 edge rate-limiting, and DDoS protection, and pointing a custom domain at it so

@@ -26,6 +26,31 @@ def test_cors_origins_default_and_env(monkeypatch):
     assert mod._cors_origins() == ["*"]
 
 
+def test_cors_origin_regex_matches_vercel_previews(monkeypatch):
+    import re
+
+    monkeypatch.delenv("CORS_ALLOW_ORIGIN_REGEX", raising=False)
+    mod = _reload_app_module()
+    pattern = re.compile(mod._cors_origin_regex())
+    # Production + rotating preview + branch deployments all match.
+    assert pattern.fullmatch("https://edu-threat-cti-dashboard.vercel.app")
+    assert pattern.fullmatch(
+        "https://edu-threat-cti-dashboard-9v8sg0sk1-sagarkishore-7s-projects.vercel.app"
+    )
+    assert pattern.fullmatch(
+        "https://edu-threat-cti-dashboard-git-main-sagarkishore-7s-projects.vercel.app"
+    )
+    # Look-alikes are rejected.
+    assert not pattern.fullmatch("https://evil.example.com")
+    assert not pattern.fullmatch("https://edu-threat-cti-dashboard.vercel.app.evil.com")
+
+    # Overridable; empty string disables preview matching.
+    monkeypatch.setenv("CORS_ALLOW_ORIGIN_REGEX", "")
+    assert mod._cors_origin_regex() is None
+    monkeypatch.setenv("CORS_ALLOW_ORIGIN_REGEX", r"https://foo\.example\.com")
+    assert mod._cors_origin_regex() == r"https://foo\.example\.com"
+
+
 def test_rate_limit_default_and_env(monkeypatch):
     monkeypatch.delenv("API_RATE_LIMIT", raising=False)
     mod = _reload_app_module()
