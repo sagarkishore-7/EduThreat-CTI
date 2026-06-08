@@ -410,3 +410,139 @@ def get_flag_emoji_for_code(country_code: Optional[str]) -> Optional[str]:
     if len(code) != 2 or not code.isalpha():
         return None
     return "".join(chr(0x1F1E6 + (ord(ch) - ord("A"))) for ch in code)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Complete ISO 3166-1 alpha-2 reference: every code -> (display name, region).
+# Merged into the maps above so a NEW country never appears without a name,
+# falls into an "Other" region, or shows a missing flag. Keep this comprehensive
+# rather than only the countries seen so far in the corpus.
+# ─────────────────────────────────────────────────────────────────────────────
+
+_ISO_COUNTRY_REFERENCE = {
+    # code: (name, region)
+    "AD": ("Andorra", "Europe"), "AE": ("United Arab Emirates", "Middle East"),
+    "AF": ("Afghanistan", "Asia Pacific"), "AG": ("Antigua and Barbuda", "Latin America"),
+    "AI": ("Anguilla", "Latin America"), "AL": ("Albania", "Europe"),
+    "AM": ("Armenia", "Asia Pacific"), "AO": ("Angola", "Africa"),
+    "AR": ("Argentina", "Latin America"), "AT": ("Austria", "Europe"),
+    "AU": ("Australia", "Asia Pacific"), "AW": ("Aruba", "Latin America"),
+    "AZ": ("Azerbaijan", "Asia Pacific"), "BA": ("Bosnia and Herzegovina", "Europe"),
+    "BB": ("Barbados", "Latin America"), "BD": ("Bangladesh", "Asia Pacific"),
+    "BE": ("Belgium", "Europe"), "BF": ("Burkina Faso", "Africa"),
+    "BG": ("Bulgaria", "Europe"), "BH": ("Bahrain", "Middle East"),
+    "BI": ("Burundi", "Africa"), "BJ": ("Benin", "Africa"),
+    "BM": ("Bermuda", "North America"), "BN": ("Brunei", "Asia Pacific"),
+    "BO": ("Bolivia", "Latin America"), "BR": ("Brazil", "Latin America"),
+    "BS": ("Bahamas", "Latin America"), "BT": ("Bhutan", "Asia Pacific"),
+    "BW": ("Botswana", "Africa"), "BY": ("Belarus", "Europe"),
+    "BZ": ("Belize", "Latin America"), "CA": ("Canada", "North America"),
+    "CD": ("DR Congo", "Africa"), "CF": ("Central African Republic", "Africa"),
+    "CG": ("Republic of the Congo", "Africa"), "CH": ("Switzerland", "Europe"),
+    "CI": ("Ivory Coast", "Africa"), "CL": ("Chile", "Latin America"),
+    "CM": ("Cameroon", "Africa"), "CN": ("China", "Asia Pacific"),
+    "CO": ("Colombia", "Latin America"), "CR": ("Costa Rica", "Latin America"),
+    "CU": ("Cuba", "Latin America"), "CV": ("Cape Verde", "Africa"),
+    "CY": ("Cyprus", "Europe"), "CZ": ("Czech Republic", "Europe"),
+    "DE": ("Germany", "Europe"), "DJ": ("Djibouti", "Africa"),
+    "DK": ("Denmark", "Europe"), "DM": ("Dominica", "Latin America"),
+    "DO": ("Dominican Republic", "Latin America"), "DZ": ("Algeria", "Africa"),
+    "EC": ("Ecuador", "Latin America"), "EE": ("Estonia", "Europe"),
+    "EG": ("Egypt", "Africa"), "ER": ("Eritrea", "Africa"),
+    "ES": ("Spain", "Europe"), "ET": ("Ethiopia", "Africa"),
+    "FI": ("Finland", "Europe"), "FJ": ("Fiji", "Asia Pacific"),
+    "FM": ("Micronesia", "Asia Pacific"), "FO": ("Faroe Islands", "Europe"),
+    "FR": ("France", "Europe"), "GA": ("Gabon", "Africa"),
+    "GB": ("United Kingdom", "Europe"), "GD": ("Grenada", "Latin America"),
+    "GE": ("Georgia", "Asia Pacific"), "GF": ("French Guiana", "Latin America"),
+    "GG": ("Guernsey", "Europe"), "GH": ("Ghana", "Africa"),
+    "GI": ("Gibraltar", "Europe"), "GL": ("Greenland", "North America"),
+    "GM": ("Gambia", "Africa"), "GN": ("Guinea", "Africa"),
+    "GP": ("Guadeloupe", "Latin America"), "GQ": ("Equatorial Guinea", "Africa"),
+    "GR": ("Greece", "Europe"), "GT": ("Guatemala", "Latin America"),
+    "GU": ("Guam", "Asia Pacific"), "GW": ("Guinea-Bissau", "Africa"),
+    "GY": ("Guyana", "Latin America"), "HK": ("Hong Kong", "Asia Pacific"),
+    "HN": ("Honduras", "Latin America"), "HR": ("Croatia", "Europe"),
+    "HT": ("Haiti", "Latin America"), "HU": ("Hungary", "Europe"),
+    "ID": ("Indonesia", "Asia Pacific"), "IE": ("Ireland", "Europe"),
+    "IL": ("Israel", "Middle East"), "IM": ("Isle of Man", "Europe"),
+    "IN": ("India", "Asia Pacific"), "IQ": ("Iraq", "Middle East"),
+    "IR": ("Iran", "Middle East"), "IS": ("Iceland", "Europe"),
+    "IT": ("Italy", "Europe"), "JE": ("Jersey", "Europe"),
+    "JM": ("Jamaica", "Latin America"), "JO": ("Jordan", "Middle East"),
+    "JP": ("Japan", "Asia Pacific"), "KE": ("Kenya", "Africa"),
+    "KG": ("Kyrgyzstan", "Asia Pacific"), "KH": ("Cambodia", "Asia Pacific"),
+    "KI": ("Kiribati", "Asia Pacific"), "KM": ("Comoros", "Africa"),
+    "KN": ("Saint Kitts and Nevis", "Latin America"), "KP": ("North Korea", "Asia Pacific"),
+    "KR": ("South Korea", "Asia Pacific"), "KW": ("Kuwait", "Middle East"),
+    "KY": ("Cayman Islands", "Latin America"), "KZ": ("Kazakhstan", "Asia Pacific"),
+    "LA": ("Laos", "Asia Pacific"), "LB": ("Lebanon", "Middle East"),
+    "LC": ("Saint Lucia", "Latin America"), "LI": ("Liechtenstein", "Europe"),
+    "LK": ("Sri Lanka", "Asia Pacific"), "LR": ("Liberia", "Africa"),
+    "LS": ("Lesotho", "Africa"), "LT": ("Lithuania", "Europe"),
+    "LU": ("Luxembourg", "Europe"), "LV": ("Latvia", "Europe"),
+    "LY": ("Libya", "Africa"), "MA": ("Morocco", "Africa"),
+    "MC": ("Monaco", "Europe"), "MD": ("Moldova", "Europe"),
+    "ME": ("Montenegro", "Europe"), "MG": ("Madagascar", "Africa"),
+    "MH": ("Marshall Islands", "Asia Pacific"), "MK": ("North Macedonia", "Europe"),
+    "ML": ("Mali", "Africa"), "MM": ("Myanmar", "Asia Pacific"),
+    "MN": ("Mongolia", "Asia Pacific"), "MO": ("Macau", "Asia Pacific"),
+    "MQ": ("Martinique", "Latin America"), "MR": ("Mauritania", "Africa"),
+    "MT": ("Malta", "Europe"), "MU": ("Mauritius", "Africa"),
+    "MV": ("Maldives", "Asia Pacific"), "MW": ("Malawi", "Africa"),
+    "MX": ("Mexico", "North America"), "MY": ("Malaysia", "Asia Pacific"),
+    "MZ": ("Mozambique", "Africa"), "NA": ("Namibia", "Africa"),
+    "NC": ("New Caledonia", "Asia Pacific"), "NE": ("Niger", "Africa"),
+    "NG": ("Nigeria", "Africa"), "NI": ("Nicaragua", "Latin America"),
+    "NL": ("Netherlands", "Europe"), "NO": ("Norway", "Europe"),
+    "NP": ("Nepal", "Asia Pacific"), "NZ": ("New Zealand", "Asia Pacific"),
+    "OM": ("Oman", "Middle East"), "PA": ("Panama", "Latin America"),
+    "PE": ("Peru", "Latin America"), "PF": ("French Polynesia", "Asia Pacific"),
+    "PG": ("Papua New Guinea", "Asia Pacific"), "PH": ("Philippines", "Asia Pacific"),
+    "PK": ("Pakistan", "Asia Pacific"), "PL": ("Poland", "Europe"),
+    "PR": ("Puerto Rico", "North America"), "PS": ("Palestine", "Middle East"),
+    "PT": ("Portugal", "Europe"), "PW": ("Palau", "Asia Pacific"),
+    "PY": ("Paraguay", "Latin America"), "QA": ("Qatar", "Middle East"),
+    "RE": ("Reunion", "Africa"), "RO": ("Romania", "Europe"),
+    "RS": ("Serbia", "Europe"), "RU": ("Russia", "Europe"),
+    "RW": ("Rwanda", "Africa"), "SA": ("Saudi Arabia", "Middle East"),
+    "SB": ("Solomon Islands", "Asia Pacific"), "SC": ("Seychelles", "Africa"),
+    "SD": ("Sudan", "Africa"), "SE": ("Sweden", "Europe"),
+    "SG": ("Singapore", "Asia Pacific"), "SI": ("Slovenia", "Europe"),
+    "SK": ("Slovakia", "Europe"), "SL": ("Sierra Leone", "Africa"),
+    "SM": ("San Marino", "Europe"), "SN": ("Senegal", "Africa"),
+    "SO": ("Somalia", "Africa"), "SR": ("Suriname", "Latin America"),
+    "SS": ("South Sudan", "Africa"), "SV": ("El Salvador", "Latin America"),
+    "SY": ("Syria", "Middle East"), "SZ": ("Eswatini", "Africa"),
+    "TC": ("Turks and Caicos Islands", "Latin America"), "TD": ("Chad", "Africa"),
+    "TG": ("Togo", "Africa"), "TH": ("Thailand", "Asia Pacific"),
+    "TJ": ("Tajikistan", "Asia Pacific"), "TL": ("Timor-Leste", "Asia Pacific"),
+    "TM": ("Turkmenistan", "Asia Pacific"), "TN": ("Tunisia", "Africa"),
+    "TO": ("Tonga", "Asia Pacific"), "TR": ("Turkey", "Middle East"),
+    "TT": ("Trinidad and Tobago", "Latin America"), "TV": ("Tuvalu", "Asia Pacific"),
+    "TW": ("Taiwan", "Asia Pacific"), "TZ": ("Tanzania", "Africa"),
+    "UA": ("Ukraine", "Europe"), "UG": ("Uganda", "Africa"),
+    "US": ("United States", "North America"), "UY": ("Uruguay", "Latin America"),
+    "UZ": ("Uzbekistan", "Asia Pacific"), "VC": ("Saint Vincent and the Grenadines", "Latin America"),
+    "VE": ("Venezuela", "Latin America"), "VG": ("British Virgin Islands", "Latin America"),
+    "VI": ("U.S. Virgin Islands", "Latin America"), "VN": ("Vietnam", "Asia Pacific"),
+    "VU": ("Vanuatu", "Asia Pacific"), "WS": ("Samoa", "Asia Pacific"),
+    "XK": ("Kosovo", "Europe"), "YE": ("Yemen", "Middle East"),
+    "ZA": ("South Africa", "Africa"), "ZM": ("Zambia", "Africa"),
+    "ZW": ("Zimbabwe", "Africa"),
+}
+
+# Country names safe for FREE-TEXT derivation (scanning article prose for a
+# country mention). This is the curated set captured BEFORE the full-ISO
+# expansion below, because many ISO names collide with US states / common words /
+# given names (e.g. "Georgia", "Jordan", "Chad", "Guinea", "Turkey") and would
+# misread "Georgia Institute of Technology" as the country Georgia. The full
+# expansion is still used for code->name/region/flag *display*.
+CURATED_COUNTRY_TEXT_NAMES = set(COUNTRY_NAME_TO_CODE.keys())
+
+# Backfill the primary maps so every ISO code resolves to a name + region + flag.
+for _code, (_name, _region) in _ISO_COUNTRY_REFERENCE.items():
+    COUNTRY_CODE_TO_NAME.setdefault(_code, _name)
+    COUNTRY_CODE_TO_REGION.setdefault(_code, _region)
+# Keep the reverse name->code map in sync with the expanded set.
+COUNTRY_NAME_TO_CODE = {v: k for k, v in COUNTRY_CODE_TO_NAME.items()}

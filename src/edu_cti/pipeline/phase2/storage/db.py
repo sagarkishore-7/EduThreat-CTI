@@ -16,6 +16,7 @@ from datetime import datetime
 from src.edu_cti.core.countries import (
     COUNTRY_ALIASES,
     COUNTRY_NAME_TO_CODE,
+    CURATED_COUNTRY_TEXT_NAMES,
     get_country_code,
     normalize_country,
 )
@@ -201,7 +202,9 @@ _COUNTRY_TEXT_PATTERNS = tuple(
         normalize_country(label),
     )
     for label in sorted(
-        set(COUNTRY_NAME_TO_CODE.keys()) | set(COUNTRY_ALIASES.keys()),
+        # Use the curated text-safe names (NOT the full ISO expansion) to avoid
+        # false country hits from ambiguous names like "Georgia"/"Jordan"/"Chad".
+        set(CURATED_COUNTRY_TEXT_NAMES) | set(COUNTRY_ALIASES.keys()),
         key=len,
         reverse=True,
     )
