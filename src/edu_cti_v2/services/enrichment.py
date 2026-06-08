@@ -16,7 +16,10 @@ from src.edu_cti.pipeline.phase2.utils.deduplication import (
     clean_institution_name,
     institution_names_match,
 )
-from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
+from src.edu_cti.pipeline.phase2.utils.post_processing import (
+    infer_institution_type,
+    is_headline_format,
+)
 from src.edu_cti_v2.models import PipelineTask, SourceEnrichment, SourceIncident
 from src.edu_cti_v2.repositories import (
     ArticleRepository,
@@ -286,6 +289,51 @@ def _parse_iso_day(value: Any) -> Optional[date]:
         return date.fromisoformat(text[:10])
     except ValueError:
         return None
+
+
+_THIRD_PARTY_ATTACK_SIGNALS = {
+    "third_party_compromise",
+    "supply_chain_compromise",
+    "third_party_vendor",
+    "software_update_compromise",
+    "trusted_relationship",
+}
+
+
+def _apply_extraction_quality_fixes(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """Deterministic post-LLM repairs applied to both the raw JSON and the typed
+    projection so they reach the canonical record:
+
+    1. institution_type — infer from the institution name when the LLM left it
+       null/unknown (e.g. "University of Oxford" -> "university").
+    2. third_party_vendor_impact — set true when the attack is classified as a
+       third-party/supply-chain compromise, even if the LLM forgot the boolean.
+    """
+    if not isinstance(payload, dict):
+        return payload
+
+    # 1. institution_type inference.
+    name = payload.get("institution_name") or payload.get("institution_name_en")
+    inst_type = payload.get("institution_type")
+    if name and inst_type in (None, "", "unknown"):
+        inferred = infer_institution_type(str(name), inst_type if isinstance(inst_type, str) else None)
+        if inferred and inferred not in (None, "unknown"):
+            payload["institution_type"] = inferred
+
+    # 2. third_party_vendor_impact reconciliation.
+    attack_vals = []
+    for key in ("attack_category", "attack_vector"):
+        v = payload.get(key)
+        if isinstance(v, str):
+            attack_vals.append(v.lower())
+        elif isinstance(v, list):
+            attack_vals.extend(str(x).lower() for x in v)
+    is_third_party = any(sig in attack_vals for sig in _THIRD_PARTY_ATTACK_SIGNALS)
+    if is_third_party:
+        si = payload.get("system_impact")
+        if isinstance(si, dict) and not si.get("third_party_vendor_impact"):
+            si["third_party_vendor_impact"] = True
+    return payload
 
 
 def _source_or_document_publish_date(
@@ -1305,6 +1353,10 @@ class V2EnrichmentService:
                 publish_date=source_publish_date,
                 article_content=document.content_text,
             )
+            # Deterministic extraction-quality repairs (institution_type inference,
+            # third-party-vendor flag reconciliation) applied to both layers.
+            raw_json_data = _apply_extraction_quality_fixes(raw_json_data)
+            typed_enrichment = _apply_extraction_quality_fixes(typed_enrichment)
         is_education_related = None
         if isinstance(raw_json_data, dict):
             is_education_related = raw_json_data.get("is_edu_cyber_incident")
