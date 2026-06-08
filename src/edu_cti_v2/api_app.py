@@ -61,6 +61,29 @@ def _cors_origins() -> list[str]:
     ]
 
 
+def _cors_origin_regex() -> str | None:
+    """Regex matching *additional* allowed browser origins, on top of the exact
+    list in ``_cors_origins()``. Starlette allows an origin if it matches either.
+
+    This is how we admit Vercel **preview** deployments, whose subdomain carries a
+    rotating build hash, e.g.::
+
+        https://edu-threat-cti-dashboard-9v8sg0sk1-sagarkishore-7s-projects.vercel.app
+        https://edu-threat-cti-dashboard-git-<branch>-sagarkishore-7s-projects.vercel.app
+
+    The default pattern covers the production domain and every preview/branch
+    variant for this project. Override with ``CORS_ALLOW_ORIGIN_REGEX`` (set it to
+    an empty string to disable preview matching)."""
+    raw = os.environ.get("CORS_ALLOW_ORIGIN_REGEX")
+    if raw is not None:
+        raw = raw.strip()
+        return raw or None
+    return (
+        r"https://edu-threat-cti-dashboard"
+        r"(-[a-z0-9-]+-sagarkishore-7s-projects)?\.vercel\.app"
+    )
+
+
 def _rate_limit() -> str:
     """Default per-IP rate limit for public read endpoints (override via
     ``API_RATE_LIMIT``, e.g. ``120/minute``)."""
@@ -71,7 +94,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="EduThreat-CTI v2 API",
         description="Postgres-backed canonical incident API for EduThreat-CTI",
-        version="2.0.4-v2",
+        version="2.0.5-v2",
         lifespan=lifespan,
     )
 
@@ -103,9 +126,15 @@ def create_app() -> FastAPI:
 
     cors_origins = _cors_origins()
     allow_any = cors_origins == ["*"]
+    cors_origin_regex = None if allow_any else _cors_origin_regex()
+    if cors_origin_regex:
+        logger.info("CORS preview-origin regex enabled: %s", cors_origin_regex)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=cors_origins,
+        # Admit Vercel preview deployments (rotating subdomain) via a regex, in
+        # addition to the exact-match production/localhost origins above.
+        allow_origin_regex=cors_origin_regex,
         # credentials cannot be combined with a wildcard origin per the CORS spec.
         allow_credentials=not allow_any,
         allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
