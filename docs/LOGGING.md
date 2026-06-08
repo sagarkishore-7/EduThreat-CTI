@@ -16,9 +16,15 @@ Controlled by the `LOG_FORMAT` env var:
 | `json` | one JSON object per line | production (Railway) — filterable, aggregator-ready |
 | `console` | pretty, coloured, aligned | local development |
 
-Default: `json` when `RAILWAY_ENVIRONMENT` is set, otherwise `console`. The
-Railway worker/API images bake `LOG_FORMAT=json`; flip a service to
-`LOG_FORMAT=console` anytime to read it directly.
+Default (when `LOG_FORMAT` is unset): auto-detected by whether `stderr` is an
+interactive TTY — `console` in a local terminal, `json` whenever output is piped
+or redirected (i.e. any deployment). Set `LOG_FORMAT` explicitly to override.
+
+> **Reading Railway logs:** the default `railway logs` view *auto-parses* JSON
+> lines and pretty-prints them as `[INFO]  event="…" key="value"` for human
+> reading — so the underlying logs are JSON even though the default view doesn't
+> show braces. Use **`railway logs --json`** to get the raw JSON objects for
+> `jq`/aggregation.
 
 A JSON line looks like:
 
@@ -60,20 +66,20 @@ get_structlog(__name__).info("source_completed", incidents=612, elapsed_ms=412)
 
 ## Filtering production logs
 
-Pipe Railway JSON logs through `jq`:
+Use `railway logs --json` (raw JSON objects) and pipe through `jq`:
 
 ```bash
 # every line for one task across all stages
-railway logs --service v2-worker | jq -c 'select(.task_id=="d1f2…")'
+railway logs --service v2-worker --json | jq -c 'select(.task_id=="d1f2…")'
 
 # everything that happened to one incident
-railway logs --service v2-worker | jq -c 'select(.source_incident_id=="a3b1…")'
+railway logs --service v2-worker --json | jq -c 'select(.source_incident_id=="a3b1…")'
 
 # only failures
-railway logs --service v2-worker | jq -c 'select(.level=="error" or .event|test("failed"))'
+railway logs --service v2-worker --json | jq -c 'select(.level=="error" or (.event|test("failed")))'
 
 # per-source collection summary
-railway logs --service v2-worker | jq -c 'select(.event=="source_completed") | {source, incidents, elapsed_ms}'
+railway logs --service v2-worker --json | jq -c 'select(.event=="source_completed") | {source, incidents, elapsed_ms}'
 ```
 
 ## Event taxonomy (hot path)
