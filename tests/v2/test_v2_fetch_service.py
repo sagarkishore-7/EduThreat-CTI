@@ -213,6 +213,9 @@ def test_fetch_service_skips_source_that_is_already_enriched():
 
 
 def test_fetch_service_force_refetch_bypasses_already_enriched_and_reenriches():
+    # Identical article/selection setup to the persists test (so the candidate is
+    # selected and an enrichment task is queued), but with an EXISTING enrichment +
+    # force_refetch — the task queued must then be a reenrich, not enrich_source.
     article_repository = Mock()
     article_repository.get_document_by_source_url.return_value = None
     article_repository.get_selected_document.return_value = None
@@ -222,21 +225,22 @@ def test_fetch_service_force_refetch_bypasses_already_enriched_and_reenriches():
     article_fetcher.fetch_article.return_value = ArticleContent(
         url="https://example.com/story",
         title="University hit by ransomware",
-        content="Article body about the breach.",
+        content="Article body",
         author="Reporter",
         publish_date="2020-10-29",
         fetch_successful=True,
         error_message=None,
-        content_length=30,
+        content_length=12,
         fetch_metadata={
             "selected_tier": "oxylabs",
             "tier_attempts": [
+                {"tier": "newspaper3k", "success": False, "latency_ms": 31,
+                 "content_length": 0, "error_code": "unknown_failure", "error_message": None},
                 {"tier": "oxylabs", "success": True, "latency_ms": 402,
-                 "content_length": 30, "error_code": None, "error_message": None},
+                 "content_length": 12, "error_code": None, "error_message": None},
             ],
         },
     )
-    # Existing enrichment present -> would normally be skipped; force_refetch overrides.
     service = V2FetchService(
         article_fetcher=article_fetcher,
         article_repository=article_repository,
@@ -250,7 +254,8 @@ def test_fetch_service_force_refetch_bypasses_already_enriched_and_reenriches():
         session, incident, worker_id="worker-1", force_refetch=True
     )
 
-    # Did NOT skip as already-enriched; re-fetched and queued a reenrich (not enrich_source).
+    # Did NOT skip as already-enriched (the whole point of force_refetch); re-fetched
+    # and queued a reenrich (overwrite), never enrich_source.
     assert result.get("skipped_already_enriched") != 1
     article_fetcher.fetch_article.assert_called()
     enqueued_types = [
