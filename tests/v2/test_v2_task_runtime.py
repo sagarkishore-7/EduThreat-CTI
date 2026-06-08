@@ -32,6 +32,7 @@ def test_task_runtime_processes_fetch_article_task_and_marks_complete():
         session,
         source_incident,
         worker_id="worker-1",
+        force_refetch=False,
     )
     task_repo.mark_completed.assert_called_once_with(session, task, {"articles_saved": 1})
 
@@ -73,6 +74,7 @@ def test_task_runtime_prefers_fetch_over_resolve_when_unspecified():
         session,
         fetch_source_incident,
         worker_id="worker-1",
+        force_refetch=False,
     )
     resolve_service.resolve_source_incident_urls.assert_not_called()
 
