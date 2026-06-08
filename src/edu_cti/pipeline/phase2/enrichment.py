@@ -627,6 +627,13 @@ class IncidentEnricher:
             )
         if primary_article.publish_date:
             article_metadata_lines.append(f"- Article Publish Date: {primary_article.publish_date}")
+        else:
+            # Explicit so the model never anchors relative dates to the current
+            # day when no real publication date is known (return null instead).
+            article_metadata_lines.append(
+                "- Article Publish Date: UNKNOWN (no reliable date extracted — do NOT "
+                "guess; return null for any date you cannot resolve from the text)"
+            )
         if primary_article.author:
             article_metadata_lines.append(f"- Article Author: {primary_article.author}")
         article_metadata_block = (
@@ -1157,6 +1164,11 @@ class IncidentEnricher:
             )
         if primary_article.publish_date:
             article_metadata_lines.append(f"- Article Publish Date: {primary_article.publish_date}")
+        else:
+            article_metadata_lines.append(
+                "- Article Publish Date: UNKNOWN (no reliable date extracted — do NOT "
+                "guess; return null for any date you cannot resolve from the text)"
+            )
         article_metadata_block = (
             ("\n" + "\n".join(article_metadata_lines))
             if article_metadata_lines

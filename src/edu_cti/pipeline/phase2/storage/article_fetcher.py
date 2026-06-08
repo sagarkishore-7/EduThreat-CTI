@@ -23,7 +23,10 @@ from urllib.parse import urlparse, quote
 
 from src.edu_cti.core.http import HttpClient, build_http_client
 from src.edu_cti.core.oxylabs import OxylabsClient
-from src.edu_cti.core.date_parsing import parse_datetime_with_known_timezones
+from src.edu_cti.core.date_parsing import (
+    parse_datetime_with_known_timezones,
+    parse_date_strict,
+)
 from bs4 import BeautifulSoup
 
 # Optional newspaper3k support for article extraction
@@ -295,6 +298,52 @@ _VISIBLE_HEADER_DATE_RE = re.compile(
 )
 _ORDINAL_DAY_SUFFIX_RE = re.compile(r"(\d{1,2})(st|nd|rd|th)\b", re.IGNORECASE)
 _URL_PATH_YEAR_RE = re.compile(r"(?:^|[/-])(20[0-3]\d)(?:[/-]|$)")
+# Full date embedded in a URL path, e.g. /2020/05/12/ or /2020-05-12-... (very reliable).
+_URL_PATH_DATE_RE = re.compile(r"(?:^|[/_-])(20[0-3]\d)[/_-](0?[1-9]|1[0-2])[/_-](0?[1-9]|[12]\d|3[01])(?:[/_-]|$)")
+
+# High-confidence "this article was PUBLISHED on" meta tags.
+_META_PUBLISHED_SELECTORS = (
+    'meta[property="article:published_time"]',
+    'meta[name="article:published_time"]',
+    'meta[property="og:published_time"]',
+    'meta[name="og:published_time"]',
+    'meta[itemprop="datePublished"]',
+    'meta[name="publish-date"]',
+    'meta[name="publish_date"]',
+    'meta[name="pubdate"]',
+    'meta[name="pub_date"]',
+    'meta[name="parsely-pub-date"]',
+    'meta[name="cXenseParse:publishtime"]',
+    'meta[name="sailthru.date"]',
+    'meta[name="dc.date.issued"]',
+    'meta[name="dcterms.created"]',
+    'meta[name="date"]',
+)
+# Lower-confidence date meta (modified/updated time): used only as a fallback.
+_META_SECONDARY_SELECTORS = (
+    'meta[property="og:updated_time"]',
+    'meta[name="og:updated_time"]',
+    'meta[property="article:modified_time"]',
+    'meta[name="article:modified_time"]',
+    'meta[itemprop="dateModified"]',
+    'meta[name="dc.date"]',
+    'meta[name="last-modified"]',
+)
+# Visible containers that commonly hold the byline/post date (incl. icon rows).
+_DATE_CONTAINER_SELECTORS = (
+    '[itemprop="datePublished"]',
+    '[class*="published"]',
+    '[class*="post-date"]',
+    '[class*="entry-date"]',
+    '[class*="article-date"]',
+    '[class*="post-meta"]',
+    '[class*="entry-meta"]',
+    '[class*="post-tags"]',
+    '[class*="byline"]',
+    '[class*="timestamp"]',
+    '[class*="calendar"]',
+    '[class*="date"]',
+)
 _DATE_LABEL_PREFIX_RE = re.compile(
     r"^(?:published|posted|updated|last updated|date|by)\s*:?\s*",
     re.IGNORECASE,
@@ -327,6 +376,27 @@ def _extract_url_path_year(url: str) -> Optional[int]:
         return None
     try:
         return int(match.group(1))
+    except (TypeError, ValueError):
+        return None
+
+
+def _extract_url_path_date(url: Optional[str]):
+    """Return a full ``date`` embedded in the URL path (e.g. ``/2020/05/12/``)
+    when present, else ``None``. A complete Y/M/D in the path is a highly reliable
+    publish-date signal for most news CMSs."""
+    if not url:
+        return None
+    try:
+        path = urlparse(url).path
+    except Exception:
+        return None
+    match = _URL_PATH_DATE_RE.search(path or "")
+    if not match:
+        return None
+    try:
+        from datetime import date as _date
+
+        return _date(int(match.group(1)), int(match.group(2)), int(match.group(3)))
     except (TypeError, ValueError):
         return None
 
@@ -690,7 +760,7 @@ class ArticleFetcher:
         soup = BeautifulSoup(html, "html.parser")
         title = self._extract_title(soup)
         author = self._extract_author(soup)
-        publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup))
+        publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup, url))
         content = self._clean_content(self._extract_content(BeautifulSoup(html, "html.parser")))
         if len((content or "").strip()) < 100:
             # Some modern layouts put the article inside a parent class such
@@ -931,7 +1001,7 @@ class ArticleFetcher:
         title = self._extract_title(soup)
         content = self._extract_content(soup)
         author = self._extract_author(soup)
-        publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup))
+        publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup, url))
         content = self._clean_content(content)
 
         # Detect soft-404 pages (site returns 200 but content is a "not found" page)
@@ -1082,7 +1152,7 @@ class ArticleFetcher:
                 if len(content) > 200:  # Minimum content threshold
                     publish_date = self._normalize_publish_date_for_url(
                         original_url,
-                        self._extract_publish_date(soup),
+                        self._extract_publish_date(soup, original_url),
                     )
                     author = self._extract_author(soup)
                     return ArticleContent(
@@ -1472,7 +1542,7 @@ class ArticleFetcher:
             title = self._extract_title(soup)
             content = self._extract_content(soup)
             author = self._extract_author(soup)
-            publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup))
+            publish_date = self._normalize_publish_date_for_url(url, self._extract_publish_date(soup, url))
             
             logger.debug(f"HttpClient: Extracted title length: {len(title) if title else 0}, content length: {len(content) if content else 0}")
             
@@ -1602,7 +1672,7 @@ class ArticleFetcher:
                     if not publish_date:
                         publish_date = self._normalize_publish_date_for_url(
                             url,
-                            self._extract_publish_date(soup),
+                            self._extract_publish_date(soup, url),
                         )
                     if not author:
                         author = self._extract_author(soup)
@@ -2136,148 +2206,114 @@ class ArticleFetcher:
         
         return None
     
-    def _extract_publish_date(self, soup: BeautifulSoup) -> Optional[str]:
+    def _extract_publish_date(
+        self,
+        soup: BeautifulSoup,
+        url: Optional[str] = None,
+    ) -> Optional[str]:
+        """Resolve the article's publish date from multiple signals and return it
+        as ISO ``YYYY-MM-DD``, or ``None`` when no trustworthy date is found.
+
+        Signals are gathered with a confidence rank (lower = better), parsed via
+        the strict parser (which never invents a year), and reconciled:
+        JSON-LD ``datePublished`` > published-meta / URL-path date > ``<time>`` >
+        secondary meta (modified/updated) > byline/post-meta containers (incl.
+        calendar-icon rows like daijiworld's ``.post-tags``) > full-page visible
+        scan. Candidates equal to the fetch date with no corroboration are dropped
+        as page-furniture ("current date" widgets).
         """
-        Extract article publish date from soup and normalize to ISO format when possible.
-        
-        Returns:
-            Date string in ISO format (YYYY-MM-DD) when possible, or original format if parsing fails
-        """
+        from datetime import date as _date
+
+        # (parsed_date, rank, source) — rank: lower is higher confidence.
+        candidates: list = []
+
+        def _add(raw, rank: int, source: str) -> None:
+            parsed, _prec = self._parse_candidate(raw)
+            if parsed is not None:
+                candidates.append((parsed, rank, source))
+
+        # 1. JSON-LD / hydration datePublished (most reliable).
         for value in self._extract_structured_metadata_values(soup, _STRUCTURED_PUBLISH_DATE_KEYS):
-            normalized = self._normalize_structured_date_value(value)
-            if normalized:
-                return normalized
+            _add(self._normalize_structured_date_value(value) or value, 1, "jsonld")
 
-        date_selectors = [
-            'time[datetime]',
-            '[class*="date"]',
-            '[class*="published"]',
-            '[itemprop="datePublished"]',
-            'meta[property="article:published_time"]',
-            'meta[name="article:published_time"]',
-            'meta[name="date"]',
-            'meta[property="og:published_time"]',
-            'meta[name="og:published_time"]',
-            'meta[name="publish-date"]',
-            'meta[name="pubdate"]',
-            'meta[name="publish_date"]',
-            'meta[name="pub_date"]',
-            'meta[name="parsely-pub-date"]',
-            'meta[name="cXenseParse:publishtime"]',
-            'meta[name="dc.date"]',
-            'meta[name="dcterms.created"]',
-        ]
-        
-        raw_date = None
-        for selector in date_selectors:
-            element = soup.select_one(selector)
-            if element:
-                if element.name == 'meta':
-                    raw_date = element.get('content', '')
-                elif element.name == 'time':
-                    raw_date = element.get('datetime', '') or element.get_text(strip=True)
-                else:
-                    raw_date = element.get_text(strip=True)
-                
-                if raw_date:
-                    break
+        # 2. Published-meta tags + URL-path date (both strong positive signals).
+        for selector in _META_PUBLISHED_SELECTORS:
+            el = soup.select_one(selector)
+            if el is not None:
+                _add(el.get("content", "") or el.get_text(strip=True), 2, "meta_published")
+        url_date = _extract_url_path_date(url)
+        if url_date is not None:
+            candidates.append((url_date, 2, "url_path"))
 
-        if not raw_date:
-            top_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))[:800]
-            match = _VISIBLE_HEADER_DATE_RE.search(top_text)
-            if match:
-                raw_date = match.group(0)
+        # 3. <time datetime="...">.
+        for el in soup.select("time[datetime], time"):
+            _add(el.get("datetime", "") or el.get_text(strip=True), 3, "time_tag")
 
-        if not raw_date:
+        # 4. Secondary meta (modified/updated time) — e.g. daijiworld's og:updated_time.
+        for selector in _META_SECONDARY_SELECTORS:
+            el = soup.select_one(selector)
+            if el is not None:
+                _add(el.get("content", "") or el.get_text(strip=True), 4, "meta_secondary")
+
+        # 5. Byline / post-meta / calendar-icon containers (visible date rows).
+        for selector in _DATE_CONTAINER_SELECTORS:
+            for el in soup.select(selector)[:6]:
+                text = el.get_text(" ", strip=True)
+                if not text or len(text) > 200:
+                    continue
+                match = _VISIBLE_HEADER_DATE_RE.search(text)
+                _add(match.group(0) if match else text, 5, "container")
+
+        # 6. Full-page visible-text scan (not just the header).
+        page_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
+        for match in _VISIBLE_HEADER_DATE_RE.finditer(page_text):
+            _add(match.group(0), 6, "visible_text")
+
+        if not candidates:
             return None
-        
-        # Try to normalize to ISO format (YYYY-MM-DD) for easier LLM processing
-        normalized = self._normalize_date_to_iso(raw_date)
-        return normalized if normalized else raw_date  # Return original if normalization fails
+
+        today = _date.today()
+
+        def _corroborated(target, exclude_source: str) -> bool:
+            return any(
+                d == target and src != exclude_source and rank <= 4
+                for (d, rank, src) in candidates
+            )
+
+        # Drop "current date" furniture: a candidate equal to (or within ~2 days of)
+        # the fetch date that no strong published signal corroborates.
+        filtered = []
+        for parsed, rank, source in candidates:
+            if abs((today - parsed).days) <= 2 and rank >= 4 and not _corroborated(parsed, source):
+                continue
+            filtered.append((parsed, rank, source))
+        if not filtered:
+            return None
+
+        # Pick the best-ranked; tie-break toward the earliest date (publish, not update).
+        best = min(filtered, key=lambda c: (c[1], c[0]))
+        return best[0].isoformat()
     
     def _normalize_date_to_iso(self, date_str: str) -> Optional[str]:
+        """Normalize a date string to ISO ``YYYY-MM-DD`` when a trustworthy date
+        (with a real year) is present, else ``None``.
+
+        Uses :func:`parse_date_strict`, which refuses to invent a year — so
+        partial strings ("August", "Monday", a bare time) return ``None`` instead
+        of being silently filled with the current date.
         """
-        Normalize date string to ISO format (YYYY-MM-DD) when possible.
-        
-        Args:
-            date_str: Raw date string in various formats
-            
-        Returns:
-            ISO format date string (YYYY-MM-DD) or None if parsing fails
-        """
+        parsed, _precision = self._parse_candidate(date_str)
+        return parsed.isoformat() if parsed else None
+
+    @staticmethod
+    def _parse_candidate(date_str: Optional[str]):
+        """Parse a raw date candidate, returning ``(date|None, precision|None)``."""
         if not date_str:
-            return None
-        
-        date_str = _clean_date_candidate(date_str)
-        if not date_str:
-            return None
-        
-        # Try parsing with dateutil if available (handles many formats)
-        try:
-            dt = parse_datetime_with_known_timezones(date_str)
-            return dt.date().isoformat()  # Return YYYY-MM-DD format
-        except (ImportError, ValueError, TypeError):
-            pass
-        
-        # Try common ISO and RFC formats
-        import re
-        from datetime import datetime
-        
-        # ISO 8601 formats
-        iso_patterns = [
-            r'(\d{4}-\d{2}-\d{2})',  # YYYY-MM-DD
-            r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})',  # YYYY-MM-DDTHH:MM:SS
-            r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z)',  # YYYY-MM-DDTHH:MM:SSZ
-            r'(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+\d{2}:\d{2})',  # YYYY-MM-DDTHH:MM:SS+00:00
-        ]
-        
-        for pattern in iso_patterns:
-            match = re.search(pattern, date_str)
-            if match:
-                date_part = match.group(1).split('T')[0]  # Extract YYYY-MM-DD part
-                try:
-                    # Validate it's a valid date
-                    datetime.strptime(date_part, "%Y-%m-%d")
-                    return date_part
-                except ValueError:
-                    continue
-        
-        # RFC 822/1123 formats (common in RSS feeds)
-        rfc_formats = [
-            "%a, %d %b %Y %H:%M:%S %z",  # RFC 822 with timezone
-            "%a, %d %b %Y %H:%M:%S %Z",  # RFC 822 with GMT/UTC
-            "%a, %d %b %Y %H:%M:%S",     # RFC 822 without timezone
-        ]
-        
-        for fmt in rfc_formats:
-            try:
-                dt = datetime.strptime(date_str, fmt)
-                return dt.date().isoformat()
-            except ValueError:
-                continue
-        
-        # Common human-readable formats
-        human_formats = [
-            "%B %d, %Y",   # April 17, 2025
-            "%B %d %Y",    # April 17 2025
-            "%b %d, %Y",   # Apr 17, 2025
-            "%b %d %Y",    # Apr 17 2025
-            "%d %B %Y",    # 10 December 2021
-            "%d %b %Y",    # 10 Dec 2021
-            "%Y-%m-%d",    # 2025-08-11
-            "%m/%d/%Y",    # 11/19/2025
-            "%d/%m/%Y",    # 19/11/2025
-        ]
-        
-        for fmt in human_formats:
-            try:
-                dt = datetime.strptime(date_str, fmt)
-                return dt.date().isoformat()
-            except ValueError:
-                continue
-        
-        # If we can't parse, return None to use original
-        return None
+            return None, None
+        cleaned = _clean_date_candidate(str(date_str))
+        if not cleaned:
+            return None, None
+        return parse_date_strict(cleaned)
 
     def _normalize_publish_date_for_url(self, url: str, raw_date: Optional[str]) -> Optional[str]:
         """Normalize publish date and reject obvious template dates from mismatched URL years."""

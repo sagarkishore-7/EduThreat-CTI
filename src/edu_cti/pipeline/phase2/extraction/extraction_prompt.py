@@ -249,6 +249,10 @@ CRITICAL OUTPUT REQUIREMENTS:
      * "recently" → use publication_date minus 14 days as estimate, set date_precision to "approximate"
    - If you cannot determine publication_date from the article, use null for relative dates
      rather than guessing — do NOT fabricate absolute dates from unresolvable relative expressions
+   - NEVER use today's date, the current date, or the processing date as a value for any
+     field. If the Article Publish Date is marked UNKNOWN, you have no anchor: set
+     publication_date to null and resolve relative expressions to null (not the current day).
+   - An incident_date must never be in the future relative to the publication_date.
    - Always set incident_date_precision to reflect how confident the date is:
      "exact" (specific date stated), "approximate" (relative expression resolved),
      "month_only" (only month known), "year_only" (only year known), "unknown"

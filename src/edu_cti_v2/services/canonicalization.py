@@ -977,6 +977,11 @@ def _safe_projection_incident_date(
         return None
     if not _safe_canonical_date(value):
         return None
+    # An incident can never have happened in the future. A future incident_date is
+    # always an extraction/anchor error (e.g. the old "defaulted to today" bug or a
+    # mis-resolved relative date) — drop it rather than pollute the timeline.
+    if value > date.today():
+        return None
     if (
         source_published_at is not None
         and str(source_group or "").strip().lower() in _SOURCE_DATE_RELATIVE_GUARD_GROUPS
