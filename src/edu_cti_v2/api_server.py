@@ -99,6 +99,9 @@ def main() -> None:
         port=port,
         reload=args.reload,
         workers=workers,
+        # The app module configures structlog logging on import (per worker);
+        # log_config=None stops uvicorn from replacing it with its own format.
+        log_config=None,
     )
 
 
