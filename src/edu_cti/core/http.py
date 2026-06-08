@@ -54,6 +54,19 @@ except ImportError:
 # Plain requests fallback
 import requests as plain_requests
 
+
+def _unified_listing_fetch_enabled() -> bool:
+    """Whether plain ``get_soup`` fetches route through the unified
+    Scrapling/Oxylabs tier before the legacy curl_cffi/Playwright chain.
+    On by default; set ``EDU_CTI_UNIFY_LISTING_FETCH=0`` to disable instantly."""
+    return os.environ.get("EDU_CTI_UNIFY_LISTING_FETCH", "1").strip().lower() not in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }
+
+
 # ── Constants ────────────────────────────────────────────────────────
 
 # Chrome versions that curl_cffi can impersonate (TLS fingerprint match)
@@ -784,11 +797,38 @@ class HttpClient:
             url: URL to fetch
             allow_404: Return None instead of raising on 404
             wait_selector: CSS selector to wait for (Playwright only, for JS-rendered content)
+
+        For plain (non-JS) fetches the unified Scrapling -> Oxylabs tier — the
+        same robust chain used for article retrieval — is tried first; the
+        legacy curl_cffi/Playwright chain below remains as the fallback. Callers
+        that need JS rendering (``wait_selector`` set) skip the unified tier and
+        go straight to the legacy Playwright path.
         """
+        if wait_selector is None:
+            soup = self._unified_listing_soup(url)
+            if soup is not None:
+                return soup
         result = self._smart_get(url, allow_404=allow_404, wait_selector=wait_selector)
         if result is None:
             return None
         return self._to_soup(result.text)
+
+    def _unified_listing_soup(self, url: str) -> BeautifulSoup | None:
+        """Try the unified Scrapling/Oxylabs fetch tier shared with article
+        retrieval. Returns parsed soup on success, or ``None`` to fall through to
+        the legacy chain. Disabled by setting ``EDU_CTI_UNIFY_LISTING_FETCH=0``."""
+        if not _unified_listing_fetch_enabled():
+            return None
+        try:
+            from src.edu_cti.pipeline.phase2.storage.article_fetcher import fetch_listing_html
+
+            html = fetch_listing_html(url)
+        except Exception as exc:  # noqa: BLE001 - any failure falls back to legacy
+            logger.debug("Unified listing fetch tier unavailable for %s: %s", url, exc)
+            return None
+        if not html:
+            return None
+        return self._to_soup(html)
 
     def get_soup_with_fallback(
         self,

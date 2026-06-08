@@ -20,6 +20,7 @@ from src.edu_cti.core.sources import (
     get_api_builder,
     validate_sources as validate_source_names,
 )
+from src.edu_cti.core.timeouts import guard_source_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +53,7 @@ def collect_api_incidents(
             logger.error(f"Builder function not found for API source: {source_name}")
             results[source_name] = []
             continue
+        builder_func = guard_source_timeout(builder_func, label=f"api:{source_name}")
         try:
             logger.info(f"Collecting incidents from API source: {source_name}...")
 

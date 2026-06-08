@@ -20,6 +20,7 @@ from src.edu_cti.core.sources import (
     get_curated_builder,
     validate_sources as validate_source_names,
 )
+from src.edu_cti.core.timeouts import guard_source_timeout
 from .base_io import RAW_CURATED_DIR, write_base_csv
 
 logger = logging.getLogger(__name__)
@@ -66,6 +67,7 @@ def collect_curated_incidents(
             logger.error(f"Builder function not found for curated source: {source_name}")
             results[source_name] = []
             continue
+        builder_func = guard_source_timeout(builder_func, label=f"curated:{source_name}")
         try:
             logger.info(f"Collecting incidents from {source_name}...")
             
