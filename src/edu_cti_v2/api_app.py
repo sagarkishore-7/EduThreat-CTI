@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 
 from src.edu_cti.core.logging_utils import setup_logging
 
@@ -43,6 +45,25 @@ async def lifespan(_app: FastAPI):
     logger.info("Stopping EduThreat-CTI v2 API...")
 
 
+def _cors_origins() -> list[str]:
+    """Allowed browser origins. Default to the public dashboard; override with a
+    comma-separated ``CORS_ALLOW_ORIGINS`` env (use ``*`` to allow any, e.g. for
+    open API consumers in a dev environment)."""
+    raw = os.environ.get("CORS_ALLOW_ORIGINS", "").strip()
+    if raw:
+        return [o.strip() for o in raw.split(",") if o.strip()]
+    return [
+        "https://eduthreat-cti-dashboard.vercel.app",
+        "http://localhost:3000",
+    ]
+
+
+def _rate_limit() -> str:
+    """Default per-IP rate limit for public read endpoints (override via
+    ``API_RATE_LIMIT``, e.g. ``120/minute``)."""
+    return os.environ.get("API_RATE_LIMIT", "60/minute").strip() or "60/minute"
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title="EduThreat-CTI v2 API",
@@ -51,22 +72,57 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # ── Rate limiting (public read abuse / cost protection) ───────────────────
+    # slowapi keys by client IP and applies a global default limit; /health is
+    # exempt so uptime checks are never throttled.
+    try:
+        from slowapi import Limiter, _rate_limit_exceeded_handler
+        from slowapi.errors import RateLimitExceeded
+        from slowapi.middleware import SlowAPIMiddleware
+        from slowapi.util import get_remote_address
+
+        def _limit_key(request: Request) -> str:
+            # Honour the platform's forwarded client IP (Railway/Cloudflare) so
+            # the limiter doesn't see every request as the same proxy IP.
+            fwd = request.headers.get("x-forwarded-for")
+            if fwd:
+                return fwd.split(",")[0].strip()
+            return get_remote_address(request)
+
+        limiter = Limiter(key_func=_limit_key, default_limits=[_rate_limit()])
+        app.state.limiter = limiter
+        app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+        app.add_middleware(SlowAPIMiddleware)
+        logger.info("Rate limiting enabled: %s per IP", _rate_limit())
+    except Exception:  # pragma: no cover - never block startup on the limiter
+        limiter = None
+        logger.warning("Could not enable rate limiting", exc_info=True)
+
+    cors_origins = _cors_origins()
+    allow_any = cors_origins == ["*"]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_credentials=True,
-        allow_methods=["*"],
+        allow_origins=cors_origins,
+        # credentials cannot be combined with a wildcard origin per the CORS spec.
+        allow_credentials=not allow_any,
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
         allow_headers=["*"],
     )
 
     app.include_router(v2_admin_router, prefix="/api")
     app.include_router(v2_router)
 
+    def _exempt(fn):
+        # Exempt uptime checks from the rate limiter so they're never throttled.
+        return limiter.exempt(fn) if limiter is not None else fn
+
     @app.get("/health", tags=["Health"])
+    @_exempt
     async def health() -> dict[str, str]:
         return {"status": "healthy", "service": "v2-api", "layer": "v2"}
 
     @app.get("/api/health", tags=["Health"])
+    @_exempt
     async def api_health() -> dict[str, str]:
         return {"status": "healthy", "service": "v2-api", "layer": "v2"}
 
