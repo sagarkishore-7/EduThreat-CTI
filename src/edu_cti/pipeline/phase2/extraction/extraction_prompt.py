@@ -68,6 +68,20 @@ CRITICAL OUTPUT REQUIREMENTS:
      * institution_name must be ONLY the victim institution label, not a headline.
        Remove threat actor names, attack verbs, and wrappers like
        "Qilin Ransomware Targets ..." or "... suffers cyberattack"
+     * institution_type: ALWAYS set this from the institution_name when the type
+       is evident from the name, even if the article doesn't state it explicitly:
+       - name contains "University"/"Université"/"Universidad" → "university"
+       - "College" → "college"; "Institute"/"Polytechnic" → "research_institute"
+         (or "university" if it grants degrees); "School District" →
+         "school_district"; "...School"/"Academy"/"Seminary" → "k12_school".
+       Only use "unknown" when the name gives no signal. Example: institution_name
+       "University of Oxford" → institution_type "university".
+     * third_parties_involved: when the breach occurred via a third-party vendor,
+       SaaS/application, clearinghouse, or service provider, populate this array
+       with the NAMED product/vendor (e.g. "CareerConnect (GTI)", "Canvas
+       (Instructure)", "MOVEit (Progress)"). This is crucial — capture the
+       specific application/vendor through which the institution was compromised,
+       not just a generic "third party".
    - ALL TEXT FIELDS (institution_name, city, region, threat_actor_name, etc.):
      Output in English only. No non-Latin characters anywhere in the JSON.
    - CURRENCY: Convert ALL monetary values to USD integers before storing.

@@ -22,7 +22,10 @@ from src.edu_cti.pipeline.phase2.utils.deduplication import (
     institution_names_match,
     parse_incident_date,
 )
-from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
+from src.edu_cti.pipeline.phase2.utils.post_processing import (
+    infer_institution_type,
+    is_headline_format,
+)
 from src.edu_cti_v2.models import (
     CanonicalEnrichment,
     CanonicalIncident,
@@ -827,6 +830,16 @@ def build_source_projection(source_incident, source_enrichment: SourceEnrichment
         raw.get("institution_type"),
         source_incident.raw_institution_type,
     )
+    # Deterministic fallback: infer the type from the institution name when the
+    # LLM left it null/unknown (e.g. "University of Oxford" -> "university"). This
+    # lets a plain re-canonicalize backfill the type with no LLM re-run.
+    if institution_name and institution_type in (None, "", "unknown"):
+        inferred_type = infer_institution_type(
+            str(institution_name),
+            institution_type if isinstance(institution_type, str) else None,
+        )
+        if inferred_type and inferred_type not in (None, "unknown"):
+            institution_type = inferred_type
     vendor_name = _first_present(typed.get("vendor_name"), raw.get("vendor_name"))
     if not vendor_name and institution_name and institution_type in _VENDOR_LIKE_TYPES:
         vendor_name = institution_name
