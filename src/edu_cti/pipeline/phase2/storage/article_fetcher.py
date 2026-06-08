@@ -2337,5 +2337,58 @@ class ArticleFetcher:
         results = {}
         for url in urls:
             results[url] = self.fetch_article(url)
-        
+
         return results
+
+
+def fetch_listing_html(url: str, *, render_js: bool = False) -> Optional[str]:
+    """Fetch RAW HTML for a source listing/index page using the same robust
+    fetch tiers as article retrieval — Scrapling first, then Oxylabs.
+
+    This deliberately skips the article-body extraction, gate detection, and
+    minimum-length heuristics used by :meth:`ArticleFetcher.fetch_article`:
+    listing/index pages are not articles, so the caller wants the raw HTML to
+    run its own selectors against. Each tier is internally time-bounded
+    (Scrapling via ``EDU_CTI_SCRAPLING_TIMEOUT_MS``, Oxylabs via its client),
+    so unlike the legacy curl_cffi/Playwright ``get_soup`` chain this cannot
+    block indefinitely.
+
+    Returns the raw HTML string, or ``None`` when every enabled tier misses, in
+    which case the caller should fall back to its legacy fetch path.
+    """
+    # Tier 1: Scrapling (lightweight Chrome-impersonation fetcher, bounded timeout).
+    if _fetch_scrapling_enabled() and SCRAPLING_AVAILABLE and ScraplingFetcher is not None:
+        try:
+            timeout_seconds = _env_timeout_ms_as_seconds("EDU_CTI_SCRAPLING_TIMEOUT_MS", 20000)
+            impersonate = os.environ.get("EDU_CTI_SCRAPLING_IMPERSONATE", "chrome")
+            response = ScraplingFetcher.get(
+                url,
+                timeout=timeout_seconds,
+                impersonate=impersonate,
+                stealthy_headers=True,
+                follow_redirects=True,
+            )
+            status = int(getattr(response, "status", None) or getattr(response, "status_code", 0) or 0)
+            if status and status >= 400:
+                logger.debug("Scrapling listing fetch HTTP %s for %s", status, url)
+            else:
+                html = ArticleFetcher._scrapling_response_html(response)
+                if html and html.strip():
+                    return html
+                logger.debug("Scrapling listing fetch returned empty body for %s", url)
+        except Exception as exc:  # noqa: BLE001 - fall through to next tier
+            logger.debug("Scrapling listing fetch failed for %s: %s", url, exc)
+
+    # Tier 2: Oxylabs Realtime (paid cloud) — only when explicitly enabled and configured.
+    if _fetch_oxylabs_enabled():
+        try:
+            client = OxylabsClient()
+            if client._is_configured():
+                html = client.fetch_url(url, render_js=render_js)
+                if html and html.strip():
+                    return html
+                logger.debug("Oxylabs listing fetch returned no content for %s", url)
+        except Exception as exc:  # noqa: BLE001 - fall through to legacy path
+            logger.debug("Oxylabs listing fetch failed for %s: %s", url, exc)
+
+    return None

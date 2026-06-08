@@ -18,6 +18,7 @@ from src.edu_cti.core.sources import (
     get_rss_sources,
     validate_sources as validate_source_names,
 )
+from src.edu_cti.core.timeouts import guard_source_timeout
 from .base_io import RAW_RSS_DIR, write_base_csv
 
 logger = logging.getLogger(__name__)
@@ -57,6 +58,7 @@ def collect_rss_incidents(
             logger.error(f"Builder function not found for RSS source: {source_name}")
             results[source_name] = []
             continue
+        builder_func = guard_source_timeout(builder_func, label=f"rss:{source_name}")
         try:
             logger.info(f"Collecting incidents from RSS feed: {source_name}...")
             
