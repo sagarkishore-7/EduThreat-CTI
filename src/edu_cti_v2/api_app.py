@@ -71,7 +71,7 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="EduThreat-CTI v2 API",
         description="Postgres-backed canonical incident API for EduThreat-CTI",
-        version="2.0.2-v2",
+        version="2.0.3-v2",
         lifespan=lifespan,
     )
 

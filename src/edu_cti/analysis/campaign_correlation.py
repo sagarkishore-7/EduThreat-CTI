@@ -982,11 +982,11 @@ def _assign_families(
     """Group candidate campaigns that describe one real campaign into a family.
 
     Two candidates join the same family when they share a *primary* signal token
-    within the same year — same top actor+year, top platform+year, top cve+year,
-    or top vendor+year. This links the actor "wave" and CVE "exposure" views of
-    one event (they share the responsible actor) and collapses duplicate
-    components that got the same name but different ids, without chaining
-    unrelated campaigns together.
+    within the same year — same top actor+year, top cve+year, or top vendor+year
+    (platform is intentionally excluded; see below). This links the actor "wave"
+    and CVE "exposure" views of one event (they share the responsible actor) and
+    collapses duplicate components that got the same name but different ids,
+    without chaining unrelated campaigns together.
 
     We deliberately use only the single most-salient value of each kind (the
     campaign's headline signal), not every value, and we do NOT union by shared
@@ -1017,14 +1017,21 @@ def _assign_families(
 
     # Shared *primary* signal token within the same year. Only the top value of
     # each kind participates, so a campaign that incidentally mentions a second
-    # actor/platform can't bridge two otherwise-unrelated families.
+    # actor/cve can't bridge two otherwise-unrelated families.
+    #
+    # We deliberately exclude PLATFORM from the family key: a platform (MOVEit,
+    # Canvas, …) is shared across many independent actors, so platform-based
+    # union chains genuinely different campaigns together (e.g. the 2023 MOVEit
+    # mass-exploitation tags Cl0p / LockBit / Rhysida / Akira waves with the same
+    # platform and merges them). Actor, CVE, and vendor are far more
+    # campaign-specific. This still links the actor "wave" and CVE "exposure"
+    # views of one event because they share the responsible actor and/or CVE.
     token_owner: dict[tuple[str, str, str], str] = {}
     for candidate in candidates:
         year = (candidate.first_seen_date or "")[:4]
         tokens: set[tuple[str, str, str]] = set()
         for kind, values in (
             ("actor", candidate.actors),
-            ("platform", candidate.platforms),
             ("cve", candidate.cves),
             ("vendor", candidate.vendors),
         ):
