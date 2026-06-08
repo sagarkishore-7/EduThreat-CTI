@@ -226,14 +226,26 @@ class TestInferInstitutionType:
     def test_existing_unknown_is_upgraded(self):
         assert infer_institution_type("Springfield School District", "unknown") == "school_district"
 
+    def test_english_university_inferred(self):
+        # English higher-ed names must infer "university" (regression: previously
+        # only non-English university words matched, so these returned None).
+        assert infer_institution_type("University of Oxford", None) == "university"
+        assert infer_institution_type("Boston College", None) == "university"
+        assert infer_institution_type("University of Michigan", "unknown") == "university"
+
+    def test_powerschool_not_misclassified(self):
+        # A vendor/product name with "School" in it must NOT match.
+        assert infer_institution_type("PowerSchool", None) is None
+
     def test_no_match_returns_existing(self):
-        assert infer_institution_type("University of Oxford", None) is None
+        # A name with no education signal returns the existing value unchanged.
+        assert infer_institution_type("Acme Holdings LLC", None) is None
 
     def test_none_name_returns_existing(self):
         assert infer_institution_type(None, None) is None
 
     def test_unknown_with_no_match_returns_unknown(self):
-        assert infer_institution_type("University of Michigan", "unknown") == "unknown"
+        assert infer_institution_type("Acme Holdings LLC", "unknown") == "unknown"
 
     def test_case_insensitive_district(self):
         assert infer_institution_type("clark county school district", None) == "school_district"
