@@ -53,6 +53,9 @@ def _cors_origins() -> list[str]:
     if raw:
         return [o.strip() for o in raw.split(",") if o.strip()]
     return [
+        # Production dashboard (Vercel). Both spellings are included because the
+        # deployed project URL uses the hyphenated "edu-threat" form.
+        "https://edu-threat-cti-dashboard.vercel.app",
         "https://eduthreat-cti-dashboard.vercel.app",
         "http://localhost:3000",
     ]
