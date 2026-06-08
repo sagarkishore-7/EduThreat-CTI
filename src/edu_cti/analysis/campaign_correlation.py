@@ -981,18 +981,22 @@ def _assign_families(
 ) -> None:
     """Group candidate campaigns that describe one real campaign into a family.
 
-    Two candidates join the same family when they share a *primary* signal token
-    within the same year — same top actor+year, top cve+year, or top vendor+year
-    (platform is intentionally excluded; see below). This links the actor "wave"
-    and CVE "exposure" views of one event (they share the responsible actor) and
-    collapses duplicate components that got the same name but different ids,
-    without chaining unrelated campaigns together.
+    Two candidates join the same family when they share their **top threat actor
+    within the same year**. This collapses duplicate components of one actor's
+    wave (e.g. two "Rhysida 2023" rows) and links the alternate views of one
+    event — the CVE "exposure" and vendor "impact" clusters list the responsible
+    actor as their top actor, so e.g. "Cl0p 2025 activity wave" groups with
+    "CVE-2025-61882 2025 exposure" (top actor Cl0p) and "ShinyHunters 2026"
+    groups with "Canvas 2026 impact" (top actor ShinyHunters).
 
-    We deliberately use only the single most-salient value of each kind (the
-    campaign's headline signal), not every value, and we do NOT union by shared
-    canonical members: an incident can legitimately belong to several distinct
-    campaigns, and member-overlap union-find transitively merges everything into
-    one blob. Members are NOT merged — this is a presentational grouping only.
+    Only the actor is used. Platform (MOVEit, Canvas), vendor (Progress
+    Software), and mass-exploitation CVEs are *shared across many independent
+    actors* — keying on them chains genuinely different campaigns together (the
+    2023 MOVEit wave tagged Cl0p / LockBit / Rhysida / Akira with the same
+    Progress-Software vendor and merged them into one blob). The threat actor is
+    the only campaign-defining signal. Member overlap is also not used: an
+    incident can belong to several distinct campaigns, which transitively merges
+    everything. Members are NOT merged — this is a presentational grouping only.
     Mutates each candidate's ``family_id`` / ``related_campaign_ids`` /
     ``is_primary_in_family`` in place.
     """
@@ -1015,37 +1019,20 @@ def _assign_families(
             lo, hi = sorted((root_left, root_right))
             parent[hi] = lo
 
-    # Shared *primary* signal token within the same year. Only the top value of
-    # each kind participates, so a campaign that incidentally mentions a second
-    # actor/cve can't bridge two otherwise-unrelated families.
-    #
-    # We deliberately exclude PLATFORM from the family key: a platform (MOVEit,
-    # Canvas, …) is shared across many independent actors, so platform-based
-    # union chains genuinely different campaigns together (e.g. the 2023 MOVEit
-    # mass-exploitation tags Cl0p / LockBit / Rhysida / Akira waves with the same
-    # platform and merges them). Actor, CVE, and vendor are far more
-    # campaign-specific. This still links the actor "wave" and CVE "exposure"
-    # views of one event because they share the responsible actor and/or CVE.
-    token_owner: dict[tuple[str, str, str], str] = {}
+    # Union campaigns that share their top threat actor within the same year.
+    actor_year_owner: dict[tuple[str, str], str] = {}
     for candidate in candidates:
-        year = (candidate.first_seen_date or "")[:4]
-        tokens: set[tuple[str, str, str]] = set()
-        for kind, values in (
-            ("actor", candidate.actors),
-            ("cve", candidate.cves),
-            ("vendor", candidate.vendors),
-        ):
-            if not values:
-                continue
-            norm = _normalize_for_match(values[0])
-            if norm:
-                tokens.add((kind, norm, year))
-        for token in tokens:
-            owner = token_owner.get(token)
-            if owner is None:
-                token_owner[token] = candidate.campaign_id
-            else:
-                union(owner, candidate.campaign_id)
+        if not candidate.actors:
+            continue
+        actor = _normalize_for_match(candidate.actors[0])
+        if not actor:
+            continue
+        key = (actor, (candidate.first_seen_date or "")[:4])
+        owner = actor_year_owner.get(key)
+        if owner is None:
+            actor_year_owner[key] = candidate.campaign_id
+        else:
+            union(owner, candidate.campaign_id)
 
     families: dict[str, list[CampaignCandidate]] = defaultdict(list)
     for candidate in candidates:
