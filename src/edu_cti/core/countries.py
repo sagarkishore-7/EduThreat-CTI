@@ -532,6 +532,14 @@ _ISO_COUNTRY_REFERENCE = {
     "ZW": ("Zimbabwe", "Africa"),
 }
 
+# Country names safe for FREE-TEXT derivation (scanning article prose for a
+# country mention). This is the curated set captured BEFORE the full-ISO
+# expansion below, because many ISO names collide with US states / common words /
+# given names (e.g. "Georgia", "Jordan", "Chad", "Guinea", "Turkey") and would
+# misread "Georgia Institute of Technology" as the country Georgia. The full
+# expansion is still used for code->name/region/flag *display*.
+CURATED_COUNTRY_TEXT_NAMES = set(COUNTRY_NAME_TO_CODE.keys())
+
 # Backfill the primary maps so every ISO code resolves to a name + region + flag.
 for _code, (_name, _region) in _ISO_COUNTRY_REFERENCE.items():
     COUNTRY_CODE_TO_NAME.setdefault(_code, _name)
