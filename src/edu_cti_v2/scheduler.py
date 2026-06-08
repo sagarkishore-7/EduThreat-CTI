@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 import logging
-import os
 import signal
 import time
 
@@ -25,10 +24,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
+    from src.edu_cti.core.logging_utils import setup_logging
+
+    setup_logging()
     args = build_parser().parse_args()
     service = V2SchedulerService(poll_interval_seconds=args.poll_interval)
 

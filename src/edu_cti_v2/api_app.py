@@ -8,6 +8,12 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from src.edu_cti.core.logging_utils import setup_logging
+
+# Configure structured logging at import time so every uvicorn worker process
+# (the app is imported per worker) shares the same format and suppression.
+setup_logging()
+
 from src.edu_cti.api.v2 import router as v2_router
 from src.edu_cti.api.v2_admin import router as v2_admin_router
 

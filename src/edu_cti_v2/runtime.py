@@ -510,10 +510,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main() -> None:
-    logging.basicConfig(
-        level=os.environ.get("LOG_LEVEL", "INFO").upper(),
-        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
-    )
+    from src.edu_cti.core.logging_utils import setup_logging
+
+    setup_logging()
     args = build_parser().parse_args()
     runtime = V2RuntimeService(
         worker_count=args.workers,

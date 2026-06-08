@@ -12,8 +12,10 @@ Supports incremental ingestion via last_pubdate tracking.
 from __future__ import annotations
 
 import logging
+import time
 from typing import Callable, Dict, List, Optional, Sequence
 
+from src.edu_cti.core.logging_utils import bind_log_context, unbind_log_context
 from src.edu_cti.core.models import BaseIncident
 from src.edu_cti.core.sources import (
     CURATED_SOURCE_REGISTRY,
@@ -68,9 +70,11 @@ def collect_curated_incidents(
             results[source_name] = []
             continue
         builder_func = guard_source_timeout(builder_func, label=f"curated:{source_name}")
+        bind_log_context(source=source_name, source_group="curated")
+        started = time.monotonic()
         try:
-            logger.info(f"Collecting incidents from {source_name}...")
-            
+            logger.info("source_started")
+
             # Check which parameters the builder supports
             import inspect
             sig = inspect.signature(builder_func)
@@ -104,11 +108,26 @@ def collect_curated_incidents(
                             logger.error(f"{source_name}: Error saving batch: {e}", exc_info=True)
             
             results[source_name] = incidents
-            logger.info(f"{source_name}: collected {len(incidents)} incidents")
+            logger.info(
+                "source_completed",
+                extra={
+                    "incidents": len(incidents),
+                    "elapsed_ms": round((time.monotonic() - started) * 1000),
+                },
+            )
         except Exception as e:
-            logger.error(f"Error collecting incidents from {source_name}: {e}", exc_info=True)
+            logger.error(
+                "source_failed",
+                extra={
+                    "error": str(e),
+                    "elapsed_ms": round((time.monotonic() - started) * 1000),
+                },
+                exc_info=True,
+            )
             results[source_name] = []
-    
+        finally:
+            unbind_log_context("source", "source_group")
+
     return results
 
 

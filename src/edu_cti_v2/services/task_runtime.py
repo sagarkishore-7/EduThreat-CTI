@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import time
 from typing import Optional, Sequence
 
 from sqlalchemy import text
@@ -17,6 +19,9 @@ from src.edu_cti_v2.services.enrichment import V2EnrichmentService
 from src.edu_cti_v2.services.fetching import V2FetchService
 from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 from src.edu_cti_v2.services.resolution import V2ResolveUrlService
+from src.edu_cti.core.logging_utils import bind_log_context, clear_log_context
+
+logger = logging.getLogger(__name__)
 
 MEMORY_HEAVY_TASK_TYPES = ("enrich_source", "reenrich")
 MEMORY_HEAVY_LEASE_LOCK_KEY = 0xEDC71002
@@ -233,6 +238,9 @@ class V2TaskRuntime:
             source_incident = self.source_incident_repository.get_by_id(session, task.target_id)
             if source_incident is None:
                 raise ValueError(f"Source incident not found: {task.target_id}")
+            # Bind the incident id so the whole fetch -> resolve -> enrich ->
+            # canonicalize chain for this incident is filterable as one unit.
+            bind_log_context(source_incident_id=str(source_incident.id))
             if task.task_type == "fetch_article":
                 result = self.fetch_service.fetch_articles_for_source_incident(
                     session,
@@ -338,20 +346,45 @@ class V2TaskRuntime:
         if task is None:
             return None
 
+        # Bind task identity to every downstream log line so a single task can be
+        # traced across the resolve -> fetch -> enrich -> canonicalize stages.
+        bind_log_context(
+            task_id=str(task_id),
+            task_type=task.task_type,
+            run_id=str(task.run_id) if getattr(task, "run_id", None) else None,
+            worker_id=worker_id,
+        )
+        started = time.monotonic()
+        logger.debug("task_started")
         try:
-            return self._process_task(session, task=task, worker_id=worker_id)
+            result = self._process_task(session, task=task, worker_id=worker_id)
+            logger.info(
+                "task_completed",
+                extra={"elapsed_ms": round((time.monotonic() - started) * 1000)},
+            )
+            return result
         except Exception as exc:
             session.rollback()
             failed_task = session.get(PipelineTask, task.id) if getattr(task, "id", None) is not None else task
             if failed_task is None:
                 raise
+            dead_letter = isinstance(exc, NotImplementedError)
             self.pipeline_task_repository.mark_failed(
                 session,
                 failed_task,
                 error=str(exc),
-                dead_letter=isinstance(exc, NotImplementedError),
+                dead_letter=dead_letter,
+            )
+            logger.warning(
+                "task_dead_lettered" if dead_letter else "task_failed",
+                extra={
+                    "elapsed_ms": round((time.monotonic() - started) * 1000),
+                    "error": str(exc),
+                },
             )
             return failed_task
+        finally:
+            clear_log_context()
 
     def process_next_task(
         self,

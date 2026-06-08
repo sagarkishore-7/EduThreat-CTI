@@ -66,6 +66,13 @@ ENV OMP_NUM_THREADS=1
 ENV MKL_NUM_THREADS=1
 ENV OPENBLAS_NUM_THREADS=1
 ENV TOKENIZERS_PARALLELISM=false
+# Structured logging: JSON lines in prod (filter by task_id/run_id/source via jq),
+# and silence HuggingFace/transformers progress bars + gliner truncation warnings
+# that otherwise flood the worker logs.
+ENV LOG_FORMAT=json
+ENV TRANSFORMERS_VERBOSITY=error
+ENV HF_HUB_DISABLE_PROGRESS_BARS=1
+ENV PYTHONWARNINGS=ignore::UserWarning:gliner
 # The worker runs more threads than the API (enrichment + fetch + resolve +
 # canonicalize + orchestrator + analytics), so give it a larger connection pool
 # than the API's lean default so short worker transactions never starve. Stays

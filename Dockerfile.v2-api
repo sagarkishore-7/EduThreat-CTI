@@ -29,6 +29,8 @@ RUN pip install --no-cache-dir .
 
 ENV PYTHONUNBUFFERED=1
 ENV PYTHONDONTWRITEBYTECODE=1
+# JSON structured access/app logs in prod (override with LOG_FORMAT=console).
+ENV LOG_FORMAT=json
 
 EXPOSE 8000
 
