@@ -271,10 +271,12 @@ def test_assign_families_groups_same_actor_year_and_marks_primary():
     assert big.campaign_id in small.related_campaign_ids
 
 
-def test_assign_families_links_candidates_sharing_a_member():
+def test_assign_families_does_not_chain_via_shared_member():
+    # Different anchors and different years that merely share a canonical incident
+    # must NOT be grouped — member-overlap union-find transitively merges
+    # unrelated campaigns into one blob, so we group by shared primary token only.
     left = _candidate("camp_left", member_count=3, platforms=["MOVEit"], first_seen="2023-06-01")
     right = _candidate("camp_right", member_count=4, actors=["Cl0p"], first_seen="2024-02-01")
-    # Different anchors and different years, but they share canonical incident "x1".
     memberships = [
         _membership("camp_left", "x1"),
         _membership("camp_right", "x1"),
@@ -283,8 +285,19 @@ def test_assign_families_links_candidates_sharing_a_member():
 
     _assign_families([left, right], memberships)
 
-    assert left.family_id == right.family_id
-    assert right.is_primary_in_family is True  # larger member_count
+    assert left.family_id != right.family_id
+
+
+def test_assign_families_groups_cve_and_actor_sharing_actor_token():
+    # The CVE "exposure" view also carries the responsible actor as its top actor,
+    # so it groups with the actor "wave" view of the same event (same year).
+    wave = _candidate("camp_wave", member_count=5, actors=["Cl0p"], first_seen="2025-06-01")
+    cve = _candidate(
+        "camp_cve", member_count=3, actors=["Cl0p"], cves=["CVE-2025-61882"], first_seen="2025-06-10"
+    )
+    _assign_families([wave, cve], [_membership("camp_wave", "a1"), _membership("camp_cve", "b1")])
+    assert wave.family_id == cve.family_id
+    assert wave.is_primary_in_family is True
 
 
 def test_assign_families_keeps_unrelated_campaigns_separate():

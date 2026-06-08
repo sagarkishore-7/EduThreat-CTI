@@ -981,13 +981,20 @@ def _assign_families(
 ) -> None:
     """Group candidate campaigns that describe one real campaign into a family.
 
-    Two candidates join the same family when they either (a) share at least one
-    canonical incident member, or (b) share a primary signal token within the
-    same year — same actor+year, platform+year, cve+year, or vendor+year. This
-    links the actor "wave" and CVE "exposure" views of one event, and collapses
-    duplicate components that got the same name but different ids. Members are
-    NOT merged — this is a presentational grouping only. Mutates each candidate's
-    ``family_id`` / ``related_campaign_ids`` / ``is_primary_in_family`` in place.
+    Two candidates join the same family when they share a *primary* signal token
+    within the same year — same top actor+year, top platform+year, top cve+year,
+    or top vendor+year. This links the actor "wave" and CVE "exposure" views of
+    one event (they share the responsible actor) and collapses duplicate
+    components that got the same name but different ids, without chaining
+    unrelated campaigns together.
+
+    We deliberately use only the single most-salient value of each kind (the
+    campaign's headline signal), not every value, and we do NOT union by shared
+    canonical members: an incident can legitimately belong to several distinct
+    campaigns, and member-overlap union-find transitively merges everything into
+    one blob. Members are NOT merged — this is a presentational grouping only.
+    Mutates each candidate's ``family_id`` / ``related_campaign_ids`` /
+    ``is_primary_in_family`` in place.
     """
 
     if not candidates:
@@ -1008,16 +1015,9 @@ def _assign_families(
             lo, hi = sorted((root_left, root_right))
             parent[hi] = lo
 
-    # (a) shared canonical incident member.
-    member_owner: dict[str, str] = {}
-    for membership in memberships:
-        owner = member_owner.get(membership.canonical_incident_id)
-        if owner is None:
-            member_owner[membership.canonical_incident_id] = membership.campaign_id
-        else:
-            union(owner, membership.campaign_id)
-
-    # (b) shared primary signal token within the same year.
+    # Shared *primary* signal token within the same year. Only the top value of
+    # each kind participates, so a campaign that incidentally mentions a second
+    # actor/platform can't bridge two otherwise-unrelated families.
     token_owner: dict[tuple[str, str, str], str] = {}
     for candidate in candidates:
         year = (candidate.first_seen_date or "")[:4]
@@ -1028,10 +1028,11 @@ def _assign_families(
             ("cve", candidate.cves),
             ("vendor", candidate.vendors),
         ):
-            for value in values:
-                norm = _normalize_for_match(value)
-                if norm:
-                    tokens.add((kind, norm, year))
+            if not values:
+                continue
+            norm = _normalize_for_match(values[0])
+            if norm:
+                tokens.add((kind, norm, year))
         for token in tokens:
             owner = token_owner.get(token)
             if owner is None:
