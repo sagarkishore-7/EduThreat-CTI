@@ -310,3 +310,16 @@ def test_assign_families_keeps_unrelated_campaigns_separate():
     assert a.family_id != b.family_id
     assert a.related_campaign_ids == []
     assert b.related_campaign_ids == []
+
+
+def test_assign_families_distinct_actors_sharing_a_vendor_do_not_group():
+    # The 2023 MOVEit bleed: distinct ransomware actors all carrying
+    # vendor "Progress Software" must NOT be merged into one family — only a
+    # shared top actor groups campaigns.
+    clop = _candidate("camp_clop", member_count=14, actors=["Cl0p"], vendors=["Progress Software"], first_seen="2023-04-07")
+    lockbit = _candidate("camp_lockbit", member_count=12, actors=["LockBit"], vendors=["Progress Software"], first_seen="2023-04-05")
+    rhysida = _candidate("camp_rhysida", member_count=9, actors=["Rhysida"], vendors=["Progress Software"], first_seen="2023-06-10")
+    _assign_families([clop, lockbit, rhysida], [])
+    assert clop.family_id != lockbit.family_id
+    assert clop.family_id != rhysida.family_id
+    assert lockbit.family_id != rhysida.family_id
