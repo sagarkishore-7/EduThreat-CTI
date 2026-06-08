@@ -242,10 +242,12 @@ class V2TaskRuntime:
             # canonicalize chain for this incident is filterable as one unit.
             bind_log_context(source_incident_id=str(source_incident.id))
             if task.task_type == "fetch_article":
+                _fetch_payload = task.payload if isinstance(getattr(task, "payload", None), dict) else {}
                 result = self.fetch_service.fetch_articles_for_source_incident(
                     session,
                     source_incident,
                     worker_id=worker_id,
+                    force_refetch=bool(_fetch_payload.get("force_refetch")),
                 )
             elif task.task_type == "resolve_url":
                 resolve_url_service = self.resolve_url_service or V2ResolveUrlService(

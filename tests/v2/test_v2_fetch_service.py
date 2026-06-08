@@ -212,6 +212,48 @@ def test_fetch_service_skips_source_that_is_already_enriched():
     pipeline_task_repository.enqueue.assert_not_called()
 
 
+def test_fetch_service_force_refetch_bypasses_already_enriched_and_reenriches():
+    article_repository = Mock()
+    article_repository.get_document_by_source_url.return_value = None
+    article_repository.get_selected_document.return_value = object()
+    pipeline_task_repository = Mock()
+    pipeline_task_repository.get_active_for_target.return_value = None
+    article_fetcher = Mock()
+    article_fetcher.fetch_article.return_value = ArticleContent(
+        url="https://example.com/story",
+        title="University hit by ransomware",
+        content="Article body about the breach.",
+        author="Reporter",
+        publish_date="2020-10-29",
+        fetch_successful=True,
+        error_message=None,
+        content_length=30,
+        fetch_metadata={"selected_tier": "scrapling", "tier_attempts": [
+            {"tier": "scrapling", "success": True, "latency_ms": 12,
+             "content_length": 30, "error_code": None, "error_message": None}]},
+    )
+    service = V2FetchService(
+        article_fetcher=article_fetcher,
+        article_repository=article_repository,
+        source_enrichment_repository=_source_enrichment_repository(enrichment=object()),
+        pipeline_task_repository=pipeline_task_repository,
+    )
+    session = Mock()
+    incident = _source_incident_with_urls(("https://example.com/story", True))
+
+    result = service.fetch_articles_for_source_incident(
+        session, incident, worker_id="worker-1", force_refetch=True
+    )
+
+    # Did NOT skip as already-enriched; actually re-fetched and queued a reenrich.
+    assert result.get("skipped_already_enriched") != 1
+    article_fetcher.fetch_article.assert_called()
+    enqueued_types = [
+        call.args[1].task_type for call in pipeline_task_repository.enqueue.call_args_list
+    ]
+    assert "reenrich" in enqueued_types
+
+
 def test_fetch_service_enqueues_enrichment_for_existing_selected_article_without_refetch():
     article_repository = Mock()
     article_repository.get_selected_document.return_value = object()

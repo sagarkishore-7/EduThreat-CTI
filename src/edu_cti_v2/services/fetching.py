@@ -871,12 +871,16 @@ class V2FetchService:
         source_incident: SourceIncident,
         *,
         worker_id: str,
+        force_refetch: bool = False,
     ) -> Dict[str, int]:
         existing_enrichment = self.source_enrichment_repository.get_by_source_incident(
             session,
             source_incident.id,
         )
-        if existing_enrichment is not None:
+        # force_refetch re-fetches the article so the (improved) extractor re-derives
+        # publish_date in place, then re-enriches — used to repair dates corpus-wide.
+        had_enrichment = existing_enrichment is not None
+        if existing_enrichment is not None and not force_refetch:
             return {
                 "urls_total": 0,
                 "articles_saved": 0,
@@ -890,7 +894,7 @@ class V2FetchService:
             session,
             source_incident.id,
         )
-        if existing_selected_document is not None:
+        if existing_selected_document is not None and not force_refetch:
             enrich_task_enqueued = 0
             existing_enrich_task = self.pipeline_task_repository.get_active_for_target(
                 session,
@@ -1034,7 +1038,12 @@ class V2FetchService:
             else:
                 existing_document.title = article.title or existing_document.title
                 existing_document.author = article.author or existing_document.author
-                existing_document.publish_date = _parse_publish_date(article.publish_date) or existing_document.publish_date
+                _new_publish = _parse_publish_date(article.publish_date)
+                # On a force re-fetch, trust the re-extracted date even if it is now
+                # None (null beats a previously-wrong "today"); otherwise keep prior.
+                existing_document.publish_date = (
+                    _new_publish if force_refetch else (_new_publish or existing_document.publish_date)
+                )
                 existing_document.content_text = article.content
                 existing_document.content_hash = hashlib.sha256(article.content.encode("utf-8")).hexdigest()
                 existing_document.document_metadata = {
@@ -1118,24 +1127,31 @@ class V2FetchService:
                     drift_candidates_created += 1
 
         if has_selected_candidate:
+            # On a force re-fetch of an already-enriched incident, re-enrich (which
+            # overwrites the enrichment and re-canonicalizes) rather than enrich_source
+            # (which would be skipped as already-enriched).
+            enrich_task_type = "reenrich" if (force_refetch and had_enrichment) else "enrich_source"
             existing_enrich_task = self.pipeline_task_repository.get_active_for_target(
                 session,
-                task_type="enrich_source",
+                task_type=enrich_task_type,
                 target_table="source_incidents",
                 target_id=source_incident.id,
             )
             if existing_enrich_task is None:
+                enrich_payload = {
+                    "source_incident_id": str(source_incident.id),
+                    "source_name": source_incident.source_name,
+                }
+                if enrich_task_type == "reenrich":
+                    enrich_payload["re_enrich_reason"] = "force_refetch_date_fix"
                 enrich_task = PipelineTask(
                     run_id=None,
-                    task_type="enrich_source",
+                    task_type=enrich_task_type,
                     target_table="source_incidents",
                     target_id=source_incident.id,
                     status="queued",
                     priority=80,
-                    payload={
-                        "source_incident_id": str(source_incident.id),
-                        "source_name": source_incident.source_name,
-                    },
+                    payload=enrich_payload,
                     result={},
                     available_at=now,
                     attempt_count=0,
