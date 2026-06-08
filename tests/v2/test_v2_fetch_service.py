@@ -227,6 +227,8 @@ def test_fetch_service_force_refetch_bypasses_already_enriched_and_reenriches():
         title="University hit by ransomware",
         content="Article body",
         author="Reporter",
+        # A historical date that disagrees with a corrupted source year would score
+        # below threshold; force_refetch must still select it (the repair scenario).
         publish_date="2020-10-29",
         fetch_successful=True,
         error_message=None,

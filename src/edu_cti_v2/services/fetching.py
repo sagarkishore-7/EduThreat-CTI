@@ -1096,7 +1096,12 @@ class V2FetchService:
 
             best_candidate = max(selected_candidates, key=_selection_key)
             best_score = float(best_candidate["score"])
-            if best_score >= _MIN_SELECTED_ARTICLE_SCORE:
+            # On a force re-fetch we are refreshing the SAME article that was already
+            # chosen for this incident — select it regardless of score. Otherwise the
+            # year-mismatch penalty (a re-extracted historical date disagreeing with a
+            # previously-corrupted source year) would reject the corrected article and
+            # the date repair would never happen.
+            if best_score >= _MIN_SELECTED_ARTICLE_SCORE or force_refetch:
                 for candidate in selected_candidates:
                     is_selected_candidate = candidate is best_candidate
                     candidate["document"].is_selected_for_enrichment = is_selected_candidate
