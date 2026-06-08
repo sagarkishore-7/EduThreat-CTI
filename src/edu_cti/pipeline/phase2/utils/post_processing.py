@@ -479,6 +479,15 @@ _UNIVERSITY_INTL_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+# English higher-education name patterns. Checked AFTER the K-12 / district
+# patterns so e.g. "... University School District" stays a district. "School"
+# is intentionally excluded here (handled by the K-12 patterns) to avoid
+# false-matching names like "PowerSchool".
+_UNIVERSITY_EN_RE = re.compile(
+    r"\b(?:university|college|polytechnic|institute of technology)\b",
+    re.IGNORECASE,
+)
+_INSTITUTE_EN_RE = re.compile(r"\b(?:institute|academy|seminary)\b", re.IGNORECASE)
 
 
 # ── Headline detection ───────────────────────────────────────────────────────────
@@ -532,8 +541,10 @@ def infer_institution_type(name: Optional[str], existing_type: Optional[str]) ->
         return "school_district"
     if _K12_SCHOOL_RE.search(name) or _K12_SCHOOL_INTL_RE.search(name):
         return "k12_school"
-    if _UNIVERSITY_INTL_RE.search(name):
+    if _UNIVERSITY_INTL_RE.search(name) or _UNIVERSITY_EN_RE.search(name):
         return "university"
+    if _INSTITUTE_EN_RE.search(name):
+        return "research_institute"
     return existing_type
 
 
