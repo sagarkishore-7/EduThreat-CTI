@@ -1,9 +1,48 @@
 from src.edu_cti.analysis.campaign_correlation import (
+    CampaignCandidate,
+    CampaignMembership,
+    _assign_families,
     build_campaign_outputs,
     build_candidate_edges,
     build_evidence_items,
     build_profiles,
 )
+
+
+def _candidate(campaign_id: str, *, member_count: int, actors=(), platforms=(), cves=(), vendors=(), first_seen="2025-01-01", confidence=0.7):
+    return CampaignCandidate(
+        campaign_id=campaign_id,
+        campaign_name=campaign_id,
+        campaign_type="actor_activity_wave",
+        first_seen_date=first_seen,
+        last_seen_date=first_seen,
+        actors=list(actors),
+        vendors=list(vendors),
+        platforms=list(platforms),
+        cves=list(cves),
+        campaign_names=[],
+        attack_categories=[],
+        member_count=member_count,
+        confirmed_member_count=member_count,
+        evidence_only_member_count=0,
+        confidence=confidence,
+        analyst_summary="",
+    )
+
+
+def _membership(campaign_id: str, canonical_id: str):
+    return CampaignMembership(
+        campaign_id=campaign_id,
+        canonical_incident_id=canonical_id,
+        role="direct_victim",
+        confidence=0.7,
+        evidence_article_ids=[],
+        evidence_source_incident_ids=[],
+        evidence_quotes=[],
+        review_status="candidate_unreviewed",
+        victim_name="V",
+        canonical_status="open",
+    )
 
 
 def _row(
@@ -189,3 +228,72 @@ def test_stale_source_titles_do_not_create_platform_cluster_without_article_supp
     edges = build_candidate_edges(build_profiles(items))
 
     assert edges == []
+
+
+def test_structured_vendor_name_seeds_platform_key_without_text_mention():
+    # vendor_name carries "Instructure" but the article body never names the
+    # vendor/platform — the structured field alone must still seed the indicator
+    # so the third-party victim fans out to the shared-vendor campaign.
+    rows = [
+        _row(
+            "v1",
+            victim="Victim University",
+            incident_date="2026-05-07",
+            title="University reports data breach via software supplier",
+            content="The university disclosed a data breach traced to a third-party software supplier.",
+            attack_category="supply_chain_software",
+            projection={},
+        ),
+    ]
+    rows[0]["vendor_name"] = "Instructure"
+
+    items = build_evidence_items(rows)
+    assert items[0].platform_keys == ["instructure_canvas"]
+    assert "Instructure" in items[0].vendors
+    assert "Canvas" in items[0].platforms
+
+
+def test_assign_families_groups_same_actor_year_and_marks_primary():
+    big = _candidate("camp_actor_wave", member_count=5, actors=["Cl0p"], first_seen="2025-06-01")
+    small = _candidate("camp_cve_exposure", member_count=2, cves=["CVE-2025-61882"], actors=["Cl0p"], first_seen="2025-06-10")
+    memberships = [
+        _membership("camp_actor_wave", "a1"),
+        _membership("camp_actor_wave", "a2"),
+        _membership("camp_cve_exposure", "b1"),
+    ]
+
+    _assign_families([big, small], memberships)
+
+    assert big.family_id == small.family_id is not None
+    assert big.is_primary_in_family is True
+    assert small.is_primary_in_family is False
+    assert small.campaign_id in big.related_campaign_ids
+    assert big.campaign_id in small.related_campaign_ids
+
+
+def test_assign_families_links_candidates_sharing_a_member():
+    left = _candidate("camp_left", member_count=3, platforms=["MOVEit"], first_seen="2023-06-01")
+    right = _candidate("camp_right", member_count=4, actors=["Cl0p"], first_seen="2024-02-01")
+    # Different anchors and different years, but they share canonical incident "x1".
+    memberships = [
+        _membership("camp_left", "x1"),
+        _membership("camp_right", "x1"),
+        _membership("camp_right", "x2"),
+    ]
+
+    _assign_families([left, right], memberships)
+
+    assert left.family_id == right.family_id
+    assert right.is_primary_in_family is True  # larger member_count
+
+
+def test_assign_families_keeps_unrelated_campaigns_separate():
+    a = _candidate("camp_a", member_count=3, actors=["LockBit"], first_seen="2023-01-01")
+    b = _candidate("camp_b", member_count=3, actors=["Akira"], first_seen="2026-01-01")
+    memberships = [_membership("camp_a", "m1"), _membership("camp_b", "m2")]
+
+    _assign_families([a, b], memberships)
+
+    assert a.family_id != b.family_id
+    assert a.related_campaign_ids == []
+    assert b.related_campaign_ids == []
