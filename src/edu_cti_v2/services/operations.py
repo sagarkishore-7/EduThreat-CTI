@@ -527,6 +527,70 @@ class V2OperationsService:
             "skipped_existing_tasks": skipped_existing_tasks,
         }
 
+    def enqueue_force_refetch(
+        self,
+        session: Session,
+        *,
+        limit: int = 1000,
+        only_selected: bool = True,
+    ) -> dict[str, Any]:
+        """Queue ``fetch_article`` tasks with ``force_refetch=True`` so the improved
+        date extractor re-derives publish dates in place and the incidents are
+        re-enriched. Targets source incidents that currently have a selected
+        article document (the ones that were previously fetched/enriched).
+
+        Skips incidents that already have an active fetch task. Returns counts.
+        """
+        query = (
+            select(func.distinct(ArticleDocument.source_incident_id))
+            .where(ArticleDocument.is_selected_for_enrichment.is_(True))
+            if only_selected
+            else select(func.distinct(ArticleDocument.source_incident_id))
+        )
+        query = query.limit(limit)
+        source_incident_ids = [row[0] for row in session.execute(query).all()]
+
+        now = datetime.now(timezone.utc)
+        queued = 0
+        skipped_existing = 0
+        for source_incident_id in source_incident_ids:
+            existing_task = self.pipeline_task_repository.get_active_for_target(
+                session,
+                task_type="fetch_article",
+                target_table="source_incidents",
+                target_id=source_incident_id,
+            )
+            if existing_task is not None:
+                skipped_existing += 1
+                continue
+            self.pipeline_task_repository.enqueue(
+                session,
+                PipelineTask(
+                    run_id=None,
+                    task_type="fetch_article",
+                    target_table="source_incidents",
+                    target_id=source_incident_id,
+                    status="queued",
+                    priority=70,
+                    payload={
+                        "source_incident_id": str(source_incident_id),
+                        "force_refetch": True,
+                        "trigger": "date_fix_force_refetch",
+                    },
+                    result={},
+                    available_at=now,
+                    attempt_count=0,
+                    max_attempts=5,
+                ),
+            )
+            queued += 1
+        return {
+            "candidates_considered": len(source_incident_ids),
+            "queued_tasks": queued,
+            "skipped_existing_tasks": skipped_existing,
+            "limit": limit,
+        }
+
     def requeue_dead_letter_tasks(
         self,
         session: Session,

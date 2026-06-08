@@ -607,6 +607,22 @@ def requeue_v2_dead_letter_tasks(
     return result
 
 
+@router.post("/refetch-force")
+def queue_v2_force_refetch(
+    limit: int = Query(1000, ge=1, le=50000),
+    session=Depends(get_v2_session),
+    operations: V2OperationsService = Depends(get_v2_operations_service),
+    _: bool = Depends(authenticate),
+):
+    """Queue force re-fetch (+ re-enrich) of previously-fetched source incidents so
+    the improved publish-date extractor re-derives dates and re-dates the corpus."""
+    result = operations.enqueue_force_refetch(session, limit=limit)
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        commit()
+    return result
+
+
 @router.get("/manual-review-queue")
 def list_v2_manual_review_queue(
     limit: int = Query(100, ge=1, le=1000),

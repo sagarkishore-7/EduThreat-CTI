@@ -138,14 +138,25 @@ def _diagnose_source_enrichment(enrichment: SourceEnrichment, source_incident) -
         if getattr(source_incident, "collected_at", None) is not None
         else None
     )
+    # An incident_date equal to the collection date is only suspicious when NO real
+    # article publication date backs it — that is the "defaulted to today" signature.
+    # A genuine same-day incident has a real extracted publication_date (== today),
+    # so it is NOT flagged.
+    publication_date = (
+        typed.get("publication_date")
+        or raw.get("publication_date")
+        or typed.get("source_published_date")
+        or raw.get("source_published_date")
+    )
     if (
         collected_day is not None
         and _is_safe_date(incident_date)
         and str(incident_date)[:10] == collected_day
+        and not _is_safe_date(publication_date)
         and str(source_incident.source_group or "").strip().lower()
         in SOURCE_DATE_RELATIVE_GUARD_GROUPS
     ):
-        reasons.append(f"incident_date_equals_collection_date={incident_date!r}")
+        reasons.append(f"incident_date_defaulted_to_collection_date={incident_date!r}")
 
     source_published = (
         typed.get("source_published_date")
