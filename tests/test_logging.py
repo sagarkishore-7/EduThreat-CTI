@@ -85,8 +85,10 @@ def test_none_context_values_dropped():
 
 def test_third_party_noise_suppressed():
     setup_logging(log_format="json")
+    # WARNING or quieter. transformers is driven to ERROR by set_verbosity_error()
+    # when the library is installed, so assert the level is at least WARNING.
     for name in ("httpx", "httpcore", "urllib3", "gliner", "transformers"):
-        assert logging.getLogger(name).level == logging.WARNING
+        assert logging.getLogger(name).level >= logging.WARNING
 
 
 def test_scrapling_double_print_disabled():
