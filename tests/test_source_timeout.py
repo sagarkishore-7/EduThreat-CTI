@@ -11,7 +11,9 @@ import time
 import pytest
 
 from src.edu_cti.core.timeouts import (
+    Heartbeat,
     OperationTimeout,
+    call_with_idle_timeout,
     call_with_timeout,
     guard_source_timeout,
     source_timeout_seconds,
@@ -61,6 +63,66 @@ def test_guard_times_out_hung_builder():
     guarded = guard_source_timeout(hung_builder, label="curated:hung", timeout_seconds=0.2)
     with pytest.raises(OperationTimeout):
         guarded(save_callback=None)
+
+
+def test_guard_does_not_kill_slow_but_progressing_source():
+    """A source that keeps saving batches is making progress and must run to
+    completion even though its total time far exceeds the idle budget. This is
+    the Comparitech regression: a legitimately slow multi-page scrape was being
+    killed by a flat total-time budget."""
+
+    saved = []
+
+    def slow_progressing_builder(*, save_callback=None, **_kwargs):
+        # Total runtime (~0.9s) exceeds the 0.3s idle budget, but each step
+        # saves within the budget, so progress keeps resetting the clock.
+        for i in range(6):
+            time.sleep(0.15)
+            if save_callback is not None:
+                save_callback([f"incident-{i}"])
+        return [f"incident-{i}" for i in range(6)]
+
+    def collector_save(batch):
+        saved.extend(batch)
+
+    guarded = guard_source_timeout(
+        slow_progressing_builder, label="curated:comparitech", timeout_seconds=0.3
+    )
+    result = guarded(save_callback=collector_save)
+    assert len(result) == 6
+    assert len(saved) == 6  # all batches persisted, nothing lost to a timeout
+
+
+def test_guard_kills_source_that_stops_progressing():
+    """A source that saves a few batches then stalls is abandoned once the idle
+    stretch exceeds the budget — distinguishing a hang from slow progress."""
+
+    def stalling_builder(*, save_callback=None, **_kwargs):
+        if save_callback is not None:
+            save_callback(["one"])  # early progress
+        time.sleep(5)  # then hang with no further progress
+        return ["unreachable"]
+
+    guarded = guard_source_timeout(
+        stalling_builder, label="curated:stall", timeout_seconds=0.3
+    )
+    with pytest.raises(OperationTimeout):
+        guarded(save_callback=lambda batch: None)
+
+
+def test_idle_timeout_resets_on_heartbeat():
+    hb = Heartbeat()
+
+    def worker():
+        for _ in range(5):
+            time.sleep(0.1)
+            hb.beat()
+        return "done"
+
+    # Idle budget 0.25s < total 0.5s, but beats every 0.1s keep it alive.
+    assert call_with_idle_timeout(
+        worker, heartbeat=hb, idle_timeout_seconds=0.25, label="hb"
+    ) == "done"
 
 
 def test_source_timeout_env_override(monkeypatch):
