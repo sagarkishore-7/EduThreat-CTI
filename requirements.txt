@@ -46,6 +46,7 @@ sentence-transformers>=3.0.0
 fastapi>=0.109.0
 uvicorn[standard]>=0.27.0
 python-multipart>=0.0.6
+slowapi>=0.1.9
 
 # Environment
 python-dotenv>=1.0.0

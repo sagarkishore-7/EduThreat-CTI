@@ -308,8 +308,9 @@ The supported surface is the **Postgres-backed v2 API** served by
 and `src/edu_cti/api/v2_admin.py`). It is what the
 [EduThreat-CTI Dashboard](../EduThreat-CTI-Dashboard) reads from.
 
-**Base URL (production):** the `v2-api` Railway service domain
-(e.g. `https://v2-api-production-e3d1.up.railway.app`)
+**Base URL (production):** your deployed `v2-api` service domain — the dashboard
+points at it via `NEXT_PUBLIC_API_URL`; we recommend putting a custom domain in
+front of the deployment host (see `SECURITY.md`).
 **Base URL (local):** `http://localhost:8000`
 **Swagger UI:** append `/docs`
 
