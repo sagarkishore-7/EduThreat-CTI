@@ -119,11 +119,26 @@ def test_per_logger_level_override(monkeypatch):
     assert logging.getLogger("some_chatty_lib").level == logging.ERROR
 
 
-def test_resolve_format_defaults(monkeypatch):
-    monkeypatch.delenv("LOG_FORMAT", raising=False)
-    monkeypatch.delenv("RAILWAY_ENVIRONMENT", raising=False)
-    assert logging_utils._resolve_log_format() == "console"
-    monkeypatch.setenv("RAILWAY_ENVIRONMENT", "production")
-    assert logging_utils._resolve_log_format() == "json"
+def test_resolve_format_explicit_env_wins(monkeypatch):
     monkeypatch.setenv("LOG_FORMAT", "json")
+    assert logging_utils._resolve_log_format() == "json"
+    monkeypatch.setenv("LOG_FORMAT", "console")
+    assert logging_utils._resolve_log_format() == "console"
+
+
+def test_resolve_format_auto_by_tty(monkeypatch):
+    """Without an explicit LOG_FORMAT, auto-detect by whether stderr is a TTY:
+    interactive terminal -> console, piped/deployed -> json."""
+    monkeypatch.delenv("LOG_FORMAT", raising=False)
+
+    class _FakeStderr:
+        def __init__(self, tty):
+            self._tty = tty
+
+        def isatty(self):
+            return self._tty
+
+    monkeypatch.setattr(logging_utils.sys, "stderr", _FakeStderr(True))
+    assert logging_utils._resolve_log_format() == "console"
+    monkeypatch.setattr(logging_utils.sys, "stderr", _FakeStderr(False))
     assert logging_utils._resolve_log_format() == "json"

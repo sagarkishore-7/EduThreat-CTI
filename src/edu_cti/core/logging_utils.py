@@ -28,6 +28,7 @@ from __future__ import annotations
 import logging
 import logging.handlers
 import os
+import sys
 import warnings
 from pathlib import Path
 from typing import Any, Optional
@@ -73,8 +74,14 @@ def _resolve_log_format() -> str:
     fmt = os.environ.get("LOG_FORMAT", "").strip().lower()
     if fmt in {"json", "console"}:
         return fmt
-    # Default: JSON in any deployed (Railway) environment, pretty console locally.
-    return "json" if os.environ.get("RAILWAY_ENVIRONMENT") else "console"
+    # Auto-detect, env-independent: pretty console only for an interactive
+    # terminal; JSON whenever stderr is piped/redirected (i.e. deployed). This
+    # does not rely on platform env vars (e.g. RAILWAY_ENVIRONMENT), which are
+    # not always present in the running process's environment.
+    try:
+        return "console" if sys.stderr.isatty() else "json"
+    except Exception:
+        return "json"
 
 
 def _shared_processors() -> list:
@@ -176,6 +183,12 @@ def setup_logging(
     warnings.filterwarnings("ignore", message=r".*has been truncated.*")
 
     _configured = True
+
+    # One-line self-report so the chosen format is visible at the top of the logs.
+    logging.getLogger(__name__).info(
+        "logging_configured",
+        extra={"log_format": fmt, "level": level_name},
+    )
 
 
 def _suppress_third_party_noise() -> None:
