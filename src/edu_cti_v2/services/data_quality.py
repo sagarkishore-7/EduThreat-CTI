@@ -130,6 +130,23 @@ def _diagnose_source_enrichment(enrichment: SourceEnrichment, source_incident) -
     if not _is_safe_date(incident_date):
         reasons.append(f"incident_date={incident_date!r}")
 
+    # "Defaulted to today/collection date" pollution: for discovery/search sources,
+    # an incident_date equal to the collection date is almost always a missed
+    # article publish date (the old behaviour), not a genuine same-day disclosure.
+    collected_day = (
+        source_incident.collected_at.date().isoformat()
+        if getattr(source_incident, "collected_at", None) is not None
+        else None
+    )
+    if (
+        collected_day is not None
+        and _is_safe_date(incident_date)
+        and str(incident_date)[:10] == collected_day
+        and str(source_incident.source_group or "").strip().lower()
+        in SOURCE_DATE_RELATIVE_GUARD_GROUPS
+    ):
+        reasons.append(f"incident_date_equals_collection_date={incident_date!r}")
+
     source_published = (
         typed.get("source_published_date")
         or raw.get("source_published_date")
