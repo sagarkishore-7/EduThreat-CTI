@@ -1425,7 +1425,20 @@ class CanonicalIncidentRepository:
             return CanonicalIncident.attack_category.ilike("%breach%")
         if metric == "actors":
             return CanonicalIncident.threat_actor_name.is_not(None)
-        return None  # "incidents" — no extra scoping
+        if metric == "supply_chain":
+            # Mirror the intelligence-summary "vendor-linked" definition: a named
+            # upstream vendor, or a third-party / supply-chain attack category or
+            # vector.
+            return or_(
+                CanonicalIncident.vendor_name.is_not(None),
+                CanonicalIncident.attack_category.in_(
+                    ("third_party_compromise", "supply_chain_software", "software_supply_chain")
+                ),
+                CanonicalIncident.attack_vector.ilike("%third%party%"),
+                CanonicalIncident.attack_vector.ilike("%supply%chain%"),
+            )
+        # "countries" is handled specially in get_kpi_trend (distinct-count).
+        return None  # "incidents" / "countries" — no row-scoping predicate
 
     def get_kpi_trend(
         self,
@@ -1438,11 +1451,20 @@ class CanonicalIncidentRepository:
     ) -> list[dict[str, object]]:
         """Monthly count series for a single dashboard KPI segment (oldest → newest)."""
         bucket_expr = func.date_trunc(bucket, CanonicalIncident.incident_date).label("bucket_start")
+        # "countries" measures distinct affected geographies per bucket, not the
+        # incident row count; every other metric is a (scoped) incident count.
+        count_expr = (
+            func.count(func.distinct(CanonicalIncident.country_code))
+            if metric == "countries"
+            else func.count(CanonicalIncident.id)
+        ).label("incident_count")
         stmt = (
-            select(bucket_expr, func.count(CanonicalIncident.id).label("incident_count"))
+            select(bucket_expr, count_expr)
             .where(CanonicalIncident.status.in_(list(statuses)))
             .where(CanonicalIncident.incident_date.is_not(None))
         )
+        if metric == "countries":
+            stmt = stmt.where(CanonicalIncident.country_code.is_not(None))
         predicate = self._kpi_metric_predicate(metric)
         if predicate is not None:
             stmt = stmt.where(predicate)
