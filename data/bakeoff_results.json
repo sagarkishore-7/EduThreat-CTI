@@ -1,0 +1,1074 @@
+{
+  "models": [
+    "deepseek-v3.1:671b-cloud",
+    "qwen3-coder:480b-cloud",
+    "kimi-k2.6:cloud",
+    "glm-5.1:cloud"
+  ],
+  "sample": 12,
+  "winner": "deepseek-v3.1:671b-cloud",
+  "summary": {
+    "deepseek-v3.1:671b-cloud": {
+      "runs": 12,
+      "schema_valid_pct": 100.0,
+      "coverage_fields_mean": 28.2,
+      "key_field_coverage_pct": 51.7,
+      "baseline_agreement_pct": 100.0,
+      "mean_latency_s": 78.9,
+      "median_latency_s": 80.2,
+      "failure_pct": 0.0,
+      "mean_mitre": 1.5
+    },
+    "qwen3-coder:480b-cloud": {
+      "runs": 12,
+      "schema_valid_pct": 100.0,
+      "coverage_fields_mean": 28.1,
+      "key_field_coverage_pct": 55.0,
+      "baseline_agreement_pct": 85.0,
+      "mean_latency_s": 10.5,
+      "median_latency_s": 11.1,
+      "failure_pct": 0.0,
+      "mean_mitre": 1.8
+    },
+    "kimi-k2.6:cloud": {
+      "runs": 12,
+      "schema_valid_pct": 100.0,
+      "coverage_fields_mean": 22.8,
+      "key_field_coverage_pct": 44.2,
+      "baseline_agreement_pct": 76.7,
+      "mean_latency_s": 269.6,
+      "median_latency_s": 222.7,
+      "failure_pct": 0.0,
+      "mean_mitre": 0.2
+    },
+    "glm-5.1:cloud": {
+      "runs": 12,
+      "schema_valid_pct": 100.0,
+      "coverage_fields_mean": 26.2,
+      "key_field_coverage_pct": 54.2,
+      "baseline_agreement_pct": 75.0,
+      "mean_latency_s": 62.2,
+      "median_latency_s": 64.1,
+      "failure_pct": 0.0,
+      "mean_mitre": 1.1
+    }
+  },
+  "runs": {
+    "deepseek-v3.1:671b-cloud": [
+      {
+        "source_incident_id": "e11112ce-fb97-407d-a608-9533e5682b8a",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 58.880165815353394,
+        "filled_fields": 13,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Cambridge College",
+          "institution_type": null,
+          "country": "United States",
+          "attack_category": "data_breach_external",
+          "attack_vector": "unauthorized_access",
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": 30368
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "21532c79-a2c4-47ae-b4ee-f2f57b443fc1",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 65.18779230117798,
+        "filled_fields": 35,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "PowerSchool",
+          "institution_type": null,
+          "country": "United States",
+          "attack_category": "supply_chain_software",
+          "attack_vector": "third_party_vendor",
+          "vendor_name": null,
+          "threat_actor_name": "Matthew Lane",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "48901fde-bcb6-4d6e-9377-7cb0521329fa",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 22.552470922470093,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "290705aa-2856-47ed-abd9-c8bfd43ce0e3",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 28.221619129180908,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "def81b15-4beb-4825-9c40-57662adfbc03",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 28.201141119003296,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "4d68961b-708e-4200-a71e-8c63aa241f38",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 83.91639518737793,
+        "filled_fields": 40,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Delano Public Schools",
+          "institution_type": "school_district",
+          "country": "United States",
+          "attack_category": "ransomware_double_extortion",
+          "attack_vector": "unknown",
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": "unknown",
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "72134516-4b4f-4398-9350-808871fb4c90",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 120.25846695899963,
+        "filled_fields": 43,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": "education_technology_provider",
+          "country": "United States",
+          "attack_category": "supply_chain_software",
+          "attack_vector": "supply_chain_compromise",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "4240694a-b3d0-426b-b017-7a4c551110be",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 76.50688672065735,
+        "filled_fields": 42,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": "education_technology",
+          "country": "United States",
+          "attack_category": "supply_chain_software",
+          "attack_vector": "supply_chain_compromise",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": "unknown",
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 4
+      },
+      {
+        "source_incident_id": "09a85db3-312e-42e1-ba96-58c38730e3c5",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 102.22248792648315,
+        "filled_fields": 40,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Canvas",
+          "institution_type": "educational_service_provider",
+          "country": "United States",
+          "attack_category": "supply_chain_software",
+          "attack_vector": "third_party_vendor",
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "dd839cac-ff52-4892-8959-58bf4450047b",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 106.85983204841614,
+        "filled_fields": 41,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": "education_technology_provider",
+          "country": "United States",
+          "attack_category": "data_breach_external",
+          "attack_vector": "vulnerability_exploit_known",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 4
+      },
+      {
+        "source_incident_id": "d2a9f64a-efe6-4bb8-a216-b4996271bb94",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 110.70468974113464,
+        "filled_fields": 46,
+        "values": {
+          "is_education_related": true,
+          "institution_name": null,
+          "institution_type": null,
+          "country": "United States",
+          "attack_category": "supply_chain_software",
+          "attack_vector": "vulnerability_exploit_known",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "df81f080-74b1-4abf-ad80-e0570339e87f",
+        "model": "deepseek-v3.1:671b-cloud",
+        "ok": true,
+        "latency_s": 143.78036975860596,
+        "filled_fields": 36,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": "education_technology_provider",
+          "country": "United States",
+          "attack_category": "supply_chain_software",
+          "attack_vector": "supply_chain_compromise",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      }
+    ],
+    "qwen3-coder:480b-cloud": [
+      {
+        "source_incident_id": "e11112ce-fb97-407d-a608-9533e5682b8a",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 16.746605157852173,
+        "filled_fields": 26,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Cambridge College",
+          "institution_type": null,
+          "country": "United States",
+          "attack_category": "data_breach_external",
+          "attack_vector": "vulnerability_exploit_known",
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": 30368
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "21532c79-a2c4-47ae-b4ee-f2f57b443fc1",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 13.631185054779053,
+        "filled_fields": 28,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "PowerSchool",
+          "institution_type": "school_district",
+          "country": "United States",
+          "attack_category": "data_breach_external",
+          "attack_vector": "vulnerability_exploit_known",
+          "vendor_name": null,
+          "threat_actor_name": "Matthew Lane",
+          "ransomware_family": null,
+          "records_affected_exact": 70000000
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "48901fde-bcb6-4d6e-9377-7cb0521329fa",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 3.293375015258789,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "290705aa-2856-47ed-abd9-c8bfd43ce0e3",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 4.085510015487671,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "def81b15-4beb-4825-9c40-57662adfbc03",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 3.809396982192993,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "4d68961b-708e-4200-a71e-8c63aa241f38",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 17.81695318222046,
+        "filled_fields": 35,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Delano Public Schools",
+          "institution_type": "k12_school",
+          "country": "United States",
+          "attack_category": "ransomware_double_extortion",
+          "attack_vector": "unknown",
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": "unknown",
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "72134516-4b4f-4398-9350-808871fb4c90",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 14.046523094177246,
+        "filled_fields": 45,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": null,
+          "country": "United States",
+          "attack_category": "ransomware_double_extortion",
+          "attack_vector": "vulnerability_exploit_known",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": "unknown",
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 3
+      },
+      {
+        "source_incident_id": "4240694a-b3d0-426b-b017-7a4c551110be",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 13.19435977935791,
+        "filled_fields": 38,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": "edtech_platform",
+          "country": "United States",
+          "attack_category": "ransomware_double_extortion",
+          "attack_vector": "malicious_attachment",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": "unknown",
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "09a85db3-312e-42e1-ba96-58c38730e3c5",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 7.749949216842651,
+        "filled_fields": 37,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Wayne State University",
+          "institution_type": null,
+          "country": "United States",
+          "attack_category": "ransomware_double_extortion",
+          "attack_vector": "unpatched_system",
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": "unknown",
+          "records_affected_exact": 275000000
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "dd839cac-ff52-4892-8959-58bf4450047b",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 10.474700927734375,
+        "filled_fields": 40,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": null,
+          "country": "United States",
+          "attack_category": "web_defacement",
+          "attack_vector": "xss",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": 275000000
+        },
+        "error": null,
+        "mitre_count": 5
+      },
+      {
+        "source_incident_id": "d2a9f64a-efe6-4bb8-a216-b4996271bb94",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 11.735576868057251,
+        "filled_fields": 49,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Canvas",
+          "institution_type": null,
+          "country": "United States",
+          "attack_category": "data_breach_external",
+          "attack_vector": "vulnerability_exploit_known",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "df81f080-74b1-4abf-ad80-e0570339e87f",
+        "model": "qwen3-coder:480b-cloud",
+        "ok": true,
+        "latency_s": 9.2101891040802,
+        "filled_fields": 36,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": null,
+          "country": "United States",
+          "attack_category": "ransomware_data_leak_only",
+          "attack_vector": "vulnerability_exploit_known",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": "unknown",
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      }
+    ],
+    "kimi-k2.6:cloud": [
+      {
+        "source_incident_id": "e11112ce-fb97-407d-a608-9533e5682b8a",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 263.41200518608093,
+        "filled_fields": 13,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Cambridge College",
+          "institution_type": "university",
+          "country": "United States",
+          "attack_category": "data_breach_external",
+          "attack_vector": "other",
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": 30368
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "21532c79-a2c4-47ae-b4ee-f2f57b443fc1",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 100.94936108589172,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "48901fde-bcb6-4d6e-9377-7cb0521329fa",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 45.37972903251648,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "290705aa-2856-47ed-abd9-c8bfd43ce0e3",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 29.080047130584717,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "def81b15-4beb-4825-9c40-57662adfbc03",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 41.3927698135376,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "4d68961b-708e-4200-a71e-8c63aa241f38",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 194.42802596092224,
+        "filled_fields": 29,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Delano Public Schools",
+          "institution_type": "school_district",
+          "country": "United States",
+          "attack_category": "ransomware_encryption",
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": "unknown",
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "72134516-4b4f-4398-9350-808871fb4c90",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 442.6950616836548,
+        "filled_fields": 41,
+        "values": {
+          "is_education_related": true,
+          "institution_name": null,
+          "institution_type": "edtech_platform",
+          "country": "United States",
+          "attack_category": "supply_chain_software",
+          "attack_vector": null,
+          "vendor_name": "Instructure",
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "4240694a-b3d0-426b-b017-7a4c551110be",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 999.9701159000397,
+        "filled_fields": 37,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": "edtech_platform",
+          "country": "United States",
+          "attack_category": "ransomware_data_leak_only",
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 1
+      },
+      {
+        "source_incident_id": "09a85db3-312e-42e1-ba96-58c38730e3c5",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 182.3568980693817,
+        "filled_fields": 28,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Wayne State University",
+          "institution_type": "university",
+          "country": "United States",
+          "attack_category": "third_party_compromise",
+          "attack_vector": null,
+          "vendor_name": "Canvas",
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "dd839cac-ff52-4892-8959-58bf4450047b",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 323.6142330169678,
+        "filled_fields": 41,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": "edtech_platform",
+          "country": null,
+          "attack_category": "data_breach_external",
+          "attack_vector": "xss",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "d2a9f64a-efe6-4bb8-a216-b4996271bb94",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 250.91911005973816,
+        "filled_fields": 50,
+        "values": {
+          "is_education_related": true,
+          "institution_name": null,
+          "institution_type": null,
+          "country": "United States",
+          "attack_category": "supply_chain_software",
+          "attack_vector": "third_party_vendor",
+          "vendor_name": "Instructure",
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "df81f080-74b1-4abf-ad80-e0570339e87f",
+        "model": "kimi-k2.6:cloud",
+        "ok": true,
+        "latency_s": 360.6599090099335,
+        "filled_fields": 30,
+        "values": {
+          "is_education_related": true,
+          "institution_name": null,
+          "institution_type": "university",
+          "country": "United States",
+          "attack_category": "supply_chain_software",
+          "attack_vector": null,
+          "vendor_name": "Instructure",
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      }
+    ],
+    "glm-5.1:cloud": [
+      {
+        "source_incident_id": "e11112ce-fb97-407d-a608-9533e5682b8a",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 44.42447304725647,
+        "filled_fields": 13,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Cambridge College",
+          "institution_type": "college",
+          "country": "United States",
+          "attack_category": "data_breach_external",
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": 30368
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "21532c79-a2c4-47ae-b4ee-f2f57b443fc1",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 53.28918194770813,
+        "filled_fields": 21,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Elkhorn Public Schools",
+          "institution_type": "K-12_school_district",
+          "country": "United States",
+          "attack_category": "third_party_compromise",
+          "attack_vector": "third_party_vendor",
+          "vendor_name": "PowerSchool",
+          "threat_actor_name": "Matthew Lane",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "48901fde-bcb6-4d6e-9377-7cb0521329fa",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 7.438370704650879,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "290705aa-2856-47ed-abd9-c8bfd43ce0e3",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 6.207014083862305,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "def81b15-4beb-4825-9c40-57662adfbc03",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 3.9636359214782715,
+        "filled_fields": 1,
+        "values": {
+          "is_education_related": false,
+          "institution_name": null,
+          "institution_type": null,
+          "country": null,
+          "attack_category": null,
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "4d68961b-708e-4200-a71e-8c63aa241f38",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 73.08071088790894,
+        "filled_fields": 33,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Delano Public Schools",
+          "institution_type": "K-12_school_district",
+          "country": "United States",
+          "attack_category": "ransomware_double_extortion",
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": null,
+          "ransomware_family": "unknown",
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 1
+      },
+      {
+        "source_incident_id": "72134516-4b4f-4398-9350-808871fb4c90",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 104.89289712905884,
+        "filled_fields": 43,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Harvard University",
+          "institution_type": "university",
+          "country": "United States",
+          "attack_category": "third_party_compromise",
+          "attack_vector": "third_party_vendor",
+          "vendor_name": "Instructure",
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 2
+      },
+      {
+        "source_incident_id": "4240694a-b3d0-426b-b017-7a4c551110be",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 131.8859851360321,
+        "filled_fields": 36,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": "education_service_provider",
+          "country": "United States",
+          "attack_category": "ransomware_data_leak_only",
+          "attack_vector": null,
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": "unknown",
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "09a85db3-312e-42e1-ba96-58c38730e3c5",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 55.03275108337402,
+        "filled_fields": 33,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Wayne State University",
+          "institution_type": "university",
+          "country": "United States",
+          "attack_category": "third_party_compromise",
+          "attack_vector": "third_party_vendor",
+          "vendor_name": "Canvas",
+          "threat_actor_name": null,
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 0
+      },
+      {
+        "source_incident_id": "dd839cac-ff52-4892-8959-58bf4450047b",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 81.55779314041138,
+        "filled_fields": 47,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": "education_technology_provider",
+          "country": null,
+          "attack_category": "ransomware_data_leak_only",
+          "attack_vector": "xss",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 6
+      },
+      {
+        "source_incident_id": "d2a9f64a-efe6-4bb8-a216-b4996271bb94",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 93.58640694618225,
+        "filled_fields": 48,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Instructure",
+          "institution_type": "education_service_provider",
+          "country": "United States",
+          "attack_category": "ransomware_data_leak_only",
+          "attack_vector": "exposed_service",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 3
+      },
+      {
+        "source_incident_id": "df81f080-74b1-4abf-ad80-e0570339e87f",
+        "model": "glm-5.1:cloud",
+        "ok": true,
+        "latency_s": 90.72136807441711,
+        "filled_fields": 37,
+        "values": {
+          "is_education_related": true,
+          "institution_name": "Georgetown University",
+          "institution_type": "university",
+          "country": "United States",
+          "attack_category": "third_party_compromise",
+          "attack_vector": "third_party_vendor",
+          "vendor_name": null,
+          "threat_actor_name": "ShinyHunters",
+          "ransomware_family": null,
+          "records_affected_exact": null
+        },
+        "error": null,
+        "mitre_count": 1
+      }
+    ]
+  }
+}

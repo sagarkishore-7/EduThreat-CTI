@@ -250,40 +250,6 @@ def list_v2_incidents(
     }
 
 
-@router.get("/incidents/facets")
-def get_v2_incident_facets(
-    status: Optional[List[str]] = Query(None),
-    search: Optional[str] = Query(None, min_length=1, max_length=200),
-    country_code: Optional[str] = Query(None, min_length=2, max_length=2),
-    attack_category: Optional[str] = Query(None),
-    institution_type: Optional[str] = Query(None),
-    severity: Optional[str] = Query(None),
-    is_education_related: Optional[bool] = Query(None),
-    has_vendor: Optional[bool] = Query(None),
-    date_from: Optional[date] = Query(None),
-    date_to: Optional[date] = Query(None),
-    facet_limit: int = Query(20, ge=1, le=100),
-    session: Session = Depends(get_v2_session),
-    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
-):
-    """Return filtered facet counts for canonical incidents from the v2 Postgres layer."""
-    statuses = tuple(status) if status else ("open",)
-    return read_service.get_incident_facets(
-        session,
-        statuses=statuses,
-        search=search,
-        country_code=country_code.upper() if country_code else None,
-        attack_category=attack_category,
-        institution_type=institution_type,
-        severity=severity,
-        is_education_related=is_education_related,
-        has_vendor=has_vendor,
-        date_from=date_from,
-        date_to=date_to,
-        facet_limit=facet_limit,
-    )
-
-
 @router.get("/analytics/breakdowns")
 def get_v2_analytics_breakdowns(
     status: Optional[List[str]] = Query(None),
@@ -536,26 +502,6 @@ def get_v2_intelligence_analytics(
     if cached is not None:
         return cached
     payload = read_service.get_intelligence_summary(
-        session,
-        statuses=statuses,
-    )
-    cache_set(cache_key, payload)
-    return payload
-
-
-@router.get("/analytics/diamond")
-def get_v2_diamond_analytics(
-    status: Optional[List[str]] = Query(None),
-    session: Session = Depends(get_v2_session),
-    read_service: V2CanonicalReadService = Depends(get_v2_read_service),
-):
-    """Return Diamond Model coverage and vertex summaries for the canonical dataset."""
-    statuses = tuple(status) if status else ("open",)
-    cache_key = _public_cache_key("diamond", _status_cache_fragment(statuses))
-    cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
-    if cached is not None:
-        return cached
-    payload = read_service.get_diamond_analytics(
         session,
         statuses=statuses,
     )
