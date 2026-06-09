@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 import json
+import re
 from typing import Any, Optional, Sequence
 
 from sqlalchemy import select
@@ -335,6 +336,53 @@ def _coerce_int(value: Any) -> int | None:
         return int(float(value))
     except (TypeError, ValueError):
         return None
+
+
+# Canonical ATT&CK enterprise tactics, keyed by their normalized (lowercase,
+# separator-stripped) form so that variant spellings the LLM may emit
+# ("defense_evasion", "defense-evasion", "Defense Evasion", the TA-id) all map to
+# one canonical column. Without this, variant spellings of the same tactic create
+# duplicate columns in the MITRE matrix.
+_ATTACK_TACTICS: dict[str, str] = {
+    "reconnaissance": "Reconnaissance",
+    "resourcedevelopment": "Resource Development",
+    "initialaccess": "Initial Access",
+    "execution": "Execution",
+    "persistence": "Persistence",
+    "privilegeescalation": "Privilege Escalation",
+    "defenseevasion": "Defense Evasion",
+    "credentialaccess": "Credential Access",
+    "discovery": "Discovery",
+    "lateralmovement": "Lateral Movement",
+    "collection": "Collection",
+    "commandandcontrol": "Command and Control",
+    "exfiltration": "Exfiltration",
+    "impact": "Impact",
+}
+# TA-id aliases → canonical name.
+_ATTACK_TACTIC_IDS: dict[str, str] = {
+    "ta0043": "Reconnaissance", "ta0042": "Resource Development", "ta0001": "Initial Access",
+    "ta0002": "Execution", "ta0003": "Persistence", "ta0004": "Privilege Escalation",
+    "ta0005": "Defense Evasion", "ta0006": "Credential Access", "ta0007": "Discovery",
+    "ta0008": "Lateral Movement", "ta0009": "Collection", "ta0011": "Command and Control",
+    "ta0010": "Exfiltration", "ta0040": "Impact",
+}
+
+
+def _canonical_tactic(value: str | None) -> str:
+    """Map any spelling/casing/separator/TA-id variant of an ATT&CK tactic to a
+    single canonical display name, so the matrix shows one column per tactic."""
+    if not value:
+        return "Unknown"
+    norm = re.sub(r"[^a-z0-9]+", "", str(value).lower())
+    if norm in _ATTACK_TACTIC_IDS:
+        return _ATTACK_TACTIC_IDS[norm]
+    if norm in _ATTACK_TACTICS:
+        return _ATTACK_TACTICS[norm]
+    # "command&control" / "c2" style and unknowns fall back to humanized text.
+    if norm in {"c2", "commandcontrol"}:
+        return "Command and Control"
+    return _humanize_slug(value)
 
 
 def _normalize_institution_segment(institution_type: str | None, vendor_name: str | None) -> str:
@@ -2164,7 +2212,7 @@ class V2CanonicalReadService:
             for entry in techniques:
                 if not isinstance(entry, dict):
                     continue
-                tactic = _humanize_slug(str(entry.get("tactic") or "unknown"))
+                tactic = _canonical_tactic(entry.get("tactic"))
                 technique_id = str(entry.get("technique_id") or "Unknown")
                 technique_name = str(entry.get("technique_name") or technique_id)
                 key = (tactic, technique_id, technique_name)
