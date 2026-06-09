@@ -708,10 +708,6 @@ def _is_full_dashboard_snapshot(payload: dict[str, Any]) -> bool:
     return expected_country_count == 0 or included_country_count >= expected_country_count
 
 
-def _is_diamond_dashboard_snapshot(payload: dict[str, Any]) -> bool:
-    return _is_full_dashboard_snapshot(payload) and isinstance(payload.get("diamond_summary"), dict)
-
-
 def _to_legacy_incident_summary(item: dict[str, Any]) -> dict[str, Any]:
     return {
         "incident_id": item["canonical_incident_id"],
@@ -1515,25 +1511,6 @@ class V2CanonicalReadService:
             ):
                 return snapshot.state_payload["intelligence_summary"]
         return self._build_intelligence_summary(
-            session,
-            statuses=statuses,
-        )
-
-    def get_diamond_analytics(
-        self,
-        session: Session,
-        *,
-        statuses: Sequence[str] = ("open",),
-    ) -> dict[str, Any]:
-        if tuple(statuses) == ("open",):
-            snapshot = self.analytics_refresh_repository.get_by_key(session, "dashboard:global")
-            if (
-                snapshot is not None
-                and isinstance(snapshot.state_payload, dict)
-                and _is_diamond_dashboard_snapshot(snapshot.state_payload)
-            ):
-                return snapshot.state_payload["diamond_summary"]
-        return self._build_diamond_summary(
             session,
             statuses=statuses,
         )

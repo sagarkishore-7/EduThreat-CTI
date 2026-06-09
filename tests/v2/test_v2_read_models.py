@@ -1216,7 +1216,7 @@ def test_read_service_diamond_summary_aggregates_vertex_coverage():
 
     service = V2CanonicalReadService(canonical_repository=canonical_repo)
 
-    summary = service.get_diamond_analytics(Mock(), statuses=("open",))
+    summary = service._build_diamond_summary(Mock(), statuses=("open",))
 
     assert summary["overview"]["total_incidents"] == 2
     assert summary["coverage"]["victim_vertex_count"] == 2

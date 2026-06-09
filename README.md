@@ -331,7 +331,6 @@ Public reads are cached for ~30 seconds.
 | `GET` | `/api/v2/dashboard` | Full dashboard payload (stats, intelligence summary, country/attack/ransomware breakdowns, trend, recent incidents) |
 | `GET` | `/api/v2/stats` | Summary statistics subset |
 | `GET` | `/api/v2/incidents` | Paginated, filterable canonical incident list (`format=legacy` supported) |
-| `GET` | `/api/v2/incidents/facets` | Faceted counts for the incident workspace |
 | `GET` | `/api/v2/incidents/{id}` | Full canonical incident detail with all enrichment |
 | `GET` | `/api/v2/incidents/{id}/report` | Markdown CTI report download |
 | `GET` | `/api/v2/filters` | Available filter options |
@@ -350,7 +349,6 @@ Public reads are cached for ~30 seconds.
 | `GET` | `/timeline` | Monthly timeline (compatibility shape) |
 | `GET` | `/threat-actors` | Threat-actor breakdown (targeting + families) |
 | `GET` | `/intelligence` | Analyst intelligence summary (victimology, tradecraft, attribution, exposure, coverage, priority findings) |
-| `GET` | `/diamond` | Diamond-model coverage summary |
 | `GET` | `/kpi-trends` | **(new)** Per-KPI monthly sparkline series + period-over-period deltas for the dashboard KPI tiles (`incidents`, `ransomware`, `breaches`, `actors`) |
 | `GET` | `/feeds` | **(new)** Per-source ingestion health (lifetime + 30d volume, last-seen, freshness status) for the Intel Feeds page |
 | `GET` | `/pipeline-research` · `/pipeline-research/prometheus` | Research/dataset-construction metrics (heavy; snapshot-backed) |

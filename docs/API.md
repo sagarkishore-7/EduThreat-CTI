@@ -96,15 +96,6 @@ Returns:
 - `institution_types`
 - `years`
 
-### `GET /api/v2/incidents/facets`
-
-Filtered facet counts for:
-
-- countries
-- attack categories
-- institution types
-- severities
-
 ### `GET /api/v2/analytics/breakdowns`
 
 Filtered analytics breakdowns with the same main facet families used by the
