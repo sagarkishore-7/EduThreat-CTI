@@ -467,8 +467,31 @@ def _date_score(gap_days: int | None) -> float:
     return 0.0
 
 
+_CVE_RE = re.compile(r"\bCVE-\d{4}-\d{4,7}\b", re.I)
+
+
+def _normalize_cve(raw: str | None) -> str | None:
+    """Return a canonical ``CVE-YYYY-NNNN..`` id, or None if malformed.
+
+    Enforces the canonical shape and a sane year so broken ids that leak from
+    free text / structured LLM fields don't pollute a campaign's CVE list.
+    Format-valid but spurious ids (e.g. a one-off concatenation) are filtered
+    separately by the >=2-member consensus rule in ``build_campaign_outputs``.
+    """
+    if not raw:
+        return None
+    text = str(raw).strip().upper()
+    match = re.fullmatch(r"CVE-(\d{4})-(\d{4,7})", text)
+    if not match:
+        return None
+    year = int(match.group(1))
+    if year < 1999 or year > date.today().year + 1:
+        return None
+    return text
+
+
 def _extract_cves(text: str) -> list[str]:
-    return _dedupe(match.upper() for match in re.findall(r"\bCVE-\d{4}-\d{4,7}\b", text, re.I))
+    return _dedupe(cve for cve in (_normalize_cve(m) for m in _CVE_RE.findall(text)) if cve)
 
 
 def _extract_platform_indicators(text: str) -> tuple[list[str], list[str], list[str]]:
@@ -911,6 +934,55 @@ def _top_values(profiles: Iterable[CampaignProfile], attr: str) -> list[str]:
     return [value for value, _count in counter.most_common()]
 
 
+def _consensus_values(profiles: Iterable[CampaignProfile], attr: str, min_count: int = 2) -> list[str]:
+    """Like ``_top_values`` but keeps only values attested by >= ``min_count``
+    members. Used for a campaign's CVE list so a single mis-attributed CVE on one
+    member does not pollute the whole campaign."""
+    counter: Counter[str] = Counter()
+    for profile in profiles:
+        counter.update(getattr(profile, attr))
+    return [value for value, count in counter.most_common() if count >= min_count]
+
+
+def _dominant_year(profiles: Iterable[CampaignProfile]) -> str | None:
+    """Most common member year (ties broken toward the later year).
+
+    Robust to a single mis-dated outlier, unlike ``min(member date)`` — a 2023
+    MOVEit wave with one stray 2022 record is named 2023, not 2022."""
+    counter: Counter[str] = Counter()
+    for profile in profiles:
+        parsed = _parse_date(profile.representative_date)
+        if parsed is not None:
+            counter[str(parsed.year)] += 1
+    if not counter:
+        return None
+    return max(counter.items(), key=lambda kv: (kv[1], kv[0]))[0]
+
+
+def _trim_incoherent_members(
+    component: set[str],
+    profiles: Mapping[str, CampaignProfile],
+    platform_keys: Iterable[str],
+) -> set[str]:
+    """Drop members whose incident date falls far outside the cluster's core
+    time window.
+
+    A real campaign is temporally coherent. Wide platform date windows plus
+    transitive union-find chaining can otherwise pull off-event incidents into a
+    cluster (e.g. 2025 records merged into the 2023 MOVEit wave), inflating
+    member counts and injecting unrelated CVEs. A member is kept when it is
+    within ``window`` days of the median member date; undated members are kept
+    (cannot judge). Never trims below two members."""
+    dated = [(pid, _parse_date(profiles[pid].representative_date)) for pid in component]
+    dates = sorted(parsed for _pid, parsed in dated if parsed is not None)
+    if len(dates) < 3:
+        return set(component)
+    median = dates[len(dates) // 2]
+    window = _indicator_window_days(platform_keys)
+    kept = {pid for pid, parsed in dated if parsed is None or abs((parsed - median).days) <= window}
+    return kept if len(kept) >= 2 else set(component)
+
+
 def _campaign_type(kind: str, value: str, platform_keys: list[str], cves: list[str], actors: list[str]) -> str:
     if kind == "campaign_name":
         return "same_campaign"
@@ -944,9 +1016,8 @@ def _campaign_name(
     actors: list[str],
     cves: list[str],
     campaign_names: list[str],
-    first_seen: str | None,
+    year: str | None,
 ) -> str:
-    year = (first_seen or "")[:4]
     suffix = f" {year}" if year else ""
     if kind == "campaign_name":
         return value
@@ -981,24 +1052,26 @@ def _assign_families(
 ) -> None:
     """Group candidate campaigns that describe one real campaign into a family.
 
-    Two candidates join the same family when they share their **top threat actor
-    within the same year**. This collapses duplicate components of one actor's
-    wave (e.g. two "Rhysida 2023" rows) and links the alternate views of one
-    event — the CVE "exposure" and vendor "impact" clusters list the responsible
-    actor as their top actor, so e.g. "Cl0p 2025 activity wave" groups with
-    "CVE-2025-61882 2025 exposure" (top actor Cl0p) and "ShinyHunters 2026"
-    groups with "Canvas 2026 impact" (top actor ShinyHunters).
+    Two candidates join the same family when EITHER:
 
-    Only the actor is used. Platform (MOVEit, Canvas), vendor (Progress
-    Software), and mass-exploitation CVEs are *shared across many independent
-    actors* — keying on them chains genuinely different campaigns together (the
-    2023 MOVEit wave tagged Cl0p / LockBit / Rhysida / Akira with the same
-    Progress-Software vendor and merged them into one blob). The threat actor is
-    the only campaign-defining signal. Member overlap is also not used: an
-    incident can belong to several distinct campaigns, which transitively merges
-    everything. Members are NOT merged — this is a presentational grouping only.
-    Mutates each candidate's ``family_id`` / ``related_campaign_ids`` /
-    ``is_primary_in_family`` in place.
+    1. they share their **top threat actor within the same year** — links the
+       alternate views of one actor's wave (the CVE "exposure" and vendor
+       "impact" clusters list the responsible actor as their top actor, so
+       "Cl0p 2025 activity wave" groups with "CVE-2025-61882 2025 exposure"); or
+    2. their member sets **strongly overlap** (shared >= 3 incidents AND
+       Jaccard >= 0.5) — links the per-signal "views" of one event that share no
+       single actor. The deterministic engine emits one component per signal
+       (platform, CVE, campaign-name, vendor), so the 2023 MOVEit wave appears as
+       a MOVEit-platform cluster, a CVE-2023-34362 cluster and a "MOVEit"
+       name cluster over largely the same incidents; actor-only keying left these
+       as separate families (some with no actor at all). The high overlap
+       threshold collapses these genuine fragments without transitively chaining
+       distinct campaigns (a loose threshold would merge everything into a blob).
+
+    Members are NOT merged across campaigns — this is a presentational grouping
+    only; the family is the de-duplicated unit for analysis. Mutates each
+    candidate's ``family_id`` / ``related_campaign_ids`` / ``is_primary_in_family``
+    in place.
     """
 
     if not candidates:
@@ -1034,11 +1107,24 @@ def _assign_families(
         else:
             union(owner, candidate.campaign_id)
 
+    # Union campaigns that are per-signal fragments of one event, detected by
+    # strong member-set overlap (shared >= 3 AND Jaccard >= 0.5).
+    members_by_campaign: dict[str, set[str]] = defaultdict(set)
+    for membership in memberships:
+        members_by_campaign[membership.campaign_id].add(membership.canonical_incident_id)
+    overlap_ids = [c.campaign_id for c in candidates if len(members_by_campaign.get(c.campaign_id, ())) >= 3]
+    for index, left_id in enumerate(overlap_ids):
+        left_members = members_by_campaign[left_id]
+        for right_id in overlap_ids[index + 1 :]:
+            right_members = members_by_campaign[right_id]
+            shared = len(left_members & right_members)
+            if shared >= 3 and shared / len(left_members | right_members) >= 0.5:
+                union(left_id, right_id)
+
     families: dict[str, list[CampaignCandidate]] = defaultdict(list)
     for candidate in candidates:
         families[find(candidate.campaign_id)].append(candidate)
 
-    by_id = {candidate.campaign_id: candidate for candidate in candidates}
     for root, members in families.items():
         member_ids = sorted(member.campaign_id for member in members)
         family_id = "family_" + hashlib.sha1("|".join(member_ids).encode("utf-8")).hexdigest()[:10]
@@ -1060,13 +1146,27 @@ def build_campaign_outputs(
     memberships: list[CampaignMembership] = []
 
     for kind, value, component, component_edges in components:
+        # Trim temporally-incoherent (off-event) members before deriving any
+        # attribute, so dates / CVEs / member_count / memberships all reflect the
+        # coherent core. Size the window from the cluster's platform type first.
+        pre_platform_keys = _top_values([profiles[pid] for pid in component], "platform_keys")
+        component = _trim_incoherent_members(component, profiles, pre_platform_keys)
+        component_edges = [
+            edge
+            for edge in component_edges
+            if edge.from_canonical_incident_id in component
+            and edge.to_canonical_incident_id in component
+        ]
         component_profiles = [profiles[profile_id] for profile_id in sorted(component)]
         first_seen, last_seen = _date_range(component_profiles)
+        year = _dominant_year(component_profiles)
         platform_keys = _top_values(component_profiles, "platform_keys")
         platforms = _top_values(component_profiles, "platforms")
         vendors = _top_values(component_profiles, "vendors")
         actors = _top_values(component_profiles, "actors")
-        cves = _top_values(component_profiles, "cves")
+        # Campaign CVE list = only CVEs attested by >=2 members (consensus), so a
+        # single mis-attributed CVE on one member does not pollute the campaign.
+        cves = _consensus_values(component_profiles, "cves", 2)
         campaign_names = _top_values(component_profiles, "campaign_names")
         attack_categories = _top_values(component_profiles, "attack_categories")
         if kind == "platform" and value in PLATFORM_BY_KEY:
@@ -1081,7 +1181,7 @@ def build_campaign_outputs(
         elif kind == "campaign_name":
             campaign_names = [value]
         campaign_type = _campaign_type(kind, value, platform_keys, cves, actors)
-        name = _campaign_name(kind, value, campaign_type, platforms, actors, cves, campaign_names, first_seen)
+        name = _campaign_name(kind, value, campaign_type, platforms, actors, cves, campaign_names, year)
         campaign_id = _campaign_id(name, component)
         confidence = (
             sum(edge.confidence for edge in component_edges) / len(component_edges)

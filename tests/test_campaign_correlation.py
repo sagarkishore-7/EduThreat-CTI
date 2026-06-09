@@ -1,12 +1,32 @@
 from src.edu_cti.analysis.campaign_correlation import (
     CampaignCandidate,
     CampaignMembership,
+    CampaignProfile,
     _assign_families,
+    _consensus_values,
+    _dominant_year,
+    _extract_cves,
+    _normalize_cve,
+    _trim_incoherent_members,
     build_campaign_outputs,
     build_candidate_edges,
     build_evidence_items,
     build_profiles,
 )
+
+
+def _profile(canonical_id: str, *, date: str | None = None, cves=()):
+    profile = CampaignProfile(
+        canonical_incident_id=canonical_id,
+        canonical_status="open",
+        victim_name="V",
+        institution_type="university",
+        country="United States",
+        country_code="US",
+        representative_date=date,
+    )
+    profile.cves.update(cves)
+    return profile
 
 
 def _candidate(campaign_id: str, *, member_count: int, actors=(), platforms=(), cves=(), vendors=(), first_seen="2025-01-01", confidence=0.7):
@@ -323,3 +343,94 @@ def test_assign_families_distinct_actors_sharing_a_vendor_do_not_group():
     assert clop.family_id != lockbit.family_id
     assert clop.family_id != rhysida.family_id
     assert lockbit.family_id != rhysida.family_id
+
+
+# ── A3: CVE hygiene ──────────────────────────────────────────────────────────
+
+def test_normalize_cve_rejects_malformed_and_canonicalizes():
+    assert _normalize_cve("cve-2023-34362") == "CVE-2023-34362"
+    assert _normalize_cve("CVE-2025-61882") == "CVE-2025-61882"
+    # 8-digit tail (beyond the 4-7 canonical range) is rejected.
+    assert _normalize_cve("CVE-2025-61884212") is None
+    assert _normalize_cve("CVE-25-6188") is None  # 2-digit year, wrong shape
+    assert _normalize_cve("CVE-1998-0001") is None  # year out of range
+    assert _normalize_cve("not a cve") is None
+    assert _normalize_cve(None) is None
+
+
+def test_extract_cves_rejects_out_of_range_tail():
+    found = _extract_cves("Affected by CVE-2023-34362 and the 8-digit CVE-2025-61884212 token")
+    assert found == ["CVE-2023-34362"]
+
+
+def test_consensus_values_drops_single_member_cve():
+    # The real-data "CVE-2025-618842" artifact is format-valid (6-digit tail)
+    # but spurious; the >=2-member consensus rule is what removes such one-offs.
+    profiles = [
+        _profile("m1", cves=["CVE-2023-34362"]),
+        _profile("m2", cves=["CVE-2023-34362"]),
+        _profile("m3", cves=["CVE-2025-618842"]),  # one-off pollution, kept by regex
+    ]
+    assert _consensus_values(profiles, "cves", 2) == ["CVE-2023-34362"]
+
+
+# ── A2: dominant-year naming ─────────────────────────────────────────────────
+
+def test_dominant_year_is_mode_not_min():
+    profiles = [
+        _profile("m1", date="2022-03-28"),  # lone outlier
+        _profile("m2", date="2023-05-31"),
+        _profile("m3", date="2023-06-01"),
+        _profile("m4", date="2023-05-30"),
+    ]
+    assert _dominant_year(profiles) == "2023"
+
+
+# ── A1: cohesion trim ────────────────────────────────────────────────────────
+
+def test_trim_incoherent_members_drops_off_window_outliers():
+    profiles = {
+        "m1": _profile("m1", date="2023-05-31"),
+        "m2": _profile("m2", date="2023-06-01"),
+        "m3": _profile("m3", date="2023-06-07"),
+        "m4": _profile("m4", date="2025-09-01"),  # >400d off the 2023 core
+        "m5": _profile("m5", date=None),          # undated → kept (cannot judge)
+    }
+    kept = _trim_incoherent_members(set(profiles), profiles, platform_keys=["moveit"])
+    assert "m4" not in kept
+    assert {"m1", "m2", "m3", "m5"} <= kept
+
+
+def test_trim_keeps_all_when_too_few_dated():
+    profiles = {
+        "m1": _profile("m1", date="2023-05-31"),
+        "m2": _profile("m2", date="2025-09-01"),
+    }
+    # Fewer than 3 dated members → no trim (not enough to define a core).
+    assert _trim_incoherent_members(set(profiles), profiles, platform_keys=["moveit"]) == set(profiles)
+
+
+# ── A4: family grouping by strong member overlap ─────────────────────────────
+
+def test_assign_families_groups_fragments_by_member_overlap_without_shared_actor():
+    # Two per-signal views of one MOVEit event (platform cluster + CVE cluster)
+    # share most members but carry no single shared top actor. They must land in
+    # ONE family via the overlap rule.
+    platform_view = _candidate("camp_moveit_platform", member_count=6, platforms=["MOVEit"], first_seen="2023-05-31")
+    cve_view = _candidate("camp_moveit_cve", member_count=6, cves=["CVE-2023-34362"], first_seen="2023-05-31")
+    shared_ids = ["i1", "i2", "i3", "i4", "i5"]
+    memberships = [_membership("camp_moveit_platform", cid) for cid in shared_ids + ["i6"]]
+    memberships += [_membership("camp_moveit_cve", cid) for cid in shared_ids + ["i7"]]
+    _assign_families([platform_view, cve_view], memberships)
+    assert platform_view.family_id == cve_view.family_id
+    assert platform_view.is_primary_in_family != cve_view.is_primary_in_family  # exactly one primary
+
+
+def test_assign_families_low_overlap_stays_separate():
+    a = _candidate("camp_a", member_count=5, first_seen="2023-01-01")
+    b = _candidate("camp_b", member_count=5, first_seen="2023-01-01")
+    # Only 1 shared incident out of 9 union → below threshold.
+    memberships = [_membership("camp_a", c) for c in ["i1", "i2", "i3", "i4", "i5"]]
+    memberships += [_membership("camp_b", c) for c in ["i5", "i6", "i7", "i8", "i9"]]
+    _assign_families([a, b], memberships)
+    assert a.family_id != b.family_id
