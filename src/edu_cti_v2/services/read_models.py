@@ -2275,7 +2275,7 @@ class V2CanonicalReadService:
         small trend line. Each series is oldest → newest so the sparkline reads
         left-to-right.
         """
-        metrics = ("incidents", "ransomware", "breaches", "actors")
+        metrics = ("incidents", "ransomware", "breaches", "actors", "supply_chain", "countries")
         result: dict[str, Any] = {}
         for metric in metrics:
             series = _to_time_series(
