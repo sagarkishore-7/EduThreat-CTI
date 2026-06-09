@@ -274,8 +274,20 @@ class V2CampaignService:
             )
             persisted_signatures += 1
 
+        # Remove candidate campaigns from earlier runs that this run no longer
+        # produced (their member set changed → new id → old row orphaned),
+        # cascading their memberships/evidence/signatures. Keeps the campaign set
+        # exactly the current correlation output and prevents duplicate campaigns
+        # (e.g. several "MOVEit" rows) accumulating across runs. Analyst-reviewed
+        # campaigns are preserved.
+        deleted_stale = self.campaign_repository.delete_stale_candidates(
+            session,
+            keep_ids=[candidate.campaign_id for candidate in candidates],
+        )
+
         return {
             "persisted_campaigns": len(candidates),
+            "deleted_stale_campaigns": deleted_stale,
             "persisted_memberships": persisted_memberships,
             "persisted_evidence_items": persisted_evidence,
             "persisted_signatures": persisted_signatures,

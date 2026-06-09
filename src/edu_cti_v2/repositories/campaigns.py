@@ -333,6 +333,23 @@ class CampaignRepository:
         session.add(existing)
         return existing
 
+    def delete_stale_candidates(self, session: Session, *, keep_ids: Sequence[str]) -> int:
+        """Delete candidate campaigns that the current correlation run did not
+        regenerate. A campaign's id is a hash of its member set, so when the
+        membership changes (e.g. after a re-fetch) the campaign gets a NEW id and
+        the OLD row is orphaned — left untouched these accumulate as duplicate
+        campaigns across runs. Remove every 'candidate' campaign not in this run's
+        id set; analyst-reviewed / suppressed campaigns are preserved (an analyst
+        may have curated them). Memberships, evidence, and signatures cascade via
+        the FK ON DELETE CASCADE."""
+        keep = set(keep_ids)
+        stmt = select(Campaign.id).where(Campaign.status == "candidate")
+        stale = [cid for (cid,) in session.execute(stmt).all() if cid not in keep]
+        if not stale:
+            return 0
+        session.execute(delete(Campaign).where(Campaign.id.in_(stale)))
+        return len(stale)
+
     def replace_evidence_items(self, session: Session, campaign_ids: Sequence[str], rows: Sequence[dict[str, Any]]) -> int:
         if campaign_ids:
             session.execute(
