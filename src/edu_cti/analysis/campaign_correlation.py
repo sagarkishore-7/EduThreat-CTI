@@ -296,15 +296,20 @@ GENERIC_ACTOR_VALUES = {
     "unnamed actor",
 }
 
-# Substring markers flagging a descriptive (non-attributive) actor phrase that resolves
-# to no known alias — catches forms like "russian cyber-extortion group".
-_GENERIC_ACTOR_SUBSTRINGS = (
-    "extortion",
-    "criminal",
-    "hacking",
-    "unidentified",
-    "unnamed",
-)
+# Generic word tokens stripped when deciding whether an actor label is purely
+# descriptive. After removing these, a label with NOTHING left is generic; one with a
+# real name surviving ("Clop" in "Clop cybercriminal") is kept. Mirrors
+# `_GENERIC_ACTOR_TOKENS` in `src/edu_cti_v2/normalization.py`.
+_GENERIC_ACTOR_TOKENS = {
+    "ransomware", "ransom", "extortion", "gang", "group", "operation", "operations",
+    "operator", "operators", "collective", "crew", "hacker", "hackers", "hacking",
+    "affiliate", "affiliates", "criminal", "criminals", "cybercriminal", "cybercriminals",
+    "cybercrime", "cybercrimes", "syndicate", "actor", "actors", "cyber", "cyberattack",
+    "threat", "malicious", "unknown", "unidentified", "unnamed", "suspected", "foreign",
+    "pro", "unauthorized", "unauthorised", "attacker", "attackers",
+    "china", "chinese", "iran", "iranian", "north", "korea", "korean", "russia",
+    "russian", "state", "backed",
+}
 
 
 GENERIC_NEGATIVE_TERMS = (
@@ -774,7 +779,8 @@ def _is_generic_actor(value: str) -> bool:
         return False
     if norm in GENERIC_ACTOR_VALUES:
         return True
-    return any(marker in norm for marker in _GENERIC_ACTOR_SUBSTRINGS)
+    core = [t for t in norm.split() if t not in _GENERIC_ACTOR_TOKENS]
+    return not core
 
 
 def _extract_actors(text: str, explicit_values: Sequence[Any]) -> list[str]:

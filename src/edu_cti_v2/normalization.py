@@ -18,8 +18,18 @@ _THREAT_ACTOR_DESCRIPTOR_SUFFIXES = (
     "crew",
     "hacker",
     "hackers",
+    "hacking",
     "affiliate",
     "affiliates",
+    "criminal",
+    "criminals",
+    "cybercriminal",
+    "cybercriminals",
+    "cybercrime",
+    "cybercrimes",
+    "syndicate",
+    "actor",
+    "actors",
 )
 
 _THREAT_ACTOR_ALIASES: dict[str, str] = {
@@ -290,21 +300,6 @@ _UNKNOWN_THREAT_ACTOR_VALUES = {
     "unnamed_group",
 }
 
-# Substring markers that, when present in an actor label that resolves to no known
-# alias, mark it as a generic description rather than an attribution (so descriptive
-# phrases like "Russian cyber-extortion group" are dropped even though their exact
-# normalized form isn't enumerated above).
-_GENERIC_ACTOR_SUBSTRINGS = (
-    "extortion",
-    "cybercrim",
-    "cyber_crim",
-    "criminal",
-    "hacking",
-    "unidentified",
-    "unnamed",
-    "unknown",
-)
-
 _GENERIC_GEOPOLITICAL_ACTOR_VALUES = {
     "china",
     "chinese",
@@ -316,6 +311,38 @@ _GENERIC_GEOPOLITICAL_ACTOR_VALUES = {
     "russia",
     "russian",
     "state_backed",
+}
+
+# Generic word *tokens* stripped when deciding whether an actor label is purely
+# descriptive. After removing these, a label with NOTHING left is generic; one with a
+# real name surviving ("Clop" in "Clop cybercriminal") is kept. Geo tokens are listed
+# in their split single-word form (the label is split on "_" before matching).
+_GENERIC_ACTOR_TOKENS = set(_THREAT_ACTOR_DESCRIPTOR_SUFFIXES) | {
+    "cyber",
+    "cyberattack",
+    "threat",
+    "malicious",
+    "unknown",
+    "unidentified",
+    "unnamed",
+    "suspected",
+    "foreign",
+    "pro",
+    "unauthorized",
+    "unauthorised",
+    "attacker",
+    "attackers",
+    "china",
+    "chinese",
+    "iran",
+    "iranian",
+    "north",
+    "korea",
+    "korean",
+    "russia",
+    "russian",
+    "state",
+    "backed",
 }
 
 
@@ -398,11 +425,10 @@ def is_generic_actor(name: Optional[str]) -> bool:
     """True when an actor label is a generic description, not an attribution.
 
     A known actor (resolves to a `_THREAT_ACTOR_ALIASES` entry or a LockBit variant) is
-    never generic. Otherwise the label is generic if it matches an enumerated junk value
-    (`_UNKNOWN_THREAT_ACTOR_VALUES`), a bare nationality (`_GENERIC_GEOPOLITICAL_ACTOR_VALUES`),
-    or — for unattributed labels — contains a generic marker substring (`extortion`,
-    `criminal`, `hacking`, `unidentified`, …). This catches descriptive phrases such as
-    "Russian cyber-extortion group" whose exact normalized form isn't enumerated.
+    never generic. Otherwise we strip every generic word token (`_GENERIC_ACTOR_TOKENS`)
+    from the label: if NOTHING meaningful remains it is generic ("criminal",
+    "Russian cyber-extortion group", "threat actors"), but if a real name survives it is
+    kept ("Clop cybercriminal" → keeps "clop", "Fog hacking" → keeps "fog").
     """
     if not name or not name.strip():
         return True
@@ -410,16 +436,15 @@ def is_generic_actor(name: Optional[str]) -> bool:
     for candidate in _lookup_candidate_keys(name):
         if candidate in _THREAT_ACTOR_ALIASES or candidate.startswith("lockbit"):
             return False
-        if candidate in _UNKNOWN_THREAT_ACTOR_VALUES or candidate in _GENERIC_GEOPOLITICAL_ACTOR_VALUES:
+        if candidate in _UNKNOWN_THREAT_ACTOR_VALUES:
             return True
 
-    reduced = _strip_descriptor_suffix_text(name.strip()) or name.strip()
-    reduced_key = _normalized_lookup_key(reduced)
-    if reduced_key in _UNKNOWN_THREAT_ACTOR_VALUES or reduced_key in _GENERIC_GEOPOLITICAL_ACTOR_VALUES:
+    tokens = [t for t in _normalized_lookup_key(name).split("_") if t]
+    core = [t for t in tokens if t not in _GENERIC_ACTOR_TOKENS]
+    if not core:
         return True
-
-    full_key = _normalized_lookup_key(name)
-    return any(marker in full_key for marker in _GENERIC_ACTOR_SUBSTRINGS)
+    core_key = "_".join(core)
+    return core_key in _UNKNOWN_THREAT_ACTOR_VALUES or core_key in _GENERIC_GEOPOLITICAL_ACTOR_VALUES
 
 
 def normalize_threat_actor_name(name: Optional[str]) -> Optional[str]:
