@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
 from uuid import uuid4
 
 from src.edu_cti_v2.db import create_session_factory
+from src.edu_cti_v2.env import get_int, get_optional_int
 from src.edu_cti_v2.models import PipelineRun, PipelineTask
 from src.edu_cti_v2.repositories import PipelineRunRepository, PipelineTaskRepository
 from src.edu_cti_v2.services.collection import V2CollectionService
@@ -48,8 +49,10 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         collect_kwargs={
             "groups": ["curated", "news", "rss", "api"],
             "incremental": False,
-            "max_pages": None,
-            "rss_max_age_days": 3650,
+            # Coverage knobs: COLLECT_MAX_PAGES (unset = all pages) bounds the news
+            # page-walk; RSS_MAX_AGE_DAYS sets the historical RSS look-back.
+            "max_pages": get_optional_int("COLLECT_MAX_PAGES"),
+            "rss_max_age_days": get_int("RSS_MAX_AGE_DAYS", default=3650),
         },
         drain_tasks=True,
         worker_task_type=None,

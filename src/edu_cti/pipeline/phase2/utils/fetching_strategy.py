@@ -23,7 +23,7 @@ from bs4 import BeautifulSoup
 from src.edu_cti.core.db import get_connection, get_broken_urls, mark_urls_as_broken
 from src.edu_cti.core import metrics as _metrics
 from src.edu_cti.core.deduplication import normalize_url
-from src.edu_cti.core.config import EDUCATION_KEYWORDS, CYBER_KEYWORDS, SERP_MAX_ATTEMPTS
+from src.edu_cti.core.config import EDUCATION_KEYWORDS, CYBER_KEYWORDS, EDTECH_VENDOR_KEYWORDS, SERP_MAX_ATTEMPTS
 from src.edu_cti.core.oxylabs import OxylabsClient
 from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
 from src.edu_cti.sources.rss.googlenews_rss import _resolve_google_news_article_url
@@ -183,12 +183,17 @@ def _build_news_discovery_query(incident: Dict) -> Optional[Tuple[str, str]]:
     if title:
         title_lower = title.lower()
         has_edu = any(k.lower() in title_lower for k in EDUCATION_KEYWORDS)
+        has_vendor = any(k.lower() in title_lower for k in EDTECH_VENDOR_KEYWORDS)
         has_cyber = any(k.lower() in title_lower for k in CYBER_KEYWORDS)
-        if not has_edu or not has_cyber:
+        # Relaxed recall gate: require a cyber signal AND either an education term
+        # OR a named ed-tech vendor (supply-chain cascades often name only the vendor).
+        # The downstream LLM relevance gate is the precision backstop.
+        if not has_cyber or not (has_edu or has_vendor):
             logger.debug(
-                "News discovery skip: title lacks edu+cyber keywords "
-                "(edu=%s, cyber=%s): %r",
+                "News discovery skip: title lacks cyber+(edu|vendor) keywords "
+                "(edu=%s, vendor=%s, cyber=%s): %r",
                 has_edu,
+                has_vendor,
                 has_cyber,
                 title[:80],
             )
