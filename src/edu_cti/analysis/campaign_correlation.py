@@ -44,6 +44,17 @@ class PlatformIndicator:
     date_window_days: int = DATE_WINDOW_DEFAULT_DAYS
 
 
+# ── The vendor/platform canonical registry ──────────────────────────────────
+# THIS is the single place to fix vendor/platform confusion. Each entry maps a
+# real supply-chain product to its canonical (vendor=company, platform=product)
+# pair plus the text/vendor_name aliases that should resolve to it. A campaign's
+# vendor/platform lists are normalised through this registry (see
+# _canonicalize_vendors_platforms), so e.g. "Canvas" / "Canvas (Instructure)"
+# collapse to vendor "Instructure" + platform "Canvas". To fix a NEW case: hit
+# GET /api/admin/v2/data-quality/unrecognized-vendors to see vendor strings that
+# match nothing here, then add one PlatformIndicator line below. Do NOT add
+# downstream affected orgs (National Student Clearinghouse, TIAA, CDW, ...) —
+# they are victims, not platforms, and must remain plain vendor strings.
 PLATFORM_INDICATORS: tuple[PlatformIndicator, ...] = (
     PlatformIndicator(
         key="instructure_canvas",
@@ -63,7 +74,7 @@ PLATFORM_INDICATORS: tuple[PlatformIndicator, ...] = (
         key="powerschool",
         vendor="PowerSchool",
         platform="PowerSchool",
-        aliases=("powerschool",),
+        aliases=("powerschool", "powerschool sis", "powerschool student information system"),
         campaign_type="shared_vendor_incident",
         date_window_days=180,
     ),
@@ -71,7 +82,7 @@ PLATFORM_INDICATORS: tuple[PlatformIndicator, ...] = (
         key="moveit",
         vendor="Progress Software",
         platform="MOVEit",
-        aliases=("moveit", "progress moveit", "moveit transfer"),
+        aliases=("moveit", "progress moveit", "moveit transfer", "progress", "progress software"),
         campaign_type="mass_exploitation",
         date_window_days=420,
     ),
@@ -121,6 +132,106 @@ PLATFORM_INDICATORS: tuple[PlatformIndicator, ...] = (
         platform="Microsoft 365",
         aliases=("microsoft 365", "office 365", "exchange online"),
         campaign_type="actor_activity_wave",
+        date_window_days=90,
+    ),
+    # ── Supply-chain vendors/platforms observed in the corpus ────────────────
+    PlatformIndicator(
+        key="gti_careerconnect",
+        vendor="Group GTI",
+        platform="CareerConnect",
+        aliases=("careerconnect", "career connect", "group gti", "gti"),
+        campaign_type="shared_vendor_incident",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="accellion_fta",
+        vendor="Accellion",
+        platform="Accellion FTA",
+        aliases=(
+            "accellion",
+            "accellion fta",
+            "file transfer appliance",
+            "fta",
+            "kiteworks",
+        ),
+        campaign_type="mass_exploitation",
+        date_window_days=420,
+    ),
+    PlatformIndicator(
+        key="oracle_ebs",
+        vendor="Oracle",
+        platform="E-Business Suite",
+        aliases=(
+            "oracle e business suite",
+            "oracle ebs",
+            "e business suite",
+            "ebs",
+        ),
+        campaign_type="mass_exploitation",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="cleo_mft",
+        vendor="Cleo",
+        platform="Cleo MFT",
+        aliases=("cleo", "cleo harmony", "cleo vltrader", "cleo lexicom"),
+        campaign_type="mass_exploitation",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="pearson_aimsweb",
+        vendor="Pearson",
+        platform="AIMSweb",
+        aliases=("aimsweb", "aimsweb plus"),
+        campaign_type="shared_vendor_incident",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="powerschool_naviance",
+        vendor="PowerSchool",
+        platform="Naviance",
+        aliases=("naviance",),
+        campaign_type="shared_vendor_incident",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="follett",
+        vendor="Follett",
+        platform="Aspen",
+        aliases=("follett", "follett aspen", "follett destiny", "aspen sis", "destiny"),
+        campaign_type="shared_vendor_incident",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="anthology_blackboard",
+        vendor="Anthology",
+        platform="Blackboard",
+        aliases=("blackboard", "blackboard learn", "anthology"),
+        campaign_type="shared_vendor_incident",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="verkada",
+        vendor="Verkada",
+        platform="Verkada",
+        aliases=("verkada",),
+        campaign_type="shared_vendor_incident",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="mobile_guardian",
+        vendor="Mobile Guardian",
+        platform="Mobile Guardian",
+        aliases=("mobile guardian",),
+        campaign_type="shared_vendor_incident",
+        date_window_days=180,
+    ),
+    PlatformIndicator(
+        key="zoom",
+        vendor="Zoom",
+        platform="Zoom",
+        aliases=("zoom video", "zoom communications"),
+        campaign_type="shared_vendor_incident",
         date_window_days=90,
     ),
 )
@@ -416,17 +527,114 @@ def _build_vendor_name_to_indicator() -> dict[str, str]:
     its article body never literally says "Instructure"/"Canvas" — the text-token
     path (``_extract_platform_indicators``) alone misses those."""
 
+    # First indicator to claim a normalized name keeps it (``setdefault``), so a
+    # secondary product that re-uses a primary vendor's company name — PowerSchool
+    # appears as both the SIS (``powerschool``) and Naviance (``powerschool_naviance``)
+    # indicators — does not clobber the bare-company → primary mapping. Order the
+    # registry with the primary platform first for any shared vendor.
     mapping: dict[str, str] = {}
     for indicator in PLATFORM_INDICATORS:
-        mapping[_normalize_for_match(indicator.vendor)] = indicator.key
-        mapping[_normalize_for_match(indicator.platform)] = indicator.key
+        mapping.setdefault(_normalize_for_match(indicator.vendor), indicator.key)
+        mapping.setdefault(_normalize_for_match(indicator.platform), indicator.key)
         for alias in indicator.aliases:
-            mapping[_normalize_for_match(alias)] = indicator.key
+            mapping.setdefault(_normalize_for_match(alias), indicator.key)
     mapping.pop("", None)
     return mapping
 
 
 VENDOR_NAME_TO_INDICATOR = _build_vendor_name_to_indicator()
+
+
+def _indicator_key_for_vendor(value: str) -> str | None:
+    """Match a (possibly messy) vendor string to a platform indicator.
+
+    Tries the whole normalized string, then each parenthesis/slash/comma-separated
+    part, so product-name-as-vendor strings the LLM produces — ``"Canvas"`` or
+    ``"Canvas (Instructure)"`` — resolve to the Instructure/Canvas indicator."""
+    norm = _normalize_for_match(value)
+    if norm in VENDOR_NAME_TO_INDICATOR:
+        return VENDOR_NAME_TO_INDICATOR[norm]
+    for part in re.split(r"[()/,]", value or ""):
+        pn = _normalize_for_match(part)
+        if pn and pn in VENDOR_NAME_TO_INDICATOR:
+            return VENDOR_NAME_TO_INDICATOR[pn]
+    return None
+
+
+def _split_vendor_entities(value: str) -> list[str]:
+    """Split a raw vendor string into individual entities on top-level commas.
+
+    ``vendor_name`` is built by comma-joining the LLM's ``third_parties_involved``
+    list (``json_to_schema_mapper.py``), so a single field routinely mixes the
+    breached vendor with downstream victims — ``"MOVEit (Progress), NSC, TIAA"``.
+    Splitting first lets each entity be canonicalised (or kept) on its own, instead
+    of one product match (``moveit``) swallowing the whole string and dropping NSC /
+    TIAA. Commas *inside* parentheses are not split points (``"Acme (a, b) Corp"``
+    stays one entity)."""
+    if not value:
+        return []
+    parts: list[str] = []
+    buf: list[str] = []
+    depth = 0
+    for ch in value:
+        if ch == "(":
+            depth += 1
+            buf.append(ch)
+        elif ch == ")":
+            depth = max(0, depth - 1)
+            buf.append(ch)
+        elif ch == "," and depth == 0:
+            parts.append("".join(buf).strip())
+            buf = []
+        else:
+            buf.append(ch)
+    parts.append("".join(buf).strip())
+    return [p for p in parts if p]
+
+
+def _strip_descriptive_parenthetical(entity: str) -> str:
+    """Drop a trailing ``(...)`` that merely *describes* an unknown vendor.
+
+    ``"SureFire (cybersecurity contractor)"`` → ``"SureFire"``. Only applied to
+    entities that did not resolve to a registry indicator, and never when the
+    parenthetical names a *known* company (so ``"Foo (Instructure)"`` is left for
+    the registry to handle rather than mangled)."""
+    match = re.search(r"\s*\(([^()]*)\)\s*$", entity)
+    if not match:
+        return entity.strip()
+    inner = match.group(1)
+    if _normalize_for_match(inner) in VENDOR_NAME_TO_INDICATOR:
+        return entity.strip()
+    return entity[: match.start()].strip()
+
+
+def _canonicalize_vendors_platforms(
+    vendors: Sequence[str], platforms: Sequence[str]
+) -> tuple[list[str], list[str]]:
+    """Normalise a campaign's vendor/platform lists through the indicator registry.
+
+    Each raw vendor string is first **split** into individual entities (a single
+    field often comma-joins the breached vendor with downstream victims), then each
+    entity is canonicalised independently: a known platform's *product* name (e.g.
+    Canvas) or a parenthetical alias (``Canvas (Instructure)``) collapses to the
+    canonical company (Instructure) in ``vendors`` and the product (Canvas) in
+    ``platforms`` — so a campaign no longer lists Canvas / Canvas (Instructure) /
+    Instructure as three vendors, and ``"MOVEit (Progress), NSC, TIAA"`` becomes
+    ``Progress Software`` (vendor) + ``MOVEit`` (platform) while NSC / TIAA survive
+    as their own plain vendor strings. Unknown vendors are kept verbatim apart from
+    a stripped *descriptive* parenthetical."""
+    out_vendors: list[str] = []
+    out_platforms: list[str] = list(platforms)
+    for raw in vendors:
+        for entity in _split_vendor_entities(raw):
+            key = _indicator_key_for_vendor(entity)
+            if key is not None:
+                indicator = PLATFORM_BY_KEY[key]
+                out_vendors.append(indicator.vendor)
+                out_platforms.append(indicator.platform)
+            else:
+                out_vendors.append(_strip_descriptive_parenthetical(entity))
+    return _dedupe(out_vendors), _dedupe(out_platforms)
 
 
 def _parse_date(value: str | date | datetime | None) -> date | None:
@@ -1200,6 +1408,10 @@ def build_campaign_outputs(
             actors = [value]
         elif kind == "campaign_name":
             campaign_names = [value]
+        # Collapse product-name-as-vendor strings (Canvas, "Canvas (Instructure)")
+        # to the canonical company + platform so a campaign lists Instructure once,
+        # not Canvas / Canvas (Instructure) / Instructure as separate vendors.
+        vendors, platforms = _canonicalize_vendors_platforms(vendors, platforms)
         campaign_type = _campaign_type(kind, value, platform_keys, cves, actors)
         name = _campaign_name(kind, value, campaign_type, platforms, actors, cves, campaign_names, year)
         campaign_id = _campaign_id(name, component)

@@ -283,6 +283,71 @@ class V2SourceHealthService:
             "source_discovery_metrics": result.get("source_discovery_metrics") or {},
         }
 
+    def get_unrecognized_vendors(
+        self, session: Session, *, limit: int = 100
+    ) -> dict[str, Any]:
+        """Self-audit: vendor entities that match no platform-indicator registry line.
+
+        Every canonical ``vendor_name`` is split into individual entities (the same
+        comma/paren-aware split the campaign canonicaliser uses) and each entity is
+        checked against ``VENDOR_NAME_TO_INDICATOR``. Entities that resolve to a known
+        indicator are dropped; the rest are reported with occurrence counts and a few
+        sample incidents. This is the workflow surface for "fix vendor/platform issues
+        like this": hit the endpoint, decide whether an unknown is a real product worth
+        a registry line (vs. a downstream victim org that should stay a plain string),
+        add a ``PlatformIndicator`` in ``campaign_correlation.py``, re-correlate.
+        Read-only — never mutates production data."""
+        from src.edu_cti.analysis.campaign_correlation import (
+            VENDOR_NAME_TO_INDICATOR,
+            _normalize_for_match,
+            _split_vendor_entities,
+            _strip_descriptive_parenthetical,
+        )
+
+        limit = max(1, min(int(limit), 500))
+        rows = _mapping_rows(
+            session,
+            """
+            SELECT id AS canonical_incident_id, institution_name, vendor_name
+            FROM canonical_incidents
+            WHERE status = 'open' AND vendor_name IS NOT NULL AND vendor_name <> ''
+            """,
+        )
+
+        unknown: dict[str, dict[str, Any]] = {}
+        scanned = 0
+        for row in rows:
+            scanned += 1
+            for entity in _split_vendor_entities(str(row.get("vendor_name") or "")):
+                norm = _normalize_for_match(entity)
+                if not norm or norm in VENDOR_NAME_TO_INDICATOR:
+                    continue
+                display = _strip_descriptive_parenthetical(entity)
+                bucket = unknown.setdefault(
+                    norm,
+                    {"vendor": display, "count": 0, "sample_incidents": []},
+                )
+                bucket["count"] += 1
+                if len(bucket["sample_incidents"]) < 5:
+                    bucket["sample_incidents"].append(
+                        {
+                            "canonical_incident_id": row.get("canonical_incident_id"),
+                            "institution_name": row.get("institution_name"),
+                            "raw_vendor_name": row.get("vendor_name"),
+                        }
+                    )
+
+        ranked = sorted(
+            unknown.values(), key=lambda item: (-item["count"], item["vendor"].lower())
+        )
+        return {
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "canonical_incidents_with_vendor": scanned,
+            "registered_indicator_count": len(set(VENDOR_NAME_TO_INDICATOR.values())),
+            "unrecognized_vendor_count": len(ranked),
+            "unrecognized_vendors": ranked[:limit],
+        }
+
     def _google_news_config(self) -> dict[str, Any]:
         countries = sorted({country for values in GOOGLE_NEWS_RSS_COUNTRIES_BY_LANG.values() for country in values})
         return {

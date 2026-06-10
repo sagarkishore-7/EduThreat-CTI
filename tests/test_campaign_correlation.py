@@ -395,6 +395,70 @@ def test_evidence_cve_consensus_keeps_multiply_reported_cve():
     assert out == ["CVE-2023-34362"]
 
 
+def test_canonicalize_collapses_product_name_vendors():
+    # Canvas / "Canvas (Instructure)" are the product, not the company: they must
+    # collapse to vendor Instructure + platform Canvas. CareerConnect resolves to its
+    # registered company Group GTI; PowerSchool stays a vendor.
+    from src.edu_cti.analysis.campaign_correlation import _canonicalize_vendors_platforms
+
+    vendors, platforms = _canonicalize_vendors_platforms(
+        ["Instructure", "Canvas (Instructure)", "CareerConnect (GTI)", "PowerSchool", "Canvas"],
+        ["Canvas", "PowerSchool"],
+    )
+    assert vendors == ["Instructure", "Group GTI", "PowerSchool"]
+    assert "Canvas" in platforms and "PowerSchool" in platforms
+    assert "CareerConnect" in platforms
+    assert "Canvas (Instructure)" not in vendors and "Canvas" not in vendors
+
+
+def test_canonicalize_splits_multi_entity_vendor_string():
+    # A single vendor field comma-joins the breached vendor with downstream victims;
+    # split first so the product match (MOVEit -> Progress Software) does not swallow
+    # NSC / TIAA, which survive as their own plain vendor strings.
+    from src.edu_cti.analysis.campaign_correlation import _canonicalize_vendors_platforms
+
+    vendors, platforms = _canonicalize_vendors_platforms(
+        ["MOVEit (Progress), NSC, TIAA"], []
+    )
+    assert vendors == ["Progress Software", "NSC", "TIAA"]
+    assert platforms == ["MOVEit"]
+
+
+def test_canonicalize_strips_descriptive_parenthetical_on_unknown_vendor():
+    # An unknown vendor's *descriptive* parenthetical is noise and is dropped, but a
+    # parenthetical naming a known company is left for the registry to resolve.
+    from src.edu_cti.analysis.campaign_correlation import _canonicalize_vendors_platforms
+
+    vendors, _ = _canonicalize_vendors_platforms(
+        ["SureFire (cybersecurity contractor)"], []
+    )
+    assert vendors == ["SureFire"]
+
+
+def test_canonicalize_registry_expansion_supply_chain_vendors():
+    # Newly registered supply-chain vendors resolve through their aliases.
+    from src.edu_cti.analysis.campaign_correlation import _indicator_key_for_vendor, PLATFORM_BY_KEY
+
+    def resolve(value: str) -> tuple[str, str]:
+        ind = PLATFORM_BY_KEY[_indicator_key_for_vendor(value)]
+        return ind.vendor, ind.platform
+
+    assert resolve("Accellion FTA") == ("Accellion", "Accellion FTA")
+    assert resolve("file transfer appliance") == ("Accellion", "Accellion FTA")
+    assert resolve("Oracle EBS") == ("Oracle", "E-Business Suite")
+    assert resolve("CareerConnect") == ("Group GTI", "CareerConnect")
+    assert resolve("Cleo MFT") == ("Cleo", "Cleo MFT")
+
+
+def test_canonicalize_shared_vendor_name_keeps_primary_platform():
+    # PowerSchool is both the SIS (primary) and Naviance indicators; the bare company
+    # name must resolve to the primary SIS, not the secondary product.
+    from src.edu_cti.analysis.campaign_correlation import _indicator_key_for_vendor, PLATFORM_BY_KEY
+
+    assert PLATFORM_BY_KEY[_indicator_key_for_vendor("PowerSchool")].platform == "PowerSchool"
+    assert PLATFORM_BY_KEY[_indicator_key_for_vendor("Naviance")].platform == "Naviance"
+
+
 def test_consensus_values_drops_single_member_cve():
     # The real-data "CVE-2025-618842" artifact is format-valid (6-digit tail)
     # but spurious; the >=2-member consensus rule is what removes such one-offs.
