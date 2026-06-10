@@ -1,7 +1,26 @@
 from src.edu_cti_v2.normalization import (
+    is_generic_actor,
     normalize_ransomware_family,
     normalize_threat_actor_name,
 )
+
+
+def test_is_generic_actor_drops_descriptive_labels_keeps_real_groups():
+    for junk in [
+        "criminal",
+        "criminals",
+        "Russian cyber-extortion",
+        "cyber extortionists",
+        "unknown actor",
+        "threat actors",
+        "Chinese",
+        "unidentified hackers",
+    ]:
+        assert is_generic_actor(junk) is True, junk
+        assert normalize_threat_actor_name(junk) is None, junk
+    for real in ["Cl0p", "Qilin", "ShinyHunters", "Scattered Spider", "LockBit 3.0", "Hunters International"]:
+        assert is_generic_actor(real) is False, real
+        assert normalize_threat_actor_name(real) is not None, real
 
 
 def test_threat_actor_suffix_variants_normalize_cleanly():
