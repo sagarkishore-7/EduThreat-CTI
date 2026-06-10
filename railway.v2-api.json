@@ -11,18 +11,16 @@
       "/alembic.ini",
       "/alembic/**",
       "/src/edu_cti/api/**",
+      "/src/edu_cti/analysis/**",
       "/src/edu_cti_v2/api_app.py",
       "/src/edu_cti_v2/api_server.py",
       "/src/edu_cti_v2/auth.py",
+      "/src/edu_cti_v2/env.py",
       "/src/edu_cti_v2/preflight_cli.py",
       "/src/edu_cti_v2/db/**",
       "/src/edu_cti_v2/models/**",
       "/src/edu_cti_v2/repositories/**",
-      "/src/edu_cti_v2/services/analytics.py",
-      "/src/edu_cti_v2/services/operations.py",
-      "/src/edu_cti_v2/services/preflight.py",
-      "/src/edu_cti_v2/services/read_models.py",
-      "/src/edu_cti_v2/services/research_metrics.py"
+      "/src/edu_cti_v2/services/**"
     ]
   },
   "deploy": {
