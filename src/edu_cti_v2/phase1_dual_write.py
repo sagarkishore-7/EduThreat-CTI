@@ -21,20 +21,14 @@ from src.edu_cti.core.sources import (
 from src.edu_cti_v2.db.connection import create_session_factory
 from src.edu_cti_v2.models import SourceIncident, SourceIncidentUrl
 from src.edu_cti_v2.repositories import SourceIncidentRepository
+from src.edu_cti_v2.env import get_env, get_flag
 from src.edu_cti_v2.services.intake import V2IntakeService
 
 logger = logging.getLogger(__name__)
 
-_PHASE1_DUAL_WRITE_ENV = "EDU_CTI_V2_PHASE1_DUAL_WRITE"
-
-
-def _env_flag(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
 def is_phase1_dual_write_enabled() -> bool:
     """Return True when Phase 1 should also write raw observations into v2."""
-    return _env_flag(_PHASE1_DUAL_WRITE_ENV, "0")
+    return get_flag("PHASE1_DUAL_WRITE", "EDU_CTI_V2_PHASE1_DUAL_WRITE", default=False)
 
 
 def _build_source_group_index() -> Dict[str, str]:
@@ -119,7 +113,7 @@ def build_source_incident_record(incident: BaseIncident, event_key: str) -> Sour
         source_name=incident.source,
         source_group=classify_source_group(incident.source),
         source_event_key=event_key,
-        collector_version=os.environ.get("EDU_CTI_V2_COLLECTOR_VERSION"),
+        collector_version=get_env("COLLECTOR_VERSION", "EDU_CTI_V2_COLLECTOR_VERSION"),
         collected_at=collected_at,
         source_published_at=source_published_at,
         raw_title=incident.title,

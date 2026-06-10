@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import os
 from dataclasses import dataclass
 from urllib.parse import quote_plus
 
-
-def _env_flag(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+from src.edu_cti_v2.env import get_env, get_flag, get_int
 
 
 def build_database_url(
@@ -56,37 +53,37 @@ class V2DatabaseSettings:
 
     @classmethod
     def from_env(cls) -> "V2DatabaseSettings":
-        database_url = os.environ.get("EDU_CTI_V2_DATABASE_URL")
+        # New unprefixed names with legacy EDU_CTI_V2_* fallbacks; DB_URL also
+        # falls back to the platform-standard DATABASE_URL.
+        driver = get_env("DB_DRIVER", "EDU_CTI_V2_DB_DRIVER", default="psycopg")
+        database_url = get_env("DB_URL", "EDU_CTI_V2_DATABASE_URL", "DATABASE_URL")
         if not database_url:
             database_url = build_database_url(
-                user=os.environ.get("EDU_CTI_V2_DB_USER", "postgres"),
-                password=os.environ.get("EDU_CTI_V2_DB_PASSWORD", "postgres"),
-                host=os.environ.get("EDU_CTI_V2_DB_HOST", "localhost"),
-                port=int(os.environ.get("EDU_CTI_V2_DB_PORT", "5432")),
-                database=os.environ.get("EDU_CTI_V2_DB_NAME", "eduthreat_cti_v2"),
-                driver=os.environ.get("EDU_CTI_V2_DB_DRIVER", "psycopg"),
+                user=get_env("DB_USER", "EDU_CTI_V2_DB_USER", default="postgres"),
+                password=get_env("DB_PASSWORD", "EDU_CTI_V2_DB_PASSWORD", default="postgres"),
+                host=get_env("DB_HOST", "EDU_CTI_V2_DB_HOST", default="localhost"),
+                port=get_int("DB_PORT", "EDU_CTI_V2_DB_PORT", default=5432),
+                database=get_env("DB_NAME", "EDU_CTI_V2_DB_NAME", default="eduthreat_cti_v2"),
+                driver=driver,
             )
-        database_url = normalize_database_url(
-            database_url,
-            default_driver=os.environ.get("EDU_CTI_V2_DB_DRIVER", "psycopg"),
-        )
+        database_url = normalize_database_url(database_url, default_driver=driver)
         alembic_database_url = normalize_database_url(
-            os.environ.get("ALEMBIC_DATABASE_URL", database_url),
-            default_driver=os.environ.get("EDU_CTI_V2_DB_DRIVER", "psycopg"),
+            get_env("ALEMBIC_DATABASE_URL", default=database_url),
+            default_driver=driver,
         )
 
         return cls(
             database_url=database_url,
             alembic_database_url=alembic_database_url,
-            echo_sql=_env_flag("EDU_CTI_V2_DB_ECHO", "0"),
-            pool_size=int(os.environ.get("EDU_CTI_V2_DB_POOL_SIZE", "5")),
-            max_overflow=int(os.environ.get("EDU_CTI_V2_DB_MAX_OVERFLOW", "5")),
-            pool_timeout=int(os.environ.get("EDU_CTI_V2_DB_POOL_TIMEOUT", "10")),
-            pool_recycle=int(os.environ.get("EDU_CTI_V2_DB_POOL_RECYCLE", "1800")),
-            statement_timeout_ms=int(os.environ.get("EDU_CTI_V2_DB_STATEMENT_TIMEOUT_MS", "30000")),
-            app_name=os.environ.get("EDU_CTI_V2_DB_APP_NAME", "eduthreat-cti-v2"),
-            schema_name=os.environ.get("EDU_CTI_V2_DB_SCHEMA", "public"),
-            task_lease_seconds=int(os.environ.get("EDU_CTI_V2_TASK_LEASE_SECONDS", "300")),
+            echo_sql=get_flag("DB_ECHO", "EDU_CTI_V2_DB_ECHO", default=False),
+            pool_size=get_int("DB_POOL_SIZE", "EDU_CTI_V2_DB_POOL_SIZE", default=5),
+            max_overflow=get_int("DB_MAX_OVERFLOW", "EDU_CTI_V2_DB_MAX_OVERFLOW", default=5),
+            pool_timeout=get_int("DB_POOL_TIMEOUT", "EDU_CTI_V2_DB_POOL_TIMEOUT", default=10),
+            pool_recycle=get_int("DB_POOL_RECYCLE", "EDU_CTI_V2_DB_POOL_RECYCLE", default=1800),
+            statement_timeout_ms=get_int("DB_STATEMENT_TIMEOUT_MS", "EDU_CTI_V2_DB_STATEMENT_TIMEOUT_MS", default=30000),
+            app_name=get_env("DB_APP_NAME", "EDU_CTI_V2_DB_APP_NAME", default="eduthreat-cti-v2"),
+            schema_name=get_env("DB_SCHEMA", "EDU_CTI_V2_DB_SCHEMA", default="public"),
+            task_lease_seconds=get_int("TASK_LEASE_SECONDS", "EDU_CTI_V2_TASK_LEASE_SECONDS", default=300),
         )
 
     @property

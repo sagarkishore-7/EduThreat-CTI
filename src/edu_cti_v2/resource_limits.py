@@ -19,6 +19,8 @@ from __future__ import annotations
 import logging
 import os
 
+from src.edu_cti_v2.env import get_env, get_int
+
 logger = logging.getLogger(__name__)
 
 
@@ -95,7 +97,7 @@ DEFAULT_MAX_ENRICH_WORKERS = 6
 
 def _local_ml_enabled() -> bool:
     """Whether the local ML extraction pre-pass runs (drives per-worker memory)."""
-    enable = os.environ.get("EDU_CTI_V2_ENABLE_LOCAL_ML", "").strip().lower()
+    enable = (get_env("ENABLE_LOCAL_ML", "EDU_CTI_V2_ENABLE_LOCAL_ML", default="") or "").strip().lower()
     disable = os.environ.get("DISABLE_ML_FEATURES", "").strip().lower()
     if enable in {"1", "true", "yes"}:
         return True
@@ -109,15 +111,9 @@ def _default_per_worker_mb() -> int:
     return DEFAULT_PER_WORKER_MB_WITH_ML if _local_ml_enabled() else DEFAULT_PER_WORKER_MB_NO_ML
 
 
-def _env_int(name: str) -> int | None:
-    raw = os.environ.get(name)
-    if raw is None or not raw.strip():
-        return None
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning("Invalid integer for %s=%r; ignoring", name, raw)
-        return None
+def _env_int(name: str, *aliases: str) -> int | None:
+    """First valid int among the new name then legacy aliases, else None."""
+    return get_int(name, *aliases, default=None)
 
 
 def resolve_enrichment_worker_count(requested: int | str | None = None) -> int:
@@ -131,7 +127,7 @@ def resolve_enrichment_worker_count(requested: int | str | None = None) -> int:
     ``auto`` / ``0`` / unset request ⇒ derive automatically.
     """
     # Explicit override (env wins over arg).
-    env_raw = os.environ.get("EDU_CTI_V2_WORKER_COUNT")
+    env_raw = get_env("WORKER_COUNT", "EDU_CTI_V2_WORKER_COUNT")
     candidates: list[int | str | None] = [env_raw, requested]
     for cand in candidates:
         if cand is None:
@@ -146,9 +142,9 @@ def resolve_enrichment_worker_count(requested: int | str | None = None) -> int:
         if explicit > 0:
             return explicit
 
-    model_floor = _env_int("EDU_CTI_V2_MODEL_FLOOR_MB") or DEFAULT_MODEL_FLOOR_MB
-    per_worker = _env_int("EDU_CTI_V2_PER_WORKER_MB") or _default_per_worker_mb()
-    cap = _env_int("EDU_CTI_V2_MAX_WORKERS") or DEFAULT_MAX_ENRICH_WORKERS
+    model_floor = _env_int("MODEL_FLOOR_MB", "EDU_CTI_V2_MODEL_FLOOR_MB") or DEFAULT_MODEL_FLOOR_MB
+    per_worker = _env_int("PER_WORKER_MB", "EDU_CTI_V2_PER_WORKER_MB") or _default_per_worker_mb()
+    cap = _env_int("MAX_WORKERS", "EDU_CTI_V2_MAX_WORKERS") or DEFAULT_MAX_ENRICH_WORKERS
 
     mem_mb = cgroup_memory_limit_mb()
     if mem_mb:
@@ -184,7 +180,7 @@ def memory_high_water_mb() -> float | None:
     7.6 GB container the guard fires at ~6.9 GB, too late to absorb a burst, so
     the container was OOM-killed before leasing paused.
     """
-    explicit = _env_int("EDU_CTI_V2_MAX_RSS_MB")
+    explicit = _env_int("MAX_RSS_MB", "EDU_CTI_V2_MAX_RSS_MB")
     if explicit and explicit > 0:
         return float(explicit)
     mem_mb = cgroup_memory_limit_mb()

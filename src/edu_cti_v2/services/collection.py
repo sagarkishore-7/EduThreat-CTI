@@ -22,6 +22,7 @@ from src.edu_cti.core.sources import (
     PAID_RSS_SOURCE_REGISTRY,
     RSS_SOURCE_REGISTRY,
 )
+from src.edu_cti_v2.env import get_flag, get_float, get_int
 from src.edu_cti.pipeline.phase1.api_sources import collect_api_incidents
 from src.edu_cti.pipeline.phase1.curated import collect_curated_incidents
 from src.edu_cti.pipeline.phase1.news import collect_news_incidents
@@ -46,48 +47,17 @@ _COLLECTORS = {
 }
 
 
-def _env_optional_int(name: str, default: Optional[int]) -> Optional[int]:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
+def _env_optional_int(name: str, default: Optional[int], *aliases: str) -> Optional[int]:
+    return get_int(name, *aliases, default=default)
 
 
-def _env_float(name: str, default: float) -> float:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return default
-    try:
-        return float(value)
-    except ValueError:
-        return default
-
-
-def _env_flag(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
-
-
-def _env_optional_flag(name: str) -> Optional[bool]:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return None
-    return value.strip().lower() in {"1", "true", "yes", "on"}
+def _env_float(name: str, default: float, *aliases: str) -> float:
+    return get_float(name, *aliases, default=default)
 
 
 def _default_include_paid_rss() -> bool:
     """Use Oxylabs source discovery only when explicitly enabled by env."""
-    for env_name in (
-        "EDU_CTI_INCLUDE_PAID_RSS",
-        "EDU_CTI_INCLUDE_OXYLABS_NEWS_SOURCE",
-        "EDU_CTI_OXYLABS_NEWS_ENABLED",
-    ):
-        value = _env_optional_flag(env_name)
-        if value is not None:
-            return value
-    return _env_flag("EDU_CTI_OXYLABS_ENABLED", "0")
+    return get_flag("OXYLABS_ENABLED", "EDU_CTI_OXYLABS_ENABLED", default=False)
 
 
 def _normalize_groups(groups: Optional[Sequence[str]]) -> list[str]:
@@ -224,19 +194,26 @@ class V2CollectionService:
         backlog_poll_seconds: float = 0.0,
     ) -> dict:
         effective_include_paid_rss = _default_include_paid_rss() if include_paid_rss is None else include_paid_rss
-        fetch_backlog_limit = _env_optional_int("EDU_CTI_V2_FETCH_BACKLOG_LIMIT", fetch_backlog_limit)
-        resolve_backlog_limit = _env_optional_int("EDU_CTI_V2_RESOLVE_BACKLOG_LIMIT", resolve_backlog_limit)
+        fetch_backlog_limit = _env_optional_int(
+            "FETCH_BACKLOG_LIMIT", fetch_backlog_limit, "EDU_CTI_V2_FETCH_BACKLOG_LIMIT"
+        )
+        resolve_backlog_limit = _env_optional_int(
+            "RESOLVE_BACKLOG_LIMIT", resolve_backlog_limit, "EDU_CTI_V2_RESOLVE_BACKLOG_LIMIT"
+        )
         fetch_backlog_resume_ratio = _env_float(
-            "EDU_CTI_V2_FETCH_BACKLOG_RESUME_RATIO",
+            "FETCH_BACKLOG_RESUME_RATIO",
             fetch_backlog_resume_ratio if fetch_backlog_resume_ratio > 0 else 0.6,
+            "EDU_CTI_V2_FETCH_BACKLOG_RESUME_RATIO",
         )
         resolve_backlog_resume_ratio = _env_float(
-            "EDU_CTI_V2_RESOLVE_BACKLOG_RESUME_RATIO",
+            "RESOLVE_BACKLOG_RESUME_RATIO",
             resolve_backlog_resume_ratio if resolve_backlog_resume_ratio > 0 else 0.6,
+            "EDU_CTI_V2_RESOLVE_BACKLOG_RESUME_RATIO",
         )
         backlog_poll_seconds = _env_float(
-            "EDU_CTI_V2_BACKLOG_POLL_SECONDS",
+            "BACKLOG_POLL_SECONDS",
             backlog_poll_seconds if backlog_poll_seconds > 0 else 5.0,
+            "EDU_CTI_V2_BACKLOG_POLL_SECONDS",
         )
         if fetch_backlog_limit is None:
             fetch_backlog_limit = 500
