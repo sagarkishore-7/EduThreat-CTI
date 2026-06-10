@@ -126,6 +126,12 @@ CRITICAL OUTPUT REQUIREMENTS:
    - threat_actor_name: Only if the article explicitly names the actor or group. Do NOT
      infer from the ransomware family (e.g., "LockBit attacked" → actor is LockBit; but
      "ransomware attack occurred" → actor is null).
+   - Output null (NOT a generic label) when the article only describes the attacker in
+     generic terms. Never output values like "criminal(s)", "cybercriminal(s)",
+     "cyber-extortion"/"cyber extortionists", "hackers", "attackers", "unauthorized actor",
+     "unknown actor", "threat actor(s)", "ransomware gang/group" (without a specific name),
+     or a bare nationality ("Russian", "Chinese", "Iranian", "North Korean"). These are
+     descriptions, not attributions — set threat_actor_name to null.
    - ransomware_family: Only if explicitly named in the article. Do NOT guess the family
      from the attack description alone.
    - threat_actor_origin_country: Only if explicitly stated. Do NOT infer from known

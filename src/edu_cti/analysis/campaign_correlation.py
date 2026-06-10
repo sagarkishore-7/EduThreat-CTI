@@ -257,17 +257,54 @@ ACTOR_ALIASES: dict[str, tuple[str, ...]] = {
     "Play": ("play ransomware", "play group"),
 }
 
+# Generic, non-attributive actor labels dropped from campaign actor lists. Mirrors
+# `_UNKNOWN_THREAT_ACTOR_VALUES` / `_GENERIC_ACTOR_SUBSTRINGS` in
+# `src/edu_cti_v2/normalization.py` (kept as a local copy to avoid an
+# edu_cti -> edu_cti_v2 reverse import). Keep the two in sync.
 GENERIC_ACTOR_VALUES = {
     "hacking",
     "unauthorized actor",
+    "unauthorised actor",
     "unknown actor",
     "unknown criminal actors",
     "cybercriminals",
     "cybercriminal",
+    "cyber criminal",
+    "cyber criminals",
+    "criminal",
+    "criminals",
+    "attacker",
     "attackers",
     "threat actors",
     "threat actor",
+    "cyber extortion",
+    "cyber extortionist",
+    "cyber extortionists",
+    "extortion",
+    "extortion group",
+    "extortion gang",
+    "extortionist",
+    "extortionists",
+    "ransomware group",
+    "ransomware gang",
+    "ransomware operator",
+    "ransomware operators",
+    "unidentified",
+    "unidentified actor",
+    "unidentified actors",
+    "unnamed",
+    "unnamed actor",
 }
+
+# Substring markers flagging a descriptive (non-attributive) actor phrase that resolves
+# to no known alias — catches forms like "russian cyber-extortion group".
+_GENERIC_ACTOR_SUBSTRINGS = (
+    "extortion",
+    "criminal",
+    "hacking",
+    "unidentified",
+    "unnamed",
+)
 
 
 GENERIC_NEGATIVE_TERMS = (
@@ -717,6 +754,29 @@ def _extract_platform_indicators(text: str) -> tuple[list[str], list[str], list[
     return _dedupe(vendors), _dedupe(platforms), _dedupe(keys)
 
 
+_KNOWN_ACTOR_NORMALIZED = (
+    {_normalize_for_match(name) for name in ACTOR_ALIASES}
+    | {_normalize_for_match(alias) for aliases in ACTOR_ALIASES.values() for alias in aliases}
+) - {""}
+
+
+def _is_generic_actor(value: str) -> bool:
+    """Generic (non-attributive) actor label — dropped from campaign actor lists.
+
+    A known actor (a canonical `ACTOR_ALIASES` name) is never generic. Otherwise the
+    label is generic if it matches an enumerated junk value or, for an unattributed
+    label, contains a generic marker substring (so "russian cyber-extortion group" is
+    dropped even though its exact form isn't enumerated)."""
+    norm = _normalize_for_match(value)
+    if not norm:
+        return True
+    if norm in _KNOWN_ACTOR_NORMALIZED:
+        return False
+    if norm in GENERIC_ACTOR_VALUES:
+        return True
+    return any(marker in norm for marker in _GENERIC_ACTOR_SUBSTRINGS)
+
+
 def _extract_actors(text: str, explicit_values: Sequence[Any]) -> list[str]:
     actors = list(explicit_values)
     normalized = _normalize_for_match(text)
@@ -725,11 +785,7 @@ def _extract_actors(text: str, explicit_values: Sequence[Any]) -> list[str]:
             if re.search(rf"\b{re.escape(_normalize_for_match(alias))}\b", normalized):
                 actors.append(actor)
                 break
-    return [
-        actor
-        for actor in _dedupe(actors)
-        if _normalize_for_match(actor) not in GENERIC_ACTOR_VALUES
-    ]
+    return [actor for actor in _dedupe(actors) if not _is_generic_actor(actor)]
 
 
 def _extract_negative_flags(text: str) -> list[str]:

@@ -362,6 +362,66 @@ class V2DataQualityService:
             session.commit()
             return result
 
+    def normalize_actor_names(
+        self, session: Session, *, limit: int | None = None
+    ) -> dict[str, Any]:
+        """Re-apply actor normalization to stored canonical `threat_actor_name` values.
+
+        The threat-actor analytics already normalize at read time, but the raw column
+        still carries generic/junk labels (`criminal`, `Russian cyber-extortion`, …) and
+        un-canonicalised aliases. This recomputes `normalize_threat_actor_name` for every
+        open canonical incident and writes the result back — nulling generic labels and
+        collapsing aliases to their canonical form — so the stored data matches what the
+        UI shows. Idempotent: re-running it is a no-op once clean."""
+        from src.edu_cti_v2.models import CanonicalIncident
+        from src.edu_cti_v2.normalization import normalize_threat_actor_name
+
+        stmt = (
+            select(CanonicalIncident)
+            .where(CanonicalIncident.status == "open")
+            .where(CanonicalIncident.threat_actor_name.is_not(None))
+            .where(CanonicalIncident.threat_actor_name != "")
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+
+        scanned = 0
+        nulled = 0
+        renamed = 0
+        unchanged = 0
+        samples: list[dict[str, Any]] = []
+        for incident in session.execute(stmt).scalars():
+            scanned += 1
+            original = incident.threat_actor_name
+            normalized = normalize_threat_actor_name(original)
+            if normalized == original:
+                unchanged += 1
+                continue
+            incident.threat_actor_name = normalized
+            if normalized is None:
+                nulled += 1
+            else:
+                renamed += 1
+            if len(samples) < 25:
+                samples.append({"from": original, "to": normalized})
+
+        return {
+            "scanned": scanned,
+            "nulled": nulled,
+            "renamed": renamed,
+            "unchanged": unchanged,
+            "changed": nulled + renamed,
+            "samples": samples,
+        }
+
+    def run_actor_normalization(self, *, limit: int | None = None) -> dict[str, Any]:
+        if self.session_factory is None:
+            raise RuntimeError("session_factory is required for run_actor_normalization")
+        with self.session_factory() as session:
+            result = self.normalize_actor_names(session, limit=limit)
+            session.commit()
+            return result
+
     def promote_drifted_unselected_articles(
         self,
         session: Session,

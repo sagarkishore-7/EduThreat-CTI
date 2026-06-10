@@ -355,6 +355,18 @@ def run_v2_data_quality_sweep(
     return data_quality.run_sweep(limit=limit)
 
 
+@router.post("/data-quality/normalize-actors")
+def run_v2_actor_normalization(
+    limit: Optional[int] = Query(None, ge=1, le=200000),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """Re-apply actor normalization to stored canonical threat_actor_name values.
+
+    Nulls generic/junk labels and collapses aliases to canonical form. Idempotent."""
+    return data_quality.run_actor_normalization(limit=limit)
+
+
 @router.post("/data-quality/promote-drift-candidates")
 def promote_v2_drift_candidates(
     limit: int = Query(500, ge=1, le=10000),

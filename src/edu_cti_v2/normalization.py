@@ -259,7 +259,51 @@ _UNKNOWN_THREAT_ACTOR_VALUES = {
     "threat_actor",
     "threat_actors",
     "unknown_ransomware_gang",
+    "criminal",
+    "criminals",
+    "cyber_criminal",
+    "cyber_criminals",
+    "cyber_extortion",
+    "cyber_extortionist",
+    "cyber_extortionists",
+    "extortion",
+    "extortion_group",
+    "extortion_gang",
+    "extortionist",
+    "extortionists",
+    "ransomware_group",
+    "ransomware_gang",
+    "ransomware_operator",
+    "ransomware_operators",
+    "ransomware_affiliate",
+    "ransomware_affiliates",
+    "attacker",
+    "attackers",
+    "unauthorized_actor",
+    "unauthorised_actor",
+    "unidentified",
+    "unidentified_actor",
+    "unidentified_actors",
+    "unidentified_group",
+    "unnamed",
+    "unnamed_actor",
+    "unnamed_group",
 }
+
+# Substring markers that, when present in an actor label that resolves to no known
+# alias, mark it as a generic description rather than an attribution (so descriptive
+# phrases like "Russian cyber-extortion group" are dropped even though their exact
+# normalized form isn't enumerated above).
+_GENERIC_ACTOR_SUBSTRINGS = (
+    "extortion",
+    "cybercrim",
+    "cyber_crim",
+    "criminal",
+    "hacking",
+    "unidentified",
+    "unnamed",
+    "unknown",
+)
 
 _GENERIC_GEOPOLITICAL_ACTOR_VALUES = {
     "china",
@@ -350,14 +394,42 @@ def normalize_ransomware_family(name: Optional[str]) -> Optional[str]:
     return stripped or None
 
 
+def is_generic_actor(name: Optional[str]) -> bool:
+    """True when an actor label is a generic description, not an attribution.
+
+    A known actor (resolves to a `_THREAT_ACTOR_ALIASES` entry or a LockBit variant) is
+    never generic. Otherwise the label is generic if it matches an enumerated junk value
+    (`_UNKNOWN_THREAT_ACTOR_VALUES`), a bare nationality (`_GENERIC_GEOPOLITICAL_ACTOR_VALUES`),
+    or — for unattributed labels — contains a generic marker substring (`extortion`,
+    `criminal`, `hacking`, `unidentified`, …). This catches descriptive phrases such as
+    "Russian cyber-extortion group" whose exact normalized form isn't enumerated.
+    """
+    if not name or not name.strip():
+        return True
+
+    for candidate in _lookup_candidate_keys(name):
+        if candidate in _THREAT_ACTOR_ALIASES or candidate.startswith("lockbit"):
+            return False
+        if candidate in _UNKNOWN_THREAT_ACTOR_VALUES or candidate in _GENERIC_GEOPOLITICAL_ACTOR_VALUES:
+            return True
+
+    reduced = _strip_descriptor_suffix_text(name.strip()) or name.strip()
+    reduced_key = _normalized_lookup_key(reduced)
+    if reduced_key in _UNKNOWN_THREAT_ACTOR_VALUES or reduced_key in _GENERIC_GEOPOLITICAL_ACTOR_VALUES:
+        return True
+
+    full_key = _normalized_lookup_key(name)
+    return any(marker in full_key for marker in _GENERIC_ACTOR_SUBSTRINGS)
+
+
 def normalize_threat_actor_name(name: Optional[str]) -> Optional[str]:
     if not name or not name.strip():
+        return None
+    if is_generic_actor(name):
         return None
 
     stripped = name.strip()
     for candidate in _lookup_candidate_keys(stripped):
-        if candidate in _UNKNOWN_THREAT_ACTOR_VALUES:
-            return None
         canonical = _THREAT_ACTOR_ALIASES.get(candidate)
         if canonical:
             return canonical
@@ -365,11 +437,7 @@ def normalize_threat_actor_name(name: Optional[str]) -> Optional[str]:
             return "LockBit"
 
     reduced = _strip_descriptor_suffix_text(stripped)
-    if reduced:
-        reduced_key = _normalized_lookup_key(reduced)
-        if reduced_key in _UNKNOWN_THREAT_ACTOR_VALUES or reduced_key in _GENERIC_GEOPOLITICAL_ACTOR_VALUES:
-            return None
-        if reduced != stripped:
-            return reduced
+    if reduced and reduced != stripped:
+        return reduced
 
     return stripped
