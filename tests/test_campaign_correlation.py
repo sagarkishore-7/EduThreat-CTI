@@ -395,6 +395,21 @@ def test_evidence_cve_consensus_keeps_multiply_reported_cve():
     assert out == ["CVE-2023-34362"]
 
 
+def test_canonicalize_collapses_product_name_vendors():
+    # Canvas / "Canvas (Instructure)" are the product, not the company: they must
+    # collapse to vendor Instructure + platform Canvas, while an unknown vendor is
+    # preserved verbatim.
+    from src.edu_cti.analysis.campaign_correlation import _canonicalize_vendors_platforms
+
+    vendors, platforms = _canonicalize_vendors_platforms(
+        ["Instructure", "Canvas (Instructure)", "CareerConnect (GTI)", "PowerSchool", "Canvas"],
+        ["Canvas", "PowerSchool"],
+    )
+    assert vendors == ["Instructure", "CareerConnect (GTI)", "PowerSchool"]
+    assert "Canvas" in platforms and "PowerSchool" in platforms
+    assert "Canvas (Instructure)" not in vendors and "Canvas" not in vendors
+
+
 def test_consensus_values_drops_single_member_cve():
     # The real-data "CVE-2025-618842" artifact is format-valid (6-digit tail)
     # but spurious; the >=2-member consensus rule is what removes such one-offs.

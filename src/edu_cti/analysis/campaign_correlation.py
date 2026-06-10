@@ -429,6 +429,46 @@ def _build_vendor_name_to_indicator() -> dict[str, str]:
 VENDOR_NAME_TO_INDICATOR = _build_vendor_name_to_indicator()
 
 
+def _indicator_key_for_vendor(value: str) -> str | None:
+    """Match a (possibly messy) vendor string to a platform indicator.
+
+    Tries the whole normalized string, then each parenthesis/slash/comma-separated
+    part, so product-name-as-vendor strings the LLM produces — ``"Canvas"`` or
+    ``"Canvas (Instructure)"`` — resolve to the Instructure/Canvas indicator."""
+    norm = _normalize_for_match(value)
+    if norm in VENDOR_NAME_TO_INDICATOR:
+        return VENDOR_NAME_TO_INDICATOR[norm]
+    for part in re.split(r"[()/,]", value or ""):
+        pn = _normalize_for_match(part)
+        if pn and pn in VENDOR_NAME_TO_INDICATOR:
+            return VENDOR_NAME_TO_INDICATOR[pn]
+    return None
+
+
+def _canonicalize_vendors_platforms(
+    vendors: Sequence[str], platforms: Sequence[str]
+) -> tuple[list[str], list[str]]:
+    """Normalise a campaign's vendor/platform lists through the indicator registry.
+
+    A known platform's *product* name (e.g. Canvas) or a parenthetical alias
+    (``Canvas (Instructure)``) that the LLM mis-extracted into ``vendor_name`` is
+    collapsed to the canonical company (Instructure) in ``vendors`` and the product
+    (Canvas) in ``platforms`` — so a campaign no longer lists Canvas / Canvas
+    (Instructure) / Instructure as three separate vendors. Unknown vendors are kept
+    verbatim."""
+    out_vendors: list[str] = []
+    out_platforms: list[str] = list(platforms)
+    for v in vendors:
+        key = _indicator_key_for_vendor(v)
+        if key is not None:
+            indicator = PLATFORM_BY_KEY[key]
+            out_vendors.append(indicator.vendor)
+            out_platforms.append(indicator.platform)
+        else:
+            out_vendors.append(v)
+    return _dedupe(out_vendors), _dedupe(out_platforms)
+
+
 def _parse_date(value: str | date | datetime | None) -> date | None:
     if value is None:
         return None
@@ -1200,6 +1240,10 @@ def build_campaign_outputs(
             actors = [value]
         elif kind == "campaign_name":
             campaign_names = [value]
+        # Collapse product-name-as-vendor strings (Canvas, "Canvas (Instructure)")
+        # to the canonical company + platform so a campaign lists Instructure once,
+        # not Canvas / Canvas (Instructure) / Instructure as separate vendors.
+        vendors, platforms = _canonicalize_vendors_platforms(vendors, platforms)
         campaign_type = _campaign_type(kind, value, platform_keys, cves, actors)
         name = _campaign_name(kind, value, campaign_type, platforms, actors, cves, campaign_names, year)
         campaign_id = _campaign_id(name, component)
