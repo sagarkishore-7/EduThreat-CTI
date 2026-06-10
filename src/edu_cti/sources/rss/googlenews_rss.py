@@ -25,6 +25,8 @@ from datetime import datetime, timedelta
 from typing import Callable, List, Optional, Tuple
 from urllib.parse import quote, urlparse
 
+from src.edu_cti_v2.env import get_float
+
 import requests
 from bs4 import BeautifulSoup
 
@@ -68,7 +70,7 @@ _GOOGLE_NEWS_DECODE_COOKIES = {
 
 def _google_news_decode_timeout() -> float:
     try:
-        return max(1.0, float(os.environ.get("EDU_CTI_GOOGLE_NEWS_DECODE_TIMEOUT_SECONDS", "4")))
+        return max(1.0, get_float("GOOGLE_NEWS_DECODE_TIMEOUT_SECONDS", "EDU_CTI_GOOGLE_NEWS_DECODE_TIMEOUT_SECONDS", default=4.0))
     except (TypeError, ValueError):
         return 4.0
 

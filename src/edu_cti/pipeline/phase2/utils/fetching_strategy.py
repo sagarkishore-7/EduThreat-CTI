@@ -24,6 +24,7 @@ from src.edu_cti.core.db import get_connection, get_broken_urls, mark_urls_as_br
 from src.edu_cti.core import metrics as _metrics
 from src.edu_cti.core.deduplication import normalize_url
 from src.edu_cti.core.config import EDUCATION_KEYWORDS, CYBER_KEYWORDS, EDTECH_VENDOR_KEYWORDS, SERP_MAX_ATTEMPTS
+from src.edu_cti_v2.env import get_int
 from src.edu_cti.core.oxylabs import OxylabsClient
 from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
 from src.edu_cti.sources.rss.googlenews_rss import _resolve_google_news_article_url
@@ -137,14 +138,14 @@ def filter_fetchable_urls(urls: List[str]) -> List[str]:
 
 def _news_discovery_max_results() -> int:
     try:
-        return max(1, int(os.environ.get("EDU_CTI_NEWS_DISCOVERY_MAX_RESULTS", "5")))
+        return max(1, get_int("NEWS_DISCOVERY_MAX_RESULTS", "EDU_CTI_NEWS_DISCOVERY_MAX_RESULTS", default=5))
     except (TypeError, ValueError):
         return 5
 
 
 def _news_discovery_decode_limit(max_results: int) -> int:
     try:
-        configured = int(os.environ.get("EDU_CTI_NEWS_DISCOVERY_DECODE_LIMIT", "20"))
+        configured = get_int("NEWS_DISCOVERY_DECODE_LIMIT", "EDU_CTI_NEWS_DISCOVERY_DECODE_LIMIT", default=20)
     except (TypeError, ValueError):
         configured = 20
     return max(max_results, configured)

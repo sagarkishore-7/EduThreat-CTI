@@ -29,6 +29,8 @@ import threading
 import time
 from typing import Callable, Optional, TypeVar
 
+from src.edu_cti_v2.env import get_env
+
 logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
@@ -63,7 +65,7 @@ class Heartbeat:
 def source_timeout_seconds() -> int:
     """Per-source idle (no-progress) budget, overridable via
     ``EDU_CTI_SOURCE_TIMEOUT_SECONDS``."""
-    raw = os.environ.get("EDU_CTI_SOURCE_TIMEOUT_SECONDS", "").strip()
+    raw = (get_env("SOURCE_TIMEOUT_SECONDS", "EDU_CTI_SOURCE_TIMEOUT_SECONDS", default="") or "").strip()
     if raw:
         try:
             value = int(raw)

@@ -4,6 +4,8 @@ from importlib.resources import files
 from pathlib import Path
 import datetime
 import re
+
+from src.edu_cti_v2.env import get_env
 from typing import Optional, Tuple, List
 
 
@@ -102,7 +104,7 @@ def _default_edu_keywords_resource():
 def load_edu_keywords(config_path: Optional[str] = None) -> List[str]:
     global _EDU_KEYWORDS_CACHE, _EDU_KEYWORDS_CACHE_KEY
 
-    override_path = config_path or os.getenv("EDU_CTI_KEYWORDS_PATH")
+    override_path = config_path or get_env("KEYWORDS_PATH", "EDU_CTI_KEYWORDS_PATH")
     cache_key = override_path or "package:src.edu_cti/config/edu_keywords.json"
     if _EDU_KEYWORDS_CACHE and _EDU_KEYWORDS_CACHE_KEY == cache_key:
         return _EDU_KEYWORDS_CACHE

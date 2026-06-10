@@ -25,6 +25,8 @@ from __future__ import annotations
 import logging
 import os
 import re
+
+from src.edu_cti_v2.env import get_env
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -60,7 +62,7 @@ def _local_ml_disabled() -> bool:
     if explicit_disable in ("1", "true", "yes", "on"):
         return True
     if os.environ.get("RAILWAY_ENVIRONMENT"):
-        explicit_enable = os.environ.get("EDU_CTI_V2_ENABLE_LOCAL_ML", "").strip().lower()
+        explicit_enable = (get_env("ENABLE_LOCAL_ML", "EDU_CTI_V2_ENABLE_LOCAL_ML", default="") or "").strip().lower()
         return explicit_enable not in ("1", "true", "yes", "on")
     return False
 

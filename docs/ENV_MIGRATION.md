@@ -67,8 +67,35 @@ These legacy aliases are no longer read (they all duplicated `OXYLABS_ENABLED`):
 `EDU_CTI_INCLUDE_PAID_RSS`, `EDU_CTI_INCLUDE_OXYLABS_NEWS_SOURCE`,
 `EDU_CTI_OXYLABS_NEWS_ENABLED`. Delete them from Railway.
 
-## Batch 2 — `edu_cti` phase-2 fetch / discovery / extraction (pending)
-The remaining single-prefix `EDU_CTI_*` vars (fetch tiers, Scrapling/browser,
-discovery, timeouts, logging) are migrated in a follow-up; their legacy names keep
-working until then. Unprefixed standard names (`PORT`, `LOG_LEVEL`, `OLLAMA_*`,
-`OXYLABS_USERNAME/PASSWORD`, `EDUTHREAT_ADMIN_*`, `DATABASE_URL`) are unchanged.
+## Batch 2 — `edu_cti` phase-2 fetch / discovery / extraction (done)
+Every remaining `EDU_CTI_*` read now goes through `get_env` with the unprefixed
+name first and the legacy `EDU_CTI_*` fallback. **A full-repo sweep confirms no
+bare `EDU_CTI_` env reads remain.** New names (drop the `EDU_CTI_` prefix):
+
+| New name | Legacy name |
+|---|---|
+| `NEWS_DISCOVERY_MAX_RESULTS` | `EDU_CTI_NEWS_DISCOVERY_MAX_RESULTS` |
+| `NEWS_DISCOVERY_DECODE_LIMIT` | `EDU_CTI_NEWS_DISCOVERY_DECODE_LIMIT` |
+| `GOOGLE_NEWS_DECODE_TIMEOUT_SECONDS` | `EDU_CTI_GOOGLE_NEWS_DECODE_TIMEOUT_SECONDS` |
+| `GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS` | `EDU_CTI_GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS` |
+| `SOURCE_TIMEOUT_SECONDS` | `EDU_CTI_SOURCE_TIMEOUT_SECONDS` |
+| `UNIFY_LISTING_FETCH` | `EDU_CTI_UNIFY_LISTING_FETCH` |
+| `KEYWORDS_PATH` | `EDU_CTI_KEYWORDS_PATH` |
+| `DATA_DIR` | `EDU_CTI_DATA_DIR` |
+| `DB_PATH` | `EDU_CTI_DB_PATH` |
+| `METRICS_DB_PATH` | `EDU_CTI_METRICS_DB_PATH` |
+| `LOG_LEVEL` | `EDU_CTI_LOG_LEVEL` (also the standard `LOG_LEVEL`) |
+| `LOG_FILE` | `EDU_CTI_LOG_FILE` |
+| `FETCH_TIER_PROFILE` | `EDU_CTI_FETCH_TIER_PROFILE` |
+| `FETCH_ENABLE_*` / `FETCH_DISABLE_*` | `EDU_CTI_FETCH_ENABLE_*` / `EDU_CTI_FETCH_DISABLE_*` |
+| `ARTICLE_MIN_CONTENT_CHARS` | `EDU_CTI_ARTICLE_MIN_CONTENT_CHARS` |
+| `DATABREACHES_ARTICLE_MIN_CONTENT_CHARS` | `EDU_CTI_DATABREACHES_ARTICLE_MIN_CONTENT_CHARS` |
+| `SCRAPLING_*` (browser mode, proxy, impersonate, cdp, trigger reasons, …) | `EDU_CTI_SCRAPLING_*` |
+| `DYNAMIC_BLOCK_FAILURE_THRESHOLD` | `EDU_CTI_DYNAMIC_BLOCK_FAILURE_THRESHOLD` |
+
+In `article_fetcher.py` the tier-enable flags route through prefix-aware helpers,
+so every `EDU_CTI_FETCH_*` / `EDU_CTI_SCRAPLING_*` flag responds to its unprefixed
+name automatically.
+
+Unchanged (already standard/unprefixed): `PORT`, `OLLAMA_*`, `OXYLABS_USERNAME/PASSWORD`,
+`EDUTHREAT_ADMIN_*`, `DATABASE_URL`, `PHASE2_*`, `RAILWAY_*`, `DISABLE_ML_FEATURES`.
