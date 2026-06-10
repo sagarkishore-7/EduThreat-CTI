@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from src.edu_cti.core.discovery_policy import BROAD_CYBER_SOURCE_DOMAINS
+from src.edu_cti_v2.env import get_int  # backward-compatible env access (new name → legacy)
 
 # Load .env file if present (must be before any os.getenv calls)
 try:
@@ -431,7 +432,11 @@ GOOGLE_NEWS_RSS_QUERIES: List[Tuple[str, str, str]] = _expand_google_news_rss_qu
 # truncation. Override only if we need to trade coverage for runtime.
 GOOGLE_NEWS_RSS_HISTORICAL_WINDOW_DAYS = max(
     1,
-    int(os.getenv("EDU_CTI_GOOGLE_NEWS_RSS_HISTORICAL_WINDOW_DAYS", "31")),
+    get_int(
+        "GOOGLE_NEWS_RSS_HISTORICAL_WINDOW_DAYS",
+        "EDU_CTI_GOOGLE_NEWS_RSS_HISTORICAL_WINDOW_DAYS",
+        default=21,
+    ),
 )
 GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS = max(
     0.0,
@@ -565,10 +570,28 @@ EDUCATION_KEYWORDS: List[str] = [
     "instituto",                    # Spanish/Portuguese educational institute
 ]
 
-# Default page-walk limits (None = fetch all pages, can be overridden per source/CLI)
-# Set to None by default to fetch all available pages
-NEWS_MAX_PAGES = 50  # Safety cap: 50 pages × 20 articles = 1000 per term
-NEWS_EXACT_PHRASE_MAX_PAGES = int(os.getenv("EDU_CTI_NEWS_EXACT_PHRASE_MAX_PAGES", "2"))
+# Education-technology vendor names whose compromise cascades to schools/universities
+# (SIS / LMS / student-services platforms). Kept SEPARATE from EDUCATION_KEYWORDS and
+# used only to widen the news-discovery title gate (coverage), so a supply-chain article
+# that names the vendor but not "school"/"university" still gets fetched; the LLM
+# relevance gate remains the precision backstop. Only reasonably unambiguous tokens are
+# listed (multi-word where a bare token would over-match general news).
+EDTECH_VENDOR_KEYWORDS: List[str] = [
+    "powerschool", "schoology", "infinite campus", "instructure", "canvas lms",
+    "blackbaud", "ellucian", "moodle", "brightspace", "d2l", "blackboard learn",
+    "naviance", "illuminate education", "workday student", "follett destiny",
+    "securly", "classlink", "goguardian", "go guardian", "gaggle", "frontline education",
+    "renaissance learning", "edgenuity", "jenzabar", "anthology student", "skyward sis",
+    "clever inc", "parchment", "unit4 student",
+]
+
+# Default page-walk safety cap for news sources (None/CLI can still override per call).
+# Env-configurable for coverage tuning: 100 pages ≈ 2,000 results/term ceiling; the
+# per-source empty/stale-page stops prevent walking dead tails.
+NEWS_MAX_PAGES = max(1, get_int("NEWS_MAX_PAGES", "EDU_CTI_NEWS_MAX_PAGES", default=100))
+NEWS_EXACT_PHRASE_MAX_PAGES = get_int(
+    "NEWS_EXACT_PHRASE_MAX_PAGES", "EDU_CTI_NEWS_EXACT_PHRASE_MAX_PAGES", default=2
+)
 
 # The Record historical search can return long duplicate-heavy tails after the
 # first genuinely new pages. Stop early once we see a sustained stale streak.
