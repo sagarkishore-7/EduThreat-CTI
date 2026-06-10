@@ -380,7 +380,7 @@ class V2CampaignService:
         memberships = detail["memberships"]
         evidence_items = detail["evidence_items"]
 
-        return self._build_traced_graph(
+        return self._build_chain_graph(
             campaign_id=campaign_id,
             campaign=campaign,
             memberships=memberships,
@@ -389,7 +389,7 @@ class V2CampaignService:
         )
 
     @staticmethod
-    def _build_traced_graph(
+    def _build_chain_graph(
         *,
         campaign_id: str,
         campaign: dict[str, Any],
@@ -397,23 +397,25 @@ class V2CampaignService:
         evidence_items: Sequence[dict[str, Any]],
         member_limit: int,
     ) -> dict[str, Any]:
-        """Build an actor-centred traced attack chain instead of a flat star.
+        """Build a compact left-to-right attack-chain flow + grouped victims.
 
-        The chain reads outward — actor → CVE → platform/vendor → affected
-        institution — using the per-incident vendors/platforms/cves/actors carried on
-        ``campaign_evidence_items`` so institutions hang off the platform they were hit
-        *through*, not a single hub. When the campaign has no attributed actor the
-        campaign node is the centre. Every node stays reachable from the centre (no
-        orphans). Edges carry a typed ``relation`` for rendering/tooltips. The return
-        shape ``{campaign, nodes, edges, meta}`` is unchanged."""
+        The graph is just the chain — ``asset (platform) → CVE → actor`` in layers
+        0/1/2 — built from the per-incident vendors/platforms/cves/actors on
+        ``campaign_evidence_items``. The many affected institutions are NOT graph nodes;
+        they are returned separately in ``victim_groups``, grouped by the asset they were
+        hit through, so the chain stays legible (research: layered flow for the synoptic
+        "how it unfolded" read, a grid for the one-to-many victim fan-out). There is no
+        campaign node and no institution node. Edges are directional and typed; generic
+        actor labels are dropped. Returns ``{campaign, nodes, edges, victim_groups,
+        meta}``."""
         from src.edu_cti.analysis.campaign_correlation import (
             PLATFORM_INDICATORS,
             _canonicalize_vendors_platforms,
+            _is_generic_actor,
             _normalize_cve,
         )
 
         platform_to_vendor = {ind.platform: ind.vendor for ind in PLATFORM_INDICATORS}
-        vendor_to_platform = {ind.vendor: ind.platform for ind in PLATFORM_INDICATORS}
 
         confidence = campaign["confidence"]
         status = campaign["status"]
@@ -425,15 +427,14 @@ class V2CampaignService:
         campaign_platform_set = set(campaign_platforms)
         campaign_vendor_set = set(campaign_vendors)
 
-        # ---- per-incident aggregation from evidence items -------------------
+        # ---- per-incident aggregation --------------------------------------
         incident_platforms: dict[str, set[str]] = {}
         incident_vendors: dict[str, set[str]] = {}
         incident_cves: dict[str, set[str]] = {}
+        incident_actors: dict[str, set[str]] = {}
         actor_freq: dict[str, int] = {}
-        evidence_count_by_incident: dict[str, int] = {}
         for item in evidence_items:
             cid = item["canonical_incident_id"]
-            evidence_count_by_incident[cid] = evidence_count_by_incident.get(cid, 0) + 1
             vends, plats = _canonicalize_vendors_platforms(
                 item.get("vendors") or [], item.get("platforms") or []
             )
@@ -444,144 +445,148 @@ class V2CampaignService:
                 norm = _normalize_cve(raw)
                 if norm:
                     cset.add(norm)
+            aset = incident_actors.setdefault(cid, set())
             for actor in item.get("actors") or []:
-                if actor:
+                if actor and not _is_generic_actor(actor):
+                    aset.add(actor)
                     actor_freq[actor] = actor_freq.get(actor, 0) + 1
 
-        # ---- centre node: primary actor when attributed, else campaign ------
-        primary_actor = (
-            max(campaign_actors, key=lambda a: actor_freq.get(a, 0))
-            if campaign_actors
-            else None
-        )
-        campaign_node_id = f"campaign:{campaign_id}"
-        actor_centred = primary_actor is not None
-        center_id = f"actor:{primary_actor.casefold()}" if actor_centred else campaign_node_id
+        # actor set: campaign actors (filtered) + any seen in incidents
+        actors = [a for a in campaign_actors if not _is_generic_actor(a)]
+        for a in actor_freq:
+            if a not in actors:
+                actors.append(a)
 
+        # ---- nodes / edges (chain only) ------------------------------------
         nodes: list[dict[str, Any]] = []
         seen_nodes: set[str] = set()
         edges_out: list[dict[str, Any]] = []
         seen_edges: set[tuple[str, str, str]] = set()
 
-        def ensure_node(node_id: str, node_type: str, label: str, size: int, **extra: Any) -> None:
+        def ensure_node(node_id: str, node_type: str, label: str, size: int, layer: int,
+                        **extra: Any) -> None:
             if node_id in seen_nodes:
                 return
             seen_nodes.add(node_id)
             node = {"id": node_id, "type": node_type, "label": label, "size": size,
-                    "metadata": extra.get("metadata", {})}
+                    "layer": layer, "metadata": extra.get("metadata", {})}
             if "confidence" in extra:
                 node["confidence"] = extra["confidence"]
             if "status" in extra:
                 node["status"] = extra["status"]
             nodes.append(node)
 
-        def add_edge(source: str, target: str, relation: str, *, conf: Any = confidence,
-                     reasons: Sequence[str] | None = None, evidence_count: int = 0,
-                     review_status: str = status) -> None:
+        def add_edge(source: str, target: str, relation: str) -> None:
             key = (source, target, relation)
-            if source == target or key in seen_edges:
+            if (source == target or key in seen_edges
+                    or source not in seen_nodes or target not in seen_nodes):
                 return
             seen_edges.add(key)
             edges_out.append({
-                "source": source,
-                "target": target,
-                "type": relation,
-                "relation": relation,
-                "confidence": conf,
-                "reasons": list(reasons) if reasons else [relation],
-                "evidence_count": evidence_count,
-                "review_status": review_status,
+                "source": source, "target": target, "type": relation,
+                "relation": relation, "confidence": confidence,
+                "reasons": [relation], "review_status": status,
             })
 
-        # campaign node (always present; centre when un-attributed)
-        ensure_node(
-            campaign_node_id, "campaign", campaign["campaign_name"],
-            max(22, min(60, 18 + int(campaign["member_count"] or 0))),
-            confidence=confidence, status=status, metadata=campaign,
-        )
-        if actor_centred:
-            ensure_node(center_id, "actor", primary_actor, 30,
-                        confidence=confidence, status=status)
-            add_edge(center_id, campaign_node_id, "attributed_to")
-        # secondary actors attribute to the campaign too
-        for actor in campaign_actors:
-            if actor == primary_actor:
-                continue
-            actor_id = f"actor:{actor.casefold()}"
-            ensure_node(actor_id, "actor", actor, 22)
-            add_edge(actor_id, campaign_node_id, "attributed_to")
-
-        # ---- CVE nodes: actor/centre --used_cve--> CVE ----------------------
-        for cve in campaign_cves:
-            cve_id = f"cve:{cve.casefold()}"
-            ensure_node(cve_id, "cve", cve, 18)
-            add_edge(center_id, cve_id, "used_cve")
-
-        # ---- platform nodes: traced via CVE co-occurrence, else from centre -
+        # Layer 0 — assets: platforms (with vendor sublabel) + vendors with no platform.
+        asset_ids: list[str] = []
+        platform_vendors = {
+            platform_to_vendor.get(p) for p in campaign_platforms if platform_to_vendor.get(p)
+        }
         for platform in campaign_platforms:
-            plat_id = f"platform:{platform.casefold()}"
-            ensure_node(plat_id, "platform", platform, 20)
-            exploited = False
-            for cid, plats in incident_platforms.items():
-                if platform not in plats:
-                    continue
-                for cve in incident_cves.get(cid, set()):
-                    if cve in campaign_cve_set:
-                        add_edge(f"cve:{cve.casefold()}", plat_id, "exploits")
-                        exploited = True
-            if not exploited:
-                add_edge(center_id, plat_id, "targeted")
-
-        # ---- vendor nodes: vendor --makes--> platform, else from centre -----
+            pid = f"platform:{platform.casefold()}"
+            vendor = platform_to_vendor.get(platform)
+            ensure_node(pid, "platform", platform, 24, 0,
+                        metadata={"vendor": vendor} if vendor else {})
+            asset_ids.append(pid)
         for vendor in campaign_vendors:
-            vend_id = f"vendor:{vendor.casefold()}"
-            ensure_node(vend_id, "vendor", vendor, 18)
-            made_platform = vendor_to_platform.get(vendor)
-            if made_platform and made_platform in campaign_platform_set:
-                add_edge(vend_id, f"platform:{made_platform.casefold()}", "makes")
-            else:
-                add_edge(center_id, vend_id, "supply_chain")
+            if vendor in platform_vendors:
+                continue  # folded into the platform it makes
+            vid = f"vendor:{vendor.casefold()}"
+            ensure_node(vid, "vendor", vendor, 22, 0)
+            asset_ids.append(vid)
+        primary_asset = asset_ids[0] if asset_ids else None
 
-        # ---- institutions: hang off the platform/vendor they were hit through
+        # Layer 1 — CVEs.
+        for cve in campaign_cves:
+            ensure_node(f"cve:{cve.casefold()}", "cve", cve, 18, 1)
+        # Layer 2 — actors.
+        for actor in actors:
+            ensure_node(f"actor:{actor.casefold()}", "actor", actor,
+                        max(18, min(30, 14 + actor_freq.get(actor, 0))), 2)
+
+        # Edges from per-incident co-occurrence.
+        for cid, plats in incident_platforms.items():
+            assets = plats & campaign_platform_set
+            cves = incident_cves.get(cid, set()) & campaign_cve_set
+            acts = incident_actors.get(cid, set())
+            for p in assets:
+                for c in cves:
+                    add_edge(f"platform:{p.casefold()}", f"cve:{c.casefold()}", "has_vuln")
+                if not cves:  # platform + actor, no CVE → direct targeting
+                    for a in acts:
+                        add_edge(f"platform:{p.casefold()}", f"actor:{a.casefold()}", "targeted_by")
+        for cid, cset in incident_cves.items():
+            cves = cset & campaign_cve_set
+            for c in cves:
+                for a in incident_actors.get(cid, set()):
+                    add_edge(f"cve:{c.casefold()}", f"actor:{a.casefold()}", "exploited_by")
+
+        # Connectivity fallbacks so every CVE/actor descends from an asset.
+        if primary_asset:
+            incoming = {e["target"] for e in edges_out}
+            for cve in campaign_cves:
+                cid_node = f"cve:{cve.casefold()}"
+                if cid_node not in incoming:
+                    add_edge(primary_asset, cid_node, "has_vuln")
+            incoming = {e["target"] for e in edges_out}
+            for actor in actors:
+                aid = f"actor:{actor.casefold()}"
+                if aid not in incoming:
+                    add_edge(primary_asset, aid, "targeted_by")
+
+        # ---- victim_groups: each institution assigned to ONE asset group ----
+        groups: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+
+        def group_for(cid: str) -> tuple[str, str, str]:
+            hp = sorted(incident_platforms.get(cid, set()) & campaign_platform_set)
+            if hp:
+                return (f"platform:{hp[0].casefold()}", hp[0], "platform")
+            hv = sorted(incident_vendors.get(cid, set()) & campaign_vendor_set)
+            if hv:
+                return (f"vendor:{hv[0].casefold()}", hv[0], "vendor")
+            return ("direct", "Direct victims", "direct")
+
         for membership in memberships:
             cid = membership["canonical_incident_id"]
-            node_id = f"institution:{cid}"
-            ensure_node(
-                node_id, "institution",
-                membership["victim_name"] or cid,
-                max(12, min(30, 10 + int((membership["confidence"] or 0) * 18))),
-                confidence=membership["confidence"], status=membership["review_status"],
-                metadata=membership,
-            )
-            ev_count = evidence_count_by_incident.get(cid, 0)
-            reasons = membership["reasons"]
-            review_status = membership["review_status"]
-            conf = membership["confidence"]
-            hit_platforms = incident_platforms.get(cid, set()) & campaign_platform_set
-            hit_vendors = incident_vendors.get(cid, set()) & campaign_vendor_set
-            if hit_platforms:
-                for platform in sorted(hit_platforms):
-                    add_edge(f"platform:{platform.casefold()}", node_id, "affected",
-                             conf=conf, reasons=reasons, evidence_count=ev_count,
-                             review_status=review_status)
-            elif hit_vendors:
-                for vendor in sorted(hit_vendors):
-                    add_edge(f"vendor:{vendor.casefold()}", node_id, "affected",
-                             conf=conf, reasons=reasons, evidence_count=ev_count,
-                             review_status=review_status)
-            else:
-                add_edge(center_id, node_id, membership["role"] or "direct_victim",
-                         conf=conf, reasons=reasons, evidence_count=ev_count,
-                         review_status=review_status)
+            key, label, via = group_for(cid)
+            grp = groups.get(key)
+            if grp is None:
+                grp = {"key": key, "label": label, "via": via, "count": 0, "institutions": []}
+                groups[key] = grp
+                order.append(key)
+            grp["count"] += 1
+            grp["institutions"].append({
+                "canonical_incident_id": cid,
+                "victim_name": membership["victim_name"] or cid,
+                "role": membership["role"],
+                "confidence": membership["confidence"],
+            })
+
+        victim_groups = [groups[k] for k in order]
+        victim_groups.sort(key=lambda g: (-g["count"], g["label"].lower()))
+        for grp in victim_groups:
+            grp["institutions"].sort(key=lambda i: (i["victim_name"] or "").lower())
 
         return {
             "campaign": campaign,
             "nodes": nodes,
             "edges": edges_out,
+            "victim_groups": victim_groups,
             "meta": {
-                "layout": "traced",
-                "center_id": center_id,
-                "center_type": "actor" if actor_centred else "campaign",
+                "layout": "chain",
+                "roots": asset_ids,
                 "member_limit": member_limit,
                 "returned_members": len(memberships),
                 "returned_evidence_items": len(evidence_items),
