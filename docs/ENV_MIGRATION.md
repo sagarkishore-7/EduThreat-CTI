@@ -6,12 +6,25 @@ short, unprefixed names. Every read now goes through `src/edu_cti_v2/env.py`
 then the default. **Nothing breaks during migration:** the old Railway env names
 keep working until you switch them over.
 
-## How to migrate on Railway
+## Status: migration applied on Railway (2026-06-10)
+The new unprefixed names are set on **both** `v2-api` and `v2-worker`, and all legacy
+`EDU_CTI*` variables have been **deleted** — with ONE deliberate exception:
+
+> **`EDU_CTI_V2_DATABASE_URL` is kept.** It is the database connection string and no
+> replacement (`DB_URL` / standard `DATABASE_URL`) is configured on the services. The
+> code reads `get_env("DB_URL", "EDU_CTI_V2_DATABASE_URL", "DATABASE_URL")`, so it still
+> resolves. To finish the rename: in the Railway dashboard set `DB_URL` to the Postgres
+> connection (e.g. reference `${{Postgres.DATABASE_URL}}`), confirm the service boots,
+> then delete `EDU_CTI_V2_DATABASE_URL`. (Left to the dashboard to avoid handling the
+> secret via CLI.)
+
+The new env applies on the next deploy; running containers keep their in-memory env until
+then. The original old→new reference table is retained below for completeness.
+
+## (Historical) How to migrate on Railway
 1. For each row below, add the **new** variable (same value as the legacy one).
 2. Verify the services boot and behave (both names work simultaneously).
 3. Once confirmed, delete the **legacy** variable.
-
-Set the new names on **both** `v2-api` and `v2-worker` where applicable.
 
 ## Batch 1 — v2 worker / database / runtime (done)
 
