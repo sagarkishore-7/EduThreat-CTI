@@ -253,6 +253,17 @@ def get_v2_source_health(
     return source_health.get_source_health(session, sample_limit=sample_limit)
 
 
+@router.get("/data-quality/unrecognized-vendors")
+def get_v2_unrecognized_vendors(
+    limit: int = Query(100, ge=1, le=500),
+    session=Depends(get_v2_session),
+    source_health: V2SourceHealthService = Depends(get_v2_source_health_service),
+    _: bool = Depends(authenticate),
+):
+    """Read-only self-audit of vendor strings matching no platform-indicator registry line."""
+    return source_health.get_unrecognized_vendors(session, limit=limit)
+
+
 @router.post("/worker/run")
 def run_v2_worker_batch(
     max_tasks: int = Query(25, ge=1, le=500),
