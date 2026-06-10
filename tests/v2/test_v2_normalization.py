@@ -9,6 +9,9 @@ def test_is_generic_actor_drops_descriptive_labels_keeps_real_groups():
     for junk in [
         "criminal",
         "criminals",
+        "Cyber criminals",
+        "cybercrime syndicate",
+        "criminal actors",
         "Russian cyber-extortion",
         "cyber extortionists",
         "unknown actor",
@@ -18,9 +21,17 @@ def test_is_generic_actor_drops_descriptive_labels_keeps_real_groups():
     ]:
         assert is_generic_actor(junk) is True, junk
         assert normalize_threat_actor_name(junk) is None, junk
-    for real in ["Cl0p", "Qilin", "ShinyHunters", "Scattered Spider", "LockBit 3.0", "Hunters International"]:
+    for real in ["Cl0p", "Qilin", "ShinyHunters", "Scattered Spider", "LockBit 3.0", "Hunters International", "Fog"]:
         assert is_generic_actor(real) is False, real
         assert normalize_threat_actor_name(real) is not None, real
+
+
+def test_is_generic_actor_keeps_real_name_buried_in_descriptive_phrase():
+    # A real actor with a trailing/leading generic descriptor is kept, not dropped.
+    assert is_generic_actor("Clop cybercriminal") is False
+    assert normalize_threat_actor_name("Clop cybercriminal") == "Cl0p"
+    assert is_generic_actor("Fog hacking") is False
+    assert normalize_threat_actor_name("Fog hacking") == "Fog"
 
 
 def test_threat_actor_suffix_variants_normalize_cleanly():
