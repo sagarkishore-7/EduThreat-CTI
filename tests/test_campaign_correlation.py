@@ -363,6 +363,38 @@ def test_extract_cves_rejects_out_of_range_tail():
     assert found == ["CVE-2023-34362"]
 
 
+def test_evidence_cve_consensus_keeps_multiply_reported_cve():
+    # The MOVEit case: the real zero-day appears in several evidence items even
+    # though few member projections carry it; off-event CVEs surface once each.
+    from src.edu_cti.analysis.campaign_correlation import (
+        _evidence_cve_consensus, CampaignEvidenceItem,
+    )
+
+    def _item(cid, cves):
+        return CampaignEvidenceItem(
+            evidence_item_id=f"e-{cid}-{','.join(cves)}", canonical_incident_id=cid,
+            canonical_status="open", source_incident_id=None, article_document_id=None,
+            victim_name="V", institution_type=None, country=None, country_code=None,
+            incident_date="2023-06-01", publication_date="2023-06-01", source_name="s",
+            source_group="rss", source_title=None, article_title=None, source_url=None,
+            attack_category=None, attack_vector=None, threat_actor=None, ransomware_family=None,
+            vendors=[], platforms=["MOVEit"], affected_systems=[], platform_keys=["moveit"],
+            actors=[], cves=cves, campaign_names=[], mitre_tactics=[],
+            records_affected_exact=None,
+        )
+
+    component = {"m1", "m2", "m3"}
+    items = [
+        _item("m1", ["CVE-2023-34362"]),
+        _item("m2", ["CVE-2023-34362"]),         # 2nd evidence item -> consensus
+        _item("m3", ["CVE-2024-5655"]),          # off-event, single -> dropped
+        _item("m4", ["CVE-2023-34362"]),          # outside component -> ignored
+    ]
+    component_only = {"m1", "m2", "m3"}
+    out = _evidence_cve_consensus(items, component_only, 2)
+    assert out == ["CVE-2023-34362"]
+
+
 def test_consensus_values_drops_single_member_cve():
     # The real-data "CVE-2025-618842" artifact is format-valid (6-digit tail)
     # but spurious; the >=2-member consensus rule is what removes such one-offs.

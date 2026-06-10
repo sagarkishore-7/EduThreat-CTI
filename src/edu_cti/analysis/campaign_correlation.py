@@ -944,6 +944,24 @@ def _consensus_values(profiles: Iterable[CampaignProfile], attr: str, min_count:
     return [value for value, count in counter.most_common() if count >= min_count]
 
 
+def _evidence_cve_consensus(
+    items: Sequence["CampaignEvidenceItem"], component: set[str], min_count: int = 2
+) -> list[str]:
+    """Campaign CVEs attested by >= ``min_count`` *evidence items* in the cluster.
+
+    Counting at the evidence-item level (not the member level) keeps a real,
+    multiply-reported CVE that few victim records mention in their structured
+    fields -- e.g. the 2023 MOVEit zero-day CVE-2023-34362 appears in several
+    article evidence items even though most affected schools' projections only
+    say "MOVEit incident" -- while still dropping one-off mis-attributions (the
+    off-event GitLab/Ollama CVEs that each surface in a single evidence item)."""
+    counter: Counter[str] = Counter()
+    for item in items:
+        if item.canonical_incident_id in component:
+            counter.update(item.cves)
+    return [value for value, count in counter.most_common() if count >= min_count]
+
+
 def _dominant_year(profiles: Iterable[CampaignProfile]) -> str | None:
     """Most common member year (ties broken toward the later year).
 
@@ -1164,9 +1182,11 @@ def build_campaign_outputs(
         platforms = _top_values(component_profiles, "platforms")
         vendors = _top_values(component_profiles, "vendors")
         actors = _top_values(component_profiles, "actors")
-        # Campaign CVE list = only CVEs attested by >=2 members (consensus), so a
-        # single mis-attributed CVE on one member does not pollute the campaign.
-        cves = _consensus_values(component_profiles, "cves", 2)
+        # Campaign CVE list = CVEs attested by >=2 evidence items in the (trimmed)
+        # cluster. Evidence-level consensus keeps a genuinely-reported CVE that few
+        # victim projections carry (e.g. MOVEit's CVE-2023-34362) while still
+        # dropping one-off off-event mis-attributions.
+        cves = _evidence_cve_consensus(items, component, 2)
         campaign_names = _top_values(component_profiles, "campaign_names")
         attack_categories = _top_values(component_profiles, "attack_categories")
         if kind == "platform" and value in PLATFORM_BY_KEY:
