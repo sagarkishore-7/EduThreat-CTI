@@ -12,6 +12,7 @@ from dataclasses import asdict, dataclass
 from typing import Callable, Optional
 
 from src.edu_cti_v2.db import V2DatabaseSettings, create_session_factory
+from src.edu_cti_v2.env import get_env, get_flag, get_float, get_int
 from src.edu_cti_v2.resource_limits import resolve_enrichment_worker_count
 from src.edu_cti_v2.services.scheduler import V2SchedulerService
 from src.edu_cti_v2.worker import V2WorkerRunSummary, run_worker_loop
@@ -19,19 +20,12 @@ from src.edu_cti_v2.worker import V2WorkerRunSummary, run_worker_loop
 logger = logging.getLogger(__name__)
 
 
-def _env_flag(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() in {"1", "true", "yes", "on"}
+def _env_flag(name: str, *aliases: str, default: bool = False) -> bool:
+    return get_flag(name, *aliases, default=default)
 
 
-def _env_int(name: str) -> Optional[int]:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return None
-    try:
-        return int(value)
-    except ValueError:
-        logger.warning("Invalid integer for %s=%r; ignoring override", name, value)
-        return None
+def _env_int(name: str, *aliases: str) -> Optional[int]:
+    return get_int(name, *aliases, default=None)
 
 
 def _resolve_worker_count(worker_count: int) -> int:
@@ -48,19 +42,14 @@ def _resolve_worker_count(worker_count: int) -> int:
     return resolve_enrichment_worker_count(worker_count)
 
 
-def _env_float_optional(name: str) -> Optional[float]:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return None
-    try:
-        return float(value)
-    except ValueError:
-        logger.warning("Invalid float for %s=%r; ignoring override", name, value)
-        return None
+def _env_float_optional(name: str, *aliases: str) -> Optional[float]:
+    return get_float(name, *aliases, default=None)
 
 
 def _default_idle_resource_release_seconds() -> float:
-    configured = _env_float_optional("EDU_CTI_V2_IDLE_RESOURCE_RELEASE_SECONDS")
+    configured = _env_float_optional(
+        "IDLE_RESOURCE_RELEASE_SECONDS", "EDU_CTI_V2_IDLE_RESOURCE_RELEASE_SECONDS"
+    )
     if configured is not None:
         return max(configured, 0.0)
     if os.environ.get("RAILWAY_ENVIRONMENT"):
@@ -69,7 +58,7 @@ def _default_idle_resource_release_seconds() -> float:
 
 
 def _default_prewarm_models_enabled() -> bool:
-    configured = os.environ.get("EDU_CTI_V2_PREWARM_MODELS")
+    configured = get_env("PREWARM_MODELS", "EDU_CTI_V2_PREWARM_MODELS")
     if configured is not None and configured.strip():
         return configured.strip().lower() in {"1", "true", "yes", "on"}
     # Railway workers are memory-constrained and can lazy-load the extraction
@@ -445,7 +434,7 @@ class V2RuntimeService:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    default_enable_scheduler = _env_flag("EDU_CTI_V2_ENABLE_SCHEDULER", "1")
+    default_enable_scheduler = _env_flag("ENABLE_SCHEDULER", "EDU_CTI_V2_ENABLE_SCHEDULER", default=True)
     parser = argparse.ArgumentParser(description="Run the EduThreat-CTI v2 unified worker runtime")
     parser.add_argument(
         "--workers",
@@ -461,19 +450,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--fetch-workers",
         type=int,
-        default=_env_int("EDU_CTI_V2_FETCH_WORKER_COUNT"),
+        default=_env_int("FETCH_WORKER_COUNT", "EDU_CTI_V2_FETCH_WORKER_COUNT"),
         help="Number of dedicated fetch_article worker threads",
     )
     parser.add_argument(
         "--resolve-workers",
         type=int,
-        default=_env_int("EDU_CTI_V2_RESOLVE_WORKER_COUNT"),
+        default=_env_int("RESOLVE_WORKER_COUNT", "EDU_CTI_V2_RESOLVE_WORKER_COUNT"),
         help="Number of dedicated resolve_url worker threads",
     )
     parser.add_argument(
         "--canonicalize-workers",
         type=int,
-        default=_env_int("EDU_CTI_V2_CANONICALIZE_WORKER_COUNT"),
+        default=_env_int("CANONICALIZE_WORKER_COUNT", "EDU_CTI_V2_CANONICALIZE_WORKER_COUNT"),
         help="Number of dedicated canonicalize worker threads",
     )
     parser.add_argument("--task-type", type=str, default=None, help="Restrict all workers to one task type")

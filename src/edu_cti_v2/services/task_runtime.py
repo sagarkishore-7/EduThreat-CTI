@@ -10,6 +10,7 @@ from typing import Optional, Sequence
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from src.edu_cti_v2.env import get_env, get_flag, get_int
 from src.edu_cti_v2.models import PipelineTask
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceIncidentRepository
 from src.edu_cti_v2.services.analytics import V2AnalyticsRefreshService
@@ -38,25 +39,14 @@ DEFAULT_TASK_LEASE_ORDER = (
 )
 
 
-def _env_int(name: str, default: int) -> int:
-    value = os.environ.get(name)
-    if value is None or not value.strip():
-        return default
-    try:
-        return int(value)
-    except ValueError:
-        return default
-
-
 def _default_max_active_enrich_tasks() -> int:
-    configured = os.environ.get("EDU_CTI_V2_MAX_ACTIVE_ENRICH_TASKS")
+    configured = get_env("MAX_ACTIVE_ENRICH_TASKS", "EDU_CTI_V2_MAX_ACTIVE_ENRICH_TASKS")
     if configured is not None and configured.strip():
-        requested = _env_int("EDU_CTI_V2_MAX_ACTIVE_ENRICH_TASKS", 0)
+        requested = get_int("MAX_ACTIVE_ENRICH_TASKS", "EDU_CTI_V2_MAX_ACTIVE_ENRICH_TASKS", default=0)
         if (
             os.environ.get("RAILWAY_ENVIRONMENT")
             and requested > 1
-            and os.environ.get("EDU_CTI_V2_ALLOW_HIGH_ENRICH_CONCURRENCY", "").strip().lower()
-            not in {"1", "true", "yes", "on"}
+            and not get_flag("ALLOW_HIGH_ENRICH_CONCURRENCY", "EDU_CTI_V2_ALLOW_HIGH_ENRICH_CONCURRENCY", default=False)
         ):
             return 1
         return requested
@@ -96,8 +86,8 @@ class V2TaskRuntime:
         self.analytics_refresh_service = analytics_refresh_service
         self.campaign_service = campaign_service
         self.orchestration_service = orchestration_service
-        self.max_fetch_backlog = max_fetch_backlog if max_fetch_backlog is not None else int(
-            os.environ.get("EDU_CTI_V2_MAX_FETCH_BACKLOG", "600")
+        self.max_fetch_backlog = max_fetch_backlog if max_fetch_backlog is not None else get_int(
+            "MAX_FETCH_BACKLOG", "EDU_CTI_V2_MAX_FETCH_BACKLOG", default=600
         )
         self.max_active_enrich_tasks = (
             max_active_enrich_tasks

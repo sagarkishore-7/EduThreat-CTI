@@ -139,7 +139,9 @@ def test_collection_service_exposes_source_discovery_policy_and_metrics():
 
 
 def test_collection_service_uses_env_for_paid_rss_default(monkeypatch):
-    monkeypatch.setenv("EDU_CTI_INCLUDE_OXYLABS_NEWS_SOURCE", "1")
+    # The legacy EDU_CTI_INCLUDE_* aliases were removed in the env-prefix cleanup;
+    # the supported flag is OXYLABS_ENABLED (legacy EDU_CTI_OXYLABS_ENABLED).
+    monkeypatch.setenv("OXYLABS_ENABLED", "1")
     dual_writer = Mock()
     run_repo = Mock()
     task_repo = Mock()

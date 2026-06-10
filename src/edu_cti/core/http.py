@@ -24,6 +24,8 @@ from dataclasses import dataclass
 from typing import Callable, Iterable, Optional
 from urllib.parse import urlparse
 
+from src.edu_cti_v2.env import get_env
+
 from bs4 import BeautifulSoup
 
 from src.edu_cti.core import config
@@ -59,7 +61,7 @@ def _unified_listing_fetch_enabled() -> bool:
     """Whether plain ``get_soup`` fetches route through the unified
     Scrapling/Oxylabs tier before the legacy curl_cffi/Playwright chain.
     On by default; set ``EDU_CTI_UNIFY_LISTING_FETCH=0`` to disable instantly."""
-    return os.environ.get("EDU_CTI_UNIFY_LISTING_FETCH", "1").strip().lower() not in {
+    return (get_env("UNIFY_LISTING_FETCH", "EDU_CTI_UNIFY_LISTING_FETCH", default="1") or "1").strip().lower() not in {
         "0",
         "false",
         "no",

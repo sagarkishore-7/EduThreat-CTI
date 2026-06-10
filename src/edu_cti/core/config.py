@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from src.edu_cti.core.discovery_policy import BROAD_CYBER_SOURCE_DOMAINS
-from src.edu_cti_v2.env import get_int  # backward-compatible env access (new name → legacy)
+from src.edu_cti_v2.env import get_env, get_float, get_int  # backward-compat env (new → legacy)
 
 # Load .env file if present (must be before any os.getenv calls)
 try:
@@ -440,7 +440,7 @@ GOOGLE_NEWS_RSS_HISTORICAL_WINDOW_DAYS = max(
 )
 GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS = max(
     0.0,
-    float(os.getenv("EDU_CTI_GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS", "1.0")),
+    get_float("GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS", "EDU_CTI_GOOGLE_NEWS_RSS_REQUEST_DELAY_SECONDS", default=1.0),
 )
 
 # Legacy keyword list — used for post-fetch filtering (matches_keywords)
@@ -631,8 +631,9 @@ def _detect_railway() -> bool:
 def _get_data_dir() -> Path:
     """Get data directory based on environment."""
     # Check for explicit override (highest priority)
-    if os.getenv("EDU_CTI_DATA_DIR"):
-        data_dir = Path(os.getenv("EDU_CTI_DATA_DIR"))
+    _data_dir_override = get_env("DATA_DIR", "EDU_CTI_DATA_DIR")
+    if _data_dir_override:
+        data_dir = Path(_data_dir_override)
         try:
             data_dir.mkdir(parents=True, exist_ok=True)
         except (OSError, PermissionError):
@@ -664,12 +665,12 @@ def _get_data_dir() -> Path:
 
 # Set data directory and database path
 DATA_DIR = _get_data_dir()
-DB_PATH = DATA_DIR / os.getenv("EDU_CTI_DB_PATH", "eduthreat.db")
-METRICS_DB_PATH = DATA_DIR / os.getenv("EDU_CTI_METRICS_DB_PATH", "eduthreat_metrics.db")
+DB_PATH = DATA_DIR / get_env("DB_PATH", "EDU_CTI_DB_PATH", default="eduthreat.db")
+METRICS_DB_PATH = DATA_DIR / get_env("METRICS_DB_PATH", "EDU_CTI_METRICS_DB_PATH", default="eduthreat_metrics.db")
 
 # Logging configuration
-LOG_LEVEL = os.getenv("EDU_CTI_LOG_LEVEL", "INFO")
-LOG_FILE = Path(os.getenv("EDU_CTI_LOG_FILE", "logs/pipeline.log"))
+LOG_LEVEL = get_env("LOG_LEVEL", "EDU_CTI_LOG_LEVEL", default="INFO")
+LOG_FILE = Path(get_env("LOG_FILE", "EDU_CTI_LOG_FILE", default="logs/pipeline.log"))
 
 # Ensure directories exist (with error handling)
 try:

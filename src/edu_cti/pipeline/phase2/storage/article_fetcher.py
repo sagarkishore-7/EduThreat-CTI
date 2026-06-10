@@ -17,6 +17,8 @@ import random
 import re
 import threading
 import requests
+
+from src.edu_cti_v2.env import get_env, get_flag, get_int
 from typing import List, Optional, Dict
 from dataclasses import dataclass
 from urllib.parse import urlparse, quote
@@ -74,19 +76,20 @@ logger = logging.getLogger(__name__)
 from src.edu_cti.core import metrics as _metrics
 
 
+def _short_env(name: str) -> str:
+    """Drop the legacy EDU_CTI_ prefix so the new unprefixed name is tried first."""
+    return name[len("EDU_CTI_"):] if name.startswith("EDU_CTI_") else name
+
+
 def _env_flag(name: str, default: str = "0") -> bool:
-    return os.environ.get(name, default).strip().lower() in ("1", "true", "yes", "on")
+    # Accept the new unprefixed name first, then the legacy EDU_CTI_-prefixed name.
+    default_bool = str(default).strip().lower() in ("1", "true", "yes", "on")
+    return get_flag(_short_env(name), name, default=default_bool)
 
 
 def _env_timeout_ms(name: str, default_ms: int) -> int:
     """Read a millisecond timeout env var with a safe lower bound."""
-    raw_value = os.environ.get(name, str(default_ms))
-    try:
-        milliseconds = int(raw_value)
-    except (TypeError, ValueError):
-        logger.warning("Invalid %s=%r; using default %sms", name, raw_value, default_ms)
-        milliseconds = default_ms
-    return max(1000, milliseconds)
+    return max(1000, get_int(_short_env(name), name, default=default_ms))
 
 
 def _env_timeout_ms_as_seconds(name: str, default_ms: int) -> float:
@@ -95,13 +98,7 @@ def _env_timeout_ms_as_seconds(name: str, default_ms: int) -> float:
 
 
 def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
-    raw_value = os.environ.get(name, str(default))
-    try:
-        value = int(raw_value)
-    except (TypeError, ValueError):
-        logger.warning("Invalid %s=%r; using default %s", name, raw_value, default)
-        value = default
-    return max(minimum, value)
+    return max(minimum, get_int(_short_env(name), name, default=default))
 
 
 def _minimum_article_content_length(url: str) -> int:
@@ -124,7 +121,7 @@ def _prefer_oxylabs_before_browser() -> bool:
 
 
 def _fetch_tier_profile() -> str:
-    return os.environ.get("EDU_CTI_FETCH_TIER_PROFILE", "scrapling_first").strip().lower()
+    return (get_env("FETCH_TIER_PROFILE", "EDU_CTI_FETCH_TIER_PROFILE", default="scrapling_first") or "scrapling_first").strip().lower()
 
 
 def _legacy_fetch_tiers_enabled() -> bool:
@@ -159,7 +156,7 @@ def _fetch_scrapling_browser_enabled() -> bool:
 
 
 def _scrapling_browser_mode() -> str:
-    mode = os.environ.get("EDU_CTI_SCRAPLING_BROWSER_MODE", "dynamic").strip().lower()
+    mode = (get_env("SCRAPLING_BROWSER_MODE", "EDU_CTI_SCRAPLING_BROWSER_MODE", default="dynamic") or "dynamic").strip().lower()
     if mode not in {"dynamic", "stealthy"}:
         logger.warning("Invalid EDU_CTI_SCRAPLING_BROWSER_MODE=%r; using dynamic", mode)
         return "dynamic"
@@ -170,7 +167,7 @@ def _scrapling_browser_early_mode() -> str:
     """Use the cheaper browser renderer before archive; reserve stealth for last."""
     mode = _scrapling_browser_mode()
     if mode == "stealthy":
-        return os.environ.get("EDU_CTI_SCRAPLING_EARLY_BROWSER_MODE", "dynamic").strip().lower() or "dynamic"
+        return (get_env("SCRAPLING_EARLY_BROWSER_MODE", "EDU_CTI_SCRAPLING_EARLY_BROWSER_MODE", default="dynamic") or "dynamic").strip().lower() or "dynamic"
     return mode
 
 
@@ -198,7 +195,7 @@ def _should_try_scrapling_browser(result: Optional["ArticleContent"]) -> bool:
 
 
 def _configured_scrapling_proxy() -> Optional[str]:
-    proxy_pool = os.environ.get("EDU_CTI_SCRAPLING_PROXY_POOL", "")
+    proxy_pool = get_env("SCRAPLING_PROXY_POOL", "EDU_CTI_SCRAPLING_PROXY_POOL", default="")
     proxies = [
         proxy.strip()
         for proxy in re.split(r"[\n,]+", proxy_pool)
@@ -206,7 +203,7 @@ def _configured_scrapling_proxy() -> Optional[str]:
     ]
     if proxies:
         return random.choice(proxies)
-    proxy_url = os.environ.get("EDU_CTI_SCRAPLING_PROXY_URL", "").strip()
+    proxy_url = (get_env("SCRAPLING_PROXY_URL", "EDU_CTI_SCRAPLING_PROXY_URL", default="") or "").strip()
     return proxy_url or None
 
 
@@ -491,7 +488,7 @@ def _record_dynamic_domain_failure(domain: str) -> None:
         return
     base = ".".join(domain.split(".")[-2:]) if domain.count(".") >= 1 else domain
     try:
-        threshold = max(1, int(os.environ.get("EDU_CTI_DYNAMIC_BLOCK_FAILURE_THRESHOLD", "2")))
+        threshold = max(1, get_int("DYNAMIC_BLOCK_FAILURE_THRESHOLD", "EDU_CTI_DYNAMIC_BLOCK_FAILURE_THRESHOLD", default=2))
     except ValueError:
         threshold = 2
     with _DYNAMIC_FAILED_LOCK:
@@ -825,7 +822,7 @@ class ArticleFetcher:
             )
 
         timeout_seconds = _env_timeout_ms_as_seconds("EDU_CTI_SCRAPLING_TIMEOUT_MS", 20000)
-        impersonate = os.environ.get("EDU_CTI_SCRAPLING_IMPERSONATE", "chrome")
+        impersonate = get_env("SCRAPLING_IMPERSONATE", "EDU_CTI_SCRAPLING_IMPERSONATE", default="chrome")
         try:
             response = ScraplingFetcher.get(
                 url,
@@ -919,10 +916,10 @@ class ArticleFetcher:
             "retries": _env_int("EDU_CTI_SCRAPLING_BROWSER_RETRIES", 1, minimum=0),
             "retry_delay": _env_int("EDU_CTI_SCRAPLING_BROWSER_RETRY_DELAY_SECONDS", 1, minimum=0),
         }
-        wait_selector = os.environ.get("EDU_CTI_SCRAPLING_BROWSER_WAIT_SELECTOR", "").strip()
+        wait_selector = (get_env("SCRAPLING_BROWSER_WAIT_SELECTOR", "EDU_CTI_SCRAPLING_BROWSER_WAIT_SELECTOR", default="") or "").strip()
         if wait_selector:
             kwargs["wait_selector"] = wait_selector
-        cdp_url = os.environ.get("EDU_CTI_SCRAPLING_CDP_URL", "").strip()
+        cdp_url = (get_env("SCRAPLING_CDP_URL", "EDU_CTI_SCRAPLING_CDP_URL", default="") or "").strip()
         if cdp_url:
             kwargs["cdp_url"] = cdp_url
         proxy = _configured_scrapling_proxy()
@@ -2396,7 +2393,7 @@ def fetch_listing_html(url: str, *, render_js: bool = False) -> Optional[str]:
     if _fetch_scrapling_enabled() and SCRAPLING_AVAILABLE and ScraplingFetcher is not None:
         try:
             timeout_seconds = _env_timeout_ms_as_seconds("EDU_CTI_SCRAPLING_TIMEOUT_MS", 20000)
-            impersonate = os.environ.get("EDU_CTI_SCRAPLING_IMPERSONATE", "chrome")
+            impersonate = get_env("SCRAPLING_IMPERSONATE", "EDU_CTI_SCRAPLING_IMPERSONATE", default="chrome")
             response = ScraplingFetcher.get(
                 url,
                 timeout=timeout_seconds,
