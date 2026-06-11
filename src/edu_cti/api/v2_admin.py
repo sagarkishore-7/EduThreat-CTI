@@ -646,6 +646,62 @@ def queue_v2_force_refetch(
     return result
 
 
+@router.post("/tasks/{task_id}/cancel")
+def cancel_v2_task(
+    task_id: str,
+    session=Depends(get_v2_session),
+    _: bool = Depends(authenticate),
+):
+    """Cancel a queued or leased pipeline task (e.g. a redundant queued run).
+
+    Queued tasks are cancelled cleanly. A leased task is also marked cancelled and
+    its lease cleared so it is not re-leased or continued — but a worker already
+    mid-execution finishes its current pass before noticing. Terminal tasks
+    (completed / cancelled / dead_letter) are returned unchanged.
+
+    Implemented inline against the session + model so this stays an API-only
+    change: shipping it does not redeploy the worker or interrupt a running sweep.
+    """
+    from uuid import UUID
+
+    from src.edu_cti_v2.models import PipelineTask
+
+    try:
+        tid = UUID(str(task_id))
+    except (ValueError, AttributeError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid task id")
+
+    task = session.get(PipelineTask, tid)
+    if task is None:
+        raise HTTPException(status_code=404, detail="Task not found")
+
+    terminal = {"completed", "cancelled", "dead_letter"}
+    if task.status in terminal:
+        return {
+            "task_id": str(task.id),
+            "status": task.status,
+            "cancelled": False,
+            "message": f"Task already {task.status}",
+        }
+
+    previous_status = task.status
+    task.status = "cancelled"
+    task.lease_owner = None
+    task.lease_token = None
+    task.lease_expires_at = None
+    commit = getattr(session, "commit", None)
+    if callable(commit):
+        commit()
+    return {
+        "task_id": str(task.id),
+        "run_id": str(task.run_id) if task.run_id else None,
+        "task_type": task.task_type,
+        "previous_status": previous_status,
+        "status": "cancelled",
+        "cancelled": True,
+    }
+
+
 @router.get("/manual-review-queue")
 def list_v2_manual_review_queue(
     limit: int = Query(100, ge=1, le=1000),

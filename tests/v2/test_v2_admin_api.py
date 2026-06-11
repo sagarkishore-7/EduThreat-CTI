@@ -788,3 +788,88 @@ def test_v2_admin_campaign_correlation_and_review_updates_commit():
     assert member.status_code == 200
     assert campaign_service.calls["membership_review"]["review_status"] == "true_positive"
     assert session.commits == 3
+
+
+def _build_session_client(session):
+    """Build a TestClient whose v2 session is a caller-supplied fake."""
+    app = FastAPI()
+    app.include_router(router, prefix="/api")
+    app.dependency_overrides[authenticate] = lambda: True
+    app.dependency_overrides[get_v2_session] = lambda: (yield session)
+    return TestClient(app)
+
+
+class _FakeTask:
+    def __init__(self, *, status="queued"):
+        from uuid import uuid4
+
+        self.id = uuid4()
+        self.run_id = uuid4()
+        self.task_type = "orchestrate_plan"
+        self.status = status
+        self.lease_owner = "v2-runtime:orchestrator"
+        self.lease_token = uuid4()
+        self.lease_expires_at = "2026-06-11T17:00:00+00:00"
+
+
+class _FakeSession:
+    def __init__(self, task):
+        self._task = task
+        self.commits = 0
+
+    def get(self, _model, _pk):
+        return self._task
+
+    def commit(self):
+        self.commits += 1
+
+
+def test_cancel_task_cancels_queued_task():
+    task = _FakeTask(status="queued")
+    session = _FakeSession(task)
+    client = _build_session_client(session)
+
+    resp = client.post(f"/api/admin/v2/tasks/{task.id}/cancel")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cancelled"] is True
+    assert body["previous_status"] == "queued"
+    assert body["status"] == "cancelled"
+    assert task.status == "cancelled"
+    assert task.lease_owner is None and task.lease_token is None
+    assert session.commits == 1
+
+
+def test_cancel_task_noop_on_terminal_task():
+    task = _FakeTask(status="completed")
+    session = _FakeSession(task)
+    client = _build_session_client(session)
+
+    resp = client.post(f"/api/admin/v2/tasks/{task.id}/cancel")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["cancelled"] is False
+    assert task.status == "completed"
+    assert session.commits == 0
+
+
+def test_cancel_task_404_when_missing():
+    session = _FakeSession(None)
+    client = _build_session_client(session)
+
+    from uuid import uuid4
+
+    resp = client.post(f"/api/admin/v2/tasks/{uuid4()}/cancel")
+
+    assert resp.status_code == 404
+
+
+def test_cancel_task_400_on_bad_id():
+    session = _FakeSession(_FakeTask())
+    client = _build_session_client(session)
+
+    resp = client.post("/api/admin/v2/tasks/not-a-uuid/cancel")
+
+    assert resp.status_code == 400
