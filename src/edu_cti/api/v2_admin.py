@@ -875,24 +875,28 @@ def get_v2_classifier_quality(
 @router.get("/extraction-samples")
 def get_v2_extraction_samples(
     limit: int = Query(8, ge=1, le=30),
+    random: bool = Query(False),
     session=Depends(get_v2_session),
     _: bool = Depends(authenticate),
 ):
-    """Recent open canonicals with their extracted fields + source article excerpt.
+    """Open canonicals with their extracted fields + source article excerpt.
 
     Quality-monitoring surface: lets an operator read the article the extraction
     was built from and verify the institution / date / actor / attack / country
     are faithful, and that the incident is genuinely an education cyber incident
-    (not a wrongly-kept one). Inline SQL, api-only.
+    (not a wrongly-kept one). ``random=true`` samples UNIFORMLY across the whole
+    dataset (not just the most recent), for unbiased quality sampling. Inline SQL,
+    api-only.
     """
     from sqlalchemy import text
 
+    order_by = "random()" if random else "ci.created_at DESC"
     rows = session.execute(
         text(
             "SELECT ci.id, ci.institution_name, ci.vendor_name, ci.institution_type, "
             "ci.country, ci.incident_date, ci.attack_category, ci.attack_vector, "
             "ci.threat_actor_name, ci.severity, "
-            "si.raw_title, "
+            "si.raw_title, si.source_name, "
             "e.is_education_related, e.manual_review_required, e.manual_review_reason, "
             "e.re_enrich_attempts, e.raw_extraction->>'education_relevance_reasoning', "
             "a.content_text "
@@ -903,7 +907,7 @@ def get_v2_extraction_samples(
             "LEFT JOIN article_documents a ON a.source_incident_id = si.id "
             "AND a.is_selected_for_enrichment = true "
             "WHERE ci.status = 'open' AND ci.is_education_related = true "
-            "ORDER BY ci.created_at DESC LIMIT :lim"
+            f"ORDER BY {order_by} LIMIT :lim"
         ),
         {"lim": limit},
     ).fetchall()
@@ -923,12 +927,13 @@ def get_v2_extraction_samples(
                 "threat_actor_name": r[8],
                 "severity": r[9],
                 "raw_title": r[10],
-                "is_education_related": r[11],
-                "manual_review_required": r[12],
-                "manual_review_reason": r[13],
-                "re_enrich_attempts": r[14],
-                "education_relevance_reasoning": r[15],
-                "article_excerpt": (r[16] or "")[:1600],
+                "source_name": r[11],
+                "is_education_related": r[12],
+                "manual_review_required": r[13],
+                "manual_review_reason": r[14],
+                "re_enrich_attempts": r[15],
+                "education_relevance_reasoning": r[16],
+                "article_excerpt": (r[17] or "")[:1600],
             }
         )
     return {"samples": samples, "returned": len(samples)}
