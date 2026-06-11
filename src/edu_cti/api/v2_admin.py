@@ -682,6 +682,26 @@ def list_v2_rejected_enrichments(
     }
 
 
+@router.post("/data-quality/purge-non-education")
+def purge_v2_non_education(
+    confirm: bool = Query(False),
+    limit: Optional[int] = Query(None, ge=1, le=500000),
+    session=Depends(get_v2_session),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """Hard-delete keyword-era junk (enrichments rejected as not education-related).
+
+    ``confirm=false`` returns a dry-run count and changes nothing; ``confirm=true``
+    performs the cascade deletion so the fetched/enriched funnel counts reflect
+    only genuine education incidents. Used once at the keyword→LLM cutover.
+    """
+    report = data_quality.purge_non_education_incidents(session, confirm=confirm, limit=limit)
+    if confirm:
+        session.commit()
+    return report
+
+
 @router.get("/scheduler/status")
 def get_v2_scheduler_status(
     scheduler: V2SchedulerService = Depends(get_v2_scheduler_service),

@@ -150,6 +150,44 @@ def test_canvas_rows_cluster_by_shared_vendor_platform_and_time_window():
     assert {membership.role for membership in memberships} == {"affected_via_vendor"}
 
 
+def _actor_row(cid, *, victim, incident_date, actor="Akira"):
+    # An actor-keyed row: names the actor in content + threat_actor field, NO vendor/platform/CVE,
+    # so the only linking signal is the shared actor.
+    return _row(
+        cid, victim=victim, incident_date=incident_date,
+        title=f"{victim} hit by {actor} ransomware",
+        content=f"{victim} was attacked. {actor} claimed responsibility for the ransomware incident.",
+        attack_category="ransomware_encryption",
+        projection={"threat_actor": actor, "data_impact": {"data_categories": ["student_pii"]}},
+    )
+
+
+def test_actor_wave_below_min_members_is_dropped():
+    # 2 incidents by one actor is NOT a "wave" — dropped (the methodology threshold).
+    rows = [
+        _actor_row("a1", victim="Alpha University", incident_date="2026-05-06"),
+        _actor_row("a2", victim="Beta University", incident_date="2026-05-12"),
+    ]
+    items = build_evidence_items(rows)
+    edges = build_candidate_edges(build_profiles(items))
+    candidates, _ = build_campaign_outputs(items, edges)
+    assert not any(c.campaign_type == "actor_activity_wave" for c in candidates)
+
+
+def test_actor_wave_at_min_members_is_kept():
+    # 3 incidents by one actor IS a wave — kept.
+    rows = [
+        _actor_row("a1", victim="Alpha University", incident_date="2026-05-06"),
+        _actor_row("a2", victim="Beta University", incident_date="2026-05-12"),
+        _actor_row("a3", victim="Gamma University", incident_date="2026-05-18"),
+    ]
+    items = build_evidence_items(rows)
+    edges = build_candidate_edges(build_profiles(items))
+    candidates, _ = build_campaign_outputs(items, edges)
+    waves = [c for c in candidates if c.campaign_type == "actor_activity_wave"]
+    assert len(waves) == 1 and waves[0].member_count >= 3 and waves[0].actors == ["Akira"]
+
+
 def test_excluded_rows_remain_evidence_only_not_confirmed_members():
     rows = [
         _row("c1", victim="University A", incident_date="2026-05-06"),
@@ -393,6 +431,48 @@ def test_evidence_cve_consensus_keeps_multiply_reported_cve():
     component_only = {"m1", "m2", "m3"}
     out = _evidence_cve_consensus(items, component_only, 2)
     assert out == ["CVE-2023-34362"]
+
+
+def test_evidence_actor_consensus_kills_off_event_actor_fan():
+    # MOVEit 2023: Cl0p is multiply attested; off-event groups appear once each and drop,
+    # but the modal actor is always kept even if nothing reaches the threshold.
+    from src.edu_cti.analysis.campaign_correlation import (
+        _evidence_actor_consensus, CampaignEvidenceItem,
+    )
+
+    def _item(cid, actors):
+        return CampaignEvidenceItem(
+            evidence_item_id=f"e-{cid}", canonical_incident_id=cid, canonical_status="open",
+            source_incident_id=None, article_document_id=None, victim_name="V",
+            institution_type=None, country=None, country_code=None, incident_date="2023-06-01",
+            publication_date="2023-06-01", source_name="s", source_group="rss", source_title=None,
+            article_title=None, source_url=None, attack_category=None, attack_vector=None,
+            threat_actor=None, ransomware_family=None, vendors=[], platforms=["MOVEit"],
+            affected_systems=[], platform_keys=["moveit"], actors=actors, cves=[],
+            campaign_names=[], mitre_tactics=[], records_affected_exact=None,
+        )
+
+    component = {"m1", "m2", "m3", "m4"}
+    items = [
+        _item("m1", ["Cl0p"]),
+        _item("m2", ["Cl0p"]),          # Cl0p reaches consensus (>=2)
+        _item("m3", ["Qilin"]),         # off-event, single -> dropped
+        _item("m4", ["Vice Society"]),  # off-event, single -> dropped
+    ]
+    assert _evidence_actor_consensus(items, component, 2) == ["Cl0p"]
+
+    # When no actor reaches consensus, keep just the single modal actor (deterministic).
+    solo = [_item("x1", ["Akira"]), _item("x2", ["Medusa"])]
+    assert _evidence_actor_consensus(solo, {"x1", "x2"}, 2) == ["Akira"]
+
+
+def test_extract_actors_canonicalises_and_dedupes_variants():
+    from src.edu_cti.analysis.campaign_correlation import _extract_actors
+
+    # explicit projection actors carrying variant spellings + a generic junk value;
+    # text also mentions "clop" -> all collapse to one canonical Cl0p, junk dropped.
+    out = _extract_actors("the clop gang leaked data", ["Clop ransomware syndicate", "criminal"])
+    assert out == ["Cl0p"]
 
 
 def test_canonicalize_collapses_product_name_vendors():

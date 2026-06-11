@@ -45,7 +45,8 @@ _NON_EDU_ALLOWED_KEYS = {
 }
 
 _STORAGE_DEBUG_KEY = "_storage_debug"
-_PROMPT_VERSION = "phase2_prompt_v4"
+_PROMPT_VERSION = "phase2_prompt_v5"  # v5: attack_vector default-unknown; data-extortion≠ransomware;
+                                      # ransomware_family is strain-only (not actor); no malware-subtype guessing
 _SCHEMA_VERSION = "phase2_schema_v1"
 _MAPPER_VERSION = "phase2_mapper_v1"
 _POST_PROCESSING_VERSION = "phase2_post_processing_v2"

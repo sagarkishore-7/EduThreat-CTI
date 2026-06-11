@@ -75,3 +75,15 @@ def get_optional_flag(name: str, *aliases: str) -> Optional[bool]:
     if raw is None:
         return None
     return raw.strip().lower() in _TRUTHY
+
+
+def title_classify_enabled() -> bool:
+    """Canonical reader for the LLM title-relevance gate feature flag.
+
+    When True, the news/RSS keyword pre-filter is bypassed and every collected
+    title is saved as ``pending`` for the bulk title classifier to judge before
+    any article fetch. Single source of truth for both the v1 collection sources
+    (via ``config.title_classify_enabled``) and the v2 services. Read fresh each
+    call so the Railway env / tests apply without an import-time snapshot.
+    """
+    return get_flag("TITLE_CLASSIFY_ENABLED", "EDU_CTI_TITLE_CLASSIFY_ENABLED", default=False)
