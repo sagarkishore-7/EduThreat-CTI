@@ -39,4 +39,7 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
 
 # --workers 0 → auto: resolve_worker_count() derives the count from the
 # container's CPU + memory limits. Override with API_WORKERS / WEB_CONCURRENCY.
-CMD ["sh", "-c", "exec eduthreat-v2-api --host 0.0.0.0 --workers ${API_WORKERS:-0}"]
+# Apply pending Alembic migrations on boot (idempotent: alembic_version gates it,
+# and the migrations themselves use IF [NOT] EXISTS), then start the API. Runs
+# inside Railway's network so the internal Postgres host resolves.
+CMD ["sh", "-c", "eduthreat-v2-migrate upgrade head && exec eduthreat-v2-api --host 0.0.0.0 --workers ${API_WORKERS:-0}"]

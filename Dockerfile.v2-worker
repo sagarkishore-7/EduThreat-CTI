@@ -82,4 +82,4 @@ ENV EDU_CTI_V2_DB_MAX_OVERFLOW=8
 
 # --workers omitted ⇒ CLI default 0 ⇒ auto (the runtime reads
 # EDU_CTI_V2_WORKER_COUNT directly via resolve_enrichment_worker_count).
-CMD ["sh", "-c", "if [ \"${EDU_CTI_V2_ENABLE_SCHEDULER:-1}\" = \"0\" ]; then exec eduthreat-v2-runtime --no-scheduler; else exec eduthreat-v2-runtime; fi"]
+CMD ["sh", "-c", "eduthreat-v2-migrate upgrade head && if [ \"${EDU_CTI_V2_ENABLE_SCHEDULER:-1}\" = \"0\" ]; then exec eduthreat-v2-runtime --no-scheduler; else exec eduthreat-v2-runtime; fi"]
