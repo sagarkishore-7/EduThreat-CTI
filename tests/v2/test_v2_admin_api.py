@@ -873,3 +873,61 @@ def test_cancel_task_400_on_bad_id():
     resp = client.post("/api/admin/v2/tasks/not-a-uuid/cancel")
 
     assert resp.status_code == 400
+
+
+class _FakeResult:
+    def __init__(self, rows=None, scalar=None):
+        self._rows = rows or []
+        self._scalar = scalar
+
+    def fetchall(self):
+        return self._rows
+
+    def scalar(self):
+        return self._scalar
+
+
+class _ScriptedSession:
+    """Returns canned query results in call order for classifier-quality."""
+
+    def __init__(self, results):
+        self._results = list(results)
+
+    def execute(self, _stmt, _params=None):
+        return self._results.pop(0)
+
+
+def test_classifier_quality_computes_fp_rate_and_shape():
+    from datetime import date
+
+    results = [
+        _FakeResult(rows=[("relevant", 100), ("irrelevant", 30), ("pending", 5)]),  # relevance dist
+        _FakeResult(scalar=135),  # llm_classified
+        _FakeResult(rows=[(True, 80), (False, 12), (None, 8)]),  # gate2 outcome
+        _FakeResult(rows=[(True, 90), (False, 200)]),  # overall reference
+        _FakeResult(scalar=1250),  # open canonicals
+        _FakeResult(rows=[(1200, 1100, 600, 1250)]),  # extraction quality counts
+        _FakeResult(rows=[("School guard hacked to death", "looked edu", 0.55, "no named institution")]),  # fp samples
+        _FakeResult(rows=[("University X ransomware", "named uni breach", "University X", date(2024, 5, 1))]),  # tp samples
+    ]
+    client = _build_session_client(_ScriptedSession(results))
+
+    resp = client.get("/api/admin/v2/classifier-quality")
+
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["title_relevance"] == {
+        "pending": 5,
+        "relevant": 100,
+        "irrelevant": 30,
+        "llm_classified": 135,
+    }
+    g = body["second_gate"]["llm_gated"]
+    assert g["true_positive"] == 80 and g["false_positive"] == 12 and g["judged"] == 92
+    assert g["fp_rate_pct"] == 13.0  # 12 / 92
+    assert body["second_gate"]["overall_reference"]["reject_rate_pct"] == round(200 / 290 * 100, 1)
+    assert body["second_gate"]["keyword_baseline_reject_pct"] == 61.0
+    eq = body["extraction_quality"]
+    assert eq["open_canonicals"] == 1250 and eq["with_institution_pct"] == 96.0
+    assert body["samples"]["false_positives"][0]["title"] == "School guard hacked to death"
+    assert body["samples"]["true_positives"][0]["institution_name"] == "University X"

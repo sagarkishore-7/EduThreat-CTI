@@ -702,6 +702,145 @@ def cancel_v2_task(
     }
 
 
+@router.get("/classifier-quality")
+def get_v2_classifier_quality(
+    sample_limit: int = Query(12, ge=1, le=50),
+    session=Depends(get_v2_session),
+    _: bool = Depends(authenticate),
+):
+    """Quality telemetry for the LLM title-relevance gate and downstream extraction.
+
+    The title classifier (gate 1) marks news/rss rows relevant/irrelevant from the
+    headline; the full-article ``is_education_related`` check (gate 2) is the
+    precision backstop. A title that gate 1 kept but gate 2 rejected is a
+    title-classifier FALSE POSITIVE — its rate is the headline metric here, to be
+    compared against the legacy keyword pre-filter (~61% of fetched articles were
+    gate-2 rejected). Implemented inline (api-only) so it does not redeploy the
+    worker.
+    """
+    from sqlalchemy import text
+
+    def rows(sql: str, **params):
+        return session.execute(text(sql), params).fetchall()
+
+    def scalar(sql: str, **params):
+        return session.execute(text(sql), params).scalar() or 0
+
+    # --- gate 1: title relevance distribution (news/rss) --------------------
+    relevance = {r[0]: int(r[1]) for r in rows(
+        "SELECT relevance_status, count(*) FROM source_incidents "
+        "WHERE source_group IN ('news','rss') AND is_deleted = false GROUP BY relevance_status"
+    )}
+    llm_classified = scalar(
+        "SELECT count(*) FROM source_incidents "
+        "WHERE source_group IN ('news','rss') AND title_classified_at IS NOT NULL AND is_deleted = false"
+    )
+
+    # --- gate 1 -> gate 2 outcome for LLM-classified relevant rows ----------
+    gate2 = {str(r[0]): int(r[1]) for r in rows(
+        "SELECT e.is_education_related, count(*) "
+        "FROM source_incidents si JOIN source_enrichments e ON e.source_incident_id = si.id "
+        "WHERE si.relevance_status = 'relevant' AND si.title_classified_at IS NOT NULL "
+        "GROUP BY e.is_education_related"
+    )}
+    tp = gate2.get("True", 0)
+    fp = gate2.get("False", 0)
+    pending_enrich = gate2.get("None", 0)
+    judged = tp + fp
+    title_fp_rate = (fp / judged) if judged else None
+
+    # overall gate-2 reject rate across every enrichment (reference baseline)
+    overall = {str(r[0]): int(r[1]) for r in rows(
+        "SELECT is_education_related, count(*) FROM source_enrichments GROUP BY is_education_related"
+    )}
+    o_true, o_false = overall.get("True", 0), overall.get("False", 0)
+    overall_reject_rate = (o_false / (o_true + o_false)) if (o_true + o_false) else None
+
+    # --- extraction quality of published (open) canonicals ------------------
+    open_total = scalar("SELECT count(*) FROM canonical_incidents WHERE status = 'open'")
+    eq = rows(
+        "SELECT count(institution_name), count(incident_date), count(threat_actor_name), "
+        "count(*) FILTER (WHERE is_education_related = true) "
+        "FROM canonical_incidents WHERE status = 'open'"
+    )[0]
+    with_inst, with_date, with_actor, edu_true = (int(eq[0]), int(eq[1]), int(eq[2]), int(eq[3]))
+
+    def pct(n: int, d: int) -> float:
+        return round((n / d) * 100, 1) if d else 0.0
+
+    # --- spot-check samples -------------------------------------------------
+    fp_samples = [
+        {
+            "title": r[0],
+            "title_reason": r[1],
+            "title_score": float(r[2]) if r[2] is not None else None,
+            "rejected_reason": r[3],
+        }
+        for r in rows(
+            "SELECT si.raw_title, si.title_relevance_reason, si.title_relevance_score, e.failed_reason "
+            "FROM source_incidents si JOIN source_enrichments e ON e.source_incident_id = si.id "
+            "WHERE si.relevance_status = 'relevant' AND si.title_classified_at IS NOT NULL "
+            "AND e.is_education_related = false "
+            "ORDER BY si.title_classified_at DESC LIMIT :lim",
+            lim=sample_limit,
+        )
+    ]
+    tp_samples = [
+        {
+            "title": r[0],
+            "title_reason": r[1],
+            "institution_name": r[2],
+            "incident_date": r[3].isoformat() if r[3] else None,
+        }
+        for r in rows(
+            "SELECT si.raw_title, si.title_relevance_reason, ci.institution_name, ci.incident_date "
+            "FROM source_incidents si "
+            "JOIN canonical_memberships m ON m.source_incident_id = si.id "
+            "JOIN canonical_incidents ci ON ci.id = m.canonical_incident_id "
+            "WHERE si.relevance_status = 'relevant' AND si.title_classified_at IS NOT NULL "
+            "AND ci.is_education_related = true AND ci.status = 'open' "
+            "ORDER BY si.title_classified_at DESC LIMIT :lim",
+            lim=sample_limit,
+        )
+    ]
+
+    return {
+        "title_relevance": {
+            "pending": relevance.get("pending", 0),
+            "relevant": relevance.get("relevant", 0),
+            "irrelevant": relevance.get("irrelevant", 0),
+            "llm_classified": int(llm_classified),
+        },
+        "second_gate": {
+            "llm_gated": {
+                "true_positive": tp,
+                "false_positive": fp,
+                "pending_enrichment": pending_enrich,
+                "judged": judged,
+                "fp_rate_pct": round(title_fp_rate * 100, 1) if title_fp_rate is not None else None,
+                "tp_rate_pct": round((tp / judged) * 100, 1) if judged else None,
+            },
+            "overall_reference": {
+                "edu_true": o_true,
+                "edu_false": o_false,
+                "reject_rate_pct": round(overall_reject_rate * 100, 1) if overall_reject_rate is not None else None,
+            },
+            "keyword_baseline_reject_pct": 61.0,
+        },
+        "extraction_quality": {
+            "open_canonicals": int(open_total),
+            "with_institution_pct": pct(with_inst, open_total),
+            "with_date_pct": pct(with_date, open_total),
+            "with_actor_pct": pct(with_actor, open_total),
+            "edu_confirmed_pct": pct(edu_true, open_total),
+        },
+        "samples": {
+            "false_positives": fp_samples,
+            "true_positives": tp_samples,
+        },
+    }
+
+
 @router.get("/manual-review-queue")
 def list_v2_manual_review_queue(
     limit: int = Query(100, ge=1, le=1000),
