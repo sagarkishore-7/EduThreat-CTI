@@ -411,9 +411,9 @@ class V2CampaignService:
         from src.edu_cti.analysis.campaign_correlation import (
             PLATFORM_INDICATORS,
             _canonicalize_vendors_platforms,
-            _is_generic_actor,
             _normalize_cve,
         )
+        from src.edu_cti.core.actor_identity import canonical_actor_name
 
         platform_to_vendor = {ind.platform: ind.vendor for ind in PLATFORM_INDICATORS}
 
@@ -447,15 +447,27 @@ class V2CampaignService:
                     cset.add(norm)
             aset = incident_actors.setdefault(cid, set())
             for actor in item.get("actors") or []:
-                if actor and not _is_generic_actor(actor):
-                    aset.add(actor)
-                    actor_freq[actor] = actor_freq.get(actor, 0) + 1
+                canon = canonical_actor_name(actor)  # None when generic; collapses variants
+                if canon:
+                    aset.add(canon)
+                    actor_freq[canon] = actor_freq.get(canon, 0) + 1
 
-        # actor set: campaign actors (filtered) + any seen in incidents
-        actors = [a for a in campaign_actors if not _is_generic_actor(a)]
-        for a in actor_freq:
-            if a not in actors:
-                actors.append(a)
+        # Chain actors = the campaign's ATTRIBUTED actors only (canonicalised). We do NOT
+        # union in every per-incident actor: an actor_activity_wave is defined by one actor,
+        # and unioning co-mentioned actors from member evidence inflated it (a "Qilin wave"
+        # rendered 7 actors). A mass_exploitation campaign legitimately keeps several actors
+        # because they are all in campaign["actors"] (the evidence-consensus list). The
+        # per-incident actors still drive which actor exploited which CVE/platform (edges),
+        # but only for actors that are in this attributed set.
+        actors: list[str] = []
+        for a in campaign_actors:
+            canon = canonical_actor_name(a)
+            if canon and canon not in actors:
+                actors.append(canon)
+        actor_set = set(actors)
+        # Restrict per-incident actor co-occurrence to the attributed set for edge building.
+        for cid, aset in incident_actors.items():
+            incident_actors[cid] = {a for a in aset if a in actor_set}
 
         # ---- nodes / edges (chain only) ------------------------------------
         nodes: list[dict[str, Any]] = []

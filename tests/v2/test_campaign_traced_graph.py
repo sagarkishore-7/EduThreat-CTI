@@ -109,6 +109,22 @@ def test_generic_actors_dropped_from_chain():
     assert "Russian cyber-extortion" not in actor_labels
 
 
+def test_chain_actors_limited_to_attributed_set():
+    # An actor_activity_wave is attributed to one actor; per-incident co-mentions of other
+    # actors must NOT appear as actor nodes (they inflated the wave).
+    graph = _build(
+        _campaign(actors=["Qilin"]),  # attributed to Qilin only
+        [_membership("inc-1", victim="State University")],
+        [_evidence("inc-1", platforms=["MOVEit"], cves=["CVE-2023-34362"],
+                   actors=["Qilin", "LockBit", "FIN11"])],  # co-mentions
+    )
+    actor_labels = {n["label"] for n in _nodes_by_type(graph, "actor")}
+    assert actor_labels == {"Qilin"}
+    # and no edge references a dropped actor
+    targets = {e["target"] for e in graph["edges"]}
+    assert "actor:lockbit" not in targets and "actor:fin11" not in targets
+
+
 def test_victim_groups_grouped_by_asset():
     graph = _build(
         _campaign(member_count=2),
