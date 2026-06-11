@@ -24,6 +24,12 @@ from typing import Any, Iterable, Mapping, Sequence
 import psycopg
 from psycopg.rows import dict_row
 
+from src.edu_cti.core.actor_identity import (
+    ACTOR_TEXT_ALIASES,
+    canonical_actor_name,
+    is_generic_actor,
+)
+
 
 DEFAULT_OUTPUT_DIR = Path("paper/EDU_Attack/analysis/outputs/campaign")
 
@@ -237,79 +243,6 @@ PLATFORM_INDICATORS: tuple[PlatformIndicator, ...] = (
 )
 
 PLATFORM_BY_KEY = {indicator.key: indicator for indicator in PLATFORM_INDICATORS}
-
-
-ACTOR_ALIASES: dict[str, tuple[str, ...]] = {
-    "ShinyHunters": ("shinyhunters", "shiny hunters"),
-    "Cl0p": ("cl0p", "clop"),
-    "LockBit": ("lockbit",),
-    "Akira": ("akira",),
-    "Vice Society": ("vice society",),
-    "Rhysida": ("rhysida",),
-    "Medusa": ("medusa",),
-    "BlackCat/ALPHV": ("blackcat", "alphv", "blackcat alphv"),
-    "BlackSuit": ("blacksuit", "black suit"),
-    "Hive": ("hive ransomware",),
-    "NetWalker": ("netwalker",),
-    "RansomHub": ("ransomhub",),
-    "Qilin": ("qilin",),
-    "BianLian": ("bianlian", "bian lian"),
-    "Play": ("play ransomware", "play group"),
-}
-
-# Generic, non-attributive actor labels dropped from campaign actor lists. Mirrors
-# `_UNKNOWN_THREAT_ACTOR_VALUES` / `_GENERIC_ACTOR_SUBSTRINGS` in
-# `src/edu_cti_v2/normalization.py` (kept as a local copy to avoid an
-# edu_cti -> edu_cti_v2 reverse import). Keep the two in sync.
-GENERIC_ACTOR_VALUES = {
-    "hacking",
-    "unauthorized actor",
-    "unauthorised actor",
-    "unknown actor",
-    "unknown criminal actors",
-    "cybercriminals",
-    "cybercriminal",
-    "cyber criminal",
-    "cyber criminals",
-    "criminal",
-    "criminals",
-    "attacker",
-    "attackers",
-    "threat actors",
-    "threat actor",
-    "cyber extortion",
-    "cyber extortionist",
-    "cyber extortionists",
-    "extortion",
-    "extortion group",
-    "extortion gang",
-    "extortionist",
-    "extortionists",
-    "ransomware group",
-    "ransomware gang",
-    "ransomware operator",
-    "ransomware operators",
-    "unidentified",
-    "unidentified actor",
-    "unidentified actors",
-    "unnamed",
-    "unnamed actor",
-}
-
-# Generic word tokens stripped when deciding whether an actor label is purely
-# descriptive. After removing these, a label with NOTHING left is generic; one with a
-# real name surviving ("Clop" in "Clop cybercriminal") is kept. Mirrors
-# `_GENERIC_ACTOR_TOKENS` in `src/edu_cti_v2/normalization.py`.
-_GENERIC_ACTOR_TOKENS = {
-    "ransomware", "ransom", "extortion", "gang", "group", "operation", "operations",
-    "operator", "operators", "collective", "crew", "hacker", "hackers", "hacking",
-    "affiliate", "affiliates", "criminal", "criminals", "cybercriminal", "cybercriminals",
-    "cybercrime", "cybercrimes", "syndicate", "actor", "actors", "cyber", "cyberattack",
-    "threat", "malicious", "unknown", "unidentified", "unnamed", "suspected", "foreign",
-    "pro", "unauthorized", "unauthorised", "attacker", "attackers",
-    "china", "chinese", "iran", "iranian", "north", "korea", "korean", "russia",
-    "russian", "state", "backed",
-}
 
 
 GENERIC_NEGATIVE_TERMS = (
@@ -759,39 +692,29 @@ def _extract_platform_indicators(text: str) -> tuple[list[str], list[str], list[
     return _dedupe(vendors), _dedupe(platforms), _dedupe(keys)
 
 
-_KNOWN_ACTOR_NORMALIZED = (
-    {_normalize_for_match(name) for name in ACTOR_ALIASES}
-    | {_normalize_for_match(alias) for aliases in ACTOR_ALIASES.values() for alias in aliases}
-) - {""}
-
-
-def _is_generic_actor(value: str) -> bool:
-    """Generic (non-attributive) actor label — dropped from campaign actor lists.
-
-    A known actor (a canonical `ACTOR_ALIASES` name) is never generic. Otherwise the
-    label is generic if it matches an enumerated junk value or, for an unattributed
-    label, contains a generic marker substring (so "russian cyber-extortion group" is
-    dropped even though its exact form isn't enumerated)."""
-    norm = _normalize_for_match(value)
-    if not norm:
-        return True
-    if norm in _KNOWN_ACTOR_NORMALIZED:
-        return False
-    if norm in GENERIC_ACTOR_VALUES:
-        return True
-    core = [t for t in norm.split() if t not in _GENERIC_ACTOR_TOKENS]
-    return not core
-
-
 def _extract_actors(text: str, explicit_values: Sequence[Any]) -> list[str]:
-    actors = list(explicit_values)
+    """Canonical actor list for an evidence item.
+
+    Combines the explicit projection actors with any high-precision actor name mentioned
+    in the article text (``ACTOR_TEXT_ALIASES``), then routes every value through the
+    shared ``canonical_actor_name`` so variants collapse (ShinyHunters/Shiny Hunters,
+    Matthew D. Lane/Matthew Lane, Clop ransomware syndicate -> Cl0p) and generic
+    non-attributions are dropped. This is also the read-time normalization (P0-3):
+    evidence items therefore always carry canonical surface forms, so re-correlation
+    cannot resurface raw ``canonical_projection`` actor variants."""
+    candidates: list[Any] = list(explicit_values)
     normalized = _normalize_for_match(text)
-    for actor, aliases in ACTOR_ALIASES.items():
+    for actor, aliases in ACTOR_TEXT_ALIASES.items():
         for alias in aliases:
             if re.search(rf"\b{re.escape(_normalize_for_match(alias))}\b", normalized):
-                actors.append(actor)
+                candidates.append(actor)
                 break
-    return [actor for actor in _dedupe(actors) if not _is_generic_actor(actor)]
+    canon: list[str] = []
+    for value in candidates:
+        name = canonical_actor_name(value) if isinstance(value, str) else None
+        if name and name not in canon:
+            canon.append(name)
+    return canon
 
 
 def _extract_negative_flags(text: str) -> list[str]:
@@ -1232,6 +1155,30 @@ def _evidence_cve_consensus(
     return [value for value, count in counter.most_common() if count >= min_count]
 
 
+def _evidence_actor_consensus(
+    items: Sequence["CampaignEvidenceItem"], component: set[str], min_count: int = 2
+) -> list[str]:
+    """Campaign actors attested by >= ``min_count`` *evidence items*, always keeping the
+    single modal actor so a campaign never loses its primary attribution.
+
+    Mirrors the CVE consensus and replaces the old union-of-every-member-actor, which let
+    one off-event member inject an unrelated group (e.g. MOVEit 2023 accumulating 13
+    actors). Actors are already canonical surface forms (``_extract_actors`` normalises
+    them), so counts are not split across spelling variants. Deterministic: ranked by
+    evidence count then name."""
+    counter: Counter[str] = Counter()
+    for item in items:
+        if item.canonical_incident_id in component:
+            counter.update(item.actors)
+    if not counter:
+        return []
+    ranked = sorted(counter.items(), key=lambda kv: (-kv[1], kv[0]))
+    kept = [actor for actor, count in ranked if count >= min_count]
+    if not kept:  # nothing reaches consensus -> keep just the modal actor
+        kept = [ranked[0][0]]
+    return kept
+
+
 def _dominant_year(profiles: Iterable[CampaignProfile]) -> str | None:
     """Most common member year (ties broken toward the later year).
 
@@ -1451,7 +1398,10 @@ def build_campaign_outputs(
         platform_keys = _top_values(component_profiles, "platform_keys")
         platforms = _top_values(component_profiles, "platforms")
         vendors = _top_values(component_profiles, "vendors")
-        actors = _top_values(component_profiles, "actors")
+        # Campaign actor list = actors attested by >=2 evidence items (modal actor always
+        # kept), mirroring the CVE consensus — stops one off-event member from injecting an
+        # unrelated group (the 13-actor MOVEit fan).
+        actors = _evidence_actor_consensus(items, component, 2)
         # Campaign CVE list = CVEs attested by >=2 evidence items in the (trimmed)
         # cluster. Evidence-level consensus keeps a genuinely-reported CVE that few
         # victim projections carry (e.g. MOVEit's CVE-2023-34362) while still

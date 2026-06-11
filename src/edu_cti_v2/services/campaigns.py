@@ -411,9 +411,9 @@ class V2CampaignService:
         from src.edu_cti.analysis.campaign_correlation import (
             PLATFORM_INDICATORS,
             _canonicalize_vendors_platforms,
-            _is_generic_actor,
             _normalize_cve,
         )
+        from src.edu_cti.core.actor_identity import canonical_actor_name
 
         platform_to_vendor = {ind.platform: ind.vendor for ind in PLATFORM_INDICATORS}
 
@@ -447,12 +447,17 @@ class V2CampaignService:
                     cset.add(norm)
             aset = incident_actors.setdefault(cid, set())
             for actor in item.get("actors") or []:
-                if actor and not _is_generic_actor(actor):
-                    aset.add(actor)
-                    actor_freq[actor] = actor_freq.get(actor, 0) + 1
+                canon = canonical_actor_name(actor)  # None when generic; collapses variants
+                if canon:
+                    aset.add(canon)
+                    actor_freq[canon] = actor_freq.get(canon, 0) + 1
 
-        # actor set: campaign actors (filtered) + any seen in incidents
-        actors = [a for a in campaign_actors if not _is_generic_actor(a)]
+        # actor set: campaign actors (canonicalised) + any seen in incidents
+        actors: list[str] = []
+        for a in campaign_actors:
+            canon = canonical_actor_name(a)
+            if canon and canon not in actors:
+                actors.append(canon)
         for a in actor_freq:
             if a not in actors:
                 actors.append(a)

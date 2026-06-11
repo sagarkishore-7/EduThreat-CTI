@@ -395,6 +395,48 @@ def test_evidence_cve_consensus_keeps_multiply_reported_cve():
     assert out == ["CVE-2023-34362"]
 
 
+def test_evidence_actor_consensus_kills_off_event_actor_fan():
+    # MOVEit 2023: Cl0p is multiply attested; off-event groups appear once each and drop,
+    # but the modal actor is always kept even if nothing reaches the threshold.
+    from src.edu_cti.analysis.campaign_correlation import (
+        _evidence_actor_consensus, CampaignEvidenceItem,
+    )
+
+    def _item(cid, actors):
+        return CampaignEvidenceItem(
+            evidence_item_id=f"e-{cid}", canonical_incident_id=cid, canonical_status="open",
+            source_incident_id=None, article_document_id=None, victim_name="V",
+            institution_type=None, country=None, country_code=None, incident_date="2023-06-01",
+            publication_date="2023-06-01", source_name="s", source_group="rss", source_title=None,
+            article_title=None, source_url=None, attack_category=None, attack_vector=None,
+            threat_actor=None, ransomware_family=None, vendors=[], platforms=["MOVEit"],
+            affected_systems=[], platform_keys=["moveit"], actors=actors, cves=[],
+            campaign_names=[], mitre_tactics=[], records_affected_exact=None,
+        )
+
+    component = {"m1", "m2", "m3", "m4"}
+    items = [
+        _item("m1", ["Cl0p"]),
+        _item("m2", ["Cl0p"]),          # Cl0p reaches consensus (>=2)
+        _item("m3", ["Qilin"]),         # off-event, single -> dropped
+        _item("m4", ["Vice Society"]),  # off-event, single -> dropped
+    ]
+    assert _evidence_actor_consensus(items, component, 2) == ["Cl0p"]
+
+    # When no actor reaches consensus, keep just the single modal actor (deterministic).
+    solo = [_item("x1", ["Akira"]), _item("x2", ["Medusa"])]
+    assert _evidence_actor_consensus(solo, {"x1", "x2"}, 2) == ["Akira"]
+
+
+def test_extract_actors_canonicalises_and_dedupes_variants():
+    from src.edu_cti.analysis.campaign_correlation import _extract_actors
+
+    # explicit projection actors carrying variant spellings + a generic junk value;
+    # text also mentions "clop" -> all collapse to one canonical Cl0p, junk dropped.
+    out = _extract_actors("the clop gang leaked data", ["Clop ransomware syndicate", "criminal"])
+    assert out == ["Cl0p"]
+
+
 def test_canonicalize_collapses_product_name_vendors():
     # Canvas / "Canvas (Instructure)" are the product, not the company: they must
     # collapse to vendor Instructure + platform Canvas. CareerConnect resolves to its
