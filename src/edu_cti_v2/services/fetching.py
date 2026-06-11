@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 
 from src.edu_cti.core.deduplication import normalize_url
 from src.edu_cti.pipeline.phase2.storage import ArticleContent, ArticleFetcher
+from src.edu_cti_v2.env import get_int
 from src.edu_cti_v2.models import (
     ArticleDocument,
     ArticleFetchAttempt,
@@ -121,6 +122,17 @@ _EDU_EVIDENCE_RE = re.compile(
     r")\b",
     re.IGNORECASE,
 )
+
+
+def _discovery_fetch_top_n() -> int:
+    """Max candidate article URLs to actually fetch per incident (0 = no cap).
+
+    Discovery can attach up to ~5 candidate URLs; fetching all of them to keep one is
+    the main discovery cost. Default 3 keeps a safety buffer above the single best match
+    while cutting fetches; tune via DISCOVERY_FETCH_TOP_N.
+    """
+    value = get_int("DISCOVERY_FETCH_TOP_N", "EDU_CTI_DISCOVERY_FETCH_TOP_N", default=3)
+    return value if value is not None and value >= 0 else 3
 
 
 def _parse_publish_date(value: Optional[str]) -> Optional[date]:
@@ -939,6 +951,16 @@ class V2FetchService:
             if url_row.url_kind == "article" and not url_row.is_wrapper
         ]
         fetchable_urls.sort(key=lambda row: _score_url_candidate(source_incident, row.url), reverse=True)
+        # Cap the number of candidates actually fetched. News discovery can attach up to
+        # NEWS_DISCOVERY_MAX_RESULTS (~5) candidate URLs per incident, and every one was
+        # being fetched (Scrapling/newspaper3k/Oxylabs) just to pick the single best origin
+        # match. Fetch only the top-N by URL relevance score instead — the post-fetch
+        # _score_article_candidate still selects the best among them. This cuts discovery
+        # fetch cost; missing the perfect article is de-risked for curated/api incidents by
+        # the structured-victim trust in enrichment (they are never dropped for a weak article).
+        top_n = _discovery_fetch_top_n()
+        if top_n > 0 and len(fetchable_urls) > top_n:
+            fetchable_urls = fetchable_urls[:top_n]
 
         now = datetime.now(timezone.utc)
         success_count = 0
