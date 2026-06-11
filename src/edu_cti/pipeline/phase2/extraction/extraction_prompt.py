@@ -30,11 +30,17 @@ CRITICAL OUTPUT REQUIREMENTS:
      * Theological seminaries, religious educational institutions, Bible colleges
      * Any institution with "seminary", "academy", "institute", "college", "university", "school" in the name
      * Educational service providers, student information systems, learning management systems
-     * Third-party/vendor, software supply-chain, or service-provider incidents that
-       affected a named education institution, even if the institution's own systems
-       were not directly breached. Mark the attack as third_party_compromise,
-       supply_chain_software, or an equivalent vendor-related category where supported,
-       and capture the vendor/provider separately when the article names it.
+       (e.g. Instructure/Canvas, PowerSchool, Blackboard, OneClass). When such an
+       EDUCATION-SERVICE / EdTech / LMS / SIS provider is itself breached, TREAT THE
+       PROVIDER ITSELF AS THE EDUCATION VICTIM and set is_edu_cyber_incident=true — even
+       if the article names NO individual downstream school or university. Do NOT reject
+       these for "no specific institution named": the provider is the named education-
+       sector victim. Record institution_name as the provider, mark the attack as
+       third_party_compromise or supply_chain_software, and set the vendor accordingly.
+     * Third-party/vendor or software supply-chain incidents that affected education
+       institutions, even if the institution's own systems were not directly breached and
+       even if only "schools and universities" (plural, unnamed) are mentioned as impacted.
+       Capture the vendor/provider when the article names it.
    - education_relevance_reasoning: Provide a 1-2 sentence explanation WHY this is or isn't
      a specific education sector incident, citing direct evidence from the article.
    - Examples of TRUE: "University of X suffered ransomware attack", "XYZ School District breach"
