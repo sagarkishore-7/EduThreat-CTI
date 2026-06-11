@@ -23,18 +23,37 @@ CRITICAL OUTPUT REQUIREMENTS:
      * Aggregate statistics articles ("ransomware attacks rose X% in 2023")
      * Trend analysis or "state of cybersecurity" pieces
      * Best-practice, advice, or how-to articles
-     * Any article discussing many incidents in aggregate without reporting a single named victim
+     * Any article discussing MANY incidents in aggregate (sector-wide statistics, "X% of
+       schools", "education is the most-attacked sector") — note this is about AGGREGATION,
+       not about whether the victim is named. A SINGLE discrete incident is still TRUE even
+       if the victim institution is not named (see below).
    - CRITICAL for TRUE cases — pay special attention to:
+     * A SINGLE but UNNAMED education institution is still a discrete incident — keep it.
+       Articles often anonymise the victim ("a university in Florida was hit by ransomware",
+       "a UK college confirmed a cyberattack", "a Texas school district reported a breach").
+       These are ONE concrete incident with one education victim, just not publicly named —
+       set is_edu_cyber_incident=true. Do NOT reject for "no specific institution named".
+       Set institution_name to a descriptive placeholder that preserves what IS known
+       (e.g. "Unnamed university (Florida, US)", "Unnamed college (UK)") rather than null,
+       and rely on country/region/institution_type for the known attributes. (Distinguish
+       this from the aggregate case above: one anonymised victim = TRUE; many victims as a
+       statistic = FALSE.)
      * Data breach notifications and formal regulatory filings (e.g., Maine Attorney General filings)
      * Organizations explicitly marked as "Type of Organization: Education" in breach notifications
      * Theological seminaries, religious educational institutions, Bible colleges
      * Any institution with "seminary", "academy", "institute", "college", "university", "school" in the name
      * Educational service providers, student information systems, learning management systems
-     * Third-party/vendor, software supply-chain, or service-provider incidents that
-       affected a named education institution, even if the institution's own systems
-       were not directly breached. Mark the attack as third_party_compromise,
-       supply_chain_software, or an equivalent vendor-related category where supported,
-       and capture the vendor/provider separately when the article names it.
+       (e.g. Instructure/Canvas, PowerSchool, Blackboard, OneClass). When such an
+       EDUCATION-SERVICE / EdTech / LMS / SIS provider is itself breached, TREAT THE
+       PROVIDER ITSELF AS THE EDUCATION VICTIM and set is_edu_cyber_incident=true — even
+       if the article names NO individual downstream school or university. Do NOT reject
+       these for "no specific institution named": the provider is the named education-
+       sector victim. Record institution_name as the provider, mark the attack as
+       third_party_compromise or supply_chain_software, and set the vendor accordingly.
+     * Third-party/vendor or software supply-chain incidents that affected education
+       institutions, even if the institution's own systems were not directly breached and
+       even if only "schools and universities" (plural, unnamed) are mentioned as impacted.
+       Capture the vendor/provider when the article names it.
    - education_relevance_reasoning: Provide a 1-2 sentence explanation WHY this is or isn't
      a specific education sector incident, citing direct evidence from the article.
    - Examples of TRUE: "University of X suffered ransomware attack", "XYZ School District breach"
