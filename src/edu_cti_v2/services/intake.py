@@ -7,6 +7,7 @@ from typing import Optional
 
 from sqlalchemy.orm import Session
 
+from src.edu_cti_v2.env import title_classify_enabled
 from src.edu_cti_v2.models import PipelineTask, SourceIncident
 from src.edu_cti_v2.repositories import (
     ArticleRepository,
@@ -14,6 +15,11 @@ from src.edu_cti_v2.repositories import (
     SourceEnrichmentRepository,
     SourceStateRepository,
 )
+
+# Priority of the shared LLM title-classification sweep task. Sits between
+# enrich_source (80) and fetch_article (60) so newly-collected titles get judged
+# promptly without starving the heavier downstream stages.
+CLASSIFY_SWEEP_PRIORITY = 70
 
 
 def determine_initial_task_type(source_incident: SourceIncident) -> str:
@@ -73,6 +79,45 @@ class V2IntakeService:
             last_seen_published_at=source_incident.source_published_at,
         )
 
+    def ensure_classify_sweep_task(
+        self,
+        session: Session,
+        *,
+        exclude_task_id: Optional[object] = None,
+    ) -> Optional[PipelineTask]:
+        """Ensure exactly one active ``classify_titles`` sweep task exists.
+
+        The classifier processes *all* pending news/rss rows in batches, so a
+        single shared sweep task is enough. De-dup against any queued/leased
+        classify task so repeated collection never piles up redundant sweeps.
+        ``exclude_task_id`` lets a running sweep task seed its own continuation
+        without being blocked by its own (still-leased) lease.
+        """
+        active = self.pipeline_task_repository.count_active(
+            session,
+            statuses=("queued", "leased"),
+            task_types=("classify_titles",),
+            exclude_task_ids=[exclude_task_id] if exclude_task_id is not None else None,
+        )
+        if active > 0:
+            return None
+        now = datetime.now(timezone.utc)
+        task = PipelineTask(
+            run_id=None,
+            task_type="classify_titles",
+            target_table="source_incidents",
+            target_id=None,
+            status="queued",
+            priority=CLASSIFY_SWEEP_PRIORITY,
+            payload={},
+            result={},
+            available_at=now,
+            attempt_count=0,
+            max_attempts=5,
+        )
+        self.pipeline_task_repository.enqueue(session, task)
+        return task
+
     def ensure_initial_processing_task(
         self,
         session: Session,
@@ -80,6 +125,22 @@ class V2IntakeService:
     ) -> Optional[PipelineTask]:
         if self.source_enrichment_repository.get_by_source_incident(session, source_incident.id):
             return None
+
+        # LLM title-relevance gate: route news/rss through the bulk classifier
+        # before any fetch; curated/api feeds are high-precision and bypass it.
+        if title_classify_enabled():
+            if source_incident.source_group in ("news", "rss"):
+                status = source_incident.relevance_status
+                if status == "pending":
+                    # Defer fetch — the classifier decides relevance from the title.
+                    self.ensure_classify_sweep_task(session)
+                    return None
+                if status == "irrelevant":
+                    # Confident-negative title — never fetched (kept for audit).
+                    return None
+                # status == "relevant": classifier approved it; fall through to fetch.
+            elif source_incident.relevance_status != "relevant":
+                source_incident.relevance_status = "relevant"
 
         selected_document = self.article_repository.get_selected_document(
             session,

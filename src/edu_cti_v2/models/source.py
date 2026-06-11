@@ -5,7 +5,16 @@ from __future__ import annotations
 from datetime import datetime
 from typing import List, Optional
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Text, UniqueConstraint
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -40,6 +49,17 @@ class SourceIncident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     raw_payload: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
     is_deleted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # LLM title-relevance gate (replaces the keyword pre-filter for news/rss).
+    # 'pending'    — awaiting bulk title classification (default for new rows)
+    # 'relevant'   — keep: enqueue resolve/fetch (curated/api are relevant by construction)
+    # 'irrelevant' — confident-negative title; never fetched, kept for audit/recall analysis
+    relevance_status: Mapped[str] = mapped_column(
+        Text, nullable=False, server_default="pending", default="pending"
+    )
+    title_relevance_score: Mapped[Optional[float]] = mapped_column(Float)
+    title_relevance_reason: Mapped[Optional[str]] = mapped_column(Text)
+    title_classified_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
     urls: Mapped[List["SourceIncidentUrl"]] = relationship(
         back_populates="source_incident",
         cascade="all, delete-orphan",
@@ -48,6 +68,16 @@ class SourceIncident(UUIDPrimaryKeyMixin, TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint("source_name", "source_event_key", name="uq_source_incidents_source_name"),
         CheckConstraint("source_group IN ('curated', 'news', 'rss', 'api')", name="source_group"),
+        CheckConstraint(
+            "relevance_status IN ('pending', 'relevant', 'irrelevant')",
+            name="source_incidents_relevance_status",
+        ),
+        # Drives the classifier's batch sweep: pending news/rss rows by group.
+        Index(
+            "ix_source_incidents_relevance",
+            "source_group",
+            "relevance_status",
+        ),
     )
 
 

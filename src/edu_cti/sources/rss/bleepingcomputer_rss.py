@@ -59,12 +59,18 @@ def has_security_category(categories: List[str]) -> bool:
 def contains_education_keywords(text: str) -> bool:
     """
     Check if text contains any education-related keywords.
-    
+
     Uses the EDUCATION_KEYWORDS list from config.
+
+    Disabled when the LLM title-relevance gate is on (``TITLE_CLASSIFY_ENABLED``):
+    every candidate is admitted and saved as ``pending`` for the bulk title
+    classifier to judge, instead of being dropped by keyword match.
     """
+    if config.title_classify_enabled():
+        return bool(text)
     if not text:
         return False
-    
+
     text_lower = text.lower()
     
     for keyword in config.EDUCATION_KEYWORDS:

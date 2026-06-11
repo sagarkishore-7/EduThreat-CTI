@@ -13,7 +13,13 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 
 from src.edu_cti.core.discovery_policy import BROAD_CYBER_SOURCE_DOMAINS
-from src.edu_cti_v2.env import get_env, get_float, get_int  # backward-compat env (new → legacy)
+from src.edu_cti_v2.env import (  # backward-compat env (new → legacy)
+    get_env,
+    get_flag,
+    get_float,
+    get_int,
+    title_classify_enabled,  # re-exported so collection sources call config.title_classify_enabled()
+)
 
 # Load .env file if present (must be before any os.getenv calls)
 try:
@@ -26,6 +32,18 @@ except ImportError:
 def _env_flag(name: str, default: str = "0") -> bool:
     """Parse a boolean-like environment flag."""
     return os.getenv(name, default).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def title_classify_enabled() -> bool:
+    """Whether the LLM title-relevance gate replaces the keyword pre-filter.
+
+    When True, the news/RSS keyword pre-filters (``matches_keywords`` and
+    ``contains_education_keywords``) stop dropping candidates — every collected
+    title is saved as ``pending`` for the bulk LLM classifier to judge before
+    any article fetch. Read fresh on each call so the Railway env / tests take
+    effect without an import-time snapshot. Default off = legacy keyword gate.
+    """
+    return get_flag("TITLE_CLASSIFY_ENABLED", "EDU_CTI_TITLE_CLASSIFY_ENABLED", default=False)
 
 # ---- Networking / scraping ----
 

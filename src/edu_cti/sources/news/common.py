@@ -234,7 +234,16 @@ def matches_keywords(text: str, keywords: Iterable[str]) -> bool:
 
     This prevents collecting irrelevant articles (sports, admissions, general
     university news) that happen to mention an educational institution.
+
+    When the LLM title-relevance gate is enabled (``TITLE_CLASSIFY_ENABLED``),
+    this keyword pre-filter is disabled: every candidate is admitted so it can be
+    saved and judged by the bulk title classifier before any article fetch. The
+    keyword AND-gate has poor recall (drops real incidents phrased without the
+    exact tokens) and poor precision (admits token-coincidence junk), so the LLM
+    replaces it as the relevance decision.
     """
+    if config.title_classify_enabled():
+        return bool(text)
     if not text:
         return False
     lowered = text.lower()

@@ -20,6 +20,7 @@ from src.edu_cti_v2.services.enrichment import V2EnrichmentService
 from src.edu_cti_v2.services.fetching import V2FetchService
 from src.edu_cti_v2.services.orchestration import V2OrchestrationService
 from src.edu_cti_v2.services.resolution import V2ResolveUrlService
+from src.edu_cti_v2.services.title_classification import V2TitleClassificationService
 from src.edu_cti.core.logging_utils import bind_log_context, clear_log_context
 
 logger = logging.getLogger(__name__)
@@ -31,6 +32,9 @@ DEFAULT_TASK_LEASE_ORDER = (
     "orchestrate_plan",
     "reenrich",
     "enrich_source",
+    # Title classification is memory-light and gates fetch, so it runs eagerly
+    # right after enrichment (which it yields to) and ahead of fetch/resolve.
+    "classify_titles",
     "canonicalize",
     "fetch_article",
     "refresh_analytics",
@@ -72,6 +76,7 @@ class V2TaskRuntime:
         analytics_refresh_service: Optional[V2AnalyticsRefreshService] = None,
         campaign_service: Optional[V2CampaignService] = None,
         orchestration_service: Optional[V2OrchestrationService] = None,
+        title_classification_service: Optional[V2TitleClassificationService] = None,
         max_fetch_backlog: Optional[int] = None,
         max_active_enrich_tasks: Optional[int] = None,
     ) -> None:
@@ -86,6 +91,7 @@ class V2TaskRuntime:
         self.analytics_refresh_service = analytics_refresh_service
         self.campaign_service = campaign_service
         self.orchestration_service = orchestration_service
+        self.title_classification_service = title_classification_service
         self.max_fetch_backlog = max_fetch_backlog if max_fetch_backlog is not None else get_int(
             "MAX_FETCH_BACKLOG", "EDU_CTI_V2_MAX_FETCH_BACKLOG", default=600
         )
@@ -322,6 +328,16 @@ class V2TaskRuntime:
                 limit=payload.get("limit"),
                 correlation_version=payload.get("correlation_version") or "campaign_corr_v1",
             )
+            self.pipeline_task_repository.mark_completed(session, task, result)
+            return task
+
+        if task.task_type == "classify_titles":
+            classification_service = self.title_classification_service or V2TitleClassificationService(
+                pipeline_task_repository=self.pipeline_task_repository,
+                source_incident_repository=self.source_incident_repository,
+            )
+            self.title_classification_service = classification_service
+            result = classification_service.run_batch(session, current_task_id=task.id)
             self.pipeline_task_repository.mark_completed(session, task, result)
             return task
 
