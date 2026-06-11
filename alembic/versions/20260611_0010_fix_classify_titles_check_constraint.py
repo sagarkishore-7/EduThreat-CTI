@@ -48,12 +48,23 @@ def _drop_all_variants() -> None:
 
 
 def upgrade() -> None:
+    # ``pipeline_tasks`` is a hot table (~80k rows, actively written by the worker).
+    # A plain ADD CONSTRAINT ... CHECK validation-scans every row while holding
+    # ACCESS EXCLUSIVE, which stalls the boot migration past the API healthcheck.
+    # ``NOT VALID`` skips the scan (instant, microsecond lock) and is safe here:
+    # every existing row already has a valid task_type, so there is nothing to
+    # validate — and NEW classify_titles inserts are enforced immediately.
+    # A short lock_timeout makes the brief ACCESS EXCLUSIVE grab fail fast rather
+    # than queue behind the worker and freeze the pipeline; the migration simply
+    # retries on the next boot if it loses the race.
+    op.execute("SET lock_timeout = '8s'")
     _drop_all_variants()
     op.execute(
         "ALTER TABLE IF EXISTS pipeline_tasks "
         "ADD CONSTRAINT ck_pipeline_tasks_pipeline_tasks_task_type "
-        f"CHECK (task_type IN ({', '.join(_ALL_TYPES)}))"
+        f"CHECK (task_type IN ({', '.join(_ALL_TYPES)})) NOT VALID"
     )
+    op.execute("RESET lock_timeout")
 
 
 def downgrade() -> None:
