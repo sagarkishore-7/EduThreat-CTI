@@ -28,14 +28,21 @@ from src.edu_cti_v2.repositories import (
     SourceEnrichmentRepository,
 )
 from src.edu_cti_v2.source_identity import (
+    _looks_generic_identity,
     identity_matches_source_anchor,
+    looks_broad_collective_identity,
     looks_geographic_only_identity,
     recover_source_identity,
 )
 from src.edu_cti_v2.services.intake import V2IntakeService
 
 _COLLECTIVE_IDENTITY_RE = re.compile(
-    r"^(?:\d+\s+)?(?:universities|colleges|schools|school districts?|districts|campuses|providers|students)\b",
+    # Collective/plural victim labels ("5 universities", "school districts", "districts").
+    # The negative lookahead exempts a SPECIFIC named district written type-first, e.g.
+    # "School District of Elmbrook" / "District of Columbia" — these are one named victim,
+    # not a collective, and must not be flagged as an invalid primary identity.
+    r"^(?:\d+\s+)?(?:universities|colleges|schools|school districts?|districts|campuses|providers|students)\b"
+    r"(?!\s+of\s+(?-i:[A-Z]))",
     re.IGNORECASE,
 )
 _GENERIC_EDU_ENTITY_RE = (
@@ -905,6 +912,34 @@ def _mark_victim_review_required(
     return updated
 
 
+def _curated_authoritative_identity(source_incident) -> Optional[str]:
+    """A curated source's structured institution name is authoritative — trust it.
+
+    comparitech / konbriefing are human-curated breach databases whose structured
+    ``raw_institution_name`` IS the victim of record; the fetched news article is only
+    supporting evidence. So a curated incident must NOT be dropped for "no specific
+    victim in the article" just because the soft identity heuristics or a weak
+    supporting article are imperfect. We still refuse a curated name that is itself
+    clearly collective / geographic / a headline (those are genuinely non-specific).
+    """
+    if getattr(source_incident, "source_group", None) != "curated":
+        return None
+    name = _clean_identity(source_incident.raw_institution_name) or _clean_identity(
+        source_incident.raw_victim_name
+    )
+    if not name:
+        return None
+    if (
+        _COLLECTIVE_IDENTITY_RE.match(name)
+        or looks_geographic_only_identity(name)
+        or looks_broad_collective_identity(name)
+        or _looks_generic_identity(name)
+        or is_headline_format(name, source_incident.raw_title)
+    ):
+        return None
+    return name
+
+
 def _repair_or_reject_primary_identity(
     source_incident,
     *,
@@ -920,7 +955,9 @@ def _repair_or_reject_primary_identity(
         raw_title=source_incident.raw_title,
     )
     if _looks_invalid_primary_identity(source_identity, title=source_incident.raw_title):
-        source_identity = None
+        # Fall back to the curated structured victim (authoritative) before giving up,
+        # so a curated education incident is never dropped for a weak article / name quirk.
+        source_identity = _curated_authoritative_identity(source_incident)
     extracted_identity = (
         raw_json_data.get("institution_name")
         or raw_json_data.get("institution_name_en")
