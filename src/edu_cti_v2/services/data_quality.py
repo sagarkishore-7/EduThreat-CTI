@@ -6,7 +6,7 @@ import re
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
@@ -528,3 +528,58 @@ class V2DataQualityService:
                 }
             )
         return items
+
+    def purge_non_education_incidents(
+        self,
+        session: Session,
+        *,
+        confirm: bool = False,
+        limit: Optional[int] = None,
+    ) -> dict[str, Any]:
+        """Hard-delete keyword-era junk: source incidents whose enrichment rejected
+        them as not education-related (``is_education_related = false``).
+
+        These rows were fetched + enriched but never canonicalized — they only
+        inflate the fetched/enriched funnel counts that the paper reports. Child
+        rows (urls, article_documents, article_fetch_attempts, source_enrichments)
+        are removed automatically via ``ON DELETE CASCADE``. A hard delete is
+        required because the counts are raw ``COUNT(*)`` with no is_deleted filter.
+
+        With ``confirm=False`` this only counts (dry run) and deletes nothing.
+        Returns a before/after integrity report.
+        """
+        junk_ids = list(
+            session.execute(
+                select(SourceEnrichment.source_incident_id).where(
+                    SourceEnrichment.is_education_related.is_(False)
+                )
+            ).scalars().all()
+        )
+        before_src = int(session.execute(select(func.count(SourceIncident.id))).scalar_one() or 0)
+        report: dict[str, Any] = {
+            "junk_candidates": len(junk_ids),
+            "source_incidents_before": before_src,
+            "confirmed": confirm,
+            "deleted": 0,
+        }
+        if not confirm or not junk_ids:
+            return report
+
+        if limit is not None:
+            junk_ids = junk_ids[:limit]
+
+        deleted = 0
+        chunk_size = 500
+        for start in range(0, len(junk_ids), chunk_size):
+            chunk = junk_ids[start : start + chunk_size]
+            res = session.execute(
+                SourceIncident.__table__.delete().where(SourceIncident.id.in_(chunk))
+            )
+            deleted += int(res.rowcount or 0)
+        session.flush()
+
+        report["deleted"] = deleted
+        report["source_incidents_after"] = int(
+            session.execute(select(func.count(SourceIncident.id))).scalar_one() or 0
+        )
+        return report
