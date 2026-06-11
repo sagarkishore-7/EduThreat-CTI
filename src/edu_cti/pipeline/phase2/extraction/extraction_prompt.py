@@ -23,8 +23,21 @@ CRITICAL OUTPUT REQUIREMENTS:
      * Aggregate statistics articles ("ransomware attacks rose X% in 2023")
      * Trend analysis or "state of cybersecurity" pieces
      * Best-practice, advice, or how-to articles
-     * Any article discussing many incidents in aggregate without reporting a single named victim
+     * Any article discussing MANY incidents in aggregate (sector-wide statistics, "X% of
+       schools", "education is the most-attacked sector") — note this is about AGGREGATION,
+       not about whether the victim is named. A SINGLE discrete incident is still TRUE even
+       if the victim institution is not named (see below).
    - CRITICAL for TRUE cases — pay special attention to:
+     * A SINGLE but UNNAMED education institution is still a discrete incident — keep it.
+       Articles often anonymise the victim ("a university in Florida was hit by ransomware",
+       "a UK college confirmed a cyberattack", "a Texas school district reported a breach").
+       These are ONE concrete incident with one education victim, just not publicly named —
+       set is_edu_cyber_incident=true. Do NOT reject for "no specific institution named".
+       Set institution_name to a descriptive placeholder that preserves what IS known
+       (e.g. "Unnamed university (Florida, US)", "Unnamed college (UK)") rather than null,
+       and rely on country/region/institution_type for the known attributes. (Distinguish
+       this from the aggregate case above: one anonymised victim = TRUE; many victims as a
+       statistic = FALSE.)
      * Data breach notifications and formal regulatory filings (e.g., Maine Attorney General filings)
      * Organizations explicitly marked as "Type of Organization: Education" in breach notifications
      * Theological seminaries, religious educational institutions, Bible colleges

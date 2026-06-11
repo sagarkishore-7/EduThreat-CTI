@@ -328,6 +328,13 @@ def _looks_generic_institution_label(value: Optional[str]) -> bool:
         return True
     lowered = text.lower()
     words = text.split()
+    # Anonymised-victim placeholders (kept for coverage when an article reports a
+    # real but unnamed institution, e.g. "Unnamed university (Florida, US)" or
+    # "Unknown Educational Institution"). These must NOT serve as a match key, or
+    # two distinct unnamed incidents would false-merge into one canonical — each
+    # stays its own canonical, deduped only by URL.
+    if lowered.startswith(("unnamed ", "unknown ", "undisclosed ", "anonymous ", "unidentified ", "unspecified ", "a ", "an ")):
+        return True
     if lowered.startswith(("several ", "multiple ", "various ", "few ", "many ", "some ")):
         return True
     if "website of" in lowered or "websites of" in lowered:

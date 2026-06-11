@@ -2599,3 +2599,34 @@ def test_canonicalization_service_reopens_excluded_canonical_when_identity_is_re
     assert existing_canonical.status == "open"
     assert existing_canonical.is_education_related is True
     assert existing_canonical.primary_source_incident_id == incident.id
+
+
+def test_unnamed_victim_placeholders_treated_as_generic_no_false_merge():
+    """Anonymised-victim placeholders must not serve as a canonicalization match key.
+
+    Coverage requires keeping real-but-unnamed incidents ('a university in Florida
+    was hit by ransomware'), but two distinct unnamed incidents must NOT merge into
+    one canonical just because both carry an 'Unnamed university' placeholder.
+    """
+    from src.edu_cti_v2.services.canonicalization import _looks_generic_institution_label
+
+    # placeholders → generic (None identity → deduped only by URL, never name-merged)
+    for placeholder in (
+        "Unnamed university (Florida, US)",
+        "Unnamed college (UK)",
+        "Unknown Educational Institution",
+        "Undisclosed school district",
+        "Anonymous university",
+        "a university in Florida",
+    ):
+        assert _looks_generic_institution_label(placeholder) is True, placeholder
+
+    # real named victims + EdTech vendors → NOT generic (stay matchable/dedupable)
+    for real in (
+        "University of Florida",
+        "Nantucket Public Schools",
+        "Harvard University",
+        "Instructure",
+        "Transact Campus",
+    ):
+        assert _looks_generic_institution_label(real) is False, real
