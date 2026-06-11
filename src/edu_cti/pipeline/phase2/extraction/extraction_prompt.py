@@ -170,12 +170,17 @@ CRITICAL OUTPUT REQUIREMENTS:
      in a year and says only "in August", "in December", etc., infer the most recent prior
      matching month, not the upcoming month in the article year.
 
-4. ATTACK CATEGORY — choose the most specific tag that applies:
-   RANSOMWARE:
+4. ATTACK CATEGORY — choose the most specific tag that the article SUPPORTS:
+   RANSOMWARE (only if ransomware/encryption is involved OR a ransomware gang deployed it):
    - "ransomware_encryption" — file encryption only, no confirmed exfiltration
    - "ransomware_double_extortion" — encryption + data theft with leak threat
    - "ransomware_triple_extortion" — double extortion + DDoS or contacting victims/partners
-   - "ransomware_data_leak_only" — data stolen and threatened for release, no encryption
+   - "ransomware_data_leak_only" — a RANSOMWARE actor stole data and threatened release without
+     encrypting (still a ransomware operation)
+   - Do NOT use any "ransomware_*" tag for a pure data-theft / extortion breach where no
+     ransomware, no encryption, and no ransomware gang is involved. A data-extortion group such as
+     ShinyHunters, Scattered Spider, Lapsus$, or an unnamed actor that only stole and threatened to
+     leak data is a DATA BREACH, not ransomware — use "data_breach_external".
 
    PHISHING / SOCIAL ENGINEERING:
    - "phishing_credential_harvest" — phishing aimed at stealing login credentials
@@ -194,6 +199,9 @@ CRITICAL OUTPUT REQUIREMENTS:
    - "ddos_volumetric", "ddos_application", "ddos_protocol" — DDoS by type
    - "malware_trojan", "malware_worm", "malware_backdoor", "malware_rootkit",
      "malware_cryptominer", "malware_infostealer", "malware_rat", "malware_botnet"
+     (use a specific malware_* subtype ONLY if the article names or clearly describes that
+     malware type; for generic "malware" / "malicious scripts" with no stated family or
+     behaviour, use "unauthorized_access", not a guessed subtype)
    - "unauthorized_access" — confirmed intrusion with no further classification
    - "credential_stuffing" — automated login attempts with previously leaked credentials
    - "brute_force" — systematic password guessing
@@ -204,6 +212,11 @@ CRITICAL OUTPUT REQUIREMENTS:
    - "web_defacement" — website content replaced by attacker
 
 5. ATTACK VECTOR — primary method used for initial access:
+   CRITICAL: only output a vector the article EXPLICITLY states or unambiguously describes.
+   If the article does not say how the attackers got in, output "unknown" — do NOT guess
+   "exposed_service", "unpatched_system", "vulnerability_exploit_known", etc. from the attack
+   type alone. (e.g. an article that says only "attackers gained access to a server" with no
+   entry method → "unknown", not "exposed_service".)
    CREDENTIAL-BASED: "stolen_credentials", "credential_stuffing", "brute_force",
      "password_spraying", "credential_phishing", "session_hijacking"
    EMAIL-BASED: "phishing_email", "spear_phishing_email", "malicious_attachment",
@@ -223,6 +236,10 @@ CRITICAL OUTPUT REQUIREMENTS:
    Use the exact known family name in lowercase (e.g. "lockbit", "blackcat_alphv", "cl0p_clop",
    "akira", "play", "black_basta", "rhysida", "medusa", "conti", "ryuk", "revil_sodinokibi").
    Use "unknown" if the family is not identified. Use "other" for confirmed but unlisted families.
+   This field is the RANSOMWARE STRAIN ONLY — never put a threat-actor or data-extortion group name
+   here. If the incident is not a ransomware attack (e.g. a pure data breach / data-extortion such as
+   ShinyHunters, Scattered Spider, Lapsus$), set ransomware_family to null; the group belongs in the
+   threat-actor field, not here.
 
 7. THREAT ACTOR CATEGORY:
    - "apt_nation_state" — confirmed government-sponsored APT group
