@@ -705,6 +705,7 @@ def cancel_v2_task(
 @router.get("/classifier-quality")
 def get_v2_classifier_quality(
     sample_limit: int = Query(12, ge=1, le=50),
+    debug: bool = Query(False),
     session=Depends(get_v2_session),
     _: bool = Depends(authenticate),
 ):
@@ -769,22 +770,52 @@ def get_v2_classifier_quality(
         return round((n / d) * 100, 1) if d else 0.0
 
     # --- spot-check samples -------------------------------------------------
-    fp_samples = [
-        {
-            "title": r[0],
-            "title_reason": r[1],
-            "title_score": float(r[2]) if r[2] is not None else None,
-            "rejected_reason": r[3],
-        }
-        for r in rows(
-            "SELECT si.raw_title, si.title_relevance_reason, si.title_relevance_score, e.failed_reason "
-            "FROM source_incidents si JOIN source_enrichments e ON e.source_incident_id = si.id "
-            "WHERE si.relevance_status = 'relevant' AND si.title_classified_at IS NOT NULL "
-            "AND e.is_education_related = false "
-            "ORDER BY si.title_classified_at DESC LIMIT :lim",
-            lim=sample_limit,
-        )
-    ]
+    if debug:
+        # Rich view for auditing whether gate 2 rejected correctly: include the
+        # gate-2 education_relevance_reasoning, the article URL, and an excerpt of
+        # the article text the second gate actually read.
+        fp_samples = [
+            {
+                "title": r[0],
+                "title_reason": r[1],
+                "title_score": float(r[2]) if r[2] is not None else None,
+                "rejected_reason": r[3],
+                "gate2_reasoning": r[4],
+                "url": r[5],
+                "article_excerpt": (r[6] or "")[:1400],
+            }
+            for r in rows(
+                "SELECT si.raw_title, si.title_relevance_reason, si.title_relevance_score, "
+                "e.failed_reason, e.raw_extraction->>'education_relevance_reasoning', "
+                "u.resolved_url, a.content_text "
+                "FROM source_incidents si "
+                "JOIN source_enrichments e ON e.source_incident_id = si.id "
+                "LEFT JOIN article_documents a ON a.source_incident_id = si.id "
+                "AND a.is_selected_for_enrichment = true "
+                "LEFT JOIN source_incident_urls u ON u.id = a.source_incident_url_id "
+                "WHERE si.relevance_status = 'relevant' AND si.title_classified_at IS NOT NULL "
+                "AND e.is_education_related = false "
+                "ORDER BY si.title_classified_at DESC LIMIT :lim",
+                lim=sample_limit,
+            )
+        ]
+    else:
+        fp_samples = [
+            {
+                "title": r[0],
+                "title_reason": r[1],
+                "title_score": float(r[2]) if r[2] is not None else None,
+                "rejected_reason": r[3],
+            }
+            for r in rows(
+                "SELECT si.raw_title, si.title_relevance_reason, si.title_relevance_score, e.failed_reason "
+                "FROM source_incidents si JOIN source_enrichments e ON e.source_incident_id = si.id "
+                "WHERE si.relevance_status = 'relevant' AND si.title_classified_at IS NOT NULL "
+                "AND e.is_education_related = false "
+                "ORDER BY si.title_classified_at DESC LIMIT :lim",
+                lim=sample_limit,
+            )
+        ]
     tp_samples = [
         {
             "title": r[0],
