@@ -872,6 +872,82 @@ def get_v2_classifier_quality(
     }
 
 
+@router.get("/page-yield")
+def get_v2_page_yield(
+    source_name: Optional[str] = Query(None),
+    session=Depends(get_v2_session),
+    _: bool = Depends(authenticate),
+):
+    """Per-page edu-relevance yield for search-news sources.
+
+    The news scrapers record the search page each title came from in raw_notes
+    (``...;page=N``). This groups classified news titles by that page and reports
+    how many the LLM title gate kept (relevant) vs dropped (irrelevant), so the
+    operator can see where edu-relevant yield craters with depth and pick a
+    sensible NEWS_MAX_PAGES / COLLECT_MAX_PAGES. Inline SQL, api-only.
+    """
+    from sqlalchemy import text
+
+    params: dict = {}
+    src_filter = ""
+    if source_name:
+        src_filter = "AND si.source_name = :src"
+        params["src"] = source_name
+
+    # Extract the integer page from raw_notes (e.g. '...;page=3'); only news rows
+    # that have been title-classified contribute.
+    sql = (
+        "SELECT si.source_name, "
+        "  (substring(si.raw_notes from 'page=([0-9]+)'))::int AS page, "
+        "  count(*) FILTER (WHERE si.relevance_status = 'relevant')   AS relevant, "
+        "  count(*) FILTER (WHERE si.relevance_status = 'irrelevant') AS irrelevant "
+        "FROM source_incidents si "
+        "WHERE si.source_group = 'news' AND si.title_classified_at IS NOT NULL "
+        "  AND si.raw_notes ~ 'page=[0-9]+' "
+        f"  {src_filter} "
+        "GROUP BY si.source_name, page "
+        "ORDER BY si.source_name, page"
+    )
+    rows = session.execute(text(sql), params).fetchall()
+
+    by_source: dict[str, list[dict]] = {}
+    for r in rows:
+        src, page, relevant, irrelevant = r[0], r[1], int(r[2]), int(r[3])
+        if page is None:
+            continue
+        total = relevant + irrelevant
+        by_source.setdefault(src, []).append(
+            {
+                "page": page,
+                "relevant": relevant,
+                "irrelevant": irrelevant,
+                "total": total,
+                "relevant_pct": round((relevant / total) * 100, 1) if total else 0.0,
+            }
+        )
+
+    # Cumulative relevance to suggest a cap: the page beyond which added pages
+    # contribute < 5% of cumulative relevant rows.
+    suggestions: dict[str, dict] = {}
+    for src, pages in by_source.items():
+        pages_sorted = sorted(pages, key=lambda p: p["page"])
+        total_relevant = sum(p["relevant"] for p in pages_sorted)
+        cum = 0
+        knee = pages_sorted[-1]["page"] if pages_sorted else 0
+        for p in pages_sorted:
+            cum += p["relevant"]
+            if total_relevant and (cum / total_relevant) >= 0.95:
+                knee = p["page"]
+                break
+        suggestions[src] = {
+            "total_relevant": total_relevant,
+            "page_for_95pct_relevant": knee,
+            "max_page_observed": pages_sorted[-1]["page"] if pages_sorted else 0,
+        }
+
+    return {"by_source": by_source, "suggestions": suggestions}
+
+
 @router.get("/manual-review-queue")
 def list_v2_manual_review_queue(
     limit: int = Query(100, ge=1, le=1000),
