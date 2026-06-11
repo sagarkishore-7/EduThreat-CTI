@@ -872,6 +872,68 @@ def get_v2_classifier_quality(
     }
 
 
+@router.get("/extraction-samples")
+def get_v2_extraction_samples(
+    limit: int = Query(8, ge=1, le=30),
+    session=Depends(get_v2_session),
+    _: bool = Depends(authenticate),
+):
+    """Recent open canonicals with their extracted fields + source article excerpt.
+
+    Quality-monitoring surface: lets an operator read the article the extraction
+    was built from and verify the institution / date / actor / attack / country
+    are faithful, and that the incident is genuinely an education cyber incident
+    (not a wrongly-kept one). Inline SQL, api-only.
+    """
+    from sqlalchemy import text
+
+    rows = session.execute(
+        text(
+            "SELECT ci.id, ci.institution_name, ci.vendor_name, ci.institution_type, "
+            "ci.country, ci.incident_date, ci.attack_category, ci.attack_vector, "
+            "ci.threat_actor_name, ci.severity, "
+            "si.raw_title, "
+            "e.is_education_related, e.manual_review_required, e.manual_review_reason, "
+            "e.re_enrich_attempts, e.raw_extraction->>'education_relevance_reasoning', "
+            "a.content_text "
+            "FROM canonical_incidents ci "
+            "JOIN canonical_memberships m ON m.canonical_incident_id = ci.id "
+            "JOIN source_incidents si ON si.id = m.source_incident_id "
+            "LEFT JOIN source_enrichments e ON e.source_incident_id = si.id "
+            "LEFT JOIN article_documents a ON a.source_incident_id = si.id "
+            "AND a.is_selected_for_enrichment = true "
+            "WHERE ci.status = 'open' AND ci.is_education_related = true "
+            "ORDER BY ci.created_at DESC LIMIT :lim"
+        ),
+        {"lim": limit},
+    ).fetchall()
+
+    samples = []
+    for r in rows:
+        samples.append(
+            {
+                "canonical_id": str(r[0]),
+                "institution_name": r[1],
+                "vendor_name": r[2],
+                "institution_type": r[3],
+                "country": r[4],
+                "incident_date": r[5].isoformat() if r[5] else None,
+                "attack_category": r[6],
+                "attack_vector": r[7],
+                "threat_actor_name": r[8],
+                "severity": r[9],
+                "raw_title": r[10],
+                "is_education_related": r[11],
+                "manual_review_required": r[12],
+                "manual_review_reason": r[13],
+                "re_enrich_attempts": r[14],
+                "education_relevance_reasoning": r[15],
+                "article_excerpt": (r[16] or "")[:1600],
+            }
+        )
+    return {"samples": samples, "returned": len(samples)}
+
+
 @router.get("/page-yield")
 def get_v2_page_yield(
     source_name: Optional[str] = Query(None),
