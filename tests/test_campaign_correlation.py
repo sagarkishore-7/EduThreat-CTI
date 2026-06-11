@@ -150,6 +150,44 @@ def test_canvas_rows_cluster_by_shared_vendor_platform_and_time_window():
     assert {membership.role for membership in memberships} == {"affected_via_vendor"}
 
 
+def _actor_row(cid, *, victim, incident_date, actor="Akira"):
+    # An actor-keyed row: names the actor in content + threat_actor field, NO vendor/platform/CVE,
+    # so the only linking signal is the shared actor.
+    return _row(
+        cid, victim=victim, incident_date=incident_date,
+        title=f"{victim} hit by {actor} ransomware",
+        content=f"{victim} was attacked. {actor} claimed responsibility for the ransomware incident.",
+        attack_category="ransomware_encryption",
+        projection={"threat_actor": actor, "data_impact": {"data_categories": ["student_pii"]}},
+    )
+
+
+def test_actor_wave_below_min_members_is_dropped():
+    # 2 incidents by one actor is NOT a "wave" — dropped (the methodology threshold).
+    rows = [
+        _actor_row("a1", victim="Alpha University", incident_date="2026-05-06"),
+        _actor_row("a2", victim="Beta University", incident_date="2026-05-12"),
+    ]
+    items = build_evidence_items(rows)
+    edges = build_candidate_edges(build_profiles(items))
+    candidates, _ = build_campaign_outputs(items, edges)
+    assert not any(c.campaign_type == "actor_activity_wave" for c in candidates)
+
+
+def test_actor_wave_at_min_members_is_kept():
+    # 3 incidents by one actor IS a wave — kept.
+    rows = [
+        _actor_row("a1", victim="Alpha University", incident_date="2026-05-06"),
+        _actor_row("a2", victim="Beta University", incident_date="2026-05-12"),
+        _actor_row("a3", victim="Gamma University", incident_date="2026-05-18"),
+    ]
+    items = build_evidence_items(rows)
+    edges = build_candidate_edges(build_profiles(items))
+    candidates, _ = build_campaign_outputs(items, edges)
+    waves = [c for c in candidates if c.campaign_type == "actor_activity_wave"]
+    assert len(waves) == 1 and waves[0].member_count >= 3 and waves[0].actors == ["Akira"]
+
+
 def test_excluded_rows_remain_evidence_only_not_confirmed_members():
     rows = [
         _row("c1", victim="University A", incident_date="2026-05-06"),

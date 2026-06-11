@@ -452,15 +452,22 @@ class V2CampaignService:
                     aset.add(canon)
                     actor_freq[canon] = actor_freq.get(canon, 0) + 1
 
-        # actor set: campaign actors (canonicalised) + any seen in incidents
+        # Chain actors = the campaign's ATTRIBUTED actors only (canonicalised). We do NOT
+        # union in every per-incident actor: an actor_activity_wave is defined by one actor,
+        # and unioning co-mentioned actors from member evidence inflated it (a "Qilin wave"
+        # rendered 7 actors). A mass_exploitation campaign legitimately keeps several actors
+        # because they are all in campaign["actors"] (the evidence-consensus list). The
+        # per-incident actors still drive which actor exploited which CVE/platform (edges),
+        # but only for actors that are in this attributed set.
         actors: list[str] = []
         for a in campaign_actors:
             canon = canonical_actor_name(a)
             if canon and canon not in actors:
                 actors.append(canon)
-        for a in actor_freq:
-            if a not in actors:
-                actors.append(a)
+        actor_set = set(actors)
+        # Restrict per-incident actor co-occurrence to the attributed set for edge building.
+        for cid, aset in incident_actors.items():
+            incident_actors[cid] = {a for a in aset if a in actor_set}
 
         # ---- nodes / edges (chain only) ------------------------------------
         nodes: list[dict[str, Any]] = []

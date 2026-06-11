@@ -36,6 +36,9 @@ DEFAULT_OUTPUT_DIR = Path("paper/EDU_Attack/analysis/outputs/campaign")
 DATE_WINDOW_DEFAULT_DAYS = 120
 VENDOR_NAME_WINDOW_DAYS = 180
 EDGE_THRESHOLD = 0.55
+# An actor-driven "activity wave" needs at least this many incidents to be a wave; thinner
+# actor-only clusters (e.g. one named individual in two unrelated incidents) are dropped.
+ACTOR_WAVE_MIN_MEMBERS = 3
 
 
 @dataclass(frozen=True)
@@ -1425,6 +1428,13 @@ def build_campaign_outputs(
         # not Canvas / Canvas (Instructure) / Instructure as separate vendors.
         vendors, platforms = _canonicalize_vendors_platforms(vendors, platforms)
         campaign_type = _campaign_type(kind, value, platform_keys, cves, actors)
+        # A "wave" implies a burst: an actor-driven campaign needs >= ACTOR_WAVE_MIN_MEMBERS
+        # incidents to be one. Drop thinner actor clusters (e.g. a single hacker named in two
+        # unrelated incidents) — they were inflating the campaign/family counts. A 2-member
+        # CVE/platform/vendor campaign is NOT dropped: two victims of one shared exploit or
+        # vendor is a genuine supply-chain link, only the actor-only grouping is noise.
+        if campaign_type == "actor_activity_wave" and len(component_profiles) < ACTOR_WAVE_MIN_MEMBERS:
+            continue
         name = _campaign_name(kind, value, campaign_type, platforms, actors, cves, campaign_names, year)
         campaign_id = _campaign_id(name, component)
         confidence = (
