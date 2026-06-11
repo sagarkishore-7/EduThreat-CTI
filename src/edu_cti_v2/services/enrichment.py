@@ -912,29 +912,44 @@ def _mark_victim_review_required(
     return updated
 
 
-def _curated_authoritative_identity(source_incident) -> Optional[str]:
-    """A curated source's structured institution name is authoritative — trust it.
+# Source groups that carry an authoritative, independently-known victim name in a
+# STRUCTURED field (not parsed from an article): curated breach databases
+# (comparitech / konbriefing) and leak-site APIs (ransomware.live / ransomwatch,
+# whose victim is named by the ransomware operator's own claim post). For these the
+# fetched article is only supporting evidence, so the incident must not be dropped
+# for "no specific victim in the article". news/rss have no such structured victim —
+# their identity must come from (and be supported by) the article.
+_STRUCTURED_VICTIM_SOURCE_GROUPS = ("curated", "api")
 
-    comparitech / konbriefing are human-curated breach databases whose structured
-    ``raw_institution_name`` IS the victim of record; the fetched news article is only
-    supporting evidence. So a curated incident must NOT be dropped for "no specific
-    victim in the article" just because the soft identity heuristics or a weak
-    supporting article are imperfect. We still refuse a curated name that is itself
-    clearly collective / geographic / a headline (those are genuinely non-specific).
+
+def _structured_source_authoritative_identity(source_incident) -> Optional[str]:
+    """Trust the structured victim name of a curated/api source as authoritative.
+
+    comparitech / konbriefing (curated) and ransomware.live / ransomwatch (api) record
+    the victim in a structured ``raw_institution_name`` known independently of any
+    article — for leak-site APIs the ransomware operator itself names the victim. So
+    such an incident must NOT be dropped for "no specific victim in the article" just
+    because the soft identity heuristics or a weak supporting article are imperfect. We
+    still refuse a structured name that is itself clearly collective / geographic /
+    generic / a headline (those are genuinely non-specific).
     """
-    if getattr(source_incident, "source_group", None) != "curated":
+    if getattr(source_incident, "source_group", None) not in _STRUCTURED_VICTIM_SOURCE_GROUPS:
         return None
     name = _clean_identity(source_incident.raw_institution_name) or _clean_identity(
         source_incident.raw_victim_name
     )
     if not name:
         return None
+    # NB: no is_headline_format() guard here — a curated/api structured victim is a
+    # data field, not a parsed headline, and is_headline_format() returns True whenever
+    # the name equals the title (the normal case for ransomware.live, where title ==
+    # victim_name). The collective / geographic / generic guards below are what actually
+    # distinguish a non-specific structured name from a real one.
     if (
         _COLLECTIVE_IDENTITY_RE.match(name)
         or looks_geographic_only_identity(name)
         or looks_broad_collective_identity(name)
         or _looks_generic_identity(name)
-        or is_headline_format(name, source_incident.raw_title)
     ):
         return None
     return name
@@ -948,16 +963,20 @@ def _repair_or_reject_primary_identity(
     article_title: Optional[str] = None,
     article_content: Optional[str] = None,
 ) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]], Literal["ok", "reject", "review"]]:
-    source_identity = recover_source_identity(
-        raw_institution_name=source_incident.raw_institution_name,
-        raw_victim_name=source_incident.raw_victim_name,
-        raw_subtitle=source_incident.raw_subtitle,
-        raw_title=source_incident.raw_title,
-    )
-    if _looks_invalid_primary_identity(source_identity, title=source_incident.raw_title):
-        # Fall back to the curated structured victim (authoritative) before giving up,
-        # so a curated education incident is never dropped for a weak article / name quirk.
-        source_identity = _curated_authoritative_identity(source_incident)
+    # For a curated/api source, prefer its clean structured victim name (authoritative)
+    # over the recovered identity — both so the incident is never dropped for a weak
+    # article / name-format quirk, AND so the canonical carries the clean structured name
+    # rather than a title-derived form (e.g. avoids a "(2022)" year suffix from the headline).
+    source_identity = _structured_source_authoritative_identity(source_incident)
+    if not source_identity:
+        source_identity = recover_source_identity(
+            raw_institution_name=source_incident.raw_institution_name,
+            raw_victim_name=source_incident.raw_victim_name,
+            raw_subtitle=source_incident.raw_subtitle,
+            raw_title=source_incident.raw_title,
+        )
+        if _looks_invalid_primary_identity(source_identity, title=source_incident.raw_title):
+            source_identity = None
     extracted_identity = (
         raw_json_data.get("institution_name")
         or raw_json_data.get("institution_name_en")
