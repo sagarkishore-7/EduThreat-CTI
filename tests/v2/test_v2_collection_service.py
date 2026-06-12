@@ -65,10 +65,8 @@ def test_collection_service_collects_group_and_records_run():
     persisted_run = SimpleNamespace(id=uuid4())
     run_repo.get_by_id.return_value = persisted_run
 
-    sessions = [_FakeSession(), _FakeSession(), _FakeSession(), _FakeSession()]
-
     def _session_factory():
-        return _FakeSessionContext(sessions.pop(0))
+        return _FakeSessionContext(_FakeSession())
 
     incidents = [_incident("therecord", "story-1"), _incident("therecord", "story-2")]
 
@@ -198,6 +196,7 @@ def test_collection_service_pauses_when_fetch_backlog_is_above_limit():
             persist_run=False,
             fetch_backlog_limit=5,
             resolve_backlog_limit=0,
+            enrich_backlog_limit=0,
             fetch_backlog_resume_ratio=1.0,
             backlog_poll_seconds=2.5,
         )
@@ -240,6 +239,7 @@ def test_collection_service_pauses_when_resolve_backlog_is_above_limit():
             resolve_backlog_resume_ratio=1.0,
             fetch_backlog_limit=5,
             fetch_backlog_resume_ratio=1.0,
+            enrich_backlog_limit=0,
             backlog_poll_seconds=1.5,
         )
 
@@ -248,3 +248,46 @@ def test_collection_service_pauses_when_resolve_backlog_is_above_limit():
     assert result["counts"]["fetch_backpressure_wait_cycles"] == 0
     assert sleeps == [1.5]
     assert task_repo.count_active.call_count == 3
+
+def test_collection_service_pauses_when_enrich_backlog_is_above_limit():
+    dual_writer = Mock()
+    dual_writer.write_observation.side_effect = [uuid4()]
+
+    run_repo = Mock()
+    task_repo = Mock()
+    # resolve (1), fetch (1), then enrich: 8 > limit 5 -> wait, then 3 <= 5 -> exit
+    task_repo.count_active.side_effect = [0, 0, 8, 3]
+    sleeps: list[float] = []
+
+    incidents = [_incident("therecord", "story-1")]
+
+    def _collector(*, max_pages, sources, save_callback, incremental):
+        save_callback(incidents)
+        return {"therecord": incidents}
+
+    service = V2CollectionService(
+        session_factory=lambda: _FakeSessionContext(_FakeSession()),
+        dual_writer=dual_writer,
+        pipeline_run_repository=run_repo,
+        pipeline_task_repository=task_repo,
+        sleep_fn=sleeps.append,
+    )
+
+    with patch.dict("src.edu_cti_v2.services.collection._COLLECTORS", {"news": _collector}, clear=False):
+        result = service.collect_into_v2(
+            groups=["news"],
+            sources=["therecord"],
+            persist_run=False,
+            fetch_backlog_limit=5,
+            resolve_backlog_limit=5,
+            enrich_backlog_limit=5,
+            enrich_backlog_resume_ratio=1.0,
+            fetch_backlog_resume_ratio=1.0,
+            resolve_backlog_resume_ratio=1.0,
+            backlog_poll_seconds=2.0,
+        )
+
+    assert result["counts"]["enrich_backpressure_wait_cycles"] == 1
+    assert result["counts"]["max_enrich_backlog_observed"] == 8
+    assert sleeps == [2.0]
+    assert task_repo.count_active.call_count == 4

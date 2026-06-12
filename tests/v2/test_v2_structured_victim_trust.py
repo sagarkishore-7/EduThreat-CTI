@@ -96,6 +96,33 @@ def test_news_incident_with_no_victim_still_rejected():
 
 
 # --------------------------------------------------------------------------- #
+# Fix 3 (Path A): curated + weak/unrelated article -> KEEP on structured record
+# (not parked in manual review), recovering real curated coverage.
+# --------------------------------------------------------------------------- #
+def test_structured_curated_in_scope_keeps_named_victim_on_weak_article():
+    si = _si(
+        group="curated",
+        inst="University of Guelph",
+        title="Cyber attack on a university in Canada",
+    )
+    raw = {"is_edu_cyber_incident": False, "institution_name": None}
+    out_raw, out_typed = enr._mark_structured_curated_in_scope(si, raw, {"institution_name": None})
+    # promoted back in-scope on the authoritative structured victim, flagged weak-article
+    assert out_raw["is_edu_cyber_incident"] is True
+    assert out_raw.get("_weak_article_support") is True
+    assert out_raw["institution_name"] == "University of Guelph"
+    assert out_typed["institution_name"] == "University of Guelph"
+
+
+def test_structured_curated_should_review_predicate_targets_curated_edu_incidents():
+    f = enr._structured_curated_source_should_review_non_edu_article
+    # curated source naming an edu incident with attack language -> Path A applies
+    assert f(_si(group="curated", inst="Knox College", title="Ransomware attack on a college in Illinois")) is True
+    # news/rss never qualify (no authoritative structured victim)
+    assert f(_si(group="news", inst="Knox College", title="Ransomware attack on Knox College")) is False
+
+
+# --------------------------------------------------------------------------- #
 # Discovery fetch cap
 # --------------------------------------------------------------------------- #
 def test_discovery_fetch_top_n_default_and_override(monkeypatch):

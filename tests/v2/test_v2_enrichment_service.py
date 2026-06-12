@@ -1057,11 +1057,15 @@ def test_enrichment_service_reviews_multi_victim_list_instead_of_rejecting():
     assert "multiple education victims" in saved.manual_review_reason
 
 
-def test_enrichment_service_reviews_curated_target_when_selected_article_is_unrelated():
+def test_enrichment_service_keeps_curated_target_on_structured_record_when_article_is_weak():
+    # Path A: a curated breach DB authoritatively names this education incident,
+    # so even when the discovered article is off-topic we KEEP it on the structured
+    # record (flagged weak-article) instead of parking it in manual review.
     article_repo = Mock()
     source_enrichment_repo = Mock()
     source_enrichment_repo.get_by_source_incident.return_value = None
     pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
     enricher = Mock()
     result_model = Mock()
     result_model.model_dump.return_value = {
@@ -1096,20 +1100,22 @@ def test_enrichment_service_reviews_curated_target_when_selected_article_is_unre
 
     outcome = service.enrich_source_incident(Mock(), incident)
 
-    assert outcome["enriched"] is False
-    assert outcome["is_education_related"] is None
-    assert outcome["canonicalize_tasks_enqueued"] == 0
+    assert outcome["enriched"] is True
+    assert outcome["is_education_related"] is True
+    assert outcome["canonicalize_tasks_enqueued"] == 1
     saved = source_enrichment_repo.add.call_args.args[1]
-    assert saved.typed_enrichment is None
-    assert saved.manual_review_required is True
-    assert "supporting article" in saved.manual_review_reason
+    assert saved.is_education_related is True
+    assert saved.manual_review_required is False
+    assert saved.typed_enrichment["institution_name"] == "Neenah School District"
+    assert saved.raw_extraction["_weak_article_support"] is True
 
 
-def test_enrichment_service_reviews_curated_university_target_even_without_attack_hint():
+def test_enrichment_service_keeps_curated_university_target_even_without_attack_hint():
     article_repo = Mock()
     source_enrichment_repo = Mock()
     source_enrichment_repo.get_by_source_incident.return_value = None
     pipeline_task_repo = Mock()
+    pipeline_task_repo.get_active_for_target.return_value = None
     enricher = Mock()
     enricher._enrich_article.return_value = (
         None,
@@ -1140,11 +1146,11 @@ def test_enrichment_service_reviews_curated_university_target_even_without_attac
 
     outcome = service.enrich_source_incident(Mock(), incident)
 
-    assert outcome["enriched"] is False
-    assert outcome["is_education_related"] is None
+    assert outcome["enriched"] is True
+    assert outcome["is_education_related"] is True
     saved = source_enrichment_repo.add.call_args.args[1]
-    assert saved.manual_review_required is True
-    assert "supporting article" in saved.manual_review_reason
+    assert saved.manual_review_required is False
+    assert saved.typed_enrichment["institution_name"] == "Rice University"
 
 
 def test_enrichment_service_accepts_curated_university_hospital_as_education_adjacent():

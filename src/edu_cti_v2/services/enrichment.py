@@ -687,6 +687,63 @@ def _mark_academic_medical_center_in_scope(
     return updated_raw, updated_typed
 
 
+def _mark_structured_curated_in_scope(
+    source_incident,
+    raw_json_data: Dict[str, Any],
+    typed_enrichment: Optional[Dict[str, Any]],
+) -> tuple[Dict[str, Any], Dict[str, Any]]:
+    """Keep a curated incident on its authoritative structured record (Path A).
+
+    A curated breach DB (comparitech / konbriefing) that strongly names an
+    education incident is authoritative about *that the incident happened* even
+    when the news article discovered to support it is weak or off-topic. Rather
+    than parking it in manual review (losing real coverage), trust the structured
+    victim, mark it in-scope, and flag that article corroboration is weak. The
+    structured victim / date come from the curated record; suspect article-derived
+    fields are left for the downstream identity repair to reconcile.
+    """
+    updated_raw = dict(raw_json_data)
+    updated_raw["is_edu_cyber_incident"] = True
+    updated_raw["_structured_curated_trust"] = True
+    updated_raw["_weak_article_support"] = True
+    reason = (
+        "Curated breach source authoritatively names this education incident; kept "
+        "on the structured record despite weak supporting-article corroboration."
+    )
+    existing_reasoning = str(updated_raw.get("education_relevance_reasoning") or "").strip()
+    if reason not in existing_reasoning:
+        updated_raw["education_relevance_reasoning"] = (
+            f"{existing_reasoning} {reason}".strip() if existing_reasoning else reason
+        )
+
+    updated_typed = dict(typed_enrichment or {})
+    structured_identity = _structured_source_authoritative_identity(source_incident)
+    institution_name = _coerce_optional_text(
+        structured_identity
+        or updated_typed.get("institution_name")
+        or updated_raw.get("institution_name")
+    )
+    if institution_name:
+        # The curated structured victim is authoritative — prefer it over any
+        # name parsed from the unrelated article.
+        updated_raw["institution_name"] = institution_name
+        updated_typed["institution_name"] = institution_name
+    updated_typed["incident_date"] = (
+        updated_typed.get("incident_date")
+        or updated_raw.get("incident_date")
+        or getattr(source_incident, "raw_incident_date", None)
+    )
+    updated_typed["incident_date_precision"] = (
+        updated_typed.get("incident_date_precision")
+        or updated_raw.get("incident_date_precision")
+        or getattr(source_incident, "raw_date_precision", None)
+        or _infer_date_precision(updated_typed.get("incident_date"))
+    )
+    updated_typed["education_relevance_reasoning"] = updated_raw["education_relevance_reasoning"]
+    updated_typed["_weak_article_support"] = True
+    return updated_raw, updated_typed
+
+
 def _coerce_attack_hint(value: Any) -> Optional[str]:
     if isinstance(value, list):
         value = next((item for item in value if str(item).strip()), None)
@@ -1443,14 +1500,17 @@ class V2EnrichmentService:
             and is_education_related is False
             and _structured_curated_source_should_review_non_edu_article(source_incident)
         ):
-            reason = (
-                "Structured curated source names an education incident, but the selected "
-                "supporting article was assessed as unrelated or non-incident evidence."
+            # Path A: a curated breach DB authoritatively names this education
+            # incident. Trust the structured record over the weak/unrelated article
+            # and KEEP it (flagged low article-support) instead of parking it in
+            # manual review — recovering real curated coverage.
+            raw_json_data, typed_enrichment = _mark_structured_curated_in_scope(
+                source_incident,
+                raw_json_data,
+                typed_enrichment,
             )
-            raw_json_data = _mark_victim_review_required(raw_json_data, reason=reason)
-            result = None
-            typed_enrichment = None
-            is_education_related = None
+            result = result or object()
+            is_education_related = True
 
         if (
             result is not None

@@ -199,3 +199,48 @@ def test_ensure_initial_processing_task_enqueues_enrichment_for_existing_selecte
     task_repo.enqueue.assert_called_once()
     assert task.task_type == "enrich_source"
     assert task.priority == 80
+
+
+# --------------------------------------------------------------------------- #
+# Classify-sweep debounce (cost): trickled titles accumulate into one batched
+# LLM call instead of many 1-2 title calls.
+# --------------------------------------------------------------------------- #
+def _classify_service():
+    task_repo = Mock()
+    task_repo.count_active.return_value = 0  # no active sweep -> create one
+    service = V2IntakeService(
+        article_repository=Mock(),
+        source_state_repository=Mock(),
+        source_enrichment_repository=Mock(),
+        pipeline_task_repository=task_repo,
+    )
+    return service, task_repo
+
+
+def test_classify_sweep_default_debounce_defers_run(monkeypatch):
+    monkeypatch.delenv("TITLE_CLASSIFY_DEBOUNCE_SECONDS", raising=False)
+    monkeypatch.delenv("EDU_CTI_TITLE_CLASSIFY_DEBOUNCE_SECONDS", raising=False)
+    service, _repo = _classify_service()
+    before = datetime.now(timezone.utc)
+    task = service.ensure_classify_sweep_task(Mock())
+    assert task is not None
+    # default 90s debounce -> available well in the future so titles accumulate
+    assert (task.available_at - before).total_seconds() > 30
+
+
+def test_classify_sweep_zero_delay_runs_immediately():
+    service, _repo = _classify_service()
+    before = datetime.now(timezone.utc)
+    task = service.ensure_classify_sweep_task(Mock(), delay_seconds=0)
+    assert task is not None
+    # backlog drain path -> no debounce
+    assert (task.available_at - before).total_seconds() < 5
+
+
+def test_classify_sweep_env_override(monkeypatch):
+    from src.edu_cti_v2.services.intake import _classify_debounce_seconds
+
+    monkeypatch.setenv("TITLE_CLASSIFY_DEBOUNCE_SECONDS", "20")
+    assert _classify_debounce_seconds() == 20
+    monkeypatch.setenv("TITLE_CLASSIFY_DEBOUNCE_SECONDS", "0")
+    assert _classify_debounce_seconds() == 0

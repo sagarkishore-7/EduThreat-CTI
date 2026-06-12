@@ -55,8 +55,10 @@ def test_v2_runtime_service_starts_and_stops_workers_and_scheduler(monkeypatch):
     assert prewarmed == [True]
     assert ("v2-runtime:orchestrator", "orchestrate_plan", ()) in seen
     assert ("v2-runtime:analytics", "refresh_analytics", ()) in seen
-    assert ("v2-runtime:1", None, ("orchestrate_plan", "refresh_analytics", "fetch_article", "resolve_url", "canonicalize")) in seen
-    assert ("v2-runtime:2", None, ("orchestrate_plan", "refresh_analytics", "fetch_article", "resolve_url", "canonicalize")) in seen
+    _generic_exclude = ("orchestrate_plan", "refresh_analytics", "fetch_article", "resolve_url", "canonicalize", "enrich_source")
+    assert ("v2-runtime:1", None, _generic_exclude) in seen
+    assert ("v2-runtime:2", None, _generic_exclude) in seen
+    assert ("v2-runtime:enrich:1", "enrich_source", ()) in seen
     assert ("v2-runtime:fetch:1", "fetch_article", ()) in seen
     assert ("v2-runtime:fetch:2", "fetch_article", ()) in seen
     assert ("v2-runtime:resolve:1", "resolve_url", ()) in seen
@@ -64,6 +66,7 @@ def test_v2_runtime_service_starts_and_stops_workers_and_scheduler(monkeypatch):
     assert started["fetch_worker_count"] == 2
     assert started["resolve_worker_count"] == 1
     assert started["canonicalize_worker_count"] == 1
+    assert started["enrich_worker_count"] == 1
     assert all(worker["summary"]["stop_reason"] == "stopped" for worker in stopped["workers"])
 
 
@@ -154,6 +157,44 @@ def test_v2_runtime_service_allows_explicit_canonicalize_worker_override(monkeyp
     assert ("v2-runtime:canonicalize:2", "canonicalize", ()) in seen
     assert stopped["canonicalize_worker_count"] == 2
     assert all(worker["summary"]["stop_reason"] == "stopped" for worker in stopped["workers"])
+
+
+def test_v2_runtime_service_dedicated_enrich_pool_protects_enrich_from_classify(monkeypatch):
+    seen = []
+
+    def _fake_run_worker_loop(*, worker_id, stop_event, task_type=None, exclude_task_types=None, **_kwargs):
+        seen.append((worker_id, task_type, tuple(exclude_task_types or ())))
+        stop_event.wait(0.01)
+        return V2WorkerRunSummary(
+            processed_tasks=0,
+            idle_polls=0,
+            stop_reason="stopped",
+            worker_id=worker_id,
+            task_type=task_type,
+        )
+
+    monkeypatch.setattr("src.edu_cti_v2.runtime.run_worker_loop", _fake_run_worker_loop)
+    monkeypatch.setattr("src.edu_cti_v2.runtime._prewarm_ml_models", lambda: None)
+
+    runtime = V2RuntimeService(
+        worker_count=2,
+        enrich_worker_count=3,
+        enable_scheduler=False,
+    )
+    started = runtime.start()
+    runtime.stop()
+
+    # enrich_source runs in its own dedicated pool ...
+    assert started["enrich_worker_count"] == 3
+    assert ("v2-runtime:enrich:1", "enrich_source", ()) in seen
+    assert ("v2-runtime:enrich:2", "enrich_source", ()) in seen
+    assert ("v2-runtime:enrich:3", "enrich_source", ()) in seen
+    # ... and is excluded from the generic pool so classify_titles can never
+    # starve it (the regression that stalled the historical run).
+    generic = [s for s in seen if s[0].startswith("v2-runtime:") and s[1] is None and "enrich" not in s[0]]
+    assert generic, "expected generic classify workers"
+    for _wid, _tt, excludes in generic:
+        assert "enrich_source" in excludes
 
 
 def test_v2_runtime_service_reuses_one_session_factory_for_all_workers(monkeypatch):
