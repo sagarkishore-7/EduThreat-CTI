@@ -645,6 +645,8 @@ def export_v2_dataset(
 
     Output is already normalized (one canonical token per categorical value,
     multi-valued CTI as long tables), so it needs no client-side preprocessing.
+    Both ``csv`` and ``json`` are serialisation-safe for the Postgres-native types
+    the star-schema queries return (UUID / Decimal / bytes) — see ``export._jsonable``.
     """
     from src.edu_cti_v2.export import export_dataset
 
