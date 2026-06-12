@@ -302,8 +302,11 @@ class V2TitleClassificationService:
         pending_remaining = self._count_pending(session)
         if pending_remaining:
             # Seed the next sweep (excluding our own still-leased task from the dedup).
+            # A real backlog (>= one full batch) drains immediately; a trickle is
+            # debounced so titles accumulate into one batched LLM call (cost).
+            next_delay = 0 if pending_remaining >= self.batch_size else None
             self.intake_service.ensure_classify_sweep_task(
-                session, exclude_task_id=current_task_id
+                session, exclude_task_id=current_task_id, delay_seconds=next_delay
             )
 
         result = {

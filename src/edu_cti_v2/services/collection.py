@@ -151,8 +151,10 @@ class V2CollectionService:
         counters: dict[str, int],
         fetch_backlog_limit: Optional[int],
         resolve_backlog_limit: Optional[int],
+        enrich_backlog_limit: Optional[int],
         fetch_backlog_resume_ratio: float,
         resolve_backlog_resume_ratio: float,
+        enrich_backlog_resume_ratio: float,
         backlog_poll_seconds: float,
     ) -> None:
         for incident in incidents:
@@ -176,6 +178,14 @@ class V2CollectionService:
             counters=counters,
             counter_prefix="fetch",
         )
+        self._maybe_wait_for_task_backlog(
+            task_types=("enrich_source",),
+            backlog_limit=enrich_backlog_limit,
+            backlog_resume_ratio=enrich_backlog_resume_ratio,
+            backlog_poll_seconds=backlog_poll_seconds,
+            counters=counters,
+            counter_prefix="enrich",
+        )
 
     def collect_into_v2(
         self,
@@ -189,8 +199,10 @@ class V2CollectionService:
         persist_run: bool = True,
         fetch_backlog_limit: Optional[int] = None,
         resolve_backlog_limit: Optional[int] = None,
+        enrich_backlog_limit: Optional[int] = None,
         fetch_backlog_resume_ratio: float = 0.0,
         resolve_backlog_resume_ratio: float = 0.0,
+        enrich_backlog_resume_ratio: float = 0.0,
         backlog_poll_seconds: float = 0.0,
     ) -> dict:
         effective_include_paid_rss = _default_include_paid_rss() if include_paid_rss is None else include_paid_rss
@@ -199,6 +211,9 @@ class V2CollectionService:
         )
         resolve_backlog_limit = _env_optional_int(
             "RESOLVE_BACKLOG_LIMIT", resolve_backlog_limit, "EDU_CTI_V2_RESOLVE_BACKLOG_LIMIT"
+        )
+        enrich_backlog_limit = _env_optional_int(
+            "ENRICH_BACKLOG_LIMIT", enrich_backlog_limit, "EDU_CTI_V2_ENRICH_BACKLOG_LIMIT"
         )
         fetch_backlog_resume_ratio = _env_float(
             "FETCH_BACKLOG_RESUME_RATIO",
@@ -210,6 +225,11 @@ class V2CollectionService:
             resolve_backlog_resume_ratio if resolve_backlog_resume_ratio > 0 else 0.6,
             "EDU_CTI_V2_RESOLVE_BACKLOG_RESUME_RATIO",
         )
+        enrich_backlog_resume_ratio = _env_float(
+            "ENRICH_BACKLOG_RESUME_RATIO",
+            enrich_backlog_resume_ratio if enrich_backlog_resume_ratio > 0 else 0.6,
+            "EDU_CTI_V2_ENRICH_BACKLOG_RESUME_RATIO",
+        )
         backlog_poll_seconds = _env_float(
             "BACKLOG_POLL_SECONDS",
             backlog_poll_seconds if backlog_poll_seconds > 0 else 5.0,
@@ -219,6 +239,11 @@ class V2CollectionService:
             fetch_backlog_limit = 500
         if resolve_backlog_limit is None:
             resolve_backlog_limit = 200
+        if enrich_backlog_limit is None:
+            # Pause collection when enrich_source tasks pile up so the dedicated
+            # enrich pool (see runtime.py) is never overwhelmed; complements the
+            # pool partition that already prevents classify from starving enrich.
+            enrich_backlog_limit = 300
 
         groups_to_run = _normalize_groups(groups)
         source_filter = list(dict.fromkeys(sources or []))
@@ -232,8 +257,10 @@ class V2CollectionService:
             "include_paid_rss_source": "env" if include_paid_rss is None else "override",
             "fetch_backlog_limit": fetch_backlog_limit,
             "resolve_backlog_limit": resolve_backlog_limit,
+            "enrich_backlog_limit": enrich_backlog_limit,
             "fetch_backlog_resume_ratio": fetch_backlog_resume_ratio,
             "resolve_backlog_resume_ratio": resolve_backlog_resume_ratio,
+            "enrich_backlog_resume_ratio": enrich_backlog_resume_ratio,
             "backlog_poll_seconds": backlog_poll_seconds,
         }
 
@@ -276,8 +303,10 @@ class V2CollectionService:
                         counters=counters,
                         fetch_backlog_limit=fetch_backlog_limit,
                         resolve_backlog_limit=resolve_backlog_limit,
+                        enrich_backlog_limit=enrich_backlog_limit,
                         fetch_backlog_resume_ratio=fetch_backlog_resume_ratio,
                         resolve_backlog_resume_ratio=resolve_backlog_resume_ratio,
+                        enrich_backlog_resume_ratio=enrich_backlog_resume_ratio,
                         backlog_poll_seconds=backlog_poll_seconds,
                     )
 
@@ -340,6 +369,9 @@ class V2CollectionService:
                     "resolve_backpressure_wait_cycles": counters["resolve_backpressure_wait_cycles"],
                     "resolve_backpressure_wait_seconds": counters["resolve_backpressure_wait_seconds"],
                     "max_resolve_backlog_observed": counters["max_resolve_backlog_observed"],
+                    "enrich_backpressure_wait_cycles": counters["enrich_backpressure_wait_cycles"],
+                    "enrich_backpressure_wait_seconds": counters["enrich_backpressure_wait_seconds"],
+                    "max_enrich_backlog_observed": counters["max_enrich_backlog_observed"],
                 },
                 "per_source_counts": per_source_counts,
                 "source_discovery_policies": {

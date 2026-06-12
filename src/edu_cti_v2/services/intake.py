@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from sqlalchemy.orm import Session
 
-from src.edu_cti_v2.env import title_classify_enabled
+from src.edu_cti_v2.env import get_int, title_classify_enabled
 from src.edu_cti_v2.models import PipelineTask, SourceIncident
 from src.edu_cti_v2.repositories import (
     ArticleRepository,
@@ -20,6 +20,22 @@ from src.edu_cti_v2.repositories import (
 # enrich_source (80) and fetch_article (60) so newly-collected titles get judged
 # promptly without starving the heavier downstream stages.
 CLASSIFY_SWEEP_PRIORITY = 70
+
+
+def _classify_debounce_seconds() -> int:
+    """Seconds to defer a freshly-seeded classify sweep so titles accumulate.
+
+    Collection trickles news/rss titles in 1-2 at a time. Without a debounce the
+    sweep fires immediately and classifies 1-2 titles per LLM call, paying the full
+    system-prompt overhead on every call (~20-40x cost blow-up). Deferring the run
+    lets titles pile up to a real batch (up to TITLE_CLASSIFY_BATCH) before the one
+    paid call. A backlog above the batch size bypasses the debounce (see run_batch).
+    """
+    return get_int(
+        "TITLE_CLASSIFY_DEBOUNCE_SECONDS",
+        "EDU_CTI_TITLE_CLASSIFY_DEBOUNCE_SECONDS",
+        default=90,
+    ) or 0
 
 
 def determine_initial_task_type(source_incident: SourceIncident) -> str:
@@ -84,6 +100,7 @@ class V2IntakeService:
         session: Session,
         *,
         exclude_task_id: Optional[object] = None,
+        delay_seconds: Optional[float] = None,
     ) -> Optional[PipelineTask]:
         """Ensure exactly one active ``classify_titles`` sweep task exists.
 
@@ -92,6 +109,11 @@ class V2IntakeService:
         classify task so repeated collection never piles up redundant sweeps.
         ``exclude_task_id`` lets a running sweep task seed its own continuation
         without being blocked by its own (still-leased) lease.
+
+        ``delay_seconds`` defers when the sweep becomes leasable so trickled-in
+        titles accumulate into one batched LLM call instead of many 1-2 title
+        calls (cost). Defaults to ``TITLE_CLASSIFY_DEBOUNCE_SECONDS``; callers
+        draining a real backlog pass ``0`` to run immediately.
         """
         active = self.pipeline_task_repository.count_active(
             session,
@@ -101,7 +123,10 @@ class V2IntakeService:
         )
         if active > 0:
             return None
+        if delay_seconds is None:
+            delay_seconds = _classify_debounce_seconds()
         now = datetime.now(timezone.utc)
+        available_at = now + timedelta(seconds=max(float(delay_seconds), 0.0))
         task = PipelineTask(
             run_id=None,
             task_type="classify_titles",
@@ -111,7 +136,7 @@ class V2IntakeService:
             priority=CLASSIFY_SWEEP_PRIORITY,
             payload={},
             result={},
-            available_at=now,
+            available_at=available_at,
             attempt_count=0,
             max_attempts=5,
         )
