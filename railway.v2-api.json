@@ -16,6 +16,7 @@
       "/src/edu_cti_v2/api_server.py",
       "/src/edu_cti_v2/auth.py",
       "/src/edu_cti_v2/env.py",
+      "/src/edu_cti_v2/export.py",
       "/src/edu_cti_v2/preflight_cli.py",
       "/src/edu_cti_v2/db/**",
       "/src/edu_cti_v2/models/**",
