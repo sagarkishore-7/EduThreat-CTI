@@ -104,3 +104,8 @@ Thumbs.db
 
 # Paper directory (LaTeX source — managed separately on Overleaf)
 paper/
+
+# LLM-eval run artifacts (keep the harness + gold set, not per-run reports)
+evals/reports/*.json
+evals/reports/*.md
+!evals/reports/.gitkeep
