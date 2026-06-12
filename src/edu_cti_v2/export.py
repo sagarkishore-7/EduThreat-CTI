@@ -121,8 +121,30 @@ def fetch_rows(session: Session, dataset: str) -> list[dict[str, Any]]:
 
 
 def _jsonable(value: Any) -> Any:
-    if hasattr(value, "isoformat"):
+    """Coerce a DB value to something JSON/CSV can serialise.
+
+    The star-schema queries return Postgres-native types — dates, UUIDs, Decimals,
+    occasionally bytes/sets — that ``json.dumps`` cannot serialise on its own. CSV
+    tolerated them (the writer stringifies everything) but the JSON export 500'd.
+    Handle the common types explicitly and let ``to_json``'s ``default=str`` catch
+    anything else.
+    """
+    import decimal
+    import uuid
+
+    if value is None:
+        return None
+    if hasattr(value, "isoformat"):  # date / datetime / time
         return value.isoformat()
+    if isinstance(value, uuid.UUID):
+        return str(value)
+    if isinstance(value, decimal.Decimal):
+        # int if it's whole, else float — keeps numbers numeric in JSON
+        return int(value) if value == value.to_integral_value() else float(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        return bytes(value).decode("utf-8", "replace")
+    if isinstance(value, (set, frozenset)):
+        return sorted(str(v) for v in value)
     return value
 
 
@@ -138,7 +160,11 @@ def to_csv(rows: list[dict[str, Any]]) -> str:
 
 
 def to_json(rows: list[dict[str, Any]]) -> str:
-    return json.dumps([{k: _jsonable(v) for k, v in r.items()} for r in rows], indent=2)
+    # default=str is a belt-and-suspenders fallback for any DB type _jsonable
+    # doesn't explicitly handle, so the export can never 500 on serialisation.
+    return json.dumps(
+        [{k: _jsonable(v) for k, v in r.items()} for r in rows], indent=2, default=str
+    )
 
 
 def export_dataset(session: Session, dataset: str, fmt: str = "csv") -> str:
