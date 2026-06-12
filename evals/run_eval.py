@@ -190,26 +190,48 @@ def judge_faithfulness(client, article_text: str, field: str, value: str) -> boo
 # --------------------------------------------------------------------------- #
 # Report
 # --------------------------------------------------------------------------- #
+def _ci(d: dict, key: str) -> str:
+    ci = d.get(key)
+    return f" (95% CI {ci[0]}–{ci[1]})" if isinstance(ci, list) and len(ci) == 2 else ""
+
+
 def _markdown(report: dict) -> str:
-    lines = [f"# EduThreat LLM eval — {report['generated_at']}", ""]
+    lines = [f"# EduThreat LLM eval — {report['generated_at']}",
+             "",
+             "_All percentages carry a 95% Wilson confidence interval — read the CI, "
+             "not just the point estimate, especially at small n._",
+             ""]
     cls = report.get("classifier", {}).get("scores", {})
     if cls:
         lines += ["## Title classifier (gate 1)",
-                  f"- precision **{cls.get('precision_pct')}%** · recall **{cls.get('recall_pct')}%** "
-                  f"· F1 **{cls.get('f1_pct')}%** · acc {cls.get('accuracy_pct')}% (n={cls.get('support')})",
+                  f"- precision **{cls.get('precision_pct')}%**{_ci(cls, 'precision_ci95')} · "
+                  f"recall **{cls.get('recall_pct')}%**{_ci(cls, 'recall_ci95')} · "
+                  f"F1 **{cls.get('f1_pct')}%** · acc {cls.get('accuracy_pct')}% (n={cls.get('support')})",
                   f"- confusion {cls.get('confusion')}", ""]
     ext = report.get("extraction", {})
     if ext:
         lines.append("## Extraction (gate 2 + fields)")
         edu = ext.get("is_edu_cyber", {})
-        lines.append(f"- is_edu_cyber: precision {edu.get('precision_pct')}% · recall {edu.get('recall_pct')}% "
-                     f"· F1 {edu.get('f1_pct')}% (n={edu.get('support')})")
+        lines.append(f"- is_edu_cyber: precision {edu.get('precision_pct')}%{_ci(edu, 'precision_ci95')} · "
+                     f"recall {edu.get('recall_pct')}%{_ci(edu, 'recall_ci95')} · "
+                     f"F1 {edu.get('f1_pct')}% (n={edu.get('support')})")
         for f, r in ext.get("fields", {}).items():
-            lines.append(f"- {f}: exact {r.get('exact_pct')}% · fuzzy {r.get('fuzzy_pct')}% (n={r.get('support')})")
+            lines.append(f"- {f}: exact {r.get('exact_pct')}% · "
+                         f"fuzzy {r.get('fuzzy_pct')}%{_ci(r, 'fuzzy_ci95')} (n={r.get('support')})")
         if ext.get("faithfulness"):
             fa = ext["faithfulness"]
             lines.append(f"- faithfulness {fa.get('faithfulness_pct')}% · hallucination {fa.get('hallucination_pct')}% "
                          f"(judged {fa.get('judged')})")
+        lines.append("")
+    hc = report.get("hardcases", {})
+    if hc:
+        lines.append("## Hard-case regression suite (adversarial — NOT a representative metric)")
+        chc = hc.get("classifier", {}).get("scores", {})
+        if chc:
+            lines.append(f"- titles: {chc.get('accuracy_pct')}% correct (n={chc.get('support')})")
+        ehc = hc.get("extraction", {}).get("is_edu_cyber", {})
+        if ehc:
+            lines.append(f"- extraction is_edu_cyber: {ehc.get('accuracy_pct')}% (n={ehc.get('support')})")
         lines.append("")
     return "\n".join(lines)
 
@@ -223,6 +245,9 @@ def main() -> None:
     ap.add_argument("--limit", type=int, default=None, help="cap rows per gold set (smoke test)")
     ap.add_argument("--skip-classifier", action="store_true")
     ap.add_argument("--skip-extraction", action="store_true")
+    ap.add_argument("--hardcases-titles", default=str(_GOLD / "hardcases_titles.jsonl"),
+                    help="adversarial title regression set (reported separately, not as headline)")
+    ap.add_argument("--hardcases-extractions", default=str(_GOLD / "hardcases_extractions.jsonl"))
     args = ap.parse_args()
 
     if not os.environ.get("OLLAMA_API_KEY"):
@@ -243,6 +268,22 @@ def main() -> None:
             extractions = extractions[: args.limit]
         print(f"[eval] extraction: {len(extractions)} articles ...")
         report["extraction"] = run_extraction_eval(extractions, faithfulness=not args.no_faithfulness)
+
+    # Hard-case regression suite (optional files; reported separately so the
+    # adversarial accuracy is never mistaken for the representative metric).
+    hc: dict = {}
+    hct = Path(args.hardcases_titles)
+    if not args.skip_classifier and hct.exists():
+        rows = load_jsonl(hct)
+        print(f"[eval] hard-case titles: {len(rows)} ...")
+        hc["classifier"] = run_classifier_eval(rows)
+    hce = Path(args.hardcases_extractions)
+    if not args.skip_extraction and hce.exists():
+        rows = load_jsonl(hce)
+        print(f"[eval] hard-case extractions: {len(rows)} ...")
+        hc["extraction"] = run_extraction_eval(rows, faithfulness=False)
+    if hc:
+        report["hardcases"] = hc
 
     _REPORTS.mkdir(parents=True, exist_ok=True)
     ts = dt.datetime.now().strftime("%Y%m%dT%H%M%S")

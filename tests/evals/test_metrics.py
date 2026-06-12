@@ -99,3 +99,19 @@ def test_score_fields_requires_aligned_lengths():
 
     with pytest.raises(ValueError):
         score_fields([{}], [{}, {}], ["country"])
+
+
+def test_wilson_interval_small_n_is_wide():
+    from evals.metrics import wilson_interval
+    lo, hi = wilson_interval(8, 8)
+    assert lo < 0.70 and hi == 1.0  # 8/8 -> roughly [0.68, 1.0], honestly wide
+    lo2, hi2 = wilson_interval(135, 150)
+    assert hi2 - lo2 < 0.12  # ~150 samples -> tight (±~5pp)
+    assert wilson_interval(0, 0) is None
+
+
+def test_binary_scores_expose_confidence_intervals():
+    from evals.metrics import score_binary
+    d = score_binary([(True, True)] * 8 + [(True, False)]).as_dict()
+    assert isinstance(d["precision_ci95"], list) and len(d["precision_ci95"]) == 2
+    assert d["recall_ci95"][0] < 60.0  # recall 8/9 lower bound is well below the point estimate

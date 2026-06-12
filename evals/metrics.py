@@ -13,10 +13,35 @@ but the judging itself happens in ``run_eval.py`` (it needs an LLM call).
 
 from __future__ import annotations
 
+import math
 import re
 import unicodedata
 from dataclasses import dataclass, field
 from typing import Iterable, Optional, Sequence
+
+
+# --------------------------------------------------------------------------- #
+# Confidence intervals
+# --------------------------------------------------------------------------- #
+def wilson_interval(k: int, n: int, z: float = 1.96) -> Optional[tuple[float, float]]:
+    """Wilson score 95% CI for a binomial proportion (k successes of n).
+
+    Far better than the normal approximation at small n / extreme proportions
+    (e.g. 8/8 -> [0.68, 1.0], honestly reflecting how little 8 samples tell you).
+    Returns ``None`` when ``n == 0``.
+    """
+    if n <= 0:
+        return None
+    p = k / n
+    denom = 1 + z * z / n
+    center = (p + z * z / (2 * n)) / denom
+    margin = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / denom
+    return (max(0.0, center - margin), min(1.0, center + margin))
+
+
+def _ci_pct(k: int, n: int) -> Optional[list]:
+    ci = wilson_interval(k, n)
+    return [round(ci[0] * 100, 1), round(ci[1] * 100, 1)] if ci else None
 
 
 # --------------------------------------------------------------------------- #
@@ -62,9 +87,12 @@ class BinaryScores:
             "confusion": {"tp": self.tp, "fp": self.fp, "tn": self.tn, "fn": self.fn},
             "support": self.total,
             "precision_pct": pct(self.precision),
+            "precision_ci95": _ci_pct(self.tp, self.tp + self.fp),
             "recall_pct": pct(self.recall),
+            "recall_ci95": _ci_pct(self.tp, self.tp + self.fn),
             "f1_pct": pct(self.f1),
             "accuracy_pct": pct(self.accuracy),
+            "accuracy_ci95": _ci_pct(self.tp + self.tn, self.total),
         }
 
 
@@ -162,6 +190,7 @@ class FieldReport:
             "support": self.total,
             "exact_pct": round(self.exact / self.total * 100, 1) if self.total else None,
             "fuzzy_pct": round(self.fuzzy / self.total * 100, 1) if self.total else None,
+            "fuzzy_ci95": _ci_pct(self.fuzzy, self.total),
         }
 
 

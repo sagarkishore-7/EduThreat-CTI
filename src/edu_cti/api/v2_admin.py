@@ -951,6 +951,55 @@ def get_v2_extraction_samples(
     return {"samples": samples, "returned": len(samples)}
 
 
+@router.get("/title-samples")
+def get_v2_title_samples(
+    limit: int = Query(50, ge=1, le=500),
+    relevance: Optional[str] = Query(None, pattern="^(relevant|irrelevant|pending)$"),
+    random: bool = Query(True),
+    session=Depends(get_v2_session),
+    _: bool = Depends(authenticate),
+):
+    """Classified news/rss titles with the pipeline's relevance verdict.
+
+    Sampling surface for building a human-labelled title gold set: returns the
+    raw title + snippet + source + the classifier's verdict/score, optionally
+    filtered to one ``relevance`` bucket so positives can be oversampled (the
+    corpus is ~9% relevant). ``random=true`` samples uniformly. Read-only, api-only.
+    """
+    from sqlalchemy import text
+
+    where = (
+        "si.source_group IN ('news','rss') AND si.is_deleted = false "
+        "AND si.title_classified_at IS NOT NULL AND si.raw_title IS NOT NULL"
+    )
+    params: dict = {"lim": limit}
+    if relevance:
+        where += " AND si.relevance_status = :rel"
+        params["rel"] = relevance
+    order_by = "random()" if random else "si.title_classified_at DESC"
+    rows = session.execute(
+        text(
+            "SELECT si.id, si.raw_title, si.raw_subtitle, si.source_name, "
+            "si.relevance_status, si.title_relevance_score "
+            "FROM source_incidents si "
+            f"WHERE {where} ORDER BY {order_by} LIMIT :lim"
+        ),
+        params,
+    ).fetchall()
+    samples = [
+        {
+            "source_incident_id": str(r[0]),
+            "raw_title": r[1],
+            "raw_subtitle": r[2],
+            "source_name": r[3],
+            "relevance_status": r[4],
+            "title_relevance_score": float(r[5]) if r[5] is not None else None,
+        }
+        for r in rows
+    ]
+    return {"samples": samples, "returned": len(samples)}
+
+
 @router.get("/page-yield")
 def get_v2_page_yield(
     source_name: Optional[str] = Query(None),
