@@ -1533,6 +1533,39 @@ class V2CanonicalReadService:
             "ransomware_family": ransomware_family,
         }
 
+    def count_published_incidents(self, session: Session) -> int:
+        """Live count of the published education-incident dataset.
+
+        The single authoritative incident count = open + education-related
+        canonicals. Used to keep the homepage headline, the incidents-page total,
+        and the admin canonical card in lock-step (the cached dashboard snapshot
+        otherwise lags the live DB and desyncs them).
+        """
+        return int(
+            self.canonical_repository.count_recent(
+                session,
+                statuses=("open",),
+                is_education_related=True,
+            )
+            or 0
+        )
+
+    def _overlay_live_incident_counts(self, session: Session, payload: dict[str, Any]) -> dict[str, Any]:
+        """Override the (possibly stale) snapshot headline counts with live values."""
+        if not isinstance(payload, dict):
+            return payload
+        stats = payload.get("stats")
+        if isinstance(stats, dict):
+            live = self.count_published_incidents(session)
+            stats = dict(stats)  # copy so we never mutate a cached snapshot in place
+            stats["education_incidents"] = live
+            stats["total_incidents"] = live
+            enriched = stats.get("enriched_incidents")
+            if isinstance(enriched, int):
+                stats["unenriched_incidents"] = max(live - enriched, 0)
+            payload["stats"] = stats
+        return payload
+
     def get_dashboard_summary(self, session: Session) -> dict[str, Any]:
         snapshot = self.analytics_refresh_repository.get_by_key(session, "dashboard:global")
         if snapshot is not None and snapshot.state_payload and _is_full_dashboard_snapshot(snapshot.state_payload):

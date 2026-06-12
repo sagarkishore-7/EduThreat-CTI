@@ -1272,3 +1272,57 @@ def test_read_service_mitre_analytics_aggregates_tactics_and_techniques():
     assert payload["techniques"][0]["count"] == 2
     assert payload["top_techniques_by_tactic"][0]["tactic"] == "Initial Access"
     assert payload["top_techniques_by_tactic"][0]["techniques"][0]["technique_name"] == "Phishing"
+
+
+# --------------------------------------------------------------------------- #
+# Live headline-count overlay: keeps homepage / incidents page / admin in sync
+# by overriding the (possibly stale) cached snapshot totals with a live count.
+# --------------------------------------------------------------------------- #
+def test_overlay_live_incident_counts_replaces_stale_snapshot_headline():
+    canonical_repo = Mock()
+    canonical_repo.count_recent.return_value = 683  # live open+edu count
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+
+    payload = {
+        "stats": {
+            "total_incidents": 680,        # stale snapshot values
+            "education_incidents": 678,
+            "enriched_incidents": 670,
+            "countries_affected": 9,
+        },
+    }
+    out = service._overlay_live_incident_counts(Mock(), payload)
+    stats = out["stats"]
+
+    assert stats["total_incidents"] == 683
+    assert stats["education_incidents"] == 683
+    assert stats["unenriched_incidents"] == max(683 - 670, 0)
+    assert stats["countries_affected"] == 9  # untouched
+    _args, kwargs = canonical_repo.count_recent.call_args
+    assert kwargs.get("statuses") == ("open",)
+    assert kwargs.get("is_education_related") is True
+
+
+def test_overlay_live_incident_counts_does_not_mutate_input_stats():
+    canonical_repo = Mock()
+    canonical_repo.count_recent.return_value = 683
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+    original_stats = {"total_incidents": 680, "education_incidents": 678}
+    payload = {"stats": original_stats}
+
+    service._overlay_live_incident_counts(Mock(), payload)
+
+    # the caller's stats dict (e.g. a cached snapshot) must stay untouched
+    assert original_stats["total_incidents"] == 680
+    assert original_stats["education_incidents"] == 678
+
+
+def test_count_published_incidents_uses_open_education_filter():
+    canonical_repo = Mock()
+    canonical_repo.count_recent.return_value = 681
+    service = V2CanonicalReadService(canonical_repository=canonical_repo)
+
+    assert service.count_published_incidents(Mock()) == 681
+    _args, kwargs = canonical_repo.count_recent.call_args
+    assert kwargs["statuses"] == ("open",)
+    assert kwargs["is_education_related"] is True
