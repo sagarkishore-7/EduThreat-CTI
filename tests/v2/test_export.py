@@ -40,6 +40,30 @@ def test_to_json_serializes_dates():
     assert payload[0]["incident_date"] == "2025-01-02"
 
 
+def test_to_json_serializes_postgres_native_types():
+    # Regression: the JSON export 500'd on UUID / Decimal / bytes that the
+    # star-schema queries return (CSV tolerated them, JSON did not).
+    import uuid
+    from decimal import Decimal
+
+    rows = [{
+        "id": uuid.UUID("12345678-1234-5678-1234-567812345678"),
+        "score": Decimal("3.5"),
+        "whole": Decimal("7"),
+        "blob": b"hi",
+        "tags": {"b", "a"},
+        "name": "x",
+    }]
+    payload = json.loads(export.to_json(rows))  # must not raise
+    row = payload[0]
+    assert row["id"] == "12345678-1234-5678-1234-567812345678"
+    assert row["score"] == 3.5
+    assert row["whole"] == 7  # whole Decimal -> int
+    assert row["blob"] == "hi"
+    assert row["tags"] == ["a", "b"]  # set -> sorted list
+    assert row["name"] == "x"
+
+
 def test_export_dataset_rejects_unknown_dataset():
     try:
         export.export_dataset(session=None, dataset="bogus", fmt="csv")
