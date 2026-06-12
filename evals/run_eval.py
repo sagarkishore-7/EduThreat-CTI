@@ -51,13 +51,21 @@ def load_jsonl(path: Path) -> list[dict]:
 # --------------------------------------------------------------------------- #
 # 1. Title classifier eval
 # --------------------------------------------------------------------------- #
-def run_classifier_eval(titles_gold: list[dict]) -> dict:
+def run_classifier_eval(titles_gold: list[dict], *, batch_size: int = 60) -> dict:
     from src.edu_cti.pipeline.phase2.llm_client import OllamaLLMClient
     from src.edu_cti_v2.services.title_classification import V2TitleClassificationService
 
     svc = V2TitleClassificationService(llm_client=OllamaLLMClient())
-    items = [(i, row["title"], row.get("snippet", "")) for i, row in enumerate(titles_gold)]
-    verdicts = svc._classify_titles(items)
+    # Chunk the request like production (one giant prompt times the LLM out).
+    verdicts: dict = {}
+    for start in range(0, len(titles_gold), batch_size):
+        chunk = titles_gold[start : start + batch_size]
+        items = [(start + j, row["title"], row.get("snippet", "")) for j, row in enumerate(chunk)]
+        try:
+            verdicts.update(svc._classify_titles(items))
+        except Exception as exc:
+            print(f"[eval] classifier chunk {start}-{start+len(chunk)} failed: "
+                  f"{type(exc).__name__}: {exc} (those rows fail open to relevant)")
 
     pairs, records = [], []
     for i, row in enumerate(titles_gold):

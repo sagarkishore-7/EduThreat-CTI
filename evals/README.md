@@ -48,14 +48,49 @@ python -m evals.run_eval --limit 4          # smoke a few rows
   secret): the full LLM eval; publishes the precision/recall/F1 + faithfulness summary and uploads
   the report artifact.
 
-## Growing the gold set
+## Gold-set sizing & sampling (the methodology)
 
-The gold sets are seeded with real cases (verified during data-quality monitoring) and known hard
-cases — plural "Public Schools", "Institute of Technology", EdTech/LMS vendors, academic medical
-centers, and general-security negatives. To expand: sample real incidents via
-`GET /api/admin/v2/extraction-samples?random=true`, hand-label the expected fields, and append a
-JSONL row. A field whose gold value is `null` is **not scored** (we only score what we confidently
-labelled) — so partial labels are fine.
+**Sample size depends on absolute n, not a fraction of the corpus.** A poll of 1,000 people
+estimates a country of 1M or 300M equally well; likewise here, whether the pipeline holds 14k or
+30k or 300k source incidents, the eval needs the *same* labelled n. Targets (95% confidence):
+
+| precision wanted | n needed (worst case) | n if accuracy ~90% |
+|---|---|---|
+| ±10pp | ~100 | ~35 |
+| ±7pp  | ~200 | ~70 |
+| ±5pp  | ~385 | ~140 |
+
+Two sampling rules this repo follows:
+1. **Oversample positives for the title classifier.** The corpus is only ~9% relevant, so a uniform
+   draw is almost all negatives and gives a useless *recall* estimate. `build_gold.py` pulls half
+   from each relevance bucket; precision and recall are reported separately.
+2. **Stratify extractions** across institution type, source group, country (incl. non-English),
+   and attack category.
+
+**Two sets, kept separate:**
+- **`gold/{titles,extractions}.jsonl`** — the representative, stratified sample → the *headline*
+  P/R/F1 with confidence intervals.
+- **`gold/hardcases_{titles,extractions}.jsonl`** — deliberately adversarial cases (plural "Public
+  Schools", "Institute of Technology", EdTech/LMS, academic-medical, general-security negatives).
+  Reported **separately** so their accuracy is never mistaken for the system's true accuracy.
+
+### Label provenance (be honest in the paper)
+
+Current labels carry `label_source: "model_assisted_v1"` — adjudicated against the **source text**
+(title+snippet for relevance, the article body for extraction), *independently of the pipeline's own
+prediction*. For extraction this is essentially reading-comprehension of a fixed article (strong);
+for relevance it follows a written rubric. For a top-tier publication claim, do a **human review
+pass** over these labels (review, not from-scratch — `build_gold.py` pre-fills the pipeline guess)
+and bump `label_source`.
+
+### To grow it
+```bash
+EDUTHREAT_ADMIN_PASS=... python -m evals.build_gold --titles 200 --extractions 60
+# -> evals/gold/_candidates_*.jsonl  (pipeline guess pre-filled, label slot empty)
+# label the label_relevant / expected slots from the source, then promote into the gold files.
+```
+A field whose gold value is `null` is **not scored** (we only score what we confidently labelled),
+so partial extraction labels are fine.
 
 ## How this maps to the research paper
 

@@ -112,3 +112,4 @@ evals/reports/*.md
 
 # Wazuh generated threat-intel feed artifacts (regenerate via export_threat_feed.py)
 wazuh/feeds/
+!evals/reports/RESULTS.md
