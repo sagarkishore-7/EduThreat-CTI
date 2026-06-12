@@ -122,6 +122,22 @@ def test_structured_curated_should_review_predicate_targets_curated_edu_incident
     assert f(_si(group="news", inst="Knox College", title="Ransomware attack on Knox College")) is False
 
 
+def test_education_scope_matches_plural_schools_and_institutes():
+    # Regression: the scope regex matched only singular "school"/"college", so K-12
+    # "Public Schools" (plural) and "Institute of Technology" curated incidents were
+    # wrongly skipped by Path A and hard-rejected.
+    f = enr._structured_curated_source_should_review_non_edu_article
+    for inst, title in [
+        ("Jefferson County Public Schools", "Ransomware attack on Jefferson County Public Schools (2023)"),
+        ("Township of Union Public Schools", "Ransomware attack on Township of Union Public Schools (2024)"),
+        ("Georgia Institute of Technology", "Ransomware attack on Georgia Institute of Technology (2023)"),
+    ]:
+        assert f(_si(group="curated", inst=inst, title=title)) is True, inst
+    # non-education curated rows must still be refused
+    assert f(_si(group="curated", inst="Palfinger", title="Crane maker hit by cyberattack")) is False
+    assert f(_si(group="curated", inst="Acme Steel Corp", title="Ransomware on Acme Steel")) is False
+
+
 # --------------------------------------------------------------------------- #
 # Discovery fetch cap
 # --------------------------------------------------------------------------- #

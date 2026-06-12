@@ -97,8 +97,9 @@ _ONLINE_COURSE_SCOPE_RE = re.compile(
 )
 _EDUCATION_SCOPE_RE = re.compile(
     r"\b(?:university|universit(?:y|ies)|universit[a\u00e4]t|universidad|universidade|"
-    r"universit\u00e0|universiteit|college|school|academy|polytechnic|hochschule|"
-    r"school\s+district|community\s+college|technical\s+college|"
+    r"universit\u00e0|universiteit|colleges?|schools?|academy|academies|polytechnic|hochschule|"
+    r"institute\s+of\s+technology|technical\s+institute|polytechnic\s+institute|"
+    r"school\s+districts?|community\s+college|technical\s+college|"
     # Education context terms \u2014 keep borderline higher-ed / K-12 cases in scope.
     r"higher\s+education|k-?12|campus|faculty|student\s+(?:data|records|information)|"
     r"education\s+(?:sector|department|provider|technology)|edtech|"
