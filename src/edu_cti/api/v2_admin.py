@@ -355,6 +355,23 @@ def run_v2_data_quality_sweep(
     return data_quality.run_sweep(limit=limit)
 
 
+@router.post("/data-quality/recover-curated")
+def recover_v2_curated_parked(
+    limit: Optional[int] = Query(None, ge=1, le=50000),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """Requeue parked curated/api incidents (manual-review + rejected) for re-enrichment.
+
+    The quality sweep skips manual-review and rejected rows by design, so legacy
+    curated/api incidents the OLD enricher wrongly parked or rejected never recover
+    on their own. This re-runs the current enricher on them (Path-A keeps a structured
+    victim despite a weak article; gate-2 still re-rejects a genuine non-edu row).
+    One-time recovery backfill; idempotent (skips rows with an active reenrich task).
+    """
+    return data_quality.run_curated_recovery(limit=limit)
+
+
 @router.post("/data-quality/normalize-actors")
 def run_v2_actor_normalization(
     limit: Optional[int] = Query(None, ge=1, le=200000),

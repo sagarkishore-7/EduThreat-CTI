@@ -469,3 +469,67 @@ def test_data_quality_service_promotes_existing_unselected_drift_documents():
     assert result["scanned"] == 1
     assert result["promoted"] == 1
     fetch_service.promote_existing_unselected_document_as_drift_candidate.assert_called_once()
+
+
+# --------------------------------------------------------------------------- #
+# Curated recovery: requeue parked manual-review + rejected curated/api rows.
+# --------------------------------------------------------------------------- #
+def _enr_for(si):
+    e = _source_enrichment(si)
+    e.source_incident_id = si.id
+    return e
+
+
+def test_requeue_curated_recovers_review_and_rejected_but_skips_news():
+    cur = _source_incident(); cur.source_group = "curated"; cur.source_name = "comparitech"
+    api = _source_incident(); api.source_group = "api"; api.source_name = "ransomwarelive"
+    news = _source_incident(); news.source_group = "news"; news.source_name = "therecord"
+    review_enr = _enr_for(cur); review_enr.manual_review_required = True
+    rejected_enr = _enr_for(api); rejected_enr.is_education_related = False
+    news_enr = _enr_for(news); news_enr.manual_review_required = True
+
+    enrichment_repo = Mock()
+    enrichment_repo.list_manual_review_queue.return_value = [review_enr, news_enr]
+    enrichment_repo.list_rejected_enrichments.return_value = [rejected_enr]
+    by = {cur.id: cur, api.id: api, news.id: news}
+    source_repo = Mock()
+    source_repo.get_by_id.side_effect = lambda _s, sid: by.get(sid)
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+
+    service = V2DataQualityService(
+        source_enrichment_repository=enrichment_repo,
+        source_incident_repository=source_repo,
+        pipeline_task_repository=task_repo,
+    )
+    result = service.requeue_curated_for_reenrichment(Mock())
+
+    assert result["requeued_for_reenrichment"] == 2   # curated + api only
+    assert result["skipped_non_curated"] == 1          # news skipped
+    assert review_enr.manual_review_required is False   # unblocked
+    assert review_enr.re_enrich_attempts == 0
+    assert task_repo.enqueue.call_count == 2
+    assert {c.args[1].task_type for c in task_repo.enqueue.call_args_list} == {"reenrich"}
+
+
+def test_requeue_curated_skips_rows_with_active_reenrich_task():
+    cur = _source_incident(); cur.source_group = "curated"
+    enr = _enr_for(cur); enr.manual_review_required = True
+    enrichment_repo = Mock()
+    enrichment_repo.list_manual_review_queue.return_value = [enr]
+    enrichment_repo.list_rejected_enrichments.return_value = []
+    source_repo = Mock()
+    source_repo.get_by_id.return_value = cur
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = object()  # already has an active reenrich
+
+    service = V2DataQualityService(
+        source_enrichment_repository=enrichment_repo,
+        source_incident_repository=source_repo,
+        pipeline_task_repository=task_repo,
+    )
+    result = service.requeue_curated_for_reenrichment(Mock())
+
+    assert result["requeued_for_reenrichment"] == 0
+    assert result["already_queued"] == 1
+    task_repo.enqueue.assert_not_called()

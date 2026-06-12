@@ -362,6 +362,114 @@ class V2DataQualityService:
             session.commit()
             return result
 
+    def requeue_curated_for_reenrichment(
+        self,
+        session: Session,
+        *,
+        source_groups: tuple[str, ...] = ("curated", "api"),
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        """Requeue parked curated/api incidents for re-enrichment (one-time recovery).
+
+        The quality sweep deliberately skips manual-review and rejected rows
+        (``build_quality_sweep_stmt`` filters ``manual_review_required = False`` and
+        non-False education flags), so legacy items that the *old* enricher parked in
+        review or hard-rejected can never recover on their own. For high-trust curated
+        and api sources, this re-runs the current enricher (Path-A keeps a structured
+        victim despite a weak article; gate-2 still re-rejects a genuine non-edu row),
+        recovering real coverage. Idempotent: a still-active reenrich task is skipped.
+        """
+        groups = tuple(g.lower() for g in source_groups)
+        fetch_limit = limit if limit is not None else 1000
+        candidates = list(
+            self.source_enrichment_repository.list_manual_review_queue(session, limit=fetch_limit)
+        ) + list(
+            self.source_enrichment_repository.list_rejected_enrichments(session, limit=fetch_limit)
+        )
+        now = datetime.now(timezone.utc)
+        requeued = 0
+        already_queued = 0
+        skipped_non_curated = 0
+        skipped_missing = 0
+        seen: set[Any] = set()
+        for enrichment in candidates:
+            sid = enrichment.source_incident_id
+            if sid in seen:
+                continue
+            seen.add(sid)
+            source_incident = self.source_incident_repository.get_by_id(session, sid)
+            if source_incident is None:
+                skipped_missing += 1
+                continue
+            if str(getattr(source_incident, "source_group", "") or "").lower() not in groups:
+                skipped_non_curated += 1
+                continue
+
+            # Unblock the row so the fresh enrichment verdict can take over.
+            enrichment.re_enrich_attempts = 0
+            enrichment.re_enrich_reason = "curated_recovery_requeue"
+            enrichment.manual_review_required = False
+            enrichment.manual_review_reason = None
+            self.source_enrichment_repository.add(session, enrichment)
+
+            existing_task = self.pipeline_task_repository.get_active_for_target(
+                session,
+                task_type="reenrich",
+                target_table="source_incidents",
+                target_id=sid,
+            )
+            if existing_task is not None:
+                already_queued += 1
+                continue
+
+            self.pipeline_task_repository.enqueue(
+                session,
+                PipelineTask(
+                    run_id=None,
+                    task_type="reenrich",
+                    target_table="source_incidents",
+                    target_id=sid,
+                    status="queued",
+                    priority=160,
+                    payload={
+                        "source_incident_id": str(sid),
+                        "source_name": source_incident.source_name,
+                        "re_enrich_attempts": 0,
+                        "re_enrich_reason": "curated_recovery_requeue",
+                    },
+                    result={},
+                    available_at=now,
+                    attempt_count=0,
+                    max_attempts=MAX_REENRICH_ATTEMPTS,
+                ),
+            )
+            requeued += 1
+
+        return {
+            "candidates": len(seen),
+            "requeued_for_reenrichment": requeued,
+            "already_queued": already_queued,
+            "skipped_non_curated": skipped_non_curated,
+            "skipped_missing_source_incidents": skipped_missing,
+            "source_groups": list(groups),
+            "checked_at": now.isoformat(),
+        }
+
+    def run_curated_recovery(
+        self,
+        *,
+        source_groups: tuple[str, ...] = ("curated", "api"),
+        limit: int | None = None,
+    ) -> dict[str, Any]:
+        if self.session_factory is None:
+            raise RuntimeError("session_factory is required for run_curated_recovery")
+        with self.session_factory() as session:
+            result = self.requeue_curated_for_reenrichment(
+                session, source_groups=source_groups, limit=limit
+            )
+            session.commit()
+            return result
+
     def normalize_actor_names(
         self, session: Session, *, limit: int | None = None
     ) -> dict[str, Any]:
