@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from sqlalchemy import Select, or_, select
+from sqlalchemy import Select, func, or_, select
 from sqlalchemy.orm import Session
 
 from src.edu_cti_v2.models import SourceEnrichment
@@ -88,6 +88,12 @@ class SourceEnrichmentRepository:
         stmt = self.build_manual_review_queue_stmt(limit=limit)
         return list(session.execute(stmt).scalars().all())
 
+    def count_manual_review_queue(self, session: Session) -> int:
+        stmt = select(func.count(SourceEnrichment.id)).where(
+            SourceEnrichment.manual_review_required.is_(True)
+        )
+        return int(session.execute(stmt).scalar_one() or 0)
+
     def list_rejected_enrichments(
         self,
         session: Session,
@@ -96,6 +102,14 @@ class SourceEnrichmentRepository:
     ) -> list[SourceEnrichment]:
         stmt = self.build_rejected_enrichments_stmt(limit=limit)
         return list(session.execute(stmt).scalars().all())
+
+    def count_rejected_enrichments(self, session: Session) -> int:
+        stmt = (
+            select(func.count(SourceEnrichment.id))
+            .where(SourceEnrichment.is_education_related.is_(False))
+            .where(SourceEnrichment.manual_review_required.is_(False))
+        )
+        return int(session.execute(stmt).scalar_one() or 0)
 
     def list_source_incident_ids_for_recanonicalize(
         self,

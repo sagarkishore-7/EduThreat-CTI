@@ -1036,11 +1036,14 @@ def list_v2_manual_review_queue(
 ):
     """List v2 enrichments that exhausted automatic re-enrichment attempts."""
     items = data_quality.list_manual_review_queue(session, limit=limit)
+    repo = getattr(data_quality, "source_enrichment_repository", None)
+    total = repo.count_manual_review_queue(session) if repo is not None else len(items)
     return {
         "items": items,
         "meta": {
             "limit": limit,
             "returned": len(items),
+            "total": total,
         },
     }
 
@@ -1054,11 +1057,14 @@ def list_v2_rejected_enrichments(
 ):
     """List v2 enrichments that were hard-rejected as non-canonicalizable."""
     items = data_quality.list_rejected_enrichments(session, limit=limit)
+    repo = getattr(data_quality, "source_enrichment_repository", None)
+    total = repo.count_rejected_enrichments(session) if repo is not None else len(items)
     return {
         "items": items,
         "meta": {
             "limit": limit,
             "returned": len(items),
+            "total": total,
         },
     }
 

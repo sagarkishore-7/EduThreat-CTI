@@ -61,6 +61,21 @@ def _public_cache_key(prefix: str, *parts: object) -> str:
     return "v2:" + ":".join(encoded)
 
 
+def _apply_live_incident_counts(read_service, session, payload):
+    """Overlay live published-incident counts onto a (possibly cached) dashboard
+    payload so the homepage headline stays in lock-step with the incidents page.
+
+    No-op for read services that don't implement the overlay (e.g. test doubles).
+    """
+    overlay = getattr(read_service, "_overlay_live_incident_counts", None)
+    if callable(overlay):
+        try:
+            return overlay(session, dict(payload))
+        except Exception:
+            return payload
+    return payload
+
+
 @router.get("/health")
 def v2_health() -> dict[str, str]:
     """Lightweight health check for the v2 Postgres read path."""
@@ -76,10 +91,10 @@ def get_v2_dashboard(
     cache_key = _public_cache_key("dashboard", "open")
     cached = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
     if cached is not None:
-        return cached
+        return _apply_live_incident_counts(read_service, session, cached)
     payload = read_service.get_dashboard_summary(session)
     cache_set(cache_key, payload)
-    return payload
+    return _apply_live_incident_counts(read_service, session, payload)
 
 
 @router.get("/stats")
@@ -91,12 +106,12 @@ def get_v2_stats(
     cache_key = _public_cache_key("dashboard", "open")
     cached_dashboard = cache_get(cache_key, ttl_seconds=_PUBLIC_READ_TTL_SECONDS)
     if isinstance(cached_dashboard, dict) and isinstance(cached_dashboard.get("stats"), dict):
-        return cached_dashboard["stats"]
+        return _apply_live_incident_counts(read_service, session, cached_dashboard)["stats"]
     if hasattr(read_service, "get_dashboard_summary"):
         payload = read_service.get_dashboard_summary(session)
         if isinstance(payload, dict) and isinstance(payload.get("stats"), dict):
             cache_set(cache_key, payload)
-            return payload["stats"]
+            return _apply_live_incident_counts(read_service, session, payload)["stats"]
     return read_service.get_dashboard_stats(session)
 
 
