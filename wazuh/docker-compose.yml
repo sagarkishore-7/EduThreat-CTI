@@ -1,0 +1,87 @@
+# Single-node Wazuh stack for the EduThreat-CTI SIEM integration.
+#
+# A local, free SIEM to (A) monitor the pipeline's JSON logs and (B) detect when
+# monitored logs match an IOC from the EduThreat threat-intel feed. This is a
+# learning/portfolio stack — NOT touched by and NOT touching the production
+# pipeline. Pinned to a recent Wazuh 4.x single-node image set.
+#
+# Quick start:
+#   1. (Linux host) raise the map count Elasticsearch/Indexer needs:
+#        sudo sysctl -w vm.max_map_count=262144
+#   2. docker compose -f wazuh/docker-compose.yml up -d
+#   3. Open the dashboard at https://localhost:5601  (default admin/SecretPassword;
+#        CHANGE IT — see README). Manager API on 55000, agent enrollment on 1514/1515.
+#   4. Mount this repo's rules + feeds into the manager (volumes below) and restart.
+#
+# See wazuh/README.md for the full runbook (log shipping, lists, alert routing).
+
+services:
+  wazuh.manager:
+    image: wazuh/wazuh-manager:4.9.2
+    hostname: wazuh.manager
+    restart: unless-stopped
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 655360, hard: 655360 }
+    ports:
+      - "1514:1514"     # agent events
+      - "1515:1515"     # agent enrollment
+      - "514:514/udp"   # syslog
+      - "55000:55000"   # manager API
+    environment:
+      - INDEXER_URL=https://wazuh.indexer:9200
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=SecretPassword
+      - FILEBEAT_SSL_VERIFICATION_MODE=none
+    volumes:
+      - wazuh_api_configuration:/var/ossec/api/configuration
+      - wazuh_etc:/var/ossec/etc
+      - wazuh_logs:/var/ossec/logs
+      - wazuh_queue:/var/ossec/queue
+      - wazuh_var_multigroups:/var/ossec/var/multigroups
+      - wazuh_integrations:/var/ossec/integrations
+      - wazuh_active_response:/var/ossec/active-response/bin
+      - wazuh_wodles:/var/ossec/wodles
+      # EduThreat custom rules + generated threat-intel CDB lists (read-only).
+      # After first boot, copy these into etc/rules and etc/lists then restart
+      # (see README — the named volumes shadow these paths on a fresh install).
+      - ./rules:/eduthreat/rules:ro
+      - ./feeds:/eduthreat/feeds:ro
+
+  wazuh.indexer:
+    image: wazuh/wazuh-indexer:4.9.2
+    hostname: wazuh.indexer
+    restart: unless-stopped
+    ports:
+      - "9200:9200"
+    environment:
+      - "OPENSEARCH_JAVA_OPTS=-Xms1g -Xmx1g"
+    ulimits:
+      memlock: { soft: -1, hard: -1 }
+      nofile: { soft: 65536, hard: 65536 }
+    volumes:
+      - wazuh_indexer_data:/var/lib/wazuh-indexer
+
+  wazuh.dashboard:
+    image: wazuh/wazuh-dashboard:4.9.2
+    hostname: wazuh.dashboard
+    restart: unless-stopped
+    ports:
+      - "5601:5601"
+    environment:
+      - INDEXER_USERNAME=admin
+      - INDEXER_PASSWORD=SecretPassword
+      - WAZUH_API_URL=https://wazuh.manager
+    depends_on:
+      - wazuh.indexer
+
+volumes:
+  wazuh_api_configuration:
+  wazuh_etc:
+  wazuh_logs:
+  wazuh_queue:
+  wazuh_var_multigroups:
+  wazuh_integrations:
+  wazuh_active_response:
+  wazuh_wodles:
+  wazuh_indexer_data:

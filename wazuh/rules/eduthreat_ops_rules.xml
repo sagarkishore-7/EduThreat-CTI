@@ -1,0 +1,70 @@
+<!--
+  EduThreat-CTI pipeline OPS rules for Wazuh.
+
+  Angle A: observability of the pipeline itself — the SOC/SRE automation of the
+  data-quality monitoring done by hand. These rules match the app's JSON structlog
+  events (LOG_FORMAT=json), decoded by Wazuh's json decoder. Rule ids use the
+  100000-109999 local range to avoid clashing with built-in rules.
+
+  Wire-up: tail the Railway/app JSON log into a file and add it as a localfile of
+  type "json" in ossec.conf (see wazuh/README.md). The json decoder exposes fields
+  as data.<field> (e.g. data.event, data.task_type, data.level).
+-->
+<group name="eduthreat,pipeline,">
+
+  <!-- Base: any EduThreat structured log line (json decoder + our logger field). -->
+  <rule id="100100" level="0">
+    <decoded_as>json</decoded_as>
+    <field name="logger">edu_cti</field>
+    <description>EduThreat pipeline log event</description>
+  </rule>
+
+  <!-- Worker fetch failed across every tier — a fetch-health signal. -->
+  <rule id="100110" level="6">
+    <if_sid>100100</if_sid>
+    <field name="event">FETCH FAILED ALL TIERS</field>
+    <description>EduThreat: article fetch failed across all tiers (domain block / dead URL)</description>
+    <group>fetch_failure,</group>
+  </rule>
+
+  <!-- Spike: many fetch failures in a short window -> likely a provider/Oxylabs
+       outage or a mass block. Frequency rule over the base failure rule. -->
+  <rule id="100111" level="10" frequency="8" timeframe="120">
+    <if_matched_sid>100110</if_matched_sid>
+    <description>EduThreat: fetch-failure SPIKE (>=8 in 120s) — provider outage or mass block</description>
+    <group>fetch_failure,spike,</group>
+  </rule>
+
+  <!-- A pipeline task crashed / failed (task_failed milestone event). -->
+  <rule id="100120" level="7">
+    <if_sid>100100</if_sid>
+    <field name="event">task_failed</field>
+    <description>EduThreat: pipeline task_failed ($(task_type))</description>
+    <group>task_failure,</group>
+  </rule>
+
+  <!-- Repeated task failures -> degraded worker. -->
+  <rule id="100121" level="11" frequency="6" timeframe="300">
+    <if_matched_sid>100120</if_matched_sid>
+    <description>EduThreat: repeated task failures (>=6 in 5m) — worker degraded</description>
+    <group>task_failure,spike,</group>
+  </rule>
+
+  <!-- Out-of-memory / killed worker (container OOM). Matches the OOM/Killed signature. -->
+  <rule id="100130" level="12">
+    <if_sid>100100</if_sid>
+    <field name="event">\.*(OOM|Killed|out of memory|MemoryError)\.*</field>
+    <description>EduThreat: worker OOM / killed — container memory exhausted</description>
+    <group>oom,availability,</group>
+  </rule>
+
+  <!-- Title-classifier failed-open (LLM transport/JSON error) — quality risk if frequent. -->
+  <rule id="100140" level="5">
+    <if_sid>100100</if_sid>
+    <field name="event">title_classify_batch</field>
+    <field name="failed_open">\d+</field>
+    <description>EduThreat: classify batch had fail-open titles (LLM error path)</description>
+    <group>llm_quality,</group>
+  </rule>
+
+</group>

@@ -109,3 +109,6 @@ paper/
 evals/reports/*.json
 evals/reports/*.md
 !evals/reports/.gitkeep
+
+# Wazuh generated threat-intel feed artifacts (regenerate via export_threat_feed.py)
+wazuh/feeds/

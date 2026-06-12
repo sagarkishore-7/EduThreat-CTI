@@ -1,0 +1,58 @@
+<!--
+  EduThreat-CTI THREAT-INTEL correlation rules for Wazuh.
+
+  Angle B (the differentiator): the pipeline PRODUCES threat intel; this is the SOC
+  consuming it. These rules fire when a monitored log event matches an IOC from the
+  EduThreat feed — exactly how a SOC uses an external threat feed.
+
+  Wire-up (full commands in wazuh/README.md):
+    1. Generate the feed with export_threat_feed.py (writes the CDB lists).
+    2. Copy the CDB lists into /var/ossec/etc/lists/ and declare them in ossec.conf
+       inside the ruleset block, e.g. a list line for etc/lists/eduthreat_cves,
+       etc/lists/eduthreat_actors, and etc/lists/eduthreat_ransomware_families.
+    3. Rebuild lists and restart:  /var/ossec/bin/wazuh-control restart
+    4. Schedule the exporter (cron) so the feed stays fresh as the dataset grows.
+
+  The <list> lookup checks whether the named field's value is a KEY in the CDB list;
+  on a hit it returns the value (e.g. "edu_exploited_cve"). Adjust the <field> the
+  lookup reads to match the decoder of whatever log source you monitor (web access
+  logs, IDS alerts, EDR telemetry, etc.). Rule ids 110000-119999 (local range).
+-->
+<group name="eduthreat,threat_intel,">
+
+  <!-- A monitored log mentions a CVE the EduThreat dataset has seen exploited
+       against the education sector. full_log is the generic catch-all field;
+       point <list> at a more specific decoded field for lower noise. -->
+  <rule id="110100" level="10">
+    <list field="full_log" lookup="match_key">etc/lists/eduthreat_cves</list>
+    <description>EduThreat intel match: a CVE exploited against education appears in monitored logs</description>
+    <group>ioc_match,cve,</group>
+    <mitre>
+      <id>T1190</id>
+    </mitre>
+  </rule>
+
+  <!-- A monitored log mentions a threat actor active against the education sector. -->
+  <rule id="110110" level="10">
+    <list field="full_log" lookup="match_key">etc/lists/eduthreat_actors</list>
+    <description>EduThreat intel match: an education-sector threat actor appears in monitored logs</description>
+    <group>ioc_match,threat_actor,</group>
+  </rule>
+
+  <!-- A monitored log mentions a ransomware family seen hitting education. -->
+  <rule id="110120" level="11">
+    <list field="full_log" lookup="match_key">etc/lists/eduthreat_ransomware_families</list>
+    <description>EduThreat intel match: an education-sector ransomware family appears in monitored logs</description>
+    <group>ioc_match,ransomware,</group>
+  </rule>
+
+  <!-- Correlation: the SAME source hits two distinct EduThreat IOC types in a window
+       (e.g. an actor name AND a known-exploited CVE) -> high-confidence alert. -->
+  <rule id="110200" level="13" frequency="2" timeframe="600">
+    <if_matched_group>ioc_match</if_matched_group>
+    <same_source_ip />
+    <description>EduThreat intel: multiple education-sector IOC matches from one source in 10m</description>
+    <group>ioc_match,correlation,</group>
+  </rule>
+
+</group>
