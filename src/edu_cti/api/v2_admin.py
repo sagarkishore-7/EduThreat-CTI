@@ -372,6 +372,27 @@ def recover_v2_curated_parked(
     return data_quality.run_curated_recovery(limit=limit)
 
 
+@router.post("/data-quality/recover-google-wrappers")
+def recover_v2_google_wrappers(
+    limit: Optional[int] = Query(None, ge=1, le=50000),
+    dry_run: bool = Query(False),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """Re-queue resolution for relevant Google News wrappers that never resolved.
+
+    The in-process Google ``batchexecute`` decoder is blocked from the datacenter IP
+    (0 of ~43k wrappers ever decoded), so relevant titles the gate approved died at
+    resolution. With the Oxylabs SERP tier enabled (``EDU_CTI_ENABLE_OXYLABS_SERP=1``),
+    this re-queues a ``resolve_url`` (force_discovery) task per affected row so the real
+    article is re-found by headline from a clean IP. Targets only relevant rows with a
+    wrapper but no fetchable article and no enrichment — never spends SERP quota on
+    irrelevant/already-resolved rows. ``dry_run=true`` returns the count without
+    enqueuing. Idempotent: rows with an active ``resolve_url`` task are skipped.
+    """
+    return data_quality.run_google_wrapper_recovery(limit=limit, dry_run=dry_run)
+
+
 @router.post("/data-quality/normalize-actors")
 def run_v2_actor_normalization(
     limit: Optional[int] = Query(None, ge=1, le=200000),
