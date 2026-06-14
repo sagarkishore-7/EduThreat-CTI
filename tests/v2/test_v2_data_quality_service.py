@@ -512,6 +512,57 @@ def test_requeue_curated_recovers_review_and_rejected_but_skips_news():
     assert {c.args[1].task_type for c in task_repo.enqueue.call_args_list} == {"reenrich"}
 
 
+def test_requeue_google_wrappers_enqueues_resolve_with_force_discovery():
+    gn1 = _source_incident(); gn1.source_name = "googlenews_rss"; gn1.relevance_status = "relevant"
+    gn2 = _source_incident(); gn2.source_name = "googlenews_rss"; gn2.relevance_status = "relevant"
+    session = Mock()
+    session.execute.return_value.scalars.return_value = [gn1, gn2]
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+
+    service = V2DataQualityService(pipeline_task_repository=task_repo)
+    result = service.requeue_google_wrappers_for_resolution(session)
+
+    assert result["candidates"] == 2
+    assert result["requeued_for_resolution"] == 2
+    assert task_repo.enqueue.call_count == 2
+    tasks = [c.args[1] for c in task_repo.enqueue.call_args_list]
+    assert {t.task_type for t in tasks} == {"resolve_url"}
+    assert all(t.payload["force_discovery"] is True for t in tasks)
+    assert all(t.payload["resolved_via"] == "google_wrapper_recovery" for t in tasks)
+
+
+def test_requeue_google_wrappers_dry_run_counts_without_enqueue():
+    gn = _source_incident(); gn.source_name = "googlenews_rss"; gn.relevance_status = "relevant"
+    session = Mock()
+    session.execute.return_value.scalars.return_value = [gn]
+    task_repo = Mock()
+
+    service = V2DataQualityService(pipeline_task_repository=task_repo)
+    result = service.requeue_google_wrappers_for_resolution(session, dry_run=True)
+
+    assert result["dry_run"] is True
+    assert result["candidates"] == 1
+    assert result["requeued_for_resolution"] == 0
+    assert result["estimated_max_serp_queries"] == 1
+    task_repo.enqueue.assert_not_called()
+
+
+def test_requeue_google_wrappers_skips_rows_with_active_resolve_task():
+    gn = _source_incident(); gn.source_name = "googlenews_rss"; gn.relevance_status = "relevant"
+    session = Mock()
+    session.execute.return_value.scalars.return_value = [gn]
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = object()  # already queued
+
+    service = V2DataQualityService(pipeline_task_repository=task_repo)
+    result = service.requeue_google_wrappers_for_resolution(session)
+
+    assert result["requeued_for_resolution"] == 0
+    assert result["already_queued"] == 1
+    task_repo.enqueue.assert_not_called()
+
+
 def test_requeue_curated_skips_rows_with_active_reenrich_task():
     cur = _source_incident(); cur.source_group = "curated"
     enr = _enr_for(cur); enr.manual_review_required = True

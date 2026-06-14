@@ -10,7 +10,13 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from src.edu_cti.pipeline.phase2.utils.post_processing import is_headline_format
-from src.edu_cti_v2.models import ArticleDocument, PipelineTask, SourceEnrichment, SourceIncident
+from src.edu_cti_v2.models import (
+    ArticleDocument,
+    PipelineTask,
+    SourceEnrichment,
+    SourceIncident,
+    SourceIncidentUrl,
+)
 from src.edu_cti_v2.repositories import PipelineTaskRepository, SourceEnrichmentRepository, SourceIncidentRepository
 from src.edu_cti_v2.services.fetching import V2FetchService
 from src.edu_cti_v2.source_identity import looks_broad_collective_identity, looks_geographic_only_identity
@@ -468,6 +474,119 @@ class V2DataQualityService:
                 session, source_groups=source_groups, limit=limit
             )
             session.commit()
+            return result
+
+    def requeue_google_wrappers_for_resolution(
+        self,
+        session: Session,
+        *,
+        source_name: str = "googlenews_rss",
+        limit: int | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Re-queue resolution for relevant Google News wrappers that never resolved.
+
+        Google News RSS hands us encoded redirect *wrapper* URLs. The in-process
+        ``batchexecute`` decoder is blocked from the datacenter IP (0 of ~43k wrappers
+        ever decoded), so relevant titles that the title gate approved died at
+        resolution. With the Oxylabs SERP discovery tier now enabled
+        (``EDU_CTI_ENABLE_OXYLABS_SERP=1``), re-queuing a ``resolve_url`` task with
+        ``force_discovery`` re-finds the real article by its headline from a clean IP.
+
+        Targets only ``relevance_status='relevant'`` rows for ``source_name`` that have
+        a wrapper URL but no fetchable article and no enrichment yet — so we never spend
+        SERP quota on irrelevant titles or already-resolved rows. ``dry_run`` returns the
+        count without enqueuing (and without spending). Idempotent: an active
+        ``resolve_url`` task for the row is skipped.
+        """
+        from sqlalchemy import exists
+
+        fetchable = exists().where(
+            (SourceIncidentUrl.source_incident_id == SourceIncident.id)
+            & (SourceIncidentUrl.is_wrapper.is_(False))
+            & (SourceIncidentUrl.url_kind == "article")
+        )
+        has_wrapper = exists().where(
+            (SourceIncidentUrl.source_incident_id == SourceIncident.id)
+            & (SourceIncidentUrl.is_wrapper.is_(True))
+        )
+        enriched = exists().where(
+            SourceEnrichment.source_incident_id == SourceIncident.id
+        )
+        stmt = (
+            select(SourceIncident)
+            .where(SourceIncident.source_name == source_name)
+            .where(SourceIncident.is_deleted.is_(False))
+            .where(SourceIncident.relevance_status == "relevant")
+            .where(has_wrapper)
+            .where(~fetchable)
+            .where(~enriched)
+            .order_by(SourceIncident.collected_at.desc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+
+        now = datetime.now(timezone.utc)
+        candidates = 0
+        requeued = 0
+        already_queued = 0
+        for source_incident in session.execute(stmt).scalars():
+            candidates += 1
+            if dry_run:
+                continue
+            existing_task = self.pipeline_task_repository.get_active_for_target(
+                session,
+                task_type="resolve_url",
+                target_table="source_incidents",
+                target_id=source_incident.id,
+            )
+            if existing_task is not None:
+                already_queued += 1
+                continue
+            self.pipeline_task_repository.enqueue(
+                session,
+                PipelineTask(
+                    run_id=None,
+                    task_type="resolve_url",
+                    target_table="source_incidents",
+                    target_id=source_incident.id,
+                    status="queued",
+                    priority=70,
+                    payload={
+                        "source_incident_id": str(source_incident.id),
+                        "source_name": source_incident.source_name,
+                        "force_discovery": True,
+                        "resolved_via": "google_wrapper_recovery",
+                    },
+                    result={},
+                    available_at=now,
+                    attempt_count=0,
+                    max_attempts=3,
+                ),
+            )
+            requeued += 1
+
+        return {
+            "source_name": source_name,
+            "dry_run": dry_run,
+            "candidates": candidates,
+            "requeued_for_resolution": requeued,
+            "already_queued": already_queued,
+            "estimated_max_serp_queries": candidates if dry_run else requeued,
+            "checked_at": now.isoformat(),
+        }
+
+    def run_google_wrapper_recovery(
+        self, *, limit: int | None = None, dry_run: bool = False
+    ) -> dict[str, Any]:
+        if self.session_factory is None:
+            raise RuntimeError("session_factory is required for run_google_wrapper_recovery")
+        with self.session_factory() as session:
+            result = self.requeue_google_wrappers_for_resolution(
+                session, limit=limit, dry_run=dry_run
+            )
+            if not dry_run:
+                session.commit()
             return result
 
     def normalize_actor_names(
