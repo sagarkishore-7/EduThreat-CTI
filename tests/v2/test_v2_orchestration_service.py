@@ -48,6 +48,12 @@ def test_orchestration_service_lists_named_plans():
     assert "incremental_refresh" in names
     assert "collect_only" in names
     assert "daily_quality_refresh" in names
+    assert "google_historical" in names
+    # google_historical must be Google-News-only, full-historical
+    gh = next(p for p in plans if p["name"] == "google_historical")
+    assert gh["collect_kwargs"]["groups"] == ["rss"]
+    assert gh["collect_kwargs"]["sources"] == ["googlenews_rss"]
+    assert gh["collect_kwargs"]["incremental"] is False
 
 
 def test_orchestration_service_runs_plan_and_combines_collect_and_worker_results():

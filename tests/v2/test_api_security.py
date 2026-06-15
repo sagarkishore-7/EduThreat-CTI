@@ -65,7 +65,20 @@ def test_app_builds_with_limiter(monkeypatch):
     app = mod.create_app()
     # Limiter attached to app state, health routes present.
     assert getattr(app.state, "limiter", None) is not None
-    paths = {r.path for r in app.routes}
+
+    # Newer FastAPI nests included routers as _IncludedRouter objects (no .path)
+    # inside app.routes, so collect paths recursively rather than assuming every
+    # top-level route exposes .path.
+    def _all_paths(routes):
+        found = set()
+        for route in routes:
+            path = getattr(route, "path", None)
+            if path:
+                found.add(path)
+            found |= _all_paths(getattr(route, "routes", []) or [])
+        return found
+
+    paths = _all_paths(app.routes)
     assert "/health" in paths and "/api/health" in paths
 
 

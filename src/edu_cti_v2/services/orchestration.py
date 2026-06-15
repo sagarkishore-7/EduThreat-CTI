@@ -65,6 +65,26 @@ _PLAN_DEFINITIONS: dict[str, V2PlanDefinition] = {
         run_campaign_correlation=True,
         capture_research_metrics=True,
     ),
+    "google_historical": V2PlanDefinition(
+        name="google_historical",
+        description=(
+            "Collect ONLY Google News RSS in full-historical mode (date windows from "
+            "HISTORICAL_START_YEAR to present) and drain the queue. Skips every other "
+            "source so budget goes entirely to Google coverage; resume point is "
+            "controlled by the HISTORICAL_START_YEAR env var."
+        ),
+        collect_kwargs={
+            "groups": ["rss"],
+            "sources": ["googlenews_rss"],
+            "incremental": False,
+            "max_pages": get_optional_int("COLLECT_MAX_PAGES"),
+            "rss_max_age_days": get_int("RSS_MAX_AGE_DAYS", default=3650),
+        },
+        drain_tasks=True,
+        worker_task_type=None,
+        worker_max_tasks=5000,
+        capture_research_metrics=True,
+    ),
     "incremental_refresh": V2PlanDefinition(
         name="incremental_refresh",
         description="Incremental refresh across all groups followed by a bounded drain of the v2 task queue.",
