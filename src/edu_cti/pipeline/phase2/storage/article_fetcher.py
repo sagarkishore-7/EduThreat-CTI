@@ -2287,6 +2287,22 @@ class ArticleFetcher:
         if not filtered:
             return None
 
+        best_rank = min(rank for (_d, rank, _s) in filtered)
+
+        # Ambiguity guard for weak-signal-only pages. When no strong published
+        # signal exists (best rank >= 5 — i.e. we are relying on byline/container
+        # or full-page visible-text dates) a news article that *mentions* several
+        # years (a past-incident reference, a "since 20XX" bio line, a related-article
+        # link) yields candidates spanning a wide range. Picking the chronologically
+        # earliest then grabs an unrelated PAST year as the publish date (e.g. a
+        # May-2026 Canvas story misdated to 2022). When the weak candidates disagree
+        # by more than a year, the publish date is not trustworthy — return None and
+        # let the date stay null/approximate rather than confidently wrong.
+        if best_rank >= 5:
+            weak_dates = [d for (d, rank, _s) in filtered if rank >= 5]
+            if weak_dates and (max(weak_dates) - min(weak_dates)).days > 366:
+                return None
+
         # Pick the best-ranked; tie-break toward the earliest date (publish, not update).
         best = min(filtered, key=lambda c: (c[1], c[0]))
         return best[0].isoformat()

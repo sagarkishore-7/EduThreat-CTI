@@ -238,6 +238,51 @@ class TestArticleFetcher:
             warnings.simplefilter("error", UnknownTimezoneWarning)
             assert fetcher._normalize_date_to_iso("20 May 2026 18:09 CEST") == "2026-05-20"
 
+    def test_weak_signal_page_with_wide_date_spread_is_ambiguous(self):
+        # A news page with NO strong published signal that mentions several
+        # unrelated years (the current incident, a past-incident reference, a
+        # journalist bio line) must NOT be confidently misdated to the earliest
+        # one. Previously the "earliest" tie-break picked the 2022 reference for a
+        # 2026 story (the Instructure/Canvas misdating); now it returns None.
+        fetcher = ArticleFetcher(http_client=Mock())
+        soup = BeautifulSoup(
+            """
+            <html><body>
+            <article>
+              <h1>Instructure reports cyber incident affecting Canvas</h1>
+              <p>The breach is the latest in a string of education-sector attacks.</p>
+              <aside class="related">
+                <a href="/x">Earlier breach disclosed March 25th, 2022</a>
+                <a href="/y">PowerSchool hack in January 8th, 2025</a>
+              </aside>
+              <footer>Reporter has covered security since February 1st, 2014.</footer>
+            </article>
+            </body></html>
+            """,
+            "html.parser",
+        )
+
+        assert fetcher._extract_publish_date(soup) is None
+
+    def test_weak_signal_page_with_single_consistent_date_still_resolves(self):
+        # Guard must not over-fire: one coherent byline date (no conflicting years)
+        # should still be extracted from a metadata-less page.
+        fetcher = ArticleFetcher(http_client=Mock())
+        soup = BeautifulSoup(
+            """
+            <html><body>
+            <main>
+              <h1>University ransomware attack disrupts campus systems</h1>
+              <div>Staff Writer October 12th, 2023</div>
+              <p>The university confirmed a ransomware incident this week.</p>
+            </main>
+            </body></html>
+            """,
+            "html.parser",
+        )
+
+        assert fetcher._extract_publish_date(soup) == "2023-10-12"
+
     def test_gate_detection_catches_subscription_landing_pages(self):
         assert _is_gate_page(
             "Subscribe to The Australian | Newspaper home delivery, website, iPad, iPhone & Android app",
