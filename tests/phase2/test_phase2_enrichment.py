@@ -264,6 +264,60 @@ class TestArticleFetcher:
 
         assert fetcher._extract_publish_date(soup) is None
 
+    def test_extracts_spanish_byline_publish_date(self):
+        # escudodigital.com (Univ. of Valencia) — Spanish "Publicado el …" byline
+        # that the English-only extractor previously missed (source_published_at=None).
+        fetcher = ArticleFetcher(http_client=Mock())
+        soup = BeautifulSoup(
+            """
+            <html><body>
+            <article>
+              <h1>La Universitat de València confirma haber sufrido un ciberataque</h1>
+              <span class="post-date">Publicado el 25 de mayo de 2026 a las 13:40</span>
+              <p>La universidad confirmó el incidente el pasado sábado.</p>
+            </article>
+            </body></html>
+            """,
+            "html.parser",
+        )
+
+        assert fetcher._extract_publish_date(soup) == "2026-05-25"
+
+    def test_extracts_german_numeric_byline_publish_date(self):
+        # European DD.MM.YYYY ("03.06.2026") — previously misparsed month-first.
+        fetcher = ArticleFetcher(http_client=Mock())
+        soup = BeautifulSoup(
+            """
+            <html><body>
+            <article>
+              <h1>Datenleck IIT Roorkee: 370.000 Studentendaten offen</h1>
+              <div class="byline">Veröffentlicht am 03.06.2026 um 09:50 Uhr</div>
+              <p>Das IIT Roorkee bestätigte einen Konfigurationsfehler.</p>
+            </article>
+            </body></html>
+            """,
+            "html.parser",
+        )
+
+        assert fetcher._extract_publish_date(soup) == "2026-06-03"
+
+    def test_extracts_french_byline_publish_date(self):
+        fetcher = ArticleFetcher(http_client=Mock())
+        soup = BeautifulSoup(
+            """
+            <html><body>
+            <article>
+              <h1>Cyberattaque au Lycée Jean-Moulin</h1>
+              <div class="entry-date">Publié le 2 juin 2026</div>
+              <p>Les ordinateurs sont inutilisables après une cyberattaque.</p>
+            </article>
+            </body></html>
+            """,
+            "html.parser",
+        )
+
+        assert fetcher._extract_publish_date(soup) == "2026-06-02"
+
     def test_weak_signal_page_with_single_consistent_date_still_resolves(self):
         # Guard must not over-fire: one coherent byline date (no conflicting years)
         # should still be extracted from a metadata-less page.
