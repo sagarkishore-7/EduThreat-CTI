@@ -421,6 +421,30 @@ def refetch_v2_suspicious_dates(
     )
 
 
+@router.post("/data-quality/cap-records-affected")
+def cap_v2_records_affected(
+    min_value: int = Query(1_000_000, ge=1000),
+    min_repeat: int = Query(3, ge=2, le=100),
+    dry_run: bool = Query(False),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """Null per-victim records_affected figures that are actually campaign totals.
+
+    Impact-noise fix: when an article reports a campaign-WIDE breach total (e.g. the
+    ShinyHunters/Canvas "~275 million records"), the LLM stamps that figure onto every
+    individual victim, inflating dataset records-affected stats into nonsense. This nulls
+    any large records_affected value (``>= min_value``) that repeats verbatim across
+    ``>= min_repeat`` distinct canonicals (the campaign-total signature — no two unrelated
+    breaches report exactly the same huge number). Genuine per-victim figures are kept.
+    ``dry_run=true`` lists the offending values without writing. Re-backfill the star
+    schema afterward so analytics pick up the change.
+    """
+    return data_quality.run_records_affected_cap(
+        min_value=min_value, min_repeat=min_repeat, dry_run=dry_run
+    )
+
+
 @router.post("/data-quality/normalize-actors")
 def run_v2_actor_normalization(
     limit: Optional[int] = Query(None, ge=1, le=200000),

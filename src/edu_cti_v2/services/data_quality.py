@@ -699,6 +699,112 @@ class V2DataQualityService:
                 session.commit()
             return result
 
+    def cap_implausible_records_affected(
+        self,
+        session: Session,
+        *,
+        min_value: int = 1_000_000,
+        min_repeat: int = 3,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Null per-victim ``records_affected`` figures that are actually campaign totals.
+
+        Impact-noise failure mode: an article reports a campaign-WIDE breach total
+        (e.g. the Salesforce/ShinyHunters "~275 million records") and the LLM stamps
+        that same figure onto every individual victim. The tell is a single large value
+        repeated verbatim across many distinct canonicals — no two unrelated breaches
+        independently report *exactly* 275,000,000. Summed, these inflate the dataset's
+        records-affected statistics into nonsense.
+
+        Rule (conservative, deterministic): a records_affected value is a campaign-total
+        leak iff it is large (``>= min_value``) AND appears on ``>= min_repeat`` distinct
+        canonicals. Those values are nulled in ``canonical_projection.data_impact`` (what
+        the read model + star projection read); genuine per-victim figures are untouched.
+        The campaign-wide total still lives at the campaign level. ``dry_run`` returns the
+        offending values + affected-canonical counts without writing.
+        """
+        from collections import Counter
+
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from src.edu_cti_v2.models import CanonicalEnrichment, CanonicalIncident
+
+        _FIELDS = ("records_affected_exact", "records_affected_min", "records_affected_max")
+
+        rows = list(
+            session.execute(
+                select(CanonicalEnrichment)
+                .join(CanonicalIncident, CanonicalIncident.id == CanonicalEnrichment.canonical_incident_id)
+                .where(CanonicalIncident.status == "open")
+            ).scalars()
+        )
+
+        # Count, per value, how many distinct canonicals carry it (any of the 3 fields).
+        value_canonicals: dict[int, set] = {}
+        for enr in rows:
+            di = (enr.canonical_projection or {}).get("data_impact") or {}
+            vals = set()
+            for f in _FIELDS:
+                v = di.get(f)
+                try:
+                    iv = int(v) if v is not None else None
+                except (TypeError, ValueError):
+                    iv = None
+                if iv is not None and iv >= min_value:
+                    vals.add(iv)
+            for iv in vals:
+                value_canonicals.setdefault(iv, set()).add(enr.canonical_incident_id)
+
+        leaked_values = {v for v, cans in value_canonicals.items() if len(cans) >= min_repeat}
+        offenders = sorted(
+            ((v, len(value_canonicals[v])) for v in leaked_values), key=lambda x: -x[0]
+        )
+
+        nulled_canonicals = 0
+        if not dry_run and leaked_values:
+            for enr in rows:
+                di = (enr.canonical_projection or {}).get("data_impact") or {}
+                changed = False
+                for f in _FIELDS:
+                    v = di.get(f)
+                    try:
+                        iv = int(v) if v is not None else None
+                    except (TypeError, ValueError):
+                        iv = None
+                    if iv is not None and iv in leaked_values:
+                        di[f] = None
+                        changed = True
+                if changed:
+                    enr.canonical_projection["data_impact"] = di
+                    flag_modified(enr, "canonical_projection")
+                    nulled_canonicals += 1
+
+        return {
+            "dry_run": dry_run,
+            "min_value": min_value,
+            "min_repeat": min_repeat,
+            "leaked_values": [{"value": v, "canonical_count": c} for v, c in offenders],
+            "distinct_leaked_values": len(leaked_values),
+            "nulled_canonicals": nulled_canonicals,
+        }
+
+    def run_records_affected_cap(
+        self,
+        *,
+        min_value: int = 1_000_000,
+        min_repeat: int = 3,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        if self.session_factory is None:
+            raise RuntimeError("session_factory is required for run_records_affected_cap")
+        with self.session_factory() as session:
+            result = self.cap_implausible_records_affected(
+                session, min_value=min_value, min_repeat=min_repeat, dry_run=dry_run
+            )
+            if not dry_run:
+                session.commit()
+            return result
+
     def run_google_wrapper_recovery(
         self, *, limit: int | None = None, dry_run: bool = False
     ) -> dict[str, Any]:
