@@ -576,6 +576,123 @@ class V2DataQualityService:
             "checked_at": now.isoformat(),
         }
 
+    def requeue_suspicious_dates_for_refetch(
+        self,
+        session: Session,
+        *,
+        min_age_gap_days: int = 400,
+        limit: int | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        """Re-fetch + re-enrich canonicals whose date looks wrong (the Instructure bug).
+
+        The publish-date extractor previously misdated weak-signal / non-English
+        news pages, storing a wrong year that propagated to the canonical
+        ``incident_date`` and escaped dedup as a phantom duplicate (e.g. the May-2026
+        Canvas breach stored as 2022). Now that the extractor is fixed, re-fetching
+        the article re-derives the date (``force_refetch=True`` -> the improved
+        extractor runs on fresh HTML) and the chained re-enrich + re-canonicalize
+        corrects the date and collapses the phantom dup.
+
+        Suspicious = an OPEN canonical whose primary source is **news/rss/api**
+        (NOT curated — curated breach DBs legitimately list old historical incidents)
+        and whose ``incident_date`` is more than ``min_age_gap_days`` *before* the
+        source was collected. A news/discovery incident reported years before we
+        collected it is the wrong-year-fallback signature. ``dry_run`` returns the
+        count without enqueuing or spending. Idempotent: rows with an active
+        ``fetch_article`` task are skipped.
+        """
+        from src.edu_cti_v2.models import CanonicalIncident, CanonicalMembership
+
+        # Open canonical -> its member source incidents (news/rss/api only), where the
+        # incident date predates collection by more than the gap threshold.
+        stmt = (
+            select(CanonicalIncident.id, SourceIncident.id, SourceIncident.source_name)
+            .join(CanonicalMembership, CanonicalMembership.canonical_incident_id == CanonicalIncident.id)
+            .join(SourceIncident, SourceIncident.id == CanonicalMembership.source_incident_id)
+            .where(CanonicalIncident.status == "open")
+            .where(CanonicalIncident.incident_date.is_not(None))
+            .where(SourceIncident.source_group.in_(("news", "rss", "api")))
+            .where(SourceIncident.is_deleted.is_(False))
+            .where(
+                CanonicalIncident.incident_date
+                < func.date(SourceIncident.collected_at) - min_age_gap_days
+            )
+            .order_by(CanonicalIncident.incident_date.asc())
+        )
+        if limit is not None:
+            stmt = stmt.limit(limit)
+
+        now = datetime.now(timezone.utc)
+        candidates = 0
+        requeued = 0
+        already_queued = 0
+        seen: set[Any] = set()
+        for _canonical_id, source_incident_id, source_name in session.execute(stmt):
+            if source_incident_id in seen:
+                continue
+            seen.add(source_incident_id)
+            candidates += 1
+            if dry_run:
+                continue
+            existing_task = self.pipeline_task_repository.get_active_for_target(
+                session,
+                task_type="fetch_article",
+                target_table="source_incidents",
+                target_id=source_incident_id,
+            )
+            if existing_task is not None:
+                already_queued += 1
+                continue
+            self.pipeline_task_repository.enqueue(
+                session,
+                PipelineTask(
+                    run_id=None,
+                    task_type="fetch_article",
+                    target_table="source_incidents",
+                    target_id=source_incident_id,
+                    status="queued",
+                    priority=80,
+                    payload={
+                        "source_incident_id": str(source_incident_id),
+                        "source_name": source_name,
+                        "force_refetch": True,
+                        "reason": "suspicious_date_refetch",
+                    },
+                    result={},
+                    available_at=now,
+                    attempt_count=0,
+                    max_attempts=3,
+                ),
+            )
+            requeued += 1
+
+        return {
+            "dry_run": dry_run,
+            "min_age_gap_days": min_age_gap_days,
+            "candidates": candidates,
+            "requeued_for_refetch": requeued,
+            "already_queued": already_queued,
+            "checked_at": now.isoformat(),
+        }
+
+    def run_suspicious_date_refetch(
+        self,
+        *,
+        min_age_gap_days: int = 400,
+        limit: int | None = None,
+        dry_run: bool = False,
+    ) -> dict[str, Any]:
+        if self.session_factory is None:
+            raise RuntimeError("session_factory is required for run_suspicious_date_refetch")
+        with self.session_factory() as session:
+            result = self.requeue_suspicious_dates_for_refetch(
+                session, min_age_gap_days=min_age_gap_days, limit=limit, dry_run=dry_run
+            )
+            if not dry_run:
+                session.commit()
+            return result
+
     def run_google_wrapper_recovery(
         self, *, limit: int | None = None, dry_run: bool = False
     ) -> dict[str, Any]:

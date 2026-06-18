@@ -563,6 +563,56 @@ def test_requeue_google_wrappers_skips_rows_with_active_resolve_task():
     task_repo.enqueue.assert_not_called()
 
 
+def test_requeue_suspicious_dates_enqueues_force_refetch():
+    session = Mock()
+    # (canonical_id, source_incident_id, source_name) rows from the join.
+    session.execute.return_value = [
+        ("can-1", "si-1", "oxylabs_news"),
+        ("can-2", "si-2", "googlenews_rss"),
+    ]
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = None
+
+    service = V2DataQualityService(pipeline_task_repository=task_repo)
+    result = service.requeue_suspicious_dates_for_refetch(session)
+
+    assert result["candidates"] == 2
+    assert result["requeued_for_refetch"] == 2
+    assert task_repo.enqueue.call_count == 2
+    tasks = [c.args[1] for c in task_repo.enqueue.call_args_list]
+    assert {t.task_type for t in tasks} == {"fetch_article"}
+    assert all(t.payload["force_refetch"] is True for t in tasks)
+    assert all(t.payload["reason"] == "suspicious_date_refetch" for t in tasks)
+
+
+def test_requeue_suspicious_dates_dry_run_counts_without_enqueue():
+    session = Mock()
+    session.execute.return_value = [("can-1", "si-1", "oxylabs_news")]
+    task_repo = Mock()
+
+    service = V2DataQualityService(pipeline_task_repository=task_repo)
+    result = service.requeue_suspicious_dates_for_refetch(session, dry_run=True)
+
+    assert result["dry_run"] is True
+    assert result["candidates"] == 1
+    assert result["requeued_for_refetch"] == 0
+    task_repo.enqueue.assert_not_called()
+
+
+def test_requeue_suspicious_dates_skips_active_fetch_task():
+    session = Mock()
+    session.execute.return_value = [("can-1", "si-1", "oxylabs_news")]
+    task_repo = Mock()
+    task_repo.get_active_for_target.return_value = object()
+
+    service = V2DataQualityService(pipeline_task_repository=task_repo)
+    result = service.requeue_suspicious_dates_for_refetch(session)
+
+    assert result["requeued_for_refetch"] == 0
+    assert result["already_queued"] == 1
+    task_repo.enqueue.assert_not_called()
+
+
 def test_requeue_curated_skips_rows_with_active_reenrich_task():
     cur = _source_incident(); cur.source_group = "curated"
     enr = _enr_for(cur); enr.manual_review_required = True

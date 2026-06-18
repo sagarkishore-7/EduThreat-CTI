@@ -393,6 +393,32 @@ def recover_v2_google_wrappers(
     return data_quality.run_google_wrapper_recovery(limit=limit, dry_run=dry_run)
 
 
+@router.post("/data-quality/refetch-suspicious-dates")
+def refetch_v2_suspicious_dates(
+    min_age_gap_days: int = Query(400, ge=30, le=3650),
+    limit: Optional[int] = Query(None, ge=1, le=50000),
+    dry_run: bool = Query(False),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """Re-fetch + re-enrich canonicals whose incident_date looks wrong (Instructure bug).
+
+    A wrong publish-date previously propagated to the canonical incident_date and
+    escaped dedup as a phantom duplicate (e.g. the May-2026 Canvas breach stored as
+    2022). Now that the publish-date extractor is fixed, this re-queues a
+    ``fetch_article`` (force_refetch) task per suspicious record so the improved
+    extractor re-derives the date on fresh HTML, then the chained re-enrich +
+    re-canonicalize corrects it and collapses the dup. Suspicious = an OPEN canonical
+    sourced from news/rss/api (NOT curated, whose old dates are authoritative) whose
+    incident_date predates collection by more than ``min_age_gap_days``. ``dry_run=true``
+    returns the count without enqueuing. Idempotent (skips rows with an active fetch task).
+    Run this AFTER the publish-date fix is deployed.
+    """
+    return data_quality.run_suspicious_date_refetch(
+        min_age_gap_days=min_age_gap_days, limit=limit, dry_run=dry_run
+    )
+
+
 @router.post("/data-quality/normalize-actors")
 def run_v2_actor_normalization(
     limit: Optional[int] = Query(None, ge=1, le=200000),

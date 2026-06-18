@@ -342,9 +342,87 @@ _DATE_CONTAINER_SELECTORS = (
     '[class*="date"]',
 )
 _DATE_LABEL_PREFIX_RE = re.compile(
-    r"^(?:published|posted|updated|last updated|date|by)\s*:?\s*",
+    # English + common non-English "published/posted on" byline labels.
+    r"^(?:published|posted|updated|last updated|date|by"
+    r"|publicado(?:\s+el|\s+em)?|publié(?:e)?\s+le|veröffentlicht\s+am"
+    r"|pubblicato\s+il|aktualisiert\s+am)\s*:?\s*",
     re.IGNORECASE,
 )
+
+# --------------------------------------------------------------------------- #
+# Multilingual visible-date parsing.
+#
+# The dataset spans ~28 languages, but the strict parser (dateutil) only
+# understands English month words, and treats dot-separated numeric dates as
+# US month-first. So a Spanish "25 de mayo de 2026", a German "2. Juni 2026", or
+# a European "03.06.2026" either never surfaces as a candidate or misparses.
+# Normalising the month word to a number here lets the existing pipeline handle
+# them without touching the shared strict parser.
+# --------------------------------------------------------------------------- #
+def _strip_accents(text: str) -> str:
+    import unicodedata
+
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", text) if not unicodedata.combining(ch)
+    )
+
+
+# Month word (accent-stripped, lowercased) -> month number, across es/de/fr/it/pt.
+_MULTILINGUAL_MONTHS: dict[str, int] = {}
+for _names, _num in [
+    (("enero", "januar", "janvier", "gennaio", "janeiro"), 1),
+    (("febrero", "februar", "fevrier", "febbraio", "fevereiro"), 2),
+    (("marzo", "marz", "mars", "marco"), 3),
+    (("abril", "april", "avril", "aprile"), 4),
+    (("mayo", "mai", "maggio", "maio"), 5),
+    (("junio", "juni", "juin", "giugno", "junho"), 6),
+    (("julio", "juli", "juillet", "luglio", "julho"), 7),
+    (("agosto", "august", "aout", "agost"), 8),
+    (("septiembre", "setiembre", "september", "septembre", "settembre", "setembro"), 9),
+    (("octubre", "oktober", "octobre", "ottobre", "outubro"), 10),
+    (("noviembre", "november", "novembre", "novembro"), 11),
+    (("diciembre", "dezember", "decembre", "dicembre", "dezembro"), 12),
+]:
+    for _n in _names:
+        _MULTILINGUAL_MONTHS[_n] = _num
+
+_NONEN_MONTH_WORD_RE = re.compile(
+    r"\b(\d{1,2})\s*(?:de\s+|\.\s*)?([A-Za-zÀ-ÿ]{3,12})\.?\s+(?:de\s+|del\s+)?(\d{4})\b"
+)
+# Dot-separated European numeric date: 03.06.2026 -> day-first (US uses slashes).
+_EU_NUMERIC_DATE_RE = re.compile(r"\b(0?[1-9]|[12]\d|3[01])\.(0?[1-9]|1[0-2])\.(20[0-3]\d)\b")
+
+
+def _parse_nonenglish_date(text: str):
+    """Parse a non-English visible date string to a ``date``, or ``None``.
+
+    Handles ``25 de mayo de 2026`` (es), ``2. Juni 2026`` (de),
+    ``25 mai 2026`` (fr) and dot-separated European ``03.06.2026`` (DD.MM.YYYY).
+    """
+    from datetime import date as _date
+
+    if not text:
+        return None
+
+    word_match = _NONEN_MONTH_WORD_RE.search(text)
+    if word_match:
+        day_s, month_word, year_s = word_match.groups()
+        month_num = _MULTILINGUAL_MONTHS.get(_strip_accents(month_word).lower())
+        if month_num is not None:
+            try:
+                return _date(int(year_s), month_num, int(day_s))
+            except ValueError:
+                return None
+
+    num_match = _EU_NUMERIC_DATE_RE.search(text)
+    if num_match:
+        day_s, month_s, year_s = num_match.groups()
+        try:
+            return _date(int(year_s), int(month_s), int(day_s))
+        except ValueError:
+            return None
+
+    return None
 
 
 def _strip_ordinal_day_suffixes(raw: str) -> str:
@@ -2261,10 +2339,14 @@ class ArticleFetcher:
                 match = _VISIBLE_HEADER_DATE_RE.search(text)
                 _add(match.group(0) if match else text, 5, "container")
 
-        # 6. Full-page visible-text scan (not just the header).
+        # 6. Full-page visible-text scan (not just the header), English + non-English.
         page_text = re.sub(r"\s+", " ", soup.get_text(" ", strip=True))
         for match in _VISIBLE_HEADER_DATE_RE.finditer(page_text):
             _add(match.group(0), 6, "visible_text")
+        for match in _NONEN_MONTH_WORD_RE.finditer(page_text):
+            _add(match.group(0), 6, "visible_text_nonen")
+        for match in _EU_NUMERIC_DATE_RE.finditer(page_text):
+            _add(match.group(0), 6, "visible_text_nonen")
 
         if not candidates:
             return None
@@ -2286,6 +2368,22 @@ class ArticleFetcher:
             filtered.append((parsed, rank, source))
         if not filtered:
             return None
+
+        best_rank = min(rank for (_d, rank, _s) in filtered)
+
+        # Ambiguity guard for weak-signal-only pages. When no strong published
+        # signal exists (best rank >= 5 — i.e. we are relying on byline/container
+        # or full-page visible-text dates) a news article that *mentions* several
+        # years (a past-incident reference, a "since 20XX" bio line, a related-article
+        # link) yields candidates spanning a wide range. Picking the chronologically
+        # earliest then grabs an unrelated PAST year as the publish date (e.g. a
+        # May-2026 Canvas story misdated to 2022). When the weak candidates disagree
+        # by more than a year, the publish date is not trustworthy — return None and
+        # let the date stay null/approximate rather than confidently wrong.
+        if best_rank >= 5:
+            weak_dates = [d for (d, rank, _s) in filtered if rank >= 5]
+            if weak_dates and (max(weak_dates) - min(weak_dates)).days > 366:
+                return None
 
         # Pick the best-ranked; tie-break toward the earliest date (publish, not update).
         best = min(filtered, key=lambda c: (c[1], c[0]))
@@ -2310,7 +2408,15 @@ class ArticleFetcher:
         cleaned = _clean_date_candidate(str(date_str))
         if not cleaned:
             return None, None
-        return parse_date_strict(cleaned)
+        parsed, precision = parse_date_strict(cleaned)
+        if parsed is not None:
+            return parsed, precision
+        # Fall back to multilingual parsing (Spanish/German/French/… month words,
+        # European DD.MM.YYYY) that the English-centric strict parser misses.
+        nonen = _parse_nonenglish_date(cleaned)
+        if nonen is not None:
+            return nonen, "day"
+        return None, None
 
     def _normalize_publish_date_for_url(self, url: str, raw_date: Optional[str]) -> Optional[str]:
         """Normalize publish date and reject obvious template dates from mismatched URL years."""
