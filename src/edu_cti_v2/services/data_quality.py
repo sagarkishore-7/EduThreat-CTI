@@ -596,16 +596,21 @@ class V2DataQualityService:
 
         Suspicious = an OPEN canonical whose primary source is **news/rss/api**
         (NOT curated — curated breach DBs legitimately list old historical incidents)
-        and whose ``incident_date`` is more than ``min_age_gap_days`` *before* the
-        source was collected. A news/discovery incident reported years before we
-        collected it is the wrong-year-fallback signature. ``dry_run`` returns the
-        count without enqueuing or spending. Idempotent: rows with an active
-        ``fetch_article`` task are skipped.
+        and whose ``incident_date`` is more than ``min_age_gap_days`` *before the
+        article's own publish date* (``source_published_at``). A news article can't be
+        reporting, as current news, an incident from years before it was published —
+        that gap is the wrong-year-fallback signature (e.g. a May-2026 Canvas article
+        whose incident_date is 2022). NB: we deliberately compare against the article
+        **publish date**, not ``collected_at`` — a historical sweep collects genuinely
+        old incidents recently, so ``collected_at`` would flag every legitimate
+        historical record. Rows with no ``source_published_at`` are skipped (no anchor
+        to judge against). ``dry_run`` returns the count without enqueuing or spending.
+        Idempotent: rows with an active ``fetch_article`` task are skipped.
         """
         from src.edu_cti_v2.models import CanonicalIncident, CanonicalMembership
 
-        # Open canonical -> its member source incidents (news/rss/api only), where the
-        # incident date predates collection by more than the gap threshold.
+        # Open canonical -> member source incidents (news/rss/api), where the canonical
+        # incident date predates the article's OWN publish date by more than the gap.
         stmt = (
             select(CanonicalIncident.id, SourceIncident.id, SourceIncident.source_name)
             .join(CanonicalMembership, CanonicalMembership.canonical_incident_id == CanonicalIncident.id)
@@ -614,9 +619,10 @@ class V2DataQualityService:
             .where(CanonicalIncident.incident_date.is_not(None))
             .where(SourceIncident.source_group.in_(("news", "rss", "api")))
             .where(SourceIncident.is_deleted.is_(False))
+            .where(SourceIncident.source_published_at.is_not(None))
             .where(
                 CanonicalIncident.incident_date
-                < func.date(SourceIncident.collected_at) - min_age_gap_days
+                < func.date(SourceIncident.source_published_at) - min_age_gap_days
             )
             .order_by(CanonicalIncident.incident_date.asc())
         )

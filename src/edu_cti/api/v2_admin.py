@@ -410,7 +410,9 @@ def refetch_v2_suspicious_dates(
     extractor re-derives the date on fresh HTML, then the chained re-enrich +
     re-canonicalize corrects it and collapses the dup. Suspicious = an OPEN canonical
     sourced from news/rss/api (NOT curated, whose old dates are authoritative) whose
-    incident_date predates collection by more than ``min_age_gap_days``. ``dry_run=true``
+    incident_date predates the article's own publish date by more than
+    ``min_age_gap_days`` (compared to the article publish date, NOT collection time —
+    a historical sweep collects genuinely old incidents recently). ``dry_run=true``
     returns the count without enqueuing. Idempotent (skips rows with an active fetch task).
     Run this AFTER the publish-date fix is deployed.
     """
