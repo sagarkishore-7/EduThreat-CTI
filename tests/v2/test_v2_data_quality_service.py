@@ -634,3 +634,45 @@ def test_requeue_curated_skips_rows_with_active_reenrich_task():
     assert result["requeued_for_reenrichment"] == 0
     assert result["already_queued"] == 1
     task_repo.enqueue.assert_not_called()
+
+
+def _canon_enr(canon_id, exact):
+    from unittest.mock import Mock
+    e = Mock()
+    e.canonical_incident_id = canon_id
+    e.canonical_projection = {"data_impact": {"records_affected_exact": exact}}
+    return e
+
+
+def test_cap_records_affected_nulls_repeated_campaign_total():
+    from unittest.mock import Mock
+    # 275M repeated on 4 canonicals (campaign total) + a unique 1.2M (legit)
+    rows = [_canon_enr("c1", 275_000_000), _canon_enr("c2", 275_000_000),
+            _canon_enr("c3", 275_000_000), _canon_enr("c4", 275_000_000),
+            _canon_enr("c5", 1_200_000)]
+    session = Mock()
+    session.execute.return_value.scalars.return_value = rows
+    svc = V2DataQualityService()
+    from unittest.mock import patch
+    with patch("sqlalchemy.orm.attributes.flag_modified"):
+        res = svc.cap_implausible_records_affected(session, min_repeat=3)
+    assert res["distinct_leaked_values"] == 1
+    assert res["leaked_values"][0]["value"] == 275_000_000
+    assert res["leaked_values"][0]["canonical_count"] == 4
+    assert res["nulled_canonicals"] == 4
+    # the 4 campaign-total rows nulled, the legit 1.2M kept
+    assert rows[0].canonical_projection["data_impact"]["records_affected_exact"] is None
+    assert rows[4].canonical_projection["data_impact"]["records_affected_exact"] == 1_200_000
+
+
+def test_cap_records_affected_dry_run_lists_without_writing():
+    from unittest.mock import Mock
+    rows = [_canon_enr("c1", 275_000_000), _canon_enr("c2", 275_000_000), _canon_enr("c3", 275_000_000)]
+    session = Mock()
+    session.execute.return_value.scalars.return_value = rows
+    svc = V2DataQualityService()
+    res = svc.cap_implausible_records_affected(session, min_repeat=3, dry_run=True)
+    assert res["dry_run"] is True
+    assert res["distinct_leaked_values"] == 1
+    assert res["nulled_canonicals"] == 0
+    assert rows[0].canonical_projection["data_impact"]["records_affected_exact"] == 275_000_000
