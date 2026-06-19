@@ -421,6 +421,23 @@ def refetch_v2_suspicious_dates(
     )
 
 
+@router.post("/data-quality/rebackfill-star")
+def rebackfill_v2_star_schema(
+    only_open: bool = Query(True),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """Rebuild the star-schema fact table from current canonical projections.
+
+    The export/analytics layer reads ``fact_incident``, built from
+    ``canonical_projection``. After a projection edit (e.g. the records_affected cap),
+    the facts are stale until rebuilt. This deterministic re-backfill (no Ollama, no
+    re-fetch) syncs the analytical layer so the export and paper figures reflect the
+    cleaned projections. Run after ``cap-records-affected``.
+    """
+    return data_quality.rebackfill_star_schema(only_open=only_open)
+
+
 @router.post("/data-quality/cap-records-affected")
 def cap_v2_records_affected(
     min_value: int = Query(1_000_000, ge=1000),
