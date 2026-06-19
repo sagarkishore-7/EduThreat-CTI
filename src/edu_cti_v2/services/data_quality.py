@@ -367,6 +367,9 @@ class V2DataQualityService:
     # signature. Unique large breaches (Edmodo) are never touched (repeat == 1).
     _AUTO_RECORDS_CAP_MIN_VALUE = 65_000_000
     _AUTO_RECORDS_CAP_MIN_REPEAT = 3
+    # Magnitude ceiling: above the largest real education-sector breach (Edmodo ~77M),
+    # so any single-victim figure >= 100M is an absurd parse error / campaign total.
+    _AUTO_RECORDS_CAP_MAX_PLAUSIBLE = 100_000_000
 
     def run_sweep(self, *, limit: int | None = None) -> dict[str, Any]:
         if self.session_factory is None:
@@ -379,6 +382,7 @@ class V2DataQualityService:
                 session,
                 min_value=self._AUTO_RECORDS_CAP_MIN_VALUE,
                 min_repeat=self._AUTO_RECORDS_CAP_MIN_REPEAT,
+                max_plausible=self._AUTO_RECORDS_CAP_MAX_PLAUSIBLE,
             )
             session.commit()
             result["records_affected_capped"] = cap.get("nulled_canonicals", 0)
@@ -728,23 +732,29 @@ class V2DataQualityService:
         *,
         min_value: int = 1_000_000,
         min_repeat: int = 3,
+        max_plausible: int | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        """Null per-victim ``records_affected`` figures that are actually campaign totals.
+        """Null per-victim ``records_affected`` figures that are implausible/campaign totals.
 
-        Impact-noise failure mode: an article reports a campaign-WIDE breach total
-        (e.g. the Salesforce/ShinyHunters "~275 million records") and the LLM stamps
-        that same figure onto every individual victim. The tell is a single large value
-        repeated verbatim across many distinct canonicals — no two unrelated breaches
-        independently report *exactly* 275,000,000. Summed, these inflate the dataset's
-        records-affected statistics into nonsense.
+        Two failure modes:
 
-        Rule (conservative, deterministic): a records_affected value is a campaign-total
-        leak iff it is large (``>= min_value``) AND appears on ``>= min_repeat`` distinct
-        canonicals. Those values are nulled in ``canonical_projection.data_impact`` (what
-        the read model + star projection read); genuine per-victim figures are untouched.
-        The campaign-wide total still lives at the campaign level. ``dry_run`` returns the
-        offending values + affected-canonical counts without writing.
+        1. **Campaign-total leak.** An article reports a campaign-WIDE breach total
+           (e.g. the ShinyHunters/Canvas "~275 million records") and the LLM stamps that
+           same figure onto every individual victim. The tell is a single large value
+           (``>= min_value``) repeated verbatim across ``>= min_repeat`` distinct
+           canonicals — no two unrelated breaches report *exactly* 275,000,000.
+        2. **Absurd one-off.** A parse error / hallucination produces a figure no
+           single education-sector entity could have (e.g. 3,000,000,000 records on one
+           small university). These are *unique*, so the repeat rule misses them; the
+           ``max_plausible`` magnitude ceiling catches them — any value ``>= max_plausible``
+           is nulled regardless of repeat. The largest real education breach is Edmodo
+           (~77M), so a ceiling around 100M keeps every genuine large breach.
+
+        Nulls the offending values across ``records_affected_{exact,min,max}`` in
+        ``canonical_projection.data_impact`` (what the read model + star projection read);
+        genuine per-victim figures are untouched. ``dry_run`` lists offenders without
+        writing. Re-backfill the star schema afterward.
         """
         from collections import Counter
 
@@ -779,6 +789,10 @@ class V2DataQualityService:
                 value_canonicals.setdefault(iv, set()).add(enr.canonical_incident_id)
 
         leaked_values = {v for v, cans in value_canonicals.items() if len(cans) >= min_repeat}
+        if max_plausible is not None:
+            # Magnitude ceiling: any value above the largest real edu breach is implausible
+            # for a single victim, even if it appears only once (parse error / hallucination).
+            leaked_values |= {v for v in value_canonicals if v >= max_plausible}
         offenders = sorted(
             ((v, len(value_canonicals[v])) for v in leaked_values), key=lambda x: -x[0]
         )
@@ -806,6 +820,7 @@ class V2DataQualityService:
             "dry_run": dry_run,
             "min_value": min_value,
             "min_repeat": min_repeat,
+            "max_plausible": max_plausible,
             "leaked_values": [{"value": v, "canonical_count": c} for v, c in offenders],
             "distinct_leaked_values": len(leaked_values),
             "nulled_canonicals": nulled_canonicals,
@@ -835,13 +850,15 @@ class V2DataQualityService:
         *,
         min_value: int = 1_000_000,
         min_repeat: int = 3,
+        max_plausible: int | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
         if self.session_factory is None:
             raise RuntimeError("session_factory is required for run_records_affected_cap")
         with self.session_factory() as session:
             result = self.cap_implausible_records_affected(
-                session, min_value=min_value, min_repeat=min_repeat, dry_run=dry_run
+                session, min_value=min_value, min_repeat=min_repeat,
+                max_plausible=max_plausible, dry_run=dry_run,
             )
             if not dry_run:
                 session.commit()
