@@ -788,6 +788,25 @@ class V2DataQualityService:
             "nulled_canonicals": nulled_canonicals,
         }
 
+    def rebackfill_star_schema(self, *, only_open: bool = True) -> dict[str, Any]:
+        """Rebuild the star-schema fact table from the (current) canonical projections.
+
+        The analytics/export layer reads ``fact_incident``, which is built from
+        ``canonical_enrichments.canonical_projection``. After a data-quality edit to the
+        projections (e.g. nulling campaign-total records_affected), the facts are stale
+        until rebuilt. This is the deterministic re-backfill — no Ollama, no re-fetch —
+        that syncs the analytical layer with the cleaned projections so the export and
+        paper figures reflect them.
+        """
+        if self.session_factory is None:
+            raise RuntimeError("session_factory is required for rebackfill_star_schema")
+        from src.edu_cti_v2.services.star_projection import backfill_all
+
+        with self.session_factory() as session:
+            result = backfill_all(session, only_open=only_open, progress=False)
+            session.commit()
+            return {"rebackfilled": True, "only_open": only_open, **(result or {})}
+
     def run_records_affected_cap(
         self,
         *,
