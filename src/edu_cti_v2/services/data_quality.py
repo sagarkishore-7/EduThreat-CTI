@@ -360,13 +360,36 @@ class V2DataQualityService:
             "checked_at": now.isoformat(),
         }
 
+    # Forward guard: minimum value + repeat count for the automated campaign-total cap.
+    # Conservative on purpose for unattended runs — only nulls a value that is larger
+    # than the biggest real education-sector breach (Edmodo ~77M) AND repeats across
+    # several distinct victims, the unambiguous "campaign total stamped on every victim"
+    # signature. Unique large breaches (Edmodo) are never touched (repeat == 1).
+    _AUTO_RECORDS_CAP_MIN_VALUE = 65_000_000
+    _AUTO_RECORDS_CAP_MIN_REPEAT = 3
+
     def run_sweep(self, *, limit: int | None = None) -> dict[str, Any]:
         if self.session_factory is None:
             raise RuntimeError("session_factory is required for run_sweep")
         with self.session_factory() as session:
             result = self.sweep_invalid_source_enrichments(session, limit=limit)
+            # Permanent forward guard: null campaign-total records_affected leaked onto
+            # individual victims so the impact stats can't be re-corrupted on a future run.
+            cap = self.cap_implausible_records_affected(
+                session,
+                min_value=self._AUTO_RECORDS_CAP_MIN_VALUE,
+                min_repeat=self._AUTO_RECORDS_CAP_MIN_REPEAT,
+            )
             session.commit()
-            return result
+            result["records_affected_capped"] = cap.get("nulled_canonicals", 0)
+        # If the cap nulled anything, the star facts are stale — re-backfill so analytics
+        # stay consistent with the cleaned projections.
+        if result.get("records_affected_capped"):
+            try:
+                result["star_rebackfill"] = self.rebackfill_star_schema()
+            except Exception as exc:  # pragma: no cover - never fail the sweep on rebackfill
+                result["star_rebackfill_error"] = str(exc)
+        return result
 
     def requeue_curated_for_reenrichment(
         self,
