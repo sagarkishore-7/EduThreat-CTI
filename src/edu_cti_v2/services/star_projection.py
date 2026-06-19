@@ -490,6 +490,20 @@ def backfill_all(
     if only_open:
         q = q.where(CanonicalIncident.status == "open")
 
+    pruned = 0
+    if only_open:
+        # Prune orphaned facts for canonicals that are no longer open (merged / folded
+        # during dedup, superseded, excluded). build_fact_for_canonical only rebuilds the
+        # canonicals it processes, so without this their stale fact rows linger and inflate
+        # the export/analytics row count above the true open-canonical total.
+        open_ids = select(CanonicalIncident.id).where(CanonicalIncident.status == "open")
+        for _model in (FactIncident, BridgeIncidentActor, BridgeIncidentMitreTechnique,
+                       BridgeIncidentCve, BridgeIncidentDataCategory, IncidentIoc):
+            res = session.execute(delete(_model).where(_model.canonical_incident_id.not_in(open_ids)))
+            if _model is FactIncident:
+                pruned = res.rowcount or 0
+        session.commit()
+
     processed = 0
     for canonical, projection, completeness in session.execute(q).all():
         build_fact_for_canonical(
@@ -503,7 +517,7 @@ def backfill_all(
             if progress:
                 print(f"  ... {processed} facts built", flush=True)
     session.commit()
-    return {"facts_built": processed}
+    return {"facts_built": processed, "stale_facts_pruned": pruned}
 
 
 def main() -> None:
