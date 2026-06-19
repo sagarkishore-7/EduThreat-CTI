@@ -676,3 +676,18 @@ def test_cap_records_affected_dry_run_lists_without_writing():
     assert res["distinct_leaked_values"] == 1
     assert res["nulled_canonicals"] == 0
     assert rows[0].canonical_projection["data_impact"]["records_affected_exact"] == 275_000_000
+
+
+def test_cap_records_affected_magnitude_ceiling_nulls_unique_absurd():
+    from unittest.mock import Mock, patch
+    # 3 billion on ONE canonical (parse error) — unique, so repeat-rule misses it;
+    # the magnitude ceiling must catch it. A legit 77M (Edmodo) stays.
+    rows = [_canon_enr("c1", 3_000_000_000), _canon_enr("c2", 77_000_000)]
+    session = Mock()
+    session.execute.return_value.scalars.return_value = rows
+    svc = V2DataQualityService()
+    with patch("sqlalchemy.orm.attributes.flag_modified"):
+        res = svc.cap_implausible_records_affected(session, min_repeat=3, max_plausible=100_000_000)
+    assert res["nulled_canonicals"] == 1
+    assert rows[0].canonical_projection["data_impact"]["records_affected_exact"] is None
+    assert rows[1].canonical_projection["data_impact"]["records_affected_exact"] == 77_000_000

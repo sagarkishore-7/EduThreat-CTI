@@ -442,6 +442,7 @@ def rebackfill_v2_star_schema(
 def cap_v2_records_affected(
     min_value: int = Query(1_000_000, ge=1000),
     min_repeat: int = Query(3, ge=2, le=100),
+    max_plausible: Optional[int] = Query(None, ge=1_000_000),
     dry_run: bool = Query(False),
     data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
     _: bool = Depends(authenticate),
@@ -458,7 +459,7 @@ def cap_v2_records_affected(
     schema afterward so analytics pick up the change.
     """
     return data_quality.run_records_affected_cap(
-        min_value=min_value, min_repeat=min_repeat, dry_run=dry_run
+        min_value=min_value, min_repeat=min_repeat, max_plausible=max_plausible, dry_run=dry_run
     )
 
 
