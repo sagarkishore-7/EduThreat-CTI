@@ -371,6 +371,21 @@ class V2DataQualityService:
     # so any single-victim figure >= 100M is an absurd parse error / campaign total.
     _AUTO_RECORDS_CAP_MAX_PLAUSIBLE = 100_000_000
 
+    # Manually-verified upper-bound overrides: {canonical_id: records_affected_max}.
+    # These are genuine vendor/platform-scale incidents whose headline figure exceeds the
+    # magnitude ceiling but is an *attacker-claimed upper bound* corroborated by many
+    # independent sources within the same canonical — NOT a campaign total leaked onto a
+    # single victim. The cap keeps these (skips them when nulling) and they are (re)applied
+    # as ``records_affected_max`` so the figure is reported strictly as an upper bound.
+    #
+    #  6ffbf1d6… : Instructure / Canvas LMS (ShinyHunters, 2026-05), "up to 275M users /
+    #              3.65TB from ~9,000 schools" — claimed in 297 of the canonical's sources.
+    #              Reported as MAX (upper bound); the same figure is nulled on the affected
+    #              member schools (Peralta, Wake County, …) which are separate canonicals.
+    _RECORDS_UPPER_BOUND_OVERRIDES: dict[str, int] = {
+        "6ffbf1d6-65f5-47f5-8ca4-68292977d678": 275_000_000,
+    }
+
     def run_sweep(self, *, limit: int | None = None) -> dict[str, Any]:
         if self.session_factory is None:
             raise RuntimeError("session_factory is required for run_sweep")
@@ -384,11 +399,15 @@ class V2DataQualityService:
                 min_repeat=self._AUTO_RECORDS_CAP_MIN_REPEAT,
                 max_plausible=self._AUTO_RECORDS_CAP_MAX_PLAUSIBLE,
             )
+            # Re-assert manually-verified upper bounds (e.g. the Canvas/Instructure 275M
+            # attacker claim) so the cap above can never strip the headline incident.
+            overrides = self.apply_records_upper_bound_overrides(session)
             session.commit()
             result["records_affected_capped"] = cap.get("nulled_canonicals", 0)
-        # If the cap nulled anything, the star facts are stale — re-backfill so analytics
-        # stay consistent with the cleaned projections.
-        if result.get("records_affected_capped"):
+            result["records_upper_bound_overrides"] = overrides.get("applied", 0)
+        # If the cap nulled anything or an override changed a value, the star facts are
+        # stale — re-backfill so analytics stay consistent with the projections.
+        if result.get("records_affected_capped") or result.get("records_upper_bound_overrides"):
             try:
                 result["star_rebackfill"] = self.rebackfill_star_schema()
             except Exception as exc:  # pragma: no cover - never fail the sweep on rebackfill
@@ -800,6 +819,10 @@ class V2DataQualityService:
         nulled_canonicals = 0
         if not dry_run and leaked_values:
             for enr in rows:
+                # Never strip a manually-verified upper-bound incident (e.g. the Canvas
+                # 275M attacker claim); these are re-asserted as records_affected_max.
+                if str(enr.canonical_incident_id) in self._RECORDS_UPPER_BOUND_OVERRIDES:
+                    continue
                 di = (enr.canonical_projection or {}).get("data_impact") or {}
                 changed = False
                 for f in _FIELDS:
@@ -825,6 +848,63 @@ class V2DataQualityService:
             "distinct_leaked_values": len(leaked_values),
             "nulled_canonicals": nulled_canonicals,
         }
+
+    def apply_records_upper_bound_overrides(self, session: Session) -> dict[str, Any]:
+        """(Re)assert manually-verified upper-bound records figures on specific canonicals.
+
+        Sets ``data_impact.records_affected_max`` (the upper-bound field) to the override
+        value and stamps ``records_affected_basis = "attacker_claim_upper_bound"`` so the
+        figure is reported strictly as an upper bound, never as an exact disclosure. The
+        ``records_affected_exact`` field is left untouched (these are claims, not confirmed
+        counts). Idempotent — a no-op when the value already matches. See
+        ``_RECORDS_UPPER_BOUND_OVERRIDES`` for the rationale per canonical.
+        """
+        from sqlalchemy.orm.attributes import flag_modified
+
+        from src.edu_cti_v2.models import CanonicalEnrichment
+
+        applied = 0
+        details: list[dict[str, Any]] = []
+        for canonical_id, value in self._RECORDS_UPPER_BOUND_OVERRIDES.items():
+            enr = session.execute(
+                select(CanonicalEnrichment).where(
+                    CanonicalEnrichment.canonical_incident_id == canonical_id
+                )
+            ).scalar_one_or_none()
+            if enr is None:
+                details.append({"canonical_id": canonical_id, "status": "not_found"})
+                continue
+            projection = dict(enr.canonical_projection or {})
+            di = dict(projection.get("data_impact") or {})
+            already = di.get("records_affected_max") == value and di.get(
+                "records_affected_basis"
+            ) == "attacker_claim_upper_bound"
+            di["records_affected_max"] = value
+            di["records_affected_basis"] = "attacker_claim_upper_bound"
+            projection["data_impact"] = di
+            enr.canonical_projection = projection
+            flag_modified(enr, "canonical_projection")
+            if not already:
+                applied += 1
+            details.append(
+                {"canonical_id": canonical_id, "records_affected_max": value,
+                 "status": "already_set" if already else "applied"}
+            )
+        return {"applied": applied, "overrides": details}
+
+    def run_records_upper_bound_overrides(self, *, rebackfill: bool = True) -> dict[str, Any]:
+        """Apply the upper-bound overrides standalone (own session) + optional rebackfill."""
+        if self.session_factory is None:
+            raise RuntimeError("session_factory is required for run_records_upper_bound_overrides")
+        with self.session_factory() as session:
+            result = self.apply_records_upper_bound_overrides(session)
+            session.commit()
+        if rebackfill and result.get("applied"):
+            try:
+                result["star_rebackfill"] = self.rebackfill_star_schema()
+            except Exception as exc:  # pragma: no cover - never fail on rebackfill
+                result["star_rebackfill_error"] = str(exc)
+        return result
 
     def rebackfill_star_schema(self, *, only_open: bool = True) -> dict[str, Any]:
         """Rebuild the star-schema fact table from the (current) canonical projections.

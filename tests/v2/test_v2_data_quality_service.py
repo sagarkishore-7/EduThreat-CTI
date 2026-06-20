@@ -691,3 +691,43 @@ def test_cap_records_affected_magnitude_ceiling_nulls_unique_absurd():
     assert res["nulled_canonicals"] == 1
     assert rows[0].canonical_projection["data_impact"]["records_affected_exact"] is None
     assert rows[1].canonical_projection["data_impact"]["records_affected_exact"] == 77_000_000
+
+
+def test_cap_records_affected_keeps_upper_bound_override():
+    from unittest.mock import Mock, patch
+    # The manually-verified Canvas 275M canonical must survive the magnitude ceiling,
+    # while the SAME figure leaked onto a member school (non-override) is nulled.
+    override_id = next(iter(V2DataQualityService._RECORDS_UPPER_BOUND_OVERRIDES))
+    rows = [_canon_enr(override_id, 275_000_000), _canon_enr("member-school", 275_000_000)]
+    session = Mock()
+    session.execute.return_value.scalars.return_value = rows
+    svc = V2DataQualityService()
+    with patch("sqlalchemy.orm.attributes.flag_modified"):
+        res = svc.cap_implausible_records_affected(session, min_repeat=3, max_plausible=100_000_000)
+    # only the member school is nulled; the verified vendor incident is untouched
+    assert res["nulled_canonicals"] == 1
+    assert rows[0].canonical_projection["data_impact"]["records_affected_exact"] == 275_000_000
+    assert rows[1].canonical_projection["data_impact"]["records_affected_exact"] is None
+
+
+def test_apply_records_upper_bound_overrides_sets_max_as_upper_bound():
+    from unittest.mock import Mock, patch
+    override_id, value = next(iter(V2DataQualityService._RECORDS_UPPER_BOUND_OVERRIDES.items()))
+    enr = Mock()
+    enr.canonical_incident_id = override_id
+    enr.canonical_projection = {"data_impact": {"records_affected_max": None}}
+    session = Mock()
+    session.execute.return_value.scalar_one_or_none.return_value = enr
+    svc = V2DataQualityService()
+    with patch("sqlalchemy.orm.attributes.flag_modified"):
+        res = svc.apply_records_upper_bound_overrides(session)
+    assert res["applied"] == 1
+    di = enr.canonical_projection["data_impact"]
+    assert di["records_affected_max"] == value
+    assert di["records_affected_basis"] == "attacker_claim_upper_bound"
+    # exact is never set — these are attacker claims, upper bound only
+    assert di.get("records_affected_exact") is None
+    # idempotent: re-applying is a no-op
+    with patch("sqlalchemy.orm.attributes.flag_modified"):
+        res2 = svc.apply_records_upper_bound_overrides(session)
+    assert res2["applied"] == 0
