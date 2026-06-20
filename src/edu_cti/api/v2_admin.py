@@ -463,6 +463,24 @@ def cap_v2_records_affected(
     )
 
 
+@router.post("/data-quality/apply-records-overrides")
+def apply_v2_records_overrides(
+    rebackfill: bool = Query(True),
+    data_quality: V2DataQualityService = Depends(get_v2_data_quality_service),
+    _: bool = Depends(authenticate),
+):
+    """(Re)assert manually-verified upper-bound records figures on specific canonicals.
+
+    Some genuine vendor/platform-scale incidents exceed the records cap's magnitude
+    ceiling but are attacker-claimed upper bounds corroborated by many sources (e.g. the
+    Canvas/Instructure ShinyHunters "~275M users" breach). This sets their
+    ``records_affected_max`` (upper bound only, never exact) and is idempotent. The cap
+    skips these canonicals so the figure survives future sweeps. Re-backfills the star
+    schema by default so analytics/export pick up the change.
+    """
+    return data_quality.run_records_upper_bound_overrides(rebackfill=rebackfill)
+
+
 @router.post("/data-quality/normalize-actors")
 def run_v2_actor_normalization(
     limit: Optional[int] = Query(None, ge=1, le=200000),
